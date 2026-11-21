@@ -533,7 +533,7 @@ export function validatePipeline(input: ValidatePipelineInput): WorkflowProblem[
             // agent's kind's actions, so an agent of a kind without it is
             // the wrong agent for the step, or the wrong action.
             message:
-              `"${step.name}" asks ${agent.name} for "${step.entryAction}", but ${agent.name} is a "${agent.role}" agent and that kind has no "${step.entryAction}" action — ` +
+              `"${step.name}" asks ${agent.name} for "${step.entryAction}", but ${agent.name}'s kind, "${agent.role}", has no "${step.entryAction}" action — ` +
               `choose an agent of a kind that has it, or define "${step.entryAction}" for "${agent.role}".`,
           });
         } else {

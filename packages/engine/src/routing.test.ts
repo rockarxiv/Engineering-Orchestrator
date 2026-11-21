@@ -9,7 +9,7 @@ function step(id: string, position: number, overrides: Partial<PipelineStep> = {
     position,
     name: id,
     type: "agent",
-    ownerRole: "implementer",
+    agentId: "a-implementer" as Uuid,
     entryAction: "implement",
     instructionsSummary: null,
     isTerminal: false,
@@ -43,8 +43,8 @@ function route(fromStepId: string, resultKey: string, target: string, position =
 }
 
 const IMPLEMENT = step("implement", 1);
-const REVIEW = step("review", 2, { ownerRole: "reviewer", entryAction: "review" });
-const MERGE = step("merge", 3, { type: "builtin", ownerRole: null, entryAction: null, isTerminal: true });
+const REVIEW = step("review", 2, { agentId: "a-reviewer" as Uuid, entryAction: "review" });
+const MERGE = step("merge", 3, { type: "builtin", agentId: null, entryAction: null, isTerminal: true });
 const STEPS = [IMPLEMENT, REVIEW, MERGE];
 
 const ROUTES = [
@@ -56,8 +56,8 @@ const ROUTES = [
 
 /** A second pipeline, the one a finished story is handed to (EO-58). */
 const MERGE_PIPELINE = [
-  step("queue", 0, { pipelineId: "p2" as Uuid, ownerRole: null, entryAction: null, type: "user" }),
-  step("merged", 1, { pipelineId: "p2" as Uuid, ownerRole: null, entryAction: null, type: "user", isTerminal: true }),
+  step("queue", 0, { pipelineId: "p2" as Uuid, agentId: null, entryAction: null, type: "user" }),
+  step("merged", 1, { pipelineId: "p2" as Uuid, agentId: null, entryAction: null, type: "user", isTerminal: true }),
 ];
 
 describe("resolveRoute", () => {

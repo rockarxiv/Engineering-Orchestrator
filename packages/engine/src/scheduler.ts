@@ -491,7 +491,6 @@ function eligibility<R extends DispatchRefusal>(input: EligibilityInput<R>) {
     return why === null ? null : { kind: "agent_unavailable", agentId: agent.id, agentName: agent.name, why };
   };
 
-
   /**
    * Whether the pause stands between this item and a run: every item,
    * but for an agent step whose agent is of a kind the host exempted. An

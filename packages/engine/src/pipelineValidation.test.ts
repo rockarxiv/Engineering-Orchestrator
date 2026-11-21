@@ -1,8 +1,20 @@
-import type { CustomModule, PipelineStep, StepRoute, Uuid } from "@eo/core";
+import type { CustomModule, PipelineStep, StepAgentFacts, StepRoute, Uuid } from "@eo/core";
 import { coreRegistry, developerRegistry, fromRegistryView, toRegistryView, type ActionFacts, type RegistryFacts } from "@eo/core";
 import { describe, expect, it } from "vitest";
 import { hasBlockingProblem, outsideReachByStep, validatePipeline, type ValidatePipelineInput } from "./pipelineValidation.js";
 import type { ModuleVersionFacts } from "./modulePins.js";
+
+/**
+ * What the validator reads of an agent a step names (EO-875): a global,
+ * enabled agent of `role` unless the overrides say otherwise.
+ */
+function agent(id: string, role: string, overrides: Partial<StepAgentFacts> = {}): StepAgentFacts {
+  return { id: id as Uuid, name: id, role, enabled: true, archivedAt: null, deletedAt: null, config: {}, projectId: null, ...overrides };
+}
+
+const IMPLEMENTER = agent("Ada", "implementer");
+const REVIEWER = agent("Rex", "reviewer");
+const QA = agent("Quinn", "qa");
 
 function step(id: string, position: number, overrides: Partial<PipelineStep> = {}): PipelineStep {
   return {
@@ -11,7 +23,7 @@ function step(id: string, position: number, overrides: Partial<PipelineStep> = {
     position,
     name: id,
     type: "agent",
-    ownerRole: "implementer",
+    agentId: IMPLEMENTER.id,
     entryAction: "implement",
     instructionsSummary: null,
     isTerminal: false,
@@ -64,8 +76,8 @@ function goodPipeline(): ValidatePipelineInput {
   return {
     steps: [
       step("implement", 0),
-      step("review", 1, { ownerRole: "reviewer", entryAction: "review" }),
-      step("merge", 2, { type: "user", ownerRole: null, entryAction: null, isTerminal: true }),
+      step("review", 1, { agentId: REVIEWER.id, entryAction: "review" }),
+      step("merge", 2, { type: "user", agentId: null, entryAction: null, isTerminal: true }),
     ],
     entryStepId: "implement",
     routes: [
@@ -74,7 +86,8 @@ function goodPipeline(): ValidatePipelineInput {
       route("review", "changes_requested", "implement", 1),
       route("review", "needs_user_input", "user_attention", 2),
     ],
-    staffedRoles: ["implementer", "reviewer"],
+    agents: [IMPLEMENTER, REVIEWER],
+    projectId: null,
     itemCountByStep: {},
     existingSteps: existing("implement", "review", "merge"),
     registry,
@@ -133,7 +146,7 @@ function withBuiltinStep(stepOverrides: Partial<PipelineStep> = {}): ValidatePip
     steps: [
       input.steps[0]!,
       input.steps[1]!,
-      step("merge_request", 1.5, { type: "builtin", ownerRole: null, entryAction: "open_pull_request", ...stepOverrides }),
+      step("merge_request", 1.5, { type: "builtin", agentId: null, entryAction: "open_pull_request", ...stepOverrides }),
       input.steps[2]!,
     ],
     routes: [
@@ -160,7 +173,7 @@ function withModuleStep(stepOverrides: Partial<PipelineStep>, moduleOverrides: P
     ...input,
     steps: [
       input.steps[0]!,
-      step("deploy", 0.5, { type: "module", ownerRole: null, entryAction: module.id, ...stepOverrides }),
+      step("deploy", 0.5, { type: "module", agentId: null, entryAction: module.id, ...stepOverrides }),
       ...input.steps.slice(1),
     ],
     routes: [
@@ -177,8 +190,8 @@ function withModuleStep(stepOverrides: Partial<PipelineStep>, moduleOverrides: P
 
 /** A second pipeline, the one a finished story is handed to (EO-58). */
 const MERGE_PIPELINE = [
-  step("queue", 0, { pipelineId: "p2" as Uuid, type: "user", ownerRole: null, entryAction: null }),
-  step("merged", 1, { pipelineId: "p2" as Uuid, type: "user", ownerRole: null, entryAction: null, isTerminal: true }),
+  step("queue", 0, { pipelineId: "p2" as Uuid, type: "user", agentId: null, entryAction: null }),
+  step("merged", 1, { pipelineId: "p2" as Uuid, type: "user", agentId: null, entryAction: null, isTerminal: true }),
 ];
 
 describe("validatePipeline", () => {
@@ -237,11 +250,14 @@ describe("validatePipeline", () => {
     expect(trapped).toEqual(expect.arrayContaining(["a", "b"]));
   });
 
-  it("warns when a step's role has no enabled agent", () => {
+  it("warns when the agent a step names is disabled", () => {
+    // What "the role has no enabled agent" became once a step names its
+    // agent (EO-875): the step's own agent being switched off is what
+    // leaves tickets waiting there, whoever else is enabled.
     const input = goodPipeline();
-    input.staffedRoles = ["implementer"];
+    input.agents = [IMPLEMENTER, { ...REVIEWER, enabled: false }, agent("Other reviewer", "reviewer")];
     const problems = validatePipeline(input);
-    expect(problems.some((p) => p.stateId === "review" && /no enabled agent/.test(p.message))).toBe(true);
+    expect(problems.some((p) => p.stateId === "review" && /which is disabled/.test(p.message))).toBe(true);
     // A warning, not an error: the user may be about to enable one.
     expect(hasBlockingProblem(problems)).toBe(false);
   });
@@ -251,7 +267,7 @@ describe("validatePipeline", () => {
     // dispatch a terminal step, so a terminal step that names an action is
     // one that would silently never run.
     const input = goodPipeline();
-    input.steps = input.steps.map((s) => (s.isTerminal ? { ...s, type: "agent" as const, ownerRole: "implementer", entryAction: "implement" } : s));
+    input.steps = input.steps.map((s) => (s.isTerminal ? { ...s, type: "agent" as const, agentId: IMPLEMENTER.id, entryAction: "implement" } : s));
     expect(errors(input).some((m) => /is terminal, so nothing runs there/.test(m))).toBe(true);
   });
 
@@ -308,7 +324,7 @@ describe("validatePipeline", () => {
 
   it("lets a step with items on it be renamed or change type — only removal is refused", () => {
     const input = goodPipeline();
-    input.steps = input.steps.map((s) => (s.id === "review" ? { ...s, name: "Code review", type: "user" as const, ownerRole: null, entryAction: null } : s));
+    input.steps = input.steps.map((s) => (s.id === "review" ? { ...s, name: "Code review", type: "user" as const, agentId: null, entryAction: null } : s));
     input.itemCountByStep = { review: 2 };
     expect(errors(input).some((message) => message.includes("items on it"))).toBe(false);
   });
@@ -382,7 +398,7 @@ describe("validatePipeline", () => {
     // walk is fine for `ready` and wrong for a failure, which is a
     // warning rather than a refusal — the pipeline still saves.
     const input = goodPipeline();
-    input.steps = [step("worktree", -1, { type: "builtin", ownerRole: null, entryAction: "create_worktree" }), ...input.steps];
+    input.steps = [step("worktree", -1, { type: "builtin", agentId: null, entryAction: "create_worktree" }), ...input.steps];
     input.existingSteps = [...existing("worktree"), ...input.existingSteps];
     input.entryStepId = "worktree";
     expect(errors(input)).toEqual([]);
@@ -405,7 +421,7 @@ describe("validatePipeline", () => {
     // The shape the feature exists for: this pipeline finishes by leaving,
     // so nothing in it is terminal and that is not a mistake.
     const input = goodPipeline();
-    input.steps = [step("implement", 0), step("review", 1, { ownerRole: "reviewer", entryAction: "review" })];
+    input.steps = [step("implement", 0), step("review", 1, { agentId: REVIEWER.id, entryAction: "review" })];
     input.existingSteps = existing("implement", "review");
     input.routes = [
       route("implement", "done", "review"),
@@ -421,7 +437,7 @@ describe("validatePipeline", () => {
     // A way out nothing can get to is the same failure as an unreachable
     // terminal: work enters and never comes out.
     const input = goodPipeline();
-    input.steps = [step("implement", 0), step("review", 1, { ownerRole: "reviewer", entryAction: "review" }), step("stranded", 2)];
+    input.steps = [step("implement", 0), step("review", 1, { agentId: REVIEWER.id, entryAction: "review" }), step("stranded", 2)];
     input.existingSteps = existing("implement", "review", "stranded");
     input.routes = [
       route("implement", "done", "review"),
@@ -954,12 +970,13 @@ describe("a webhook entry that reaches a side effect (EO-334)", () => {
     return {
       steps: [
         step("classify", 0),
-        step("send", 1, { name: "Send", type: "module", ownerRole: null, entryAction: "mod-reply", ...send }),
-        step("done", 2, { name: "Done", type: "user", ownerRole: null, entryAction: null, isTerminal: true }),
+        step("send", 1, { name: "Send", type: "module", agentId: null, entryAction: "mod-reply", ...send }),
+        step("done", 2, { name: "Done", type: "user", agentId: null, entryAction: null, isTerminal: true }),
       ],
       entryStepId: "classify",
       routes: [route("classify", "done", "send"), route("send", "sent", "done", 0), route("send", "failed", "user_attention", 1)],
-      staffedRoles: ["implementer"],
+      agents: [IMPLEMENTER],
+      projectId: null,
       itemCountByStep: {},
       existingSteps: existing("classify", "send", "done"),
       modules: [replyModule()],
@@ -978,7 +995,7 @@ describe("a webhook entry that reaches a side effect (EO-334)", () => {
         step("approve", 0.5, {
           name: "Approve",
           type: "user",
-          ownerRole: null,
+          agentId: null,
           entryAction: null,
           results: [{ key: "approved", label: "Approve", tone: "success" as const, requiresComment: false }],
         }),
@@ -1067,7 +1084,7 @@ describe("a webhook entry that reaches a side effect (EO-334)", () => {
     // server attached to the agents in its role, which the caller
     // resolves because this package cannot.
     const input = triagePipeline(
-      { type: "agent", ownerRole: "implementer", entryAction: "implement" },
+      { type: "agent", agentId: IMPLEMENTER.id, entryAction: "implement" },
       { modules: [], sideEffectingServersByStep: { send: ["helpdesk"] } },
     );
     input.routes = [route("classify", "done", "send"), route("send", "done", "done")];
@@ -1077,7 +1094,7 @@ describe("a webhook entry that reaches a side effect (EO-334)", () => {
 
   it("names every step a payload reaches unread, once each", () => {
     const input = triagePipeline({});
-    input.steps = [...input.steps, step("escalate", 1.5, { name: "Escalate", type: "module", ownerRole: null, entryAction: "mod-reply" })];
+    input.steps = [...input.steps, step("escalate", 1.5, { name: "Escalate", type: "module", agentId: null, entryAction: "mod-reply" })];
     input.routes = [
       route("classify", "done", "send"),
       route("send", "sent", "done", 0),
@@ -1207,9 +1224,9 @@ describe("an agent step's routes against its action's declared results (EO-423)"
     return {
       ...input,
       registry: registryFacts,
-      steps: [input.steps[0]!, input.steps[1]!, step("qa", 2, { ownerRole: "qa", entryAction: action }), { ...input.steps[2]!, position: 3 }],
+      steps: [input.steps[0]!, input.steps[1]!, step("qa", 2, { agentId: QA.id, entryAction: action }), { ...input.steps[2]!, position: 3 }],
       routes: [...input.routes.map((existing) => (existing.fromStepId === "review" && existing.resultKey === "approved" ? route("review", "approved", "qa") : existing)), ...routes],
-      staffedRoles: [...input.staffedRoles, "qa"],
+      agents: [...input.agents, QA],
       existingSteps: existing("implement", "review", "qa", "merge"),
     };
   }
@@ -1277,20 +1294,26 @@ describe("an agent step's routes against its action's declared results (EO-423)"
     expect(errors(input)).toEqual([expect.stringContaining('The "review" action can return "needs_user_input"')]);
   });
 
-  it("warns, and does not refuse, when neither the role nor an installed pack defines the action", () => {
+  it("refuses a step whose agent's kind has no such action, naming the step, the agent, its kind and the action", () => {
+    // A warning until EO-875, when a step came to name its agent: a
+    // step's action must be one of its agent's kind's actions, so this
+    // is the wrong agent for the step or the wrong action, and either
+    // way not something to publish.
     const input = withQa("ponder", [route("qa", "done", "merge")]);
     const problems = validatePipeline(input);
 
     expect(problems).toEqual([
       {
-        severity: "warning",
+        severity: "error",
         stateId: "qa",
-        message: '"qa" asks "qa" for "ponder", which neither that role nor an installed pack defines — its answer is not validated and will route as "done".',
+        message:
+          '"qa" asks Quinn for "ponder", but Quinn's kind, "qa", has no "ponder" action — choose an agent of a kind that has it, or define "ponder" for "qa".',
       },
     ]);
-    expect(hasBlockingProblem(problems)).toBe(false);
-    // Whatever it routes: with nothing declared there is nothing to hold the routes to.
-    expect(errors(withQa("ponder", [route("qa", "anything", "merge")]))).toEqual([]);
+    expect(hasBlockingProblem(problems)).toBe(true);
+    // Whatever it routes: with nothing declared there is nothing to hold
+    // the routes to, so the one error is the missing action.
+    expect(errors(withQa("ponder", [route("qa", "anything", "merge")]))).toHaveLength(1);
   });
 
   it("holds a custom role with no definition of its own to the pack's action of that name", () => {
@@ -1316,7 +1339,9 @@ describe("an agent step's routes against its action's declared results (EO-423)"
     const elsewhere = withRoleActions({ auditor: { alignment: ["aligned", "gaps_found"] } });
     const input = withQa("alignment", [route("qa", "done", "merge")], elsewhere);
 
-    expect(validatePipeline(input).map((problem) => problem.severity)).toEqual(["warning"]);
+    // The auditor's `alignment` is nothing to `qa`, so the step asks its
+    // agent's kind for an action that kind does not have (EO-875).
+    expect(validatePipeline(input).map((problem) => problem.severity)).toEqual(["error"]);
   });
 
   it("says the same thing from the registry as it crosses IPC", () => {
@@ -1354,7 +1379,7 @@ describe("validatePipeline: keep checking", () => {
     const input = goodPipeline();
     return {
       ...input,
-      steps: [input.steps[0]!, input.steps[1]!, step("wait", 1.5, { type: "builtin", ownerRole: null, entryAction: action, watch }), input.steps[2]!],
+      steps: [input.steps[0]!, input.steps[1]!, step("wait", 1.5, { type: "builtin", agentId: null, entryAction: action, watch }), input.steps[2]!],
       routes: [
         route("implement", "done", "review"),
         route("review", "approved", "wait", 0),
@@ -1432,12 +1457,13 @@ describe("validatePipeline: keep checking", () => {
     // a date to wait for and somewhere to go once it has come.
     const input: ValidatePipelineInput = {
       steps: [
-        step("wait", 0, { type: "builtin", ownerRole: null, entryAction: "wait_until", inputs: { field: "due" }, watch: { everyMinutes: 15, giveUpAfterHours: 168 } }),
-        step("done", 1, { type: "user", ownerRole: null, entryAction: null, isTerminal: true }),
+        step("wait", 0, { type: "builtin", agentId: null, entryAction: "wait_until", inputs: { field: "due" }, watch: { everyMinutes: 15, giveUpAfterHours: 168 } }),
+        step("done", 1, { type: "user", agentId: null, entryAction: null, isTerminal: true }),
       ],
       entryStepId: "wait",
       routes: [route("wait", "reached", "done", 0), route("wait", "failed", "user_attention", 1)],
-      staffedRoles: [],
+      agents: [],
+      projectId: null,
       itemCountByStep: {},
       existingSteps: existing("wait", "done"),
       registry: coreRegistry(),
@@ -1465,7 +1491,7 @@ describe("validatePipeline: a check on a step that runs once", () => {
     const input = goodPipeline();
     return {
       ...input,
-      steps: [input.steps[0]!, input.steps[1]!, step("wait", 1.5, { type: "builtin", ownerRole: null, entryAction: action, inputs: { field: "due" } }), input.steps[2]!],
+      steps: [input.steps[0]!, input.steps[1]!, step("wait", 1.5, { type: "builtin", agentId: null, entryAction: action, inputs: { field: "due" } }), input.steps[2]!],
       routes: [
         route("implement", "done", "review"),
         route("review", "approved", "wait", 0),
@@ -1485,12 +1511,13 @@ describe("validatePipeline: a check on a step that runs once", () => {
     // The core's alone, with no pack installed, says the same.
     const coreOnly: ValidatePipelineInput = {
       steps: [
-        step("wait", 0, { type: "builtin", ownerRole: null, entryAction: "wait_until", inputs: { field: "due" } }),
-        step("done", 1, { type: "user", ownerRole: null, entryAction: null, isTerminal: true }),
+        step("wait", 0, { type: "builtin", agentId: null, entryAction: "wait_until", inputs: { field: "due" } }),
+        step("done", 1, { type: "user", agentId: null, entryAction: null, isTerminal: true }),
       ],
       entryStepId: "wait",
       routes: [route("wait", "reached", "done", 0), route("wait", "failed", "user_attention", 1)],
-      staffedRoles: [],
+      agents: [],
+      projectId: null,
       itemCountByStep: {},
       existingSteps: existing("wait", "done"),
       registry: coreRegistry(),
@@ -1567,14 +1594,14 @@ describe("outsideReachByStep (EO-584)", () => {
   const creating = deployModule({ id: "mod-create" as Uuid, manifest: { ...deployModule().manifest, needs: { ...deployModule().manifest.needs, create: true } } });
   const quiet = deployModule({ id: "mod-quiet" as Uuid });
   const steps = [
-    step("open_pr", 0, { type: "builtin", ownerRole: null, entryAction: "open_pull_request" }),
-    step("worktree", 1, { type: "builtin", ownerRole: null, entryAction: "create_worktree" }),
-    step("send", 2, { type: "module", ownerRole: null, entryAction: "mod-send" }),
-    step("file", 3, { type: "module", ownerRole: null, entryAction: "mod-create" }),
-    step("build", 4, { type: "module", ownerRole: null, entryAction: "mod-quiet" }),
+    step("open_pr", 0, { type: "builtin", agentId: null, entryAction: "open_pull_request" }),
+    step("worktree", 1, { type: "builtin", agentId: null, entryAction: "create_worktree" }),
+    step("send", 2, { type: "module", agentId: null, entryAction: "mod-send" }),
+    step("file", 3, { type: "module", agentId: null, entryAction: "mod-create" }),
+    step("build", 4, { type: "module", agentId: null, entryAction: "mod-quiet" }),
     step("reply", 5),
     step("think", 6),
-    step("approve", 7, { type: "user", ownerRole: null, entryAction: null }),
+    step("approve", 7, { type: "user", agentId: null, entryAction: null }),
   ];
 
   it("says a builtin with side effects sends, and one without says nothing", () => {
@@ -1671,5 +1698,154 @@ describe("validatePipeline: a person step's brief (EO-827)", () => {
 
   it("says nothing about a pipeline that declares none", () => {
     expect(briefMessages(goodPipeline())).toEqual([]);
+  });
+});
+
+/**
+ * An agent step names the agent it runs (EO-875), and the validator
+ * reads that agent: whether there is one, whether this installation has
+ * it, whether it may work on this pipeline's project, whether it is live,
+ * and whether its kind has the step's action.
+ */
+describe("validatePipeline: the agent a step names (EO-875)", () => {
+  const P = "0199aa00-0000-7000-8000-0000000000a1" as Uuid;
+  const Q = "0199aa00-0000-7000-8000-0000000000a2" as Uuid;
+
+  /** The shipped shape with the review step naming `reviewer`, and `reviewer` among the agents. */
+  function reviewedBy(reviewer: StepAgentFacts, overrides: Partial<ValidatePipelineInput> = {}): ValidatePipelineInput {
+    const input = goodPipeline();
+    return {
+      ...input,
+      steps: input.steps.map((s) => (s.id === "review" ? { ...s, agentId: reviewer.id } : s)),
+      agents: [IMPLEMENTER, reviewer],
+      ...overrides,
+    };
+  }
+
+  function problemsOn(input: ValidatePipelineInput, stateId: string) {
+    return validatePipeline(input).filter((problem) => problem.stateId === stateId);
+  }
+
+  it("refuses an agent step that names no agent", () => {
+    const input = goodPipeline();
+    input.steps = input.steps.map((s) => (s.id === "review" ? { ...s, agentId: null } : s));
+
+    expect(problemsOn(input, "review")).toEqual([
+      { severity: "error", stateId: "review", message: '"review" is an agent step with no agent, so there is nobody to dispatch it to.' },
+    ]);
+  });
+
+  it("refuses a step naming an agent the installation does not have, and asks nothing of a kind it cannot read", () => {
+    // No action error beside it: with no row there is no kind to ask.
+    const input = goodPipeline();
+    input.agents = [IMPLEMENTER];
+
+    expect(problemsOn(input, "review")).toEqual([
+      {
+        severity: "error",
+        stateId: "review",
+        message: '"review" names an agent this installation does not have, so there is nobody to dispatch it to. Choose another agent for it.',
+      },
+    ]);
+  });
+
+  it("refuses a step naming another project's agent", () => {
+    const theirs = agent("Rex of Q", "reviewer", { projectId: Q });
+
+    expect(problemsOn(reviewedBy(theirs, { projectId: P }), "review")).toEqual([
+      {
+        severity: "error",
+        stateId: "review",
+        message: `"review" names Rex of Q, which works for another project than this pipeline's — choose this project's own agent or a global one.`,
+      },
+    ]);
+  });
+
+  it("refuses a project's own agent on a pipeline that belongs to no project", () => {
+    const own = agent("Rex of P", "reviewer", { projectId: P });
+
+    expect(problemsOn(reviewedBy(own, { projectId: null }), "review")).toEqual([
+      {
+        severity: "error",
+        stateId: "review",
+        message: '"review" names Rex of P, which works for one project only, and this pipeline belongs to no project — choose a global agent.',
+      },
+    ]);
+  });
+
+  it("accepts the project's own agent, and a global one, on the project's pipeline", () => {
+    expect(validatePipeline(reviewedBy(agent("Rex of P", "reviewer", { projectId: P }), { projectId: P }))).toEqual([]);
+    expect(validatePipeline(reviewedBy(REVIEWER, { projectId: P }))).toEqual([]);
+  });
+
+  it("warns, and does not refuse, when the named agent is archived or deleted", () => {
+    // A deleted agent is a tombstone: archived and disabled as well
+    // (EO-350). The word is the one a person would recognise.
+    const archived = agent("Old Rex", "reviewer", { archivedAt: 1_000, enabled: false });
+    const deleted = agent("Gone Rex", "reviewer", { archivedAt: 1_000, deletedAt: 2_000, enabled: false });
+
+    for (const [named, word] of [
+      [archived, "archived"],
+      [deleted, "deleted"],
+    ] as const) {
+      const problems = problemsOn(reviewedBy(named), "review");
+      expect(problems).toEqual([
+        {
+          severity: "warning",
+          stateId: "review",
+          message: `"review" names ${named.name}, which has been ${word} — tickets will wait there until the step names another agent.`,
+        },
+      ]);
+      expect(hasBlockingProblem(problems)).toBe(false);
+    }
+  });
+
+  it("warns, and does not refuse, when the named agent is disabled — even with another of its kind enabled", () => {
+    const off = agent("Sleepy Rex", "reviewer", { enabled: false });
+    const input = reviewedBy(off);
+    input.agents = [...input.agents, agent("Awake Rex", "reviewer")];
+
+    expect(problemsOn(input, "review")).toEqual([
+      {
+        severity: "warning",
+        stateId: "review",
+        message: '"review" names Sleepy Rex, which is disabled — tickets will wait there until it is enabled or the step names another agent.',
+      },
+    ]);
+  });
+
+  it("refuses an action the named agent's kind has no action for, naming the step, the agent, its kind and the action", () => {
+    // `triage` is defined by no kind on this installation and by no pack.
+    const input = reviewedBy(agent("Ada two", "implementer"));
+    input.steps = input.steps.map((s) => (s.id === "review" ? { ...s, entryAction: "triage" } : s));
+    const [problem, ...rest] = problemsOn(input, "review");
+
+    expect(rest).toEqual([]);
+    expect(problem?.severity).toBe("error");
+    // The step, the agent, its kind and the action, each named.
+    expect(problem?.message).toContain('"review"');
+    expect(problem?.message).toContain("Ada two");
+    expect(problem?.message).toContain('"implementer" agent');
+    expect(problem?.message).toContain('no "triage" action');
+  });
+
+  it("asks the action of the named agent's kind, not of the step", () => {
+    // One step, one action, two agents: the kind that defined `alignment`
+    // for itself passes, and the kind that did not is refused.
+    const defined: RegistryFacts = {
+      ...registry,
+      roleActions: new Map([["qa", new Map([["alignment", { description: "", results: [{ key: "done", label: "done" }], packShipped: false }]])]]),
+    };
+    const input = (named: StepAgentFacts): ValidatePipelineInput => {
+      const base = reviewedBy(named, { registry: defined });
+      base.steps = base.steps.map((s) => (s.id === "review" ? { ...s, entryAction: "alignment" } : s));
+      base.routes = [route("implement", "done", "review"), route("review", "done", "merge")];
+      return base;
+    };
+
+    expect(validatePipeline(input(QA))).toEqual([]);
+    expect(errors(input(agent("Auditor", "auditor")))).toEqual([
+      '"review" asks Auditor for "alignment", but Auditor's kind, "auditor", has no "alignment" action — choose an agent of a kind that has it, or define "alignment" for "auditor".',
+    ]);
   });
 });

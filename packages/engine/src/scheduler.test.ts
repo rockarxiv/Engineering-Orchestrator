@@ -1,4 +1,4 @@
-import { acceptanceCriteriaOf } from "@eo/core";
+import { PREVIEW_AGENT_KEY, acceptanceCriteriaOf } from "@eo/core";
 import type { Agent, Run, RunStatus, Item, Uuid, PipelineStep } from "@eo/core";
 import { describe, expect, it } from "vitest";
 import { dispatchBlocker, dispatchBlockers, hasDispatchableItem, tick, type CapacityKeyOf, type DependencyEdge, type DispatchGate, type TickInput } from "./scheduler.js";
@@ -44,7 +44,9 @@ function makeState(id: string, overrides: Partial<PipelineStep> = {}): PipelineS
     position: 0,
     name: id,
     type: "agent",
-    ownerRole: "implementer",
+    // The agent nearly every test below supplies (EO-875): a step names
+    // the one agent it runs.
+    agentId: "agent-1" as Uuid,
     entryAction: "implement",
     instructionsSummary: null,
     isTerminal: false,
@@ -166,8 +168,8 @@ function baseInput(overrides: Partial<TickInput> = {}): TickInput {
  * one step under two versions are two different definitions.
  */
 describe("tick — a step definition bound to one item", () => {
-  const live = makeState("todo", { type: "user", ownerRole: null, entryAction: null });
-  const asItEntered = makeState("todo", { type: "agent", ownerRole: "implementer", entryAction: "implement" });
+  const live = makeState("todo", { type: "user", agentId: null, entryAction: null });
+  const asItEntered = makeState("todo", { type: "agent", agentId: "agent-1" as Uuid, entryAction: "implement" });
 
   it("dispatches by the definition the item entered on, not the live one", () => {
     const item = makeItem("A", { pipelineVersionId: "v1" });
@@ -221,7 +223,7 @@ describe("tick — a step definition bound to one item", () => {
     expect(result).toEqual([]);
   });
 
-  it("says what is in the way of an item whose own version has no role on the step", () => {
+  it("says what is in the way of an item whose own version has nobody acting on the step", () => {
     const item = makeItem("A", { pipelineVersionId: "v1" });
     const blocker = dispatchBlocker(
       baseInput({ items: [item], steps: [asItEntered], stepsByItem: new Map([[item.id as string, live]]), agents: [makeAgent("agent-1")] }),
@@ -235,15 +237,16 @@ describe("tick — a step definition bound to one item", () => {
 });
 
 describe("tick — skip conditions", () => {
-  it("1. skips an item in a human-owned state (owner_role === null)", () => {
-    const result = tick(
-      baseInput({
-        items: [makeItem("A", { stepId: "review" })],
-        steps: [makeState("review", { ownerRole: null })],
-        agents: [makeAgent("agent-1")],
-      }),
-    );
-    expect(result).toEqual([]);
+  it("1. skips an agent step that names no agent, and says so (EO-875)", () => {
+    // What an agent step with no role used to be. An enabled agent whose
+    // kind would fit is not enough: nobody chose it for this step.
+    const input = baseInput({
+      items: [makeItem("A", { stepId: "review" })],
+      steps: [makeState("review", { agentId: null })],
+      agents: [makeAgent("agent-1")],
+    });
+    expect(tick(input)).toEqual([]);
+    expect(dispatchBlocker(input, "A")).toEqual({ kind: "no_agent" });
   });
 
   it("2. skips an item with an open (non-terminal) dependency", () => {
@@ -263,7 +266,7 @@ describe("tick — skip conditions", () => {
       baseInput({
         items: [makeItem("A"), makeItem("B", { stepId: "done" })],
         deps: [{ itemId: "A" as Uuid, dependsOnId: "B" as Uuid }],
-        steps: [makeState("todo"), makeState("done", { isTerminal: true, ownerRole: null })],
+        steps: [makeState("todo"), makeState("done", { isTerminal: true, agentId: null })],
         agents: [makeAgent("agent-1")],
       }),
     );
@@ -287,7 +290,7 @@ describe("tick — skip conditions", () => {
         items: [makeItem("A")],
         dependencyItems: [makeItem("A"), archived],
         deps: [{ itemId: "A" as Uuid, dependsOnId: "B" as Uuid }],
-        steps: [makeState("todo"), makeState("done", { isTerminal: true, ownerRole: null })],
+        steps: [makeState("todo"), makeState("done", { isTerminal: true, agentId: null })],
         agents: [makeAgent("agent-1")],
       }),
     );
@@ -363,7 +366,7 @@ describe("tick — skip conditions", () => {
   it("3d. holds an item on a step that keeps checking until its next check is due, and says when (EO-456)", () => {
     const input = baseInput({
       items: [makeItem("A", { stepId: "watch" }), makeItem("B", { stepId: "watch" })],
-      steps: [makeState("watch", { type: "builtin", ownerRole: null, entryAction: "check", watch: { everyMinutes: 5, giveUpAfterHours: 168 } })],
+      steps: [makeState("watch", { type: "builtin", agentId: null, entryAction: "check", watch: { everyMinutes: 5, giveUpAfterHours: 168 } })],
       agents: [],
       watchingUntil: new Map([["A", { nextCheckAt: 1_700_000_300_000, giveUpAt: 1_700_604_800_000 }]]),
     });
@@ -375,7 +378,7 @@ describe("tick — skip conditions", () => {
   });
 
   it("3e. holds every watch the host says is held, whether or not its check is due (EO-457)", () => {
-    const watchStep = makeState("watch", { type: "builtin", ownerRole: null, entryAction: "check", watch: { everyMinutes: 5, giveUpAfterHours: 168 } });
+    const watchStep = makeState("watch", { type: "builtin", agentId: null, entryAction: "check", watch: { everyMinutes: 5, giveUpAfterHours: 168 } });
     const offline = baseInput({
       items: [makeItem("A", { stepId: "watch" }), makeItem("B", { stepId: "watch" })],
       steps: [watchStep],
@@ -424,30 +427,30 @@ describe("tick — skip conditions", () => {
     expect(result).toEqual([]);
   });
 
-  it("5a. skips when no agent has the required role", () => {
-    const result = tick(
-      baseInput({
-        items: [makeItem("A")],
-        steps: [makeState("todo", { ownerRole: "implementer" })],
-        agents: [makeAgent("agent-1", { role: "reviewer" })],
-      }),
-    );
-    expect(result).toEqual([]);
+  it("5a. never hands the item to an agent the step does not name, whatever its kind (EO-875)", () => {
+    // An implementer is enabled and free, and the step's own action is
+    // an implementer's — but the step names agent-1, which is not here.
+    const input = baseInput({
+      items: [makeItem("A")],
+      steps: [makeState("todo")],
+      agents: [makeAgent("agent-2")],
+    });
+    expect(tick(input)).toEqual([]);
+    expect(dispatchBlocker(input, "A")).toEqual({ kind: "agent_unavailable", agentId: "agent-1", agentName: null, why: "missing" });
   });
 
-  it("5b. skips a disabled agent", () => {
-    const result = tick(
-      baseInput({
-        items: [makeItem("A")],
-        steps: [makeState("todo")],
-        agents: [makeAgent("agent-1", { enabled: false })],
-      }),
-    );
-    expect(result).toEqual([]);
+  it("5b. skips a step whose agent is disabled", () => {
+    const input = baseInput({
+      items: [makeItem("A")],
+      steps: [makeState("todo")],
+      agents: [makeAgent("agent-1", { enabled: false })],
+    });
+    expect(tick(input)).toEqual([]);
+    expect(dispatchBlocker(input, "A")).toEqual({ kind: "agent_unavailable", agentId: "agent-1", agentName: "agent-1", why: "disabled" });
   });
 
-  it("5b-ii. skips an archived agent, and says the role has nobody rather than that it is busy", () => {
-    // An archived agent staffs nothing (EO-186). Getting this wrong in
+  it("5b-ii. skips a step whose agent is archived, and says so rather than that it is busy", () => {
+    // An archived agent runs nothing (EO-186). Getting this wrong in
     // the safe-looking direction — counting one, because the switch it
     // was retired with says `enabled` — is the quietest failure the
     // scheduler has: the step reports no blocker and dispatches nothing,
@@ -460,35 +463,32 @@ describe("tick — skip conditions", () => {
     });
 
     expect(tick(input)).toEqual([]);
-    expect(dispatchBlocker(input, "A")).toEqual({ kind: "no_enabled_agent", role: "implementer" });
+    expect(dispatchBlocker(input, "A")).toEqual({ kind: "agent_unavailable", agentId: "agent-1", agentName: "agent-1", why: "archived" });
   });
 
-  it("5b-iii. dispatches to the live holder of a role one of whose agents is archived", () => {
-    // The other half: archiving one agent must not take the role with
-    // it, or "retire the one nobody uses" would park the column.
-    const result = tick(
-      baseInput({
-        items: [makeItem("A")],
-        steps: [makeState("todo")],
-        agents: [makeAgent("agent-1", { archivedAt: 1_700_000_000_000 }), makeAgent("agent-2")],
-      }),
-    );
+  it("5b-iii. runs the live agent a step names beside an archived one of its kind, and never the other way round", () => {
+    // Archiving one agent takes nothing from a step naming another of
+    // its kind — and a step naming the archived one is not quietly
+    // handed to the live one either (EO-875).
+    const agents = [makeAgent("agent-1", { archivedAt: 1_700_000_000_000 }), makeAgent("agent-2")];
+    const namingLive = tick(baseInput({ items: [makeItem("A")], steps: [makeState("todo", { agentId: "agent-2" as Uuid })], agents }));
+    expect(namingLive.map((dispatch) => dispatch.agent?.id)).toEqual(["agent-2"]);
 
-    expect(result.map((dispatch) => dispatch.agent?.id)).toEqual(["agent-2"]);
+    expect(tick(baseInput({ items: [makeItem("A")], steps: [makeState("todo")], agents }))).toEqual([]);
   });
 
-  it("5c. skips an agent at per-agent capacity, but picks a different agent with room", () => {
-    const result = tick(
-      baseInput({
-        items: [makeItem("A")],
-        steps: [makeState("todo")],
-        agents: [makeAgent("agent-1"), makeAgent("agent-2")],
-        activeRuns: [makeRun("existing", "agent-1")],
-        limits: { globalConcurrency: 10, perAgentConcurrency: 1, perRepositoryConcurrency: 10 },
-      }),
-    );
-    expect(result).toHaveLength(1);
-    expect(result[0]?.agent?.id).toBe("agent-2");
+  it("5c. leaves the item waiting for its own agent at per-agent capacity, with another of its kind free", () => {
+    // A busy agent is a queue, not a reason: no blocker, no dispatch, and
+    // agent-2 — same kind, room to spare — is not who the step names.
+    const input = baseInput({
+      items: [makeItem("A")],
+      steps: [makeState("todo")],
+      agents: [makeAgent("agent-1"), makeAgent("agent-2")],
+      activeRuns: [makeRun("existing", "agent-1")],
+      limits: { globalConcurrency: 10, perAgentConcurrency: 1, perRepositoryConcurrency: 10 },
+    });
+    expect(tick(input)).toEqual([]);
+    expect(dispatchBlocker(input, "A")).toBeNull();
   });
 
   it("6. the global pause flag stops every dispatch, even an otherwise-eligible one", () => {
@@ -514,6 +514,119 @@ describe("tick — never dispatches two runs for the same item", () => {
       }),
     );
     expect(result).toHaveLength(1);
+  });
+});
+
+/**
+ * A step names the agent it runs (EO-875).
+ *
+ * Dispatch runs exactly that agent and never another of the same kind:
+ * not when the named one is busy, not when it is switched off, archived
+ * or deleted, and not when it is on another backend from the one free
+ * beside it. The step says who runs it, and only a person changing the
+ * step changes that.
+ */
+describe("tick — each step runs the agent it names (EO-875)", () => {
+  const claudeReviewer = makeAgent("rev-claude", { name: "Claude reviewer", role: "reviewer", provider: "claude" });
+  const codexReviewer = makeAgent("rev-codex", { name: "Codex reviewer", role: "reviewer", provider: "codex" });
+
+  /** Two review steps of one kind, each naming a different reviewer, with an item on each. */
+  const twoReviews = (overrides: Partial<TickInput> = {}): TickInput =>
+    baseInput({
+      items: [makeItem("on-claude", { stepId: "review-claude" }), makeItem("on-codex", { stepId: "review-codex" })],
+      steps: [
+        makeState("review-claude", { position: 1, agentId: claudeReviewer.id, entryAction: "review" }),
+        makeState("review-codex", { position: 2, agentId: codexReviewer.id, entryAction: "review" }),
+      ],
+      agents: [claudeReviewer, codexReviewer],
+      // Nothing here is about criteria, so no gate turns a review away.
+      dispatchGate: () => null,
+      ...overrides,
+    });
+  const assigned = (input: TickInput): [string, string | undefined, string | undefined][] =>
+    tick(input).map((dispatch) => [dispatch.item.id, dispatch.agent?.id, dispatch.agent?.provider]);
+
+  it("dispatches each item to the agent its step names, on that agent's backend, whichever is listed first", () => {
+    for (const agents of [
+      [claudeReviewer, codexReviewer],
+      [codexReviewer, claudeReviewer],
+    ]) {
+      expect(assigned(twoReviews({ agents }))).toEqual([
+        ["on-claude", "rev-claude", "claude"],
+        ["on-codex", "rev-codex", "codex"],
+      ]);
+    }
+  });
+
+  it("leaves an item waiting for its own agent at its cap while the other of its kind is free", () => {
+    const limits = { globalConcurrency: 10, perAgentConcurrency: 1, perRepositoryConcurrency: 10 };
+    const claudeBusy = twoReviews({ activeRuns: [makeRun("elsewhere", "rev-claude")], limits });
+    // The codex reviewer has room and is a reviewer; it is not this step's.
+    expect(assigned(claudeBusy)).toEqual([["on-codex", "rev-codex", "codex"]]);
+    expect(dispatchBlocker(claudeBusy, "on-claude")).toBeNull();
+
+    const codexBusy = twoReviews({ activeRuns: [makeRun("elsewhere", "rev-codex")], limits });
+    expect(assigned(codexBusy)).toEqual([["on-claude", "rev-claude", "claude"]]);
+    expect(dispatchBlocker(codexBusy, "on-codex")).toBeNull();
+  });
+
+  it("spends one agent's cap on its own steps only, however many items wait on each", () => {
+    const input = twoReviews({
+      items: [
+        makeItem("c1", { stepId: "review-claude" }),
+        makeItem("c2", { stepId: "review-claude" }),
+        makeItem("x1", { stepId: "review-codex" }),
+      ],
+      limits: { globalConcurrency: 10, perAgentConcurrency: 1, perRepositoryConcurrency: 10 },
+    });
+    // c2 waits for the claude reviewer; the codex one does not take it.
+    expect(assigned(input)).toEqual([
+      ["c1", "rev-claude", "claude"],
+      ["x1", "rev-codex", "codex"],
+    ]);
+  });
+
+  describe("a named agent that cannot run, beside an enabled one of the same kind", () => {
+    const spare = makeAgent("spare", { name: "Spare implementer" });
+    const cases = [
+      ["disabled", makeAgent("named", { name: "Named implementer", enabled: false })],
+      ["archived", makeAgent("named", { name: "Named implementer", enabled: false, archivedAt: 1_700_000_000_000 })],
+      ["deleted", makeAgent("named", { name: "Named implementer", enabled: false, archivedAt: 1_700_000_000_000, deletedAt: 1_700_000_100_000 })],
+    ] as const;
+
+    it.each(cases)("dispatches nothing for an item whose step names an agent that is %s, and says why with its name", (why, named) => {
+      for (const agents of [
+        [named, spare],
+        [spare, named],
+      ]) {
+        const input = baseInput({ items: [makeItem("A")], steps: [makeState("todo", { agentId: named.id })], agents });
+        expect(tick(input)).toEqual([]);
+        expect(dispatchBlocker(input, "A")).toEqual({ kind: "agent_unavailable", agentId: "named", agentName: "Named implementer", why });
+        expect(dispatchBlockers(input).map((blocked) => blocked.blocker)).toEqual([{ kind: "agent_unavailable", agentId: "named", agentName: "Named implementer", why }]);
+        expect(hasDispatchableItem(input)).toBe(false);
+      }
+    });
+
+    it("dispatches nothing for a step that names no agent, and says so", () => {
+      const input = baseInput({ items: [makeItem("A")], steps: [makeState("todo", { agentId: null })], agents: [spare] });
+      expect(tick(input)).toEqual([]);
+      expect(dispatchBlocker(input, "A")).toEqual({ kind: "no_agent" });
+    });
+
+    it("dispatches nothing for a step naming an agent that is not among the agents, and says it is missing", () => {
+      const input = baseInput({ items: [makeItem("A")], steps: [makeState("todo", { agentId: "nobody" as Uuid })], agents: [spare] });
+      expect(tick(input)).toEqual([]);
+      expect(dispatchBlocker(input, "A")).toEqual({ kind: "agent_unavailable", agentId: "nobody", agentName: null, why: "missing" });
+    });
+
+    it("dispatches nothing for a real item whose step names a preview's own agent", () => {
+      // A preview's agent walks a rehearsal and makes things up (EO-316);
+      // the spare beside it is real and still not the step's.
+      const previewOnly = makeAgent("named", { name: "Preview implementer", config: { [PREVIEW_AGENT_KEY]: true } });
+      const input = baseInput({ items: [makeItem("A")], steps: [makeState("todo", { agentId: previewOnly.id })], agents: [previewOnly, spare] });
+      expect(tick(input)).toEqual([]);
+      expect(dispatchBlocker(input, "A")).toEqual({ kind: "agent_unavailable", agentId: "named", agentName: "Preview implementer", why: "preview_only" });
+    });
   });
 });
 
@@ -764,7 +877,7 @@ describe("step kinds", () => {
     const result = tick(
       baseInput({
         items: [makeItem("A", { stepId: "worktree" })],
-        steps: [makeState("worktree", { type: "builtin", ownerRole: null, entryAction: "create_worktree" })],
+        steps: [makeState("worktree", { type: "builtin", agentId: null, entryAction: "create_worktree" })],
         agents: [],
       }),
     );
@@ -778,7 +891,7 @@ describe("step kinds", () => {
     const result = tick(
       baseInput({
         items: [makeItem("A", { stepId: "worktree" })],
-        steps: [makeState("worktree", { type: "builtin", ownerRole: null, entryAction: null })],
+        steps: [makeState("worktree", { type: "builtin", agentId: null, entryAction: null })],
         agents: [],
       }),
     );
@@ -804,7 +917,7 @@ describe("step kinds", () => {
     const result = tick(
       baseInput({
         items: [makeItem("A", { stepId: "sign_off" })],
-        steps: [makeState("sign_off", { type: "user", ownerRole: null, entryAction: null })],
+        steps: [makeState("sign_off", { type: "user", agentId: null, entryAction: null })],
         agents: [makeAgent("agent-1")],
       }),
     );
@@ -818,7 +931,7 @@ describe("step kinds", () => {
     const result = tick(
       baseInput({
         items: [makeItem("A"), makeItem("B", { stepId: "worktree" })],
-        steps: [makeState("todo"), makeState("worktree", { position: 1, type: "builtin", ownerRole: null, entryAction: "create_worktree" })],
+        steps: [makeState("todo"), makeState("worktree", { position: 1, type: "builtin", agentId: null, entryAction: "create_worktree" })],
         agents: [makeAgent("agent-1")],
         activeRuns: [{ ...makeRun("existing", "agent-1"), agentId: null }],
         limits: { globalConcurrency: 10, perAgentConcurrency: 1, perRepositoryConcurrency: 10 },
@@ -842,7 +955,7 @@ describe("step kinds", () => {
  */
 describe("a review with nothing to judge against", () => {
   const reviewStep = (overrides: Partial<PipelineStep> = {}): PipelineStep =>
-    makeState("review", { position: 1, ownerRole: "reviewer", entryAction: "review", ...overrides });
+    makeState("review", { position: 1, agentId: "agent-1" as Uuid, entryAction: "review", ...overrides });
 
   const reviewer = (): Agent => makeAgent("agent-1", { role: "reviewer" });
 
@@ -917,7 +1030,7 @@ describe("a review with nothing to judge against", () => {
     // step id or on the reviewer role.
     const input = baseInput({
       items: [makeItem("A", { stepId: "qa" })],
-      steps: [makeState("qa", { position: 1, ownerRole: "qa", entryAction: "review" })],
+      steps: [makeState("qa", { position: 1, agentId: "agent-1" as Uuid, entryAction: "review" })],
       agents: [makeAgent("agent-1", { role: "qa" })],
     });
 
@@ -1008,7 +1121,7 @@ describe("scheduling with no pack installed", () => {
     // supplied there is nothing to refuse, and the review runs.
     const withGate = baseInput({
       items: [makeItem("A", { stepId: "review" })],
-      steps: [makeState("review", { position: 1, ownerRole: "reviewer", entryAction: "review" })],
+      steps: [makeState("review", { position: 1, agentId: "agent-1" as Uuid, entryAction: "review" })],
       agents: [makeAgent("agent-1", { role: "reviewer" })],
     });
     // Taken away rather than set to undefined: an absent gate is what a
@@ -1042,7 +1155,7 @@ describe("scheduling with no pack installed", () => {
     tick(
       baseInput({
         items: [makeItem("A", { stepId: "qa" })],
-        steps: [makeState("qa", { entryAction: "review", ownerRole: "qa" })],
+        steps: [makeState("qa", { entryAction: "review", agentId: "agent-1" as Uuid })],
         agents: [makeAgent("agent-1", { role: "qa" })],
         dispatchGate: (item, step) => {
           seen.push(`${item.id}@${step.id}`);
@@ -1058,25 +1171,27 @@ describe("scheduling with no pack installed", () => {
 describe("tick — agents scoped to a project (EO-474)", () => {
   const P = "0199aa00-0000-7000-8000-0000000000a1" as Uuid;
   const Q = "0199aa00-0000-7000-8000-0000000000a2" as Uuid;
+  const naming = (agentId: string): PipelineStep => makeState("todo", { agentId: agentId as Uuid });
 
   it("never dispatches a project's agent for an item of another project, or of none", () => {
     const input = baseInput({
       items: [makeItem("A", { projectId: Q }), makeItem("B", { projectId: null })],
-      steps: [makeState("todo")],
+      steps: [naming("p-implementer")],
       agents: [makeAgent("p-implementer", { projectId: P })],
     });
 
     expect(tick(input)).toEqual([]);
-    // Said as a role with nobody, not as a busy agent: nobody staffs it.
-    expect(dispatchBlocker(input, "A")).toEqual({ kind: "no_enabled_agent", role: "implementer" });
-    expect(dispatchBlocker(input, "B")).toEqual({ kind: "no_enabled_agent", role: "implementer" });
+    // Said as the agent being the wrong one for the item, not as a busy agent.
+    const refused = { kind: "agent_unavailable", agentId: "p-implementer", agentName: "p-implementer", why: "other_project" };
+    expect(dispatchBlocker(input, "A")).toEqual(refused);
+    expect(dispatchBlocker(input, "B")).toEqual(refused);
   });
 
   it("dispatches a project's agent for that project's item", () => {
     const result = tick(
       baseInput({
         items: [makeItem("A", { projectId: P })],
-        steps: [makeState("todo")],
+        steps: [naming("p-implementer")],
         agents: [makeAgent("p-implementer", { projectId: P })],
       }),
     );
@@ -1084,28 +1199,33 @@ describe("tick — agents scoped to a project (EO-474)", () => {
     expect(result.map((dispatch) => dispatch.agent?.id)).toEqual(["p-implementer"]);
   });
 
-  it("dispatches only the project's own implementer when there is a global one too — whichever is listed first", () => {
+  it("runs whichever of a project's own and a global implementer the step names, whichever is listed first (EO-875)", () => {
+    // Precedence was the staffing rule while a step named a role. A step
+    // names its agent now, so a project having one of its own outranks
+    // nothing: the global one runs where the step says so.
     const own = makeAgent("p-implementer", { projectId: P });
     const global = makeAgent("global-implementer");
     for (const agents of [
       [global, own],
       [own, global],
     ]) {
-      const result = tick(baseInput({ items: [makeItem("A", { projectId: P })], steps: [makeState("todo")], agents }));
-      expect(result.map((dispatch) => dispatch.agent?.id)).toEqual(["p-implementer"]);
+      for (const named of ["p-implementer", "global-implementer"]) {
+        const result = tick(baseInput({ items: [makeItem("A", { projectId: P })], steps: [naming(named)], agents }));
+        expect(result.map((dispatch) => dispatch.agent?.id)).toEqual([named]);
+      }
     }
   });
 
-  it("dispatches the global implementer for a project with none of its own", () => {
+  it("dispatches a global implementer the step names for any project's item", () => {
     const result = tick(
       baseInput({
         items: [makeItem("A", { projectId: P }), makeItem("B", { projectId: Q })],
-        steps: [makeState("todo")],
-        agents: [makeAgent("global-implementer"), makeAgent("q-reviewer", { projectId: Q, role: "reviewer" })],
+        steps: [naming("global-implementer")],
+        agents: [makeAgent("global-implementer"), makeAgent("q-implementer", { projectId: Q })],
       }),
     );
 
-    // Q's own agent is in another role, so it outranks nobody here.
+    // Q's own implementer is not the step's, so it runs nothing here.
     expect(result.map((dispatch) => [dispatch.item.id, dispatch.agent?.id])).toEqual([
       ["A", "global-implementer"],
       ["B", "global-implementer"],
@@ -1115,7 +1235,7 @@ describe("tick — agents scoped to a project (EO-474)", () => {
   it("leaves a project's item waiting for its own busy implementer rather than handing it to the global one", () => {
     const input = baseInput({
       items: [makeItem("A", { projectId: P })],
-      steps: [makeState("todo")],
+      steps: [naming("p-implementer")],
       agents: [makeAgent("p-implementer", { projectId: P }), makeAgent("global-implementer")],
       activeRuns: [makeRun("other", "p-implementer")],
       limits: { globalConcurrency: 10, perAgentConcurrency: 1, perRepositoryConcurrency: 10 },
@@ -1126,10 +1246,14 @@ describe("tick — agents scoped to a project (EO-474)", () => {
     expect(dispatchBlocker(input, "A")).toBeNull();
   });
 
-  it("falls back to the global implementer when the project's own is switched off or archived", () => {
-    for (const own of [makeAgent("p-implementer", { projectId: P, enabled: false }), makeAgent("p-implementer", { projectId: P, archivedAt: 1 })]) {
-      const result = tick(baseInput({ items: [makeItem("A", { projectId: P })], steps: [makeState("todo")], agents: [own, makeAgent("global-implementer")] }));
-      expect(result.map((dispatch) => dispatch.agent?.id)).toEqual(["global-implementer"]);
+  it("does not fall back to the global implementer when the project's own is switched off or archived (EO-875)", () => {
+    for (const [own, why] of [
+      [makeAgent("p-implementer", { projectId: P, enabled: false }), "disabled"],
+      [makeAgent("p-implementer", { projectId: P, archivedAt: 1, enabled: false }), "archived"],
+    ] as const) {
+      const input = baseInput({ items: [makeItem("A", { projectId: P })], steps: [naming("p-implementer")], agents: [own, makeAgent("global-implementer")] });
+      expect(tick(input)).toEqual([]);
+      expect(dispatchBlocker(input, "A")).toEqual({ kind: "agent_unavailable", agentId: "p-implementer", agentName: "p-implementer", why });
     }
   });
 });
@@ -1149,7 +1273,7 @@ describe("hasDispatchableItem", () => {
   });
 
   it("is false when every item is blocked — finished, waiting on a dependency, held, already running or unstaffed — and while paused", () => {
-    const steps = [makeState("todo"), makeState("done", { isTerminal: true, ownerRole: null, entryAction: null }), makeState("review", { ownerRole: "reviewer", entryAction: "review" })];
+    const steps = [makeState("todo"), makeState("done", { isTerminal: true, agentId: null, entryAction: null }), makeState("review", { agentId: "reviewer-1" as Uuid, entryAction: "review" })];
     const input = baseInput({
       items: [makeItem("finished", { stepId: "done" }), makeItem("blocked"), makeItem("held"), makeItem("running"), makeItem("unstaffed", { stepId: "review" })],
       deps: [{ itemId: "blocked" as Uuid, dependsOnId: "running" as Uuid }],
@@ -1170,12 +1294,12 @@ describe("the roles a pause does not hold (EO-615)", () => {
     baseInput({
       items: [makeItem("exempt", { stepId: "own" }), makeItem("other"), makeItem("builtin", { stepId: "run" }), makeItem("module", { stepId: "script" })],
       steps: [
-        makeState("own", { ownerRole: ROLE, entryAction: "tend" }),
+        makeState("own", { agentId: "steward-1" as Uuid, entryAction: "tend" }),
         makeState("todo"),
-        // Each names the exempt role, so what turns them away is what they
-        // are: EO running a function, with nobody to exempt.
-        makeState("run", { type: "builtin", ownerRole: ROLE, entryAction: "create_worktree" }),
-        makeState("script", { type: "module", ownerRole: ROLE, entryAction: "deploy" }),
+        // Each names the exempt kind's agent, so what turns them away is
+        // what they are: EO running a function, with nobody to exempt.
+        makeState("run", { type: "builtin", agentId: "steward-1" as Uuid, entryAction: "create_worktree" }),
+        makeState("script", { type: "module", agentId: "steward-1" as Uuid, entryAction: "deploy" }),
       ],
       agents: [makeAgent("steward-1", { role: ROLE }), makeAgent("agent-1")],
       paused: true,
@@ -1183,8 +1307,24 @@ describe("the roles a pause does not hold (EO-615)", () => {
       ...overrides,
     });
 
-  it("dispatches an agent step its role owns, and nothing else", () => {
+  it("dispatches an agent step naming an agent of the exempt kind, and nothing else", () => {
     expect(tick(paused()).map((dispatch) => [dispatch.item.id, dispatch.agent?.id])).toEqual([["exempt", "steward-1"]]);
+  });
+
+  it("keys the exemption on the kind of the agent the step names, not on the step (EO-875)", () => {
+    // One step, one action: naming an implementer holds it, and naming
+    // another agent of the exempt kind frees it, as the step's own agent.
+    const step = (agentId: string) => makeState("own", { agentId: agentId as Uuid, entryAction: "tend" });
+    const steward2 = makeAgent("steward-2", { role: ROLE });
+    const agents = [makeAgent("steward-1", { role: ROLE }), steward2, makeAgent("agent-1")];
+
+    const namingImplementer = paused({ steps: [step("agent-1")], agents, items: [makeItem("exempt", { stepId: "own" })] });
+    expect(tick(namingImplementer)).toEqual([]);
+    expect(dispatchBlocker(namingImplementer, "exempt")).toEqual({ kind: "paused" });
+
+    const namingSteward2 = paused({ steps: [step("steward-2")], agents, items: [makeItem("exempt", { stepId: "own" })] });
+    expect(tick(namingSteward2).map((dispatch) => dispatch.agent?.id)).toEqual(["steward-2"]);
+    expect(dispatchBlocker(namingSteward2, "exempt")).toBeNull();
   });
 
   it("answers null for that step, and paused for any other agent, builtin or module step", () => {
@@ -1210,8 +1350,10 @@ describe("the roles a pause does not hold (EO-615)", () => {
       [{ awaitingInput: new Set(["exempt" as Uuid]) }, "awaiting_input"],
       [{ deps: [{ itemId: "exempt" as Uuid, dependsOnId: "other" as Uuid }] }, "open_dependency"],
       [{ activeRuns: [makeRun("exempt", "steward-1")] }, "run_active"],
-      [{ agents: [makeAgent("agent-1")] }, "no_enabled_agent"],
-      [{ agents: [makeAgent("steward-1", { role: ROLE, enabled: false })] }, "no_enabled_agent"],
+      [{ agents: [makeAgent("steward-1", { role: ROLE, enabled: false })] }, "agent_unavailable"],
+      // An agent nobody can find has no kind to exempt, so the pause is
+      // what holds the step (EO-875).
+      [{ agents: [makeAgent("agent-1")] }, "paused"],
     ];
     for (const [overrides, kind] of answers) {
       expect(tick({ ...input, ...overrides })).toEqual([]);
@@ -1219,8 +1361,8 @@ describe("the roles a pause does not hold (EO-615)", () => {
     }
   });
 
-  it("reads the role off the step the item is bound to, not the live one", () => {
-    const bound = new Map([["exempt", makeState("own", { ownerRole: "reviewer", entryAction: "tend" })]]);
+  it("reads the kind off the agent the step the item is bound to names, not the live one", () => {
+    const bound = new Map([["exempt", makeState("own", { agentId: "agent-1" as Uuid, entryAction: "tend" })]]);
     expect(dispatchBlocker(paused({ stepsByItem: bound }), "exempt")).toEqual({ kind: "paused" });
   });
 
@@ -1241,8 +1383,8 @@ describe("uncappedRoles (EO-616)", () => {
       items: [makeItem("busy"), makeItem("other"), makeItem("first", { stepId: "steward" }), makeItem("second", { stepId: "steward" }), makeItem("builtin", { stepId: "setup" })],
       steps: [
         makeState("todo"),
-        makeState("steward", { ownerRole: ROLE, entryAction: "intake" }),
-        makeState("setup", { type: "builtin", ownerRole: ROLE, entryAction: "setup" }),
+        makeState("steward", { agentId: "steward-1" as Uuid, entryAction: "intake" }),
+        makeState("setup", { type: "builtin", agentId: "steward-1" as Uuid, entryAction: "setup" }),
       ],
       agents: [makeAgent("steward-1", { role: ROLE }), makeAgent("agent-1")],
       activeRuns: [makeRun("busy", "agent-1"), makeRun("busy", "steward-1")],
@@ -1252,14 +1394,14 @@ describe("uncappedRoles (EO-616)", () => {
       ...overrides,
     });
 
-  it("dispatches an agent step its role owns past all three caps, and nothing else", () => {
+  it("dispatches an agent step naming an agent of the uncapped kind past all three caps, and nothing else", () => {
     expect(tick(full()).map((dispatch) => [dispatch.item.id, dispatch.agent?.id])).toEqual([
       ["first", "steward-1"],
       ["second", "steward-1"],
     ]);
   });
 
-  it("holds the same step when no role is named", () => {
+  it("holds the same step when no kind is named", () => {
     expect(tick(full({ uncappedRoles: new Set() }))).toEqual([]);
     expect(tick(full({ uncappedRoles: undefined as never }))).toEqual([]);
   });
@@ -1274,12 +1416,34 @@ describe("uncappedRoles (EO-616)", () => {
     expect(tick(input).map((dispatch) => dispatch.item.id)).toEqual(["first"]);
   });
 
-  it("prefers an agent with room, and leaves every blocker standing", () => {
+  it("runs the agent the step names even with another of its kind free, and leaves every blocker standing", () => {
+    // Before EO-875 a spare agent of the kind with room was preferred.
+    // The step names steward-1 now, so steward-1 runs it, at its cap.
     const spare = makeAgent("steward-2", { role: ROLE });
-    expect(tick(full({ agents: [makeAgent("steward-1", { role: ROLE }), spare] }))[0]?.agent?.id).toBe("steward-2");
+    expect(tick(full({ agents: [makeAgent("steward-1", { role: ROLE }), spare, makeAgent("agent-1")] })).map((dispatch) => dispatch.agent?.id)).toEqual([
+      "steward-1",
+      "steward-1",
+    ]);
     const input = full({ items: [makeItem("first", { stepId: "steward" })], activeRuns: [makeRun("first", "steward-1")] });
     expect(tick(input)).toEqual([]);
     expect(dispatchBlocker(input, "first")).toEqual({ kind: "run_active" });
+  });
+
+  it("keys the exception on the kind of the agent the step names, not on the step (EO-875)", () => {
+    // The same `intake` step naming an implementer answers to every cap.
+    const namingImplementer = full({ steps: [makeState("todo"), makeState("steward", { agentId: "agent-1" as Uuid, entryAction: "intake" })] });
+    expect(tick(namingImplementer)).toEqual([]);
+    // And naming another agent of the uncapped kind passes them, as that agent.
+    const steward2 = makeAgent("steward-2", { role: ROLE });
+    const namingSteward2 = full({
+      steps: [makeState("todo"), makeState("steward", { agentId: "steward-2" as Uuid, entryAction: "intake" })],
+      agents: [makeAgent("steward-1", { role: ROLE }), steward2, makeAgent("agent-1")],
+      activeRuns: [makeRun("busy", "agent-1"), makeRun("busy", "steward-2")],
+    });
+    expect(tick(namingSteward2).map((dispatch) => [dispatch.item.id, dispatch.agent?.id])).toEqual([
+      ["first", "steward-2"],
+      ["second", "steward-2"],
+    ]);
   });
 });
 
@@ -1293,9 +1457,9 @@ describe("dependency wait rules", () => {
   const steps = [
     makeState("todo"),
     makeState("implement", { position: 1 }),
-    makeState("review", { position: 2, ownerRole: "reviewer", entryAction: "review" }),
+    makeState("review", { position: 2, agentId: "reviewer-1" as Uuid, entryAction: "review" }),
     makeState("merge", { position: 3 }),
-    makeState("done", { position: 4, isTerminal: true, ownerRole: null }),
+    makeState("done", { position: 4, isTerminal: true, agentId: null }),
   ];
   const input = (dependsOnStep: string, edge: Partial<DependencyEdge>, overrides: Partial<TickInput> = {}): TickInput =>
     baseInput({
