@@ -4,7 +4,7 @@
     "slug": "software-feature-to-merge",
     "title": "Software feature to merge",
     "description": "A feature is implemented on a branch of its own, reviewed, and opened as a pull request for you to approve. Review runs as a team: a lead reviewer splits every review into focused passes (the acceptance criteria, impact, tests, your repository's own rules, and security or user-facing behaviour where the change calls for them) and gives one verdict from their reports, so each review is several agent runs, not one. This is the pipeline EO ships for its own work.",
-    "version": "1.5",
+    "version": "1.6",
     "blanks": [
       {
         "key": "keyPrefix",
@@ -91,12 +91,18 @@
           {
             "key": "blocking",
             "label": "Blocking issues",
-            "meaning": "This pass found at least one thing that must change before approval."
+            "meaning": "This pass found at least one thing that must change before approval.",
+            "rulesOut": [
+              "approved"
+            ]
           },
           {
             "key": "needs_decision",
             "label": "Needs a decision",
-            "meaning": "This pass found something only a person can decide."
+            "meaning": "This pass found something only a person can decide.",
+            "rulesOut": [
+              "approved"
+            ]
           }
         ],
         "limits": {

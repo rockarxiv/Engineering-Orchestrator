@@ -6,7 +6,7 @@ An `agent` step can run as a **team**: several focused agents each contribute a 
 
 A team is a setting on an agent step (`pipeline_steps.team`, `StepTeamSchema` in `packages/core/src/team.ts`). It is versioned, exported and imported with the pipeline like the step's other settings. A step with no team is one agent, which is how every step behaves unless somebody adds a team, or a template ships one ([below](#the-software-templates-review-team)).
 
-You add or change a team by **describing it to the assistant**. Its draft can carry `team` on an agent step, or `"none"` to make the step one agent again, and a person's Publish writes it. The Graph view and the draft card show the team in words. The configure screen's step form does not edit teams, and the `pipeline_save` tool removes the key. A tool can never publish a team.
+You add, change or remove a team by **describing it to the assistant**. Its draft can carry `team` on an agent step, or `"none"` to make the step one agent again, and a person's Publish on the draft card writes it. That is the only way a team is written or removed. The Graph view and the draft card show the team in words, but the Graph view has no control that removes one. The configure screen's step form does not edit teams, and the `pipeline_save` tool removes the key, so a save through it keeps the step's team as it was. A tool can never publish a team.
 
 Members are staffed by **role**, never by agent id, using the project's usual staffing rule. A team names no tool, server or grant. Each member runs with what its role's agent already has: reduced to report-only, or exactly as it is in a copy of its own where the team's members are isolated (below). The `system` role is never a member.
 
@@ -60,9 +60,15 @@ Each team session ends in **one** routing decision, and it goes through the ordi
   - it relies on a superseded report, or on one that is not the team's;
   - it names no report although reports exist;
   - its result is not one the action declares;
-  - it fails the action's schema.
+  - it fails the action's schema;
+  - its result is one an accepted report rules out, and its `disagreements` does not overrule that report.
 
   A refused answer is corrected in another leader turn while `maxRetries` allows. After that the team parks and says why.
+- **What a report rules out.** An outcome a team declares can carry `rulesOut`: the results of the step's action that an accepted report with that outcome rules out. A leader's final answer with one of those results is refused if any current accepted report concluded that outcome, unless the answer's `disagreements` overrules that report on a line of its own: `Overruled <assignment key or comment id>: <why>`. Mentioning the report is not overruling it — `criteria` alone, or "No disagreements with criteria", is refused — and neither is an override with no reason after the colon. The refusal names the report and its outcome, as the other checks do, and the leader corrects it in another turn while `maxRetries` allows. EO checks that the override names the report and gives a reason; whether the reason persuades is for the person who reads it on the thread with the answer. The engine knows no outcome or result by name: what rules out what is the team's data. `rulesOut` is optional and versioned, diffed, exported and imported with the team. Every key in it must be a result the step's action declares, which draft and Publish check. Only a leader-led team may declare it, because an independent team's result comes from its completion table and no agent writes it.
+
+  ```json
+  { "key": "blocking", "label": "Blocking issues", "rulesOut": ["approved"] }
+  ```
 - **At most one move per session.** A session that settled before a restart answers with its settled result again, without running anyone, and moves the item once. It does that only if the evidence still holds what the reports were made on. Otherwise the result is not used and the team runs again.
 
 ### An execution failure is not a finding
@@ -187,7 +193,11 @@ Review is a leader-led team in isolated mode. The template's `reviewer` leads, a
 
 Each member works as the template's reviewer does, in a copy of its own. The leader's final answer is the step's ordinary review verdict: an approval with its pull request body, a rejection carrying every blocking issue the passes found, merged and de-duplicated, with coverage for every criterion, or a question for the person. The step's routes are unchanged. Nothing in the team names anything of EO's own: every rule a pass checks comes from the repository under review (`gallery/templateTeam.test.ts`). A review is several runs rather than one, and the template's description says so.
 
-An installation on 1.4 receives the team as any template update. Where a person already gave Review a team of their own, the update keeps theirs and holds as a conflict. Removing the team, through the assistant's draft, gives back the single-reviewer review. `packs/developer/reviewTeam.test.ts` runs the step end to end on Claude, on Codex and on both, every turn through that backend's real adapter over a stubbed SDK `query` or `codex app-server`.
+From version 1.6 the team's `blocking` and `needs_decision` outcomes each rule out `approved`. A leader that approves over a pass reporting either is refused unless it names that pass and says why it overruled it.
+
+An installation on 1.4 receives the team as any template update, and one on 1.5 receives 1.6 the same way. Where a person already gave Review a team of their own, the update keeps theirs and holds as a conflict.
+
+To remove the team, ask the assistant to make Review one agent again. Its draft carries `team: "none"` for Review, and you publish it from the draft card. The next review is the single-reviewer review: one reviewer run, the ordinary review schema, the same routes. A later template version that changes Review's team does not put it back. It is held as a conflict, as for any step a person edited. `reviewTeam.test.ts` removes it that way: the assistant's draft, then Publish on the card. `packs/developer/reviewTeam.test.ts` runs the step end to end on Claude, on Codex and on both, every turn through that backend's real adapter over a stubbed SDK `query` or `codex app-server`. Its scripted leader assigns the passes it reads in the template's own leader instructions, so a pass dropped from the template fails those runs. It also runs a leader that approves over a blocking report and is refused.
 
 ## Examples (opt-in)
 

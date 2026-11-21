@@ -61,6 +61,23 @@ describe("StepTeamSchema", () => {
     expect(issues({ ...base, outcomes: [...base.outcomes, { key: "clear", label: "Again" }] })).toContain('The outcome "clear" is declared twice.');
   });
 
+  it("lets an outcome of a leader-led team rule out results, and refuses it twice over or on an independent team (EO-873)", () => {
+    const led = { coordination: "leader", leader: { role: "lead", instructions: "Lead." }, roles: ["reviewer"] };
+    const ruling = StepTeamSchema.parse({ ...led, outcomes: [{ key: "blocking", label: "Blocking", rulesOut: ["approved"] }] });
+    expect(ruling.outcomes[0]).toEqual({ key: "blocking", label: "Blocking", meaning: "", rulesOut: ["approved"] });
+    // Left out, it is absent rather than filled in, so a team written before it reads exactly as it did.
+    expect(StepTeamSchema.parse({ ...led, outcomes: [{ key: "clear", label: "Clear" }] }).outcomes[0]).not.toHaveProperty("rulesOut");
+    expect(issues({ ...led, outcomes: [{ key: "blocking", label: "Blocking", rulesOut: ["approved", "approved"] }] })).toEqual(['The outcome "blocking" rules out "approved" twice.']);
+    expect(issues({ ...led, outcomes: [{ key: "blocking", label: "Blocking", rulesOut: ["Approved!"] }] })).not.toEqual([]);
+    expect(issues({ ...base, outcomes: [...base.outcomes.slice(0, 2), { key: "blocker", label: "Blocker", rulesOut: ["approved"] }] })).toEqual([
+      'The outcome "blocker" rules out results, which only a leader-led team\'s answer is held to: an independent team\'s completion table decides its result.',
+    ]);
+    // In the diff's words and the reader's.
+    expect(teamWords(ruling)).toContain('blocking "Blocking" rules out approved');
+    expect(teamFacts(ruling).outcomes).toEqual(["Blocking (blocking) (rules out approved)"]);
+    expect(teamFacts(ruling).completion).toContainEqual(expect.stringContaining("EO also refuses a result an accepted report's outcome rules out"));
+  });
+
   it("refuses a completion rule naming an outcome the team does not declare", () => {
     const rules = [{ when: "any", outcomes: ["meh"], result: "approved" }];
     expect(issues({ ...base, completion: { rules, fallback: "approved" } })).toEqual(['Completion rule 1 names the outcome "meh", which the team does not declare.']);

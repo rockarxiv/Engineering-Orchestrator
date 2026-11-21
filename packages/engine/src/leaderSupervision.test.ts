@@ -7,6 +7,7 @@ import {
   leaderLedger,
   planIndependentTeam,
   planLeaderTeam,
+  ruledOutProblems,
   type LeaderAttemptState,
   type LeaderVerdict,
 } from "./teamSupervision.js";
@@ -168,6 +169,59 @@ describe("leaderFinalProblems (EO-847)", () => {
 
     const missing = chain(lead, attempt("auth", "failed", { error: "Crashed." }), attempt("auth", "failed", { error: "Crashed." }));
     expect(leaderFinalProblems(leaderLedger(missing, "B1"), missing, [])).toEqual([expect.stringContaining("The required assignment **auth** has no accepted report")]);
+  });
+});
+
+describe("ruledOutProblems (EO-873)", () => {
+  const outcomes = [
+    { key: "clear", label: "Nothing blocks" },
+    { key: "blocking", label: "Blocking issues", rulesOut: ["approved"] },
+    { key: "needs_decision", label: "Needs a decision", rulesOut: ["approved"] },
+  ];
+  const contributions = [
+    { key: "criteria", reportId: "c-criteria", outcome: "blocking" },
+    { key: "tests", reportId: "c-tests", outcome: "clear" },
+  ];
+
+  it("refuses a result an accepted report's outcome rules out, naming the report, when the disagreements do not name it", () => {
+    expect(ruledOutProblems(outcomes, contributions, "approved", "None.")).toEqual([
+      'Its result "approved" is one **criteria**\'s report (comment c-criteria) rules out: it concluded "Blocking issues" (blocking). Answer with a result that report allows, or overrule it on a line of your disagreements of its own: `Overruled criteria: <why>`.',
+    ]);
+    // Every report that rules it out, each said once.
+    const two = [...contributions, { key: "rules", reportId: "c-rules", outcome: "needs_decision" }];
+    expect(ruledOutProblems(outcomes, two, "approved", "Overruled criteria: the case it names cannot happen.")).toEqual([expect.stringContaining("**rules**'s report")]);
+  });
+
+  it("accepts the result where the disagreements overrule the report, by key or comment id, and say why", () => {
+    expect(ruledOutProblems(outcomes, contributions, "approved", "Overruled criteria: the off-by-one it reports is the documented behaviour.")).toEqual([]);
+    expect(ruledOutProblems(outcomes, contributions, "approved", "Overruled comment c-criteria: checked, and it is not a bug.")).toEqual([]);
+    // On a line of its own among others, as a list item, with markdown around the key, or after a dash.
+    expect(ruledOutProblems(outcomes, contributions, "approved", "The passes agreed otherwise.\n- Overruled **criteria**: the case it names cannot happen.")).toEqual([]);
+    expect(ruledOutProblems(outcomes, contributions, "approved", "Overruled `criteria` — the fixture it names never ships.")).toEqual([]);
+  });
+
+  it("refuses where the disagreements only mention the report, or overrule it without a reason", () => {
+    // A bare identifier is not an override.
+    expect(ruledOutProblems(outcomes, contributions, "approved", "criteria")).toHaveLength(1);
+    expect(ruledOutProblems(outcomes, contributions, "approved", "c-criteria")).toHaveLength(1);
+    // Nor is an incidental mention, even one that says it disagreed.
+    expect(ruledOutProblems(outcomes, contributions, "approved", "No disagreements with criteria.")).toHaveLength(1);
+    expect(ruledOutProblems(outcomes, contributions, "approved", "I disagreed with criteria and overruled it.")).toHaveLength(1);
+    // An override with nothing after the colon, or only punctuation, gives no reason.
+    expect(ruledOutProblems(outcomes, contributions, "approved", "Overruled criteria:")).toHaveLength(1);
+    expect(ruledOutProblems(outcomes, contributions, "approved", "Overruled criteria: ...")).toHaveLength(1);
+    // An override of another report is not one of this.
+    expect(ruledOutProblems(outcomes, contributions, "approved", "Overruled tests: it ran nothing.")).toHaveLength(1);
+    // A key inside another word is not the report named.
+    expect(ruledOutProblems(outcomes, contributions, "approved", "Overruled criteria_coverage: the table is complete.")).toHaveLength(1);
+  });
+
+  it("accepts any result no current report's outcome rules out", () => {
+    expect(ruledOutProblems(outcomes, contributions, "changes_requested", "None.")).toEqual([]);
+    expect(ruledOutProblems(outcomes, [{ key: "tests", reportId: "c-tests", outcome: "clear" }], "approved", "None.")).toEqual([]);
+    expect(ruledOutProblems([{ key: "blocking", label: "Blocking" }], contributions, "approved", "None.")).toEqual([]);
+    // A report with no outcome — a team that declares none — rules out nothing.
+    expect(ruledOutProblems(outcomes, [{ key: "criteria", reportId: "c-criteria", outcome: null }], "approved", "None.")).toEqual([]);
   });
 });
 

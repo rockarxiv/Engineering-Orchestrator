@@ -182,6 +182,21 @@ describe("validatePipeline: a team on an agent step (EO-843)", () => {
     expect(warned.filter((problem) => problem.severity === "warning").map((problem) => problem.message)).toContainEqual(expect.stringContaining('has isolated members, and some of the workspaces it may work in — "folder"'));
   });
 
+  it("holds what an outcome rules out to the results the step's action declares (EO-873)", () => {
+    const outcomes = (rulesOut: string[]) => [
+      { key: "clear", label: "Clear" },
+      { key: "blocking", label: "Blocking", rulesOut },
+    ];
+    expect(teamErrors(pipeline(leader({ outcomes: outcomes(["approved"]) })))).toEqual([]);
+    expect(teamErrors(pipeline(leader({ outcomes: outcomes(["approved", "merged"]) })))).toEqual([
+      'The team on "review": the outcome "blocking" rules out "merged", which "check" cannot return.',
+    ]);
+    // The action's own results, whoever defines it: a pack's `review` returns `approved`, not `passed`.
+    const rulingOut = (input: ValidatePipelineInput) => teamErrors(input).filter((message) => message.includes("rules out"));
+    expect(rulingOut(pipeline(leader({ outcomes: outcomes(["approved", "needs_user_input"]) }), { entryAction: "review" }))).toEqual([]);
+    expect(rulingOut(pipeline(leader({ outcomes: outcomes(["passed"]) }), { entryAction: "review" }))).toEqual([expect.stringContaining('rules out "passed", which "review" cannot return')]);
+  });
+
   it("refuses a team built without parsing that breaks its own rules", () => {
     const valid = independent();
     if (valid.coordination !== "independent") throw new Error("independent");
