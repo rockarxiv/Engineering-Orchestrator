@@ -359,7 +359,7 @@ import { archiveReachOf, archiveUnusedSkills } from "../skills/archival.js";
 import { currentWatch, markCheckInFlight, ownerMention, recordQuietCheck, waitingLine, watchArrival, watchHold, watchRoundTrips, WATCH_ROUTED_REASON, WATCH_VERIFICATION_FAILED_REASON } from "./watches.js";
 import { agentMentionChain } from "./escalation.js";
 import { answerTeamCall, createTeamParticipantScopes, memberAttemptOf, MEMBER_NO_BRIDGE, memberCredential, memberWrites, withinBoundary, type TeamParticipantScopes } from "./teamParticipants.js";
-import { createTeamSupervisor, MACHINE_PARTICIPANT_LIMIT, reportMemberCopy, TEAM_RETRY_WORDS, type IsolatedTurnAnswer, type IsolatedTurnRequest, type ReportOnlyProviderAnswer, type TeamAnswerContract } from "./teamSupervisor.js";
+import { createTeamSupervisor, reportMemberCopy, TEAM_RETRY_WORDS, type IsolatedTurnAnswer, type IsolatedTurnRequest, type ReportOnlyProviderAnswer, type TeamAnswerContract } from "./teamSupervisor.js";
 import { currentTeamSession, endTeamSession, getTeamAttempt, getTeamSession, getTeamSessionRecord, runsOfTeamSession } from "../db/repos/teamSessionsRepo.js";
 import { teamNotHereProblem, type TeamControlSite } from "./teamSessionView.js";
 
@@ -479,8 +479,6 @@ export interface RunSupervisorOptions {
    * so, and a team step decides nothing.
    */
   reportOnlyProvider?: (agent: Agent, attemptId: string) => ReportOnlyProviderAnswer;
-  /** How many team participants this machine runs at once, across every team (EO-846); `MACHINE_PARTICIPANT_LIMIT` when left out. */
-  teamParticipantLimit?: number;
   /** How often a waiting team looks again at what may have changed, in ms (EO-846). Seam for tests. */
   teamPollMs?: number;
   /**
@@ -4426,9 +4424,12 @@ export function createRunSupervisor(
   /** The team runs this process is driving, from their row to their end (EO-846). */
   const teamRuns = new Set<string>();
   /**
-   * Independent teams, run as their step's run (EO-846, `teamSupervisor.ts`).
-   * Its participants are counted against the team's, the machine's and
-   * their agents' limits, and against nothing that holds other items.
+   * Teams, run as their step's run (EO-846, `teamSupervisor.ts`). The
+   * session is one run against EO's caps (EO-871): its own run holds the
+   * slot a single run of the step would. Its turns are counted against the
+   * team's own `maxParallel` alone, and against no cap or machine-wide
+   * limit; each is held to the wall clock and the inactivity guard as an
+   * ordinary run is (`guardMemberTurn`).
    */
   const teams = createTeamSupervisor({
     db,
@@ -4440,9 +4441,7 @@ export function createRunSupervisor(
     isolatedTurn: (request) => isolatedMemberTurn(request),
     scopes: teamScopes,
     writeBridge: () => options.agentWriteBridge?.() ?? null,
-    machineLimit: () => options.teamParticipantLimit ?? MACHINE_PARTICIPANT_LIMIT,
-    perAgentLimit: () => (typeof limits === "function" ? limits() : limits).perAgentConcurrency,
-    ordinaryTurnsOf: (agentId) => listActiveRuns(db).filter((run) => run.agentId === agentId && !teams.isWaitingParent(run.id)).length,
+    guardTurn: (turn) => guardMemberTurn(turn),
     restriction: participantRestriction,
     budgetLeft: (itemId) => {
       const guards = readGuards();
@@ -4563,6 +4562,8 @@ export function createRunSupervisor(
    * `skills_delivered`, dropped when the run is over.
    */
   const runSkills = new Map<string, { bySlug: Map<string, string>; loaded: Set<string> }>();
+  /** The team turns the guards watch (EO-871), by run: how each is stopped with why (`guardMemberTurn`). */
+  const memberTurnStops = new Map<string, (reason: string) => void>();
   /** When the computer last woke, as `onWake` or a late watchdog pass said. Silence before it is not the run's. */
   let lastWakeAt: number | null = null;
   let lastWatchdogPassAt: number | null = null;
@@ -4667,7 +4668,11 @@ export function createRunSupervisor(
   }
 
   function tickInputNow(): TickInput<GateRefusal> {
-    const input = buildTickInput(
+    // A team session is one run against every cap (EO-871): its own run
+    // is among the active runs, with its agent, as a single run of the
+    // step would be, and the turns inside it are not — participant runs
+    // are left out of the active runs altogether (`buildTickInput`).
+    return buildTickInput(
       db,
       typeof limits === "function" ? limits() : limits,
       paused,
@@ -4680,15 +4685,6 @@ export function createRunSupervisor(
       closing ? NO_PAUSE_EXEMPTIONS : PAUSE_EXEMPTIONS,
       UNCAPPED_ROLES,
     );
-    // Counted in provider turns (EO-846): a team's waiting run holds its
-    // item's slot and runs no turn, so it takes nothing from its agent;
-    // each participant's turn is its agent at work, and takes from that.
-    const participants = teams.participantAgentIds();
-    return {
-      ...input,
-      activeRuns: input.activeRuns.map((run) => (teams.isWaitingParent(run.id) ? { ...run, agentId: null } : run)),
-      ...(participants.length > 0 ? { participantAgentIds: participants } : {}),
-    };
   }
 
   function forcedRestartIntents(): ForcedRestartIntent[] {
@@ -6433,7 +6429,9 @@ export function createRunSupervisor(
     // so one timeout/cancellation mechanism covers the entire run. The
     // system agent's has none (EO-616).
     const timeoutTimer =
-      guards.wallClockTimeoutMs > 0 && !isSystemAgent(agent)
+      // A team's own run neither: its turns are each held to the wall
+      // clock, and the session to the team's own time limit (EO-871).
+      guards.wallClockTimeoutMs > 0 && !isSystemAgent(agent) && !teamRuns.has(run.id)
         ? setTimeout(() => {
             guardTripReasons.set(
               run.id,
@@ -11943,25 +11941,61 @@ export function createRunSupervisor(
         activity.lastAt = at;
       }
       const controller = activeControllers.get(runId);
-      if (!controller || guardTripReasons.has(runId)) continue;
+      const member = memberTurnStops.get(runId);
+      if ((!controller && !member) || guardTripReasons.has(runId)) continue;
       if (activity.openCalls.size > 0) continue;
       const quietSince = Math.max(activity.lastAt, lastWakeAt ?? 0);
       if (at - quietSince < limit) continue;
       if (lastWakeAt !== null && activity.lastAt < lastWakeAt) {
+        // A team's turn has no thread of its own to carry on in: its
+        // silence is counted afresh from the wake (EO-871).
+        if (member) {
+          activity.lastAt = at;
+          continue;
+        }
         cancelActiveRun(runId, "restart-on-resume", "sleep");
         notifyStateChange();
         continue;
       }
       if (activity.systemAgent) continue;
       const minutes = Math.max(1, Math.round((at - activity.lastAt) / 60_000));
-      guardTripReasons.set(
-        runId,
-        `No word from ${activity.agentName}'s backend for ${minutes} minute(s) while no tool was running — the last thing it said was ` +
-          `${activity.lastWord ?? "nothing at all"} — so EO stopped the run rather than wait on a process that may have stopped responding. ` +
-          `Reply to carry on in the same thread.`,
-      );
-      controller.abort();
+      const silent = `No word from ${activity.agentName}'s backend for ${minutes} minute(s) while no tool was running — the last thing it said was ${activity.lastWord ?? "nothing at all"}`;
+      if (member) {
+        member(`${silent} — so EO stopped its turn rather than wait on a process that may have stopped responding.`);
+        continue;
+      }
+      guardTripReasons.set(runId, `${silent} — so EO stopped the run rather than wait on a process that may have stopped responding. Reply to carry on in the same thread.`);
+      controller!.abort();
     }
+  }
+
+  /**
+   * Holds a team's turn, a leader's or a member's, to the guards an
+   * ordinary run is held to (EO-871): the wall clock from now, and the
+   * inactivity guard's passes (`watchLiveRuns`), which read what it says
+   * as they read any run's. What trips either calls `stop` once, with why;
+   * the turn's own run is not in `activeControllers`, so nothing else of
+   * an ordinary run's ending reaches it.
+   */
+  function guardMemberTurn(turn: { runId: string; agent: Agent; stop: (reason: string) => void }): { observe: (event: AgentEvent) => void; release: () => void } {
+    const guards = readGuards();
+    let over = false;
+    const release = (): void => {
+      over = true;
+      if (timer) clearTimeout(timer);
+      memberTurnStops.delete(turn.runId);
+      runActivity.delete(turn.runId);
+    };
+    const stop = (reason: string): void => {
+      if (over) return;
+      release();
+      turn.stop(reason);
+    };
+    const timer = guards.wallClockTimeoutMs > 0 && !isSystemAgent(turn.agent) ? setTimeout(() => stop(`Wall-clock timeout of ${guards.wallClockTimeoutMs}ms exceeded.`), guards.wallClockTimeoutMs) : undefined;
+    timer?.unref?.();
+    runActivity.set(turn.runId, { lastAt: now(), events: 0, seenEvents: 0, openCalls: new Set(), callsSinceReminder: 1, lastWord: null, agentName: turn.agent.name, systemAgent: isSystemAgent(turn.agent) });
+    memberTurnStops.set(turn.runId, stop);
+    return { observe: (event) => noteActivity(turn.runId, event), release };
   }
 
   /**

@@ -284,16 +284,6 @@ export interface TickInput<R extends DispatchRefusal = DispatchRefusal> extends 
    * highest priority, then oldest. Absent is nobody first.
    */
   firstInLine?: ReadonlySet<string>;
-  /**
-   * The agents running a team participant's turn now, one entry per turn
-   * (EO-846, ARCHITECTURE.md, "Capacity and concurrency").
-   *
-   * A participant's turn is not an item's run: its item already holds its
-   * one slot through the team's own run, so it takes no global or bucket
-   * slot. It is an agent at work all the same, so each counts against its
-   * agent's cap exactly as a run of that agent would. Absent is none.
-   */
-  participantAgentIds?: readonly string[];
 }
 
 /**
@@ -694,7 +684,6 @@ export function tick<R extends DispatchRefusal>(input: TickInput<R>): Dispatch[]
     const key = runItem ? capacityKeyOf(runItem) : null;
     if (key !== null) activeRunCountByBucket.set(key, (activeRunCountByBucket.get(key) ?? 0) + 1);
   }
-  for (const agentId of input.participantAgentIds ?? []) activeRunCountByAgent.set(agentId, (activeRunCountByAgent.get(agentId) ?? 0) + 1);
 
   // Highest priority, then oldest, first — both for picking agents (a
   // lower-priority item must never take a capacity slot ahead of a

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { IndependentTeamSchema, type IndependentTeam } from "@eo/core";
-import { allocateParticipantBudget, planIndependentTeam, type TeamAttemptState, type TeamCapacity } from "./teamSupervision.js";
+import { allocateParticipantBudget, planIndependentTeam, type TeamAttemptState } from "./teamSupervision.js";
 
 const TEAM: IndependentTeam = IndependentTeamSchema.parse({
   coordination: "independent",
@@ -17,19 +17,6 @@ const TEAM: IndependentTeam = IndependentTeamSchema.parse({
   limits: { maxParticipants: 3, maxParallel: 2, maxRetries: 1 },
 });
 
-const ROOMY: TeamCapacity = {
-  machineFree: 4,
-  agentOf: new Map([
-    ["security", "rita"],
-    ["tests", "tom"],
-    ["style", "sam"],
-  ]),
-  agentFree: new Map([
-    ["rita", 1],
-    ["tom", 1],
-    ["sam", 1],
-  ]),
-};
 
 let counter = 0;
 function attempt(key: string, status: TeamAttemptState["status"], extra: Partial<TeamAttemptState> = {}): TeamAttemptState {
@@ -37,7 +24,7 @@ function attempt(key: string, status: TeamAttemptState["status"], extra: Partial
   return { id: `a${counter}`, key, status, supersededBy: null, outcome: null, report: null, error: null, baseline: "B1", live: false, ...extra };
 }
 const done = (key: string, outcome: string, extra: Partial<TeamAttemptState> = {}) => attempt(key, "completed", { outcome, report: `${key} says ${outcome}.`, ...extra });
-const plan = (attempts: TeamAttemptState[], capacity: TeamCapacity = ROOMY, baseline = "B1") => planIndependentTeam({ team: TEAM, attempts, baseline, capacity });
+const plan = (attempts: TeamAttemptState[], baseline = "B1") => planIndependentTeam({ team: TEAM, attempts, baseline });
 
 describe("planIndependentTeam (EO-846)", () => {
   it("starts the first assignments in the team's order, no more at once than the team allows", () => {
@@ -50,17 +37,11 @@ describe("planIndependentTeam (EO-846)", () => {
     expect(next.decision.status).toBe("pending");
   });
 
-  it("holds turns to the machine's free slots and to each agent's own limit, saying which", () => {
-    expect(plan([], { ...ROOMY, machineFree: 1 }).waiting).toEqual([
-      { key: "tests", reason: "machine" },
-      { key: "style", reason: "machine" },
-    ]);
-    const busyRita = plan([], { ...ROOMY, agentFree: new Map([["tom", 1], ["sam", 1]]) });
-    expect(busyRita.start.map((one) => one.key)).toEqual(["tests", "style"]);
-    expect(busyRita.waiting).toEqual([{ key: "security", reason: "agent" }]);
-    // One agent staffing two assignments runs them one after the other at a limit of one.
-    const oneAgent = plan([], { machineFree: 4, agentOf: new Map([["security", "rita"], ["tests", "rita"], ["style", "rita"]]), agentFree: new Map([["rita", 1]]) });
-    expect(oneAgent.start.map((one) => one.key)).toEqual(["security"]);
+  it("holds turns to the team's own limit and to nothing else: no agent's cap, no machine-wide limit (EO-871)", () => {
+    // However the assignments are staffed, and whatever other teams run, only the team's limit holds them back.
+    const next = plan([]);
+    expect(next.start.map((one) => one.key)).toEqual(["security", "tests"]);
+    expect(next.waiting.map((one) => one.reason)).toEqual(["team"]);
   });
 
   it("counts a turn still working against the team's parallel limit", () => {

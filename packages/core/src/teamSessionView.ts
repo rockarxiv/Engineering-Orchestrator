@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { TEAM_MEMBER_MODES } from "./team.js";
 import { TeamAttemptStatusSchema, TeamSessionStatusSchema } from "./teamSession.js";
 
 /**
@@ -27,8 +28,7 @@ export type TeamAttemptShown = z.infer<typeof TeamAttemptShownSchema>;
 
 /**
  * Why a team is not moving. `capacity`: an assignment waits for room — the
- * team's own parallel limit, the machine's participant slots, its agent's
- * concurrency, or budget held by turns still working. `contribution`: the
+ * team's own parallel limit (EO-871), or budget held by turns still working. `contribution`: the
  * team waits on participants still at work. `human`: a member asked the
  * person something. `enforcement`: EO could not hold an agent to report-only
  * on this machine, so it was never started. `limits`: retries, rounds, time
@@ -155,6 +155,8 @@ export const TeamSessionViewSchema = z.object({
   stepId: z.string(),
   stepName: z.string(),
   coordination: z.enum(["independent", "leader"]),
+  /** Its members' mode as the session was configured (EO-867, EO-871): report-only, or isolated each in a copy of its own. */
+  members: z.enum(TEAM_MEMBER_MODES),
   status: TeamSessionStatusSchema,
   state: TeamSessionStateSchema,
   /** The item's one session that can still take work: open, on its step entry. */

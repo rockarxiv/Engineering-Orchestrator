@@ -1,6 +1,6 @@
 import { backendAllowed, bindingRefusal, DEFAULT_MEMORY_DELIVERY_CHARS, DEFAULT_MEMORY_SCOPE_MAX_CHARS, DEFAULT_MEMORY_SCOPE_MAX_ENTRIES, DEFAULT_SKILL_ARCHIVE_AFTER_RUNS, DEFAULT_SKILL_MAX_BODY_CHARS, DEFAULT_SKILL_STALE_AFTER_RUNS, isBuiltinRole, isDispatchable, isPreviewAgent, rolesStaffedFor, settledWatch, staffingAgents, stepHoldsItemsMessage, stepWorkspaceChoice, timeLimitBoundProblem, withMemoryNoteGrant } from "@eo/core";
 import type { ActionDefinitionDraft, Agent, AgentRemovalImpact, RegistryFacts, TeamReading, EntryRule, GuardConfigView, IpcPayload, IpcResponse, ItemTypeEntry, Registry, Uuid, PipelineStep, StepBrief, StepRoute, StepTeam, StepWatch } from "@eo/core";
-import { hasBlockingProblem, outsideReachByStep, validatePipeline, type WorkflowProblem } from "@eo/engine";
+import { hasBlockingProblem, outsideReachByStep, validatePipeline, type IsolatedCopyProblem, type WorkflowProblem } from "@eo/engine";
 import type { Db } from "../db/client.js";
 import { registry, registryForProject, withProposedActions } from "../registry.js";
 import { sectionLockFor } from "../managed/locks.js";
@@ -982,11 +982,12 @@ export function reportOnlyRoleProblemsForPipeline(db: Db, pipelineId: string): R
 /**
  * Why each step's isolated team could not give every member a copy of its
  * own (EO-867), by step id: a sentence naming the kinds of workspace the
- * step could work in that make none. Read as dispatch resolves a step's
+ * step could work in that make none — an error where none of them makes
+ * copies, a warning where some do (EO-871). Read as dispatch resolves a step's
  * workspace — the one it names, no disk, or (inheriting) any of the
  * workspaces of the projects its work comes from.
  */
-export function isolatedCopyProblemsForPipeline(db: Db, pipelineId: string, steps: readonly Pick<PipelineStep, "id" | "team" | "workspaceId">[]): Record<string, string> {
+export function isolatedCopyProblemsForPipeline(db: Db, pipelineId: string, steps: readonly Pick<PipelineStep, "id" | "team" | "workspaceId">[]): Record<string, IsolatedCopyProblem> {
   return isolatedCopyProblems(db, projectsServedByPipeline(db, pipelineId), steps);
 }
 
@@ -1268,12 +1269,22 @@ export function storedGraphProblems(
   alongside: ReadonlyMap<string, { steps: readonly PipelineStep[]; routes: readonly StepRoute[] }> = new Map(),
   /** The entry rules it would be written with, judged as a publish judges them (EO-771). Absent judges none. */
   entryRules?: readonly EntryRule[],
+  /**
+   * Judged for a template update (EO-871): an isolated team whose step has
+   * no workspace that makes member copies is a warning, not an error. The
+   * update applies, and each item there is refused at start with a comment
+   * naming the kind (`isolatedCopyRefusal`), where a person acts — rather
+   * than the board being held on the old version and every later update
+   * with it. Draft and Publish still refuse it.
+   */
+  judging: { templateUpdate?: boolean } = {},
 ): WorkflowProblem[] {
   // Judged for the projects the pipeline serves, never the one on
   // screen: the same unadopted graph must not apply with one project
   // selected and be held with another (EO-532 review).
   const judgedFor: JudgedFor = { serving: projectsServedByPipeline(db, pipelineId) };
-  const input = validationInput(db, pipelineId, steps, routes, entryStepId, undefined, judgedFor, entryRules);
+  const validated = validationInput(db, pipelineId, steps, routes, entryStepId, undefined, judgedFor, entryRules);
+  const input = judging.templateUpdate === true ? { ...validated, isolatedCopyProblems: copyProblemsAsWarnings(validated.isolatedCopyProblems ?? {}) } : validated;
   const others = [...alongside].filter(([id]) => id !== pipelineId);
   const judged =
     others.length === 0
@@ -1284,6 +1295,11 @@ export function storedGraphProblems(
           incomingHandOffs: listIncomingHandOffs(db, pipelineId, new Map(others.map(([id, graph]) => [id, graph.routes]))),
         };
   return [...validatePipeline(judged), ...foreignWorkspaceProblems(db, pipelineId, steps, judgedFor)];
+}
+
+/** Every isolated team's copy problem, said as a warning: what a template update is judged with (EO-871). */
+function copyProblemsAsWarnings(problems: Readonly<Record<string, IsolatedCopyProblem>>): Record<string, IsolatedCopyProblem> {
+  return Object.fromEntries(Object.entries(problems).map(([stepId, problem]) => [stepId, { ...problem, severity: "warning" as const }]));
 }
 
 /** Each step once, by id, keeping the first. */

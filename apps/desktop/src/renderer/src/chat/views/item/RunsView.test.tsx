@@ -185,6 +185,7 @@ describe("the runs view", () => {
       stepId: "review",
       stepName: "Review",
       coordination: "independent",
+      members: "report_only",
       status: "open",
       state: "running",
       current: true,
