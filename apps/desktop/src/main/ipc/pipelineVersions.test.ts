@@ -825,6 +825,7 @@ describe("a board whose pipeline has moved on", () => {
         name: "Second look",
         change: "changed",
         kind: { type: "user", agentId: null, entryAction: null },
+        agent: null,
         fields: [
           { field: "name", before: "Review", after: "Second look" },
           { field: "instructionsSummary", before: null, after: "Look again." },

@@ -62,6 +62,29 @@ describe("a change of a step's agent (EO-876)", () => {
     expect(unknown.steps[0]!.fields).toEqual([{ field: "agent", before: "Reviewer", after: "someone-else" }]);
   });
 
+  it("names the agent of every agent step it lists — added, removed, or edited in another field — and none for another type", () => {
+    const first = agentStep("reviewer-claude");
+    const diff = diffVersions(
+      { number: 1, steps: [first, step({ id: "gone", name: "Old review", type: "agent", agentId: "reviewer-claude", entryAction: "review" })], routes: [] },
+      {
+        number: 2,
+        steps: [
+          { ...first, name: "First review" },
+          step({ id: "second", name: "Second review", type: "agent", agentId: "reviewer-codex", entryAction: "review" }),
+          step({ id: "signoff", name: "Sign-off" }),
+        ],
+        routes: [],
+      },
+      undefined,
+      names,
+    );
+    const row = (name: string) => diff.steps.find((each) => each.name === name);
+    expect(row("First review")).toMatchObject({ change: "changed", agent: "Reviewer", fields: [{ field: "name", before: "Review", after: "First review" }] });
+    expect(row("Second review")).toMatchObject({ change: "added", agent: "Reviewer on Codex" });
+    expect(row("Old review")).toMatchObject({ change: "removed", agent: "Reviewer" });
+    expect(row("Sign-off")).toMatchObject({ change: "added", agent: null });
+  });
+
   it("reports two agents of one name as a change", () => {
     const twins = new Map([
       ["a", "Reviewer"],
@@ -185,6 +208,7 @@ describe("the difference between two versions", () => {
         name: "Review",
         change: "changed",
         kind: { type: "user", agentId: null, entryAction: null },
+        agent: null,
         fields: [{ field: "instructionsSummary", before: null, after: "Look again." }],
       },
     ]);
@@ -199,7 +223,7 @@ describe("the difference between two versions", () => {
     const diff = diffVersions({ number: 6, steps: STEPS, routes: [] }, { number: 7, steps: [step({ position: 4 }), STEPS[1]!], routes: [] });
 
     expect(diff.steps).toEqual([
-      { stepId: "review", name: "Review", change: "changed", kind: { type: "user", agentId: null, entryAction: null }, fields: [{ field: "position", before: "1", after: "4" }] },
+      { stepId: "review", name: "Review", change: "changed", kind: { type: "user", agentId: null, entryAction: null }, agent: null, fields: [{ field: "position", before: "1", after: "4" }] },
     ]);
   });
 
@@ -278,8 +302,8 @@ describe("the difference between two versions", () => {
     const diff = diffVersions({ number: 6, steps: [STEPS[0]!], routes: [] }, { number: 7, steps: [STEPS[1]!], routes: [] });
 
     expect(diff.steps).toEqual([
-      { stepId: "done", name: "Done", change: "added", kind: null, fields: [] },
-      { stepId: "review", name: "Review", change: "removed", kind: { type: "user", agentId: null, entryAction: null }, fields: [] },
+      { stepId: "done", name: "Done", change: "added", kind: null, agent: null, fields: [] },
+      { stepId: "review", name: "Review", change: "removed", kind: { type: "user", agentId: null, entryAction: null }, agent: null, fields: [] },
     ]);
   });
 

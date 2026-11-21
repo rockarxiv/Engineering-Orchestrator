@@ -62,6 +62,13 @@ export function VersionDiff({
                   {!kinds || step.kind == null ? null : <StepKindChip step={{ ...step.kind, agentKind: kindOf(step.kind) }} />}
                   <Chip tone={changeTone(step.change)}>{step.change}</Chip>
                 </span>
+                {/* Who runs it (EO-876), on every agent step the diff lists —
+                    added, removed or edited — not only where the agent changed. */}
+                {step.agent == null ? null : (
+                  <p className="pl-1 pt-0.5 text-[11.5px] text-ink-muted">
+                    {step.change === "removed" ? "Ran" : "Runs"} <span className="text-ink">{step.agent}</span>
+                  </p>
+                )}
                 {/* Field by field, so "the prompt changed" and "it was
                     renamed" are not one undifferentiated line. */}
                 <Fields fields={step.fields} />
