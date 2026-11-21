@@ -253,6 +253,20 @@ export interface TeamAnswerContract {
   document: JsonSchemaDocument | null;
   validate: (raw: unknown) => { ok: true; value: unknown } | { ok: false; error: string };
   results: readonly string[];
+  /**
+   * The result key a valid answer routes on, read as the step's own run's
+   * answer is read (EO-868): a pack's action may name its result some
+   * other way than `result` — a review's `verdict` — and the pack says
+   * which key that is. Null where it names none. Left out, the answer's
+   * own `result`.
+   */
+  resultOf?: (value: unknown) => string | null;
+}
+
+/** An answer's own `result`, where it names one. */
+function reportedResult(answer: unknown): string | null {
+  const result = (answer as { result?: unknown } | null)?.result;
+  return typeof result === "string" ? result : null;
 }
 
 export interface TeamTurnInput {
@@ -363,6 +377,8 @@ interface LeaderTurnRecord {
   verdict: LeaderVerdict;
   /** On an accepted final answer: the step's answer, as the action's check returned it. */
   value?: unknown;
+  /** On an accepted final answer: the declared result it is (EO-868), which a pack's action may name otherwise than `result`. */
+  resultKey?: string;
 }
 
 function leaderRecordOf(db: Db, attempt: TeamAttemptRow): LeaderTurnRecord | null {
@@ -1316,12 +1332,13 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
           const attemptId = plan.next.attemptId;
           const leaderAttempt = attempts.find((attempt) => attempt.id === attemptId)!;
           const record = leaderRecordOf(db, leaderAttempt);
-          const value = record?.value as { result?: unknown } | undefined;
-          if (record === null || typeof value?.result !== "string") {
+          // The key the answer was checked as, else its own `result`, for a record written before keys were kept.
+          const result = record?.resultKey ?? reportedResult(record?.value);
+          if (record === null || result === null) {
             endTeamSession(db, { sessionId, status: "failed", now: deps.now() });
             return { kind: "end", event: { type: "error", message: `EO could not read back the leader's accepted answer on "${step.name}", so it settled nothing.`, retryable: false } };
           }
-          return { kind: "settle", result: value.result, answer: record.value, finalCommentId: leaderAttempt.reportCommentId };
+          return { kind: "settle", result, answer: record.value, finalCommentId: leaderAttempt.reportCommentId };
         }
         // Parked rather than ended (EO-849), for the independent team's reason.
         if (plan.next.kind === "failed") {
@@ -1463,29 +1480,34 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
             // The result key first, said as such: a key the action does
             // not declare would route nowhere, whatever else is right.
             const declared = input.answer!.results;
-            const undeclared = (answer: unknown): string | null => {
-              const result = (answer as { result?: unknown } | null)?.result;
-              if (typeof result !== "string") return null;
+            const resultOf = input.answer!.resultOf ?? reportedResult;
+            const undeclared = (result: string | null): string | null => {
+              if (result === null) return null;
               return declared.includes(result) ? null : `Its result "${result}" is not one "${step.entryAction ?? ""}" declares (${declared.join(", ")}).`;
             };
             let value: unknown = undefined;
-            const raw = undeclared(read.final.answer);
+            let resultKey: string | null = null;
+            const raw = undeclared(reportedResult(read.final.answer));
             if (raw !== null) problems.push(raw);
             else {
               const checked = input.answer!.validate(read.final.answer);
+              const key = checked.ok ? resultOf(checked.value) : null;
               if (!checked.ok) problems.push(`Its answer is not a valid "${step.entryAction ?? ""}" answer: ${checked.error}`);
-              else if (typeof (checked.value as { result?: unknown } | null)?.result !== "string") problems.push(`Its answer names no result, and "${step.entryAction ?? ""}" needs one of ${declared.join(", ")}.`);
+              else if (key === null) problems.push(`Its answer names no result, and "${step.entryAction ?? ""}" needs one of ${declared.join(", ")}.`);
               else {
-                const after = undeclared(checked.value);
+                const after = undeclared(key);
                 if (after !== null) problems.push(after);
-                else value = checked.value;
+                else {
+                  value = checked.value;
+                  resultKey = key;
+                }
               }
             }
             const verdict: LeaderVerdict = { decision: "final", accepted: problems.length === 0, problems, contributions: read.final.contributions };
-            record = { leader: true, answer, verdict, ...(verdict.accepted ? { value } : {}) };
+            record = { leader: true, answer, verdict, ...(verdict.accepted ? { value, ...(resultKey === null ? {} : { resultKey }) } : {}) };
             const summary = (read.final.answer as { summary?: unknown } | null)?.summary;
             words = [
-              `Answers the step${typeof (read.final.answer as { result?: unknown } | null)?.result === "string" ? ` — ${String((read.final.answer as { result: string }).result)}` : ""}`,
+              `Answers the step${(resultKey ?? reportedResult(read.final.answer)) === null ? "" : ` — ${resultKey ?? reportedResult(read.final.answer)}`}`,
               "",
               typeof summary === "string" ? summary : JSON.stringify(read.final.answer),
               "",

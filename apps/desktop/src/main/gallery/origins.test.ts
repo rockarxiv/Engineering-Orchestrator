@@ -7,7 +7,9 @@ import type { DbHandle } from "../db/client.js";
 import { createPipeline, createStep, getPipelineOrigin, getSetting, listStepsForPipeline } from "../db/repos/index.js";
 import { openMigratedTestDb } from "../db/testHelpers.js";
 import { loadTemplateHistory, type TemplateHistory } from "./history.js";
+import { templateHistoryUpTo } from "./historyTestHelpers.js";
 import { backfillPipelineOrigins, matchTemplateVersion, ORIGINS_BACKFILLED_KEY } from "./origins.js";
+import { applyTemplateUpdates } from "./templateUpdates.js";
 
 /**
  * Origins for pipelines that predate them (EO-531): matched once, by
@@ -63,6 +65,25 @@ describe("matching step ids against the history", () => {
 
     const neverGivesUp = steps.map((step) => (step.id === "pull_request_watch" ? { ...step, watch: { everyMinutes: 5, giveUpAfterHours: 168, neverGivesUp: true } } : step));
     expect(matchTemplateVersion(ids, history, neverGivesUp)?.version.version).toBe("1.3");
+  });
+
+  /**
+   * 1.4 and 1.5 have the same steps, set the same way but for Review's
+   * team (EO-868), so the team is what tells them apart: a Delivery
+   * without it is on 1.4, and is brought to 1.5 by the update.
+   */
+  it("tells 1.4 from 1.5 by Review's team", () => {
+    const onFourteen = templateHistoryUpTo(GALLERY_DIRECTORY, SOFTWARE, "1.4");
+    backfillPipelineOrigins(handle.db, onFourteen);
+    applyTemplateUpdates(handle.db, onFourteen, { isTheRecord: false });
+    const steps = listStepsForPipeline(handle.db, "default");
+    const ids = steps.map((step) => step.id);
+    expect(steps.find((step) => step.id === "review")?.team).toBeNull();
+    expect(matchTemplateVersion(ids, history, steps)?.version.version).toBe("1.4");
+
+    const team = history.get(SOFTWARE)!.find((version) => version.version === "1.5")!.document.steps.find((step) => step.id === "review")!.team!;
+    const withTeam = steps.map((step) => (step.id === "review" ? { ...step, team } : step));
+    expect(matchTemplateVersion(ids, history, withTeam)?.version.version).toBe("1.5");
   });
 
   it("still matches a pipeline the person removed a step from, and leaves that step out of the map", () => {

@@ -95,7 +95,7 @@ export type PackHooks = Pick<RunSupervisorOptions, PackHook>;
  * load-bearing: it means "do not move this item" *and let the run
  * finish*, which is what a conversation turn is.
  */
-export type RoleWiring = Pick<Required<RunSupervisorOptions>, "resolveNextState" | "onRunSucceeded">;
+export type RoleWiring = Pick<Required<RunSupervisorOptions>, "resolveNextState" | "onRunSucceeded"> & Pick<RunSupervisorOptions, "resultKeyOf">;
 
 /**
  * What writes the record of a run whose type named it (KAN-163).
@@ -269,6 +269,7 @@ export type FoldedPacks = PackHooks & {
   /** In pack order; the first to answer for a step is the one shown (EO-828). */
   briefRenderers: readonly DecisionBriefRenderer[];
   resolveNextState: NonNullable<RunSupervisorOptions["resolveNextState"]>;
+  resultKeyOf: NonNullable<RunSupervisorOptions["resultKeyOf"]>;
   onRunSucceeded: NonNullable<RunSupervisorOptions["onRunSucceeded"]>;
 };
 
@@ -449,6 +450,14 @@ export function foldPacks(packs: readonly CodePack[]): FoldedPacks {
       }
       // Nothing claimed it, which is what the supervisor reads as "use
       // your own default": the reported result key, else `done`.
+      return undefined;
+    },
+    // The first pack with an opinion, as for `resolveNextState` (EO-868).
+    resultKeyOf: (parsedResult, action, item, role) => {
+      for (const wiring of wirings) {
+        const key = wiring.resultKeyOf?.(parsedResult, action, item, role);
+        if (key !== undefined) return key;
+      }
       return undefined;
     },
     onRunSucceeded: (item, agent, action, parsedResult, runId) => {
