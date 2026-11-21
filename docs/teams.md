@@ -4,7 +4,7 @@ An `agent` step can run as a **team**: several focused agents each contribute a 
 
 ## Configuration
 
-A team is a setting on an agent step (`pipeline_steps.team`, `StepTeamSchema` in `packages/core/src/team.ts`). It is versioned, exported and imported with the pipeline like the step's other settings. A step with no team is one agent, which is how every step behaves unless somebody adds a team.
+A team is a setting on an agent step (`pipeline_steps.team`, `StepTeamSchema` in `packages/core/src/team.ts`). It is versioned, exported and imported with the pipeline like the step's other settings. A step with no team is one agent, which is how every step behaves unless somebody adds a team, or a template ships one ([below](#the-software-templates-review-team)).
 
 You add or change a team by **describing it to the assistant**. Its draft can carry `team` on an agent step, or `"none"` to make the step one agent again, and a person's Publish writes it. The Graph view and the draft card show the team in words. The configure screen's step form does not edit teams, and the `pipeline_save` tool removes the key. A tool can never publish a team.
 
@@ -168,9 +168,22 @@ First-pass participants of an independent team all get the same view and cannot 
 
 On a trial, a team step planned real runs its participants on the trial's test item. A team step planned mocked runs nobody, and its output says the team was not tested.
 
+## The software template's Review team
+
+One bundled step has a team: **Review** in the *Software feature to merge* template, from its version 1.5. It is the only one, and `supervisor/teamQualification.test.ts` holds that. No seed or migration gives any step a team.
+
+Review is a leader-led team in isolated mode. The template's `reviewer` leads, and may assign only `reviewer`, so the template adds no role and no agent: the focus of each pass is its assignment. Its limits are 8 participants, 4 at a time, 2 rounds and 1 retry. The leader reads the change, then assigns:
+
+- on every review, a pass on the acceptance criteria and correctness, one on impact and side effects (callers, contracts, data and schema changes, configuration, paths the diff did not touch), one on the tests, and one on the repository's own written rules (`CLAUDE.md`, `AGENTS.md`, `CONTRIBUTING` and the like), which it skips, saying so, when the repository has none;
+- a security pass when the change touches authentication, permissions, input handling, secrets, network or file-system access, or dependencies, and a user-facing pass when it touches a UI, CLI output, error messages, a public API or docs, saying why it did or did not add each.
+
+Each member works as the template's reviewer does, in a copy of its own. The leader's final answer is the step's ordinary review verdict: an approval with its pull request body, a rejection carrying every blocking issue the passes found, merged and de-duplicated, with coverage for every criterion, or a question for the person. The step's routes are unchanged. Nothing in the team names anything of EO's own: every rule a pass checks comes from the repository under review (`gallery/templateTeam.test.ts`). A review is several runs rather than one, and the template's description says so.
+
+An installation on 1.4 receives the team as any template update. Where a person already gave Review a team of their own, the update keeps theirs and holds as a conflict. Removing the team, through the assistant's draft, gives back the single-reviewer review. `packs/developer/reviewTeam.test.ts` runs the step end to end on Claude, on Codex and on both.
+
 ## Examples (opt-in)
 
-Two example pipelines live in [`docs/examples/teams/`](./examples/teams/). They are ordinary pipeline export files. Nothing installs them: no template, seed or migration gives any step a team, and a test holds that. To try one, import it as you would any pipeline file. Both are non-code: the evidence is the item's own text and its attachments, so neither depends on the developer pack.
+Two example pipelines live in [`docs/examples/teams/`](./examples/teams/). They are ordinary pipeline export files. Nothing installs them. To try one, import it as you would any pipeline file. Both are non-code: the evidence is the item's own text and its attachments, so neither depends on the developer pack.
 
 - **`publication-review.json`.** Independent. A fact checker and counsel (required) and a copy editor (optional) read an attached draft. *Any* "must change" sends it to **Revise**. Otherwise it is **Ready to publish**.
 - **`incident-investigation.json`.** Leader-led. An incident lead assigns focused questions to a log analyst and a customer liaison, follows up where a report falls short, and answers *Explained* or *Action needed* from the reports it names.

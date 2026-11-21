@@ -92,10 +92,12 @@ interface Candidate {
 /**
  * The settings a version would tell apart from another with the same
  * steps: what kind each is, what it runs, who owns it, how it keeps
- * checking and what it offers. Not inputs or a time limit, which a
- * document leaves to the importing machine and so says nothing about.
+ * checking, what it offers and whether it runs as a team (1.5 of the
+ * software template differs from 1.4 only in Review's team, EO-868). Not
+ * inputs or a time limit, which a document leaves to the importing
+ * machine and so says nothing about.
  */
-const MATCHED_SETTINGS = ["type", "entryAction", "ownerRole", "watch", "results"] as const;
+const MATCHED_SETTINGS = ["type", "entryAction", "ownerRole", "watch", "results", "team"] as const;
 
 /**
  * A pipeline's step as it is matched: with the kind its agent brings as

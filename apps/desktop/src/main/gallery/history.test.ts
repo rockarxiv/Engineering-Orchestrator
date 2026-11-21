@@ -65,7 +65,7 @@ describe("Software feature to merge", () => {
   const versions = () => loadTemplateHistory(GALLERY_DIRECTORY).get(SOFTWARE)!;
 
   it("has the graph from before EO-461, the one that gave up after a week, and the current one", () => {
-    expect(versions().map((version) => version.version)).toEqual(["1.0", "1.1", "1.2", "1.3", "1.4"]);
+    expect(versions().map((version) => version.version)).toEqual(["1.0", "1.1", "1.2", "1.3", "1.4", "1.5"]);
   });
 
   it("1.0 opens the pull request and waits at Done, with no step watching it", () => {
@@ -181,6 +181,25 @@ describe("Software feature to merge", () => {
     expect(strip(current!.document)).toEqual(strip(before!.document));
   });
 
+  /**
+   * 1.5 (EO-868): Review runs as a leader-led team of focused reviewers,
+   * in isolated mode, and the template's description says a review is
+   * now several runs.
+   */
+  it("differs between 1.4 and 1.5 only in Review's team and the template's description, and says so for the person (EO-868)", () => {
+    const [, , , , before, current] = versions();
+    expect(current!.document.steps.find((step) => step.id === "review")?.team).toMatchObject({ coordination: "leader", members: "isolated", leader: { role: "reviewer" }, roles: ["reviewer"] });
+    expect(current!.document.template.description).toContain("several agent runs");
+    expect(current!.notes).toContain("Review now runs as a team");
+    expect(current!.notes).toContain("several agent runs");
+    const strip = (document: TemplateVersion["document"]) => ({
+      ...document,
+      template: { ...document.template, version: "", description: "" },
+      steps: document.steps.map((step) => ({ ...step, team: undefined })),
+    });
+    expect(strip(current!.document)).toEqual(strip(before!.document));
+  });
+
   it("differs between 1.0 and 1.1 only in what EO-461 changed", () => {
     const [before, current] = versions();
     const strip = (document: TemplateVersion["document"]) => ({
@@ -238,7 +257,7 @@ describe("reading the history", () => {
   it("skips a damaged file and keeps the versions around it", () => {
     const directory = copyOfHistory();
     writeFileSync(join(templateHistoryDirectory(directory), SOFTWARE, "1.0.json"), "{ not json");
-    expect(loadTemplateHistory(directory).get(SOFTWARE)?.map((version) => version.version)).toEqual(["1.1", "1.2", "1.3", "1.4"]);
+    expect(loadTemplateHistory(directory).get(SOFTWARE)?.map((version) => version.version)).toEqual(["1.1", "1.2", "1.3", "1.4", "1.5"]);
   });
 
   it("skips a file whose path disagrees with the version it carries", () => {
@@ -250,7 +269,7 @@ describe("reading the history", () => {
 
     const history = loadTemplateHistory(directory);
     expect(history.has("somebody-else")).toBe(false);
-    expect(history.get(SOFTWARE)?.map((version) => version.version)).toEqual(["1.0", "1.1", "1.2", "1.3", "1.4"]);
+    expect(history.get(SOFTWARE)?.map((version) => version.version)).toEqual(["1.0", "1.1", "1.2", "1.3", "1.4", "1.5"]);
   });
 
   it("refuses a pack that asks for the admin grant, as every other door does", () => {

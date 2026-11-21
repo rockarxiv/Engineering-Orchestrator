@@ -933,6 +933,15 @@ export interface RunSupervisorOptions {
     role?: string | null,
   ) => NextStep | undefined;
   /**
+   * Which declared result an answer to `action` is, where a pack names it
+   * some other way than `result` — a review's `verdict` (EO-868).
+   * `undefined` is "not mine", as for `resolveNextState`, and the answer's
+   * own `result` stands; null is an answer naming none. Read where a
+   * result must be known before anything routes: a team leader's final
+   * answer, checked against the results the step's action declares.
+   */
+  resultKeyOf?: (parsedResult: unknown, action: string, item: Item, role: string | null) => string | null | undefined;
+  /**
    * Called after a run succeeds and before it transitions, for
    * role-specific side effects the generic supervisor shouldn't know
    * about — R-03 uses it to post the reviewer's feedback into the
@@ -2141,6 +2150,7 @@ export function createRunSupervisor(
     // every test that stubs it would have to ignore.
     buildContext = (db, item, agent, action, resumingRun, visible) => buildTurnContext(db, item, agent, action, resumingRun, sectionRenderers, visible),
     resolveNextState = () => undefined,
+    resultKeyOf = () => undefined,
     onRunSucceeded = () => {},
     onPushEvents,
     debugMode = () => readDebugMode(db),
@@ -8117,6 +8127,16 @@ export function createRunSupervisor(
               return { ok: true, value: checked.value };
             },
             results: (actionFactsFor(registryFor(item), definingRole(item, agent), action)?.results ?? []).map((result) => result.key),
+            // Read as this step's own run would be routed: a pack's action
+            // may name its result otherwise than `result`, as a review's
+            // `verdict` does (EO-868).
+            resultOf: (value) => {
+              const role = definingRole(item, agent);
+              const claimed = packMeaningInForce(db, item, role, action) ? resultKeyOf(value, action, item, role) : undefined;
+              if (claimed !== undefined) return claimed;
+              const reported = (value as { result?: unknown } | null)?.result;
+              return typeof reported === "string" ? reported : null;
+            },
           }
         : undefined;
     const stream = teams.run({ item, step, team, parentRunId: run.id, workspace: { kind: kindFor(item), prepared: workspace }, signal: controller.signal, ...(answer === undefined ? {} : { answer }) });
