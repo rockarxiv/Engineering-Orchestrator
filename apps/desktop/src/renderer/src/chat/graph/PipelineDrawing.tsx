@@ -2,7 +2,6 @@ import { useId, useMemo } from "react";
 import { Link } from "react-router-dom";
 import { USER_ATTENTION_TARGET, versionLabel, type HandOffTargets, type PipelineStepView, type StepRouteView } from "@eo/core";
 import { cn } from "@eo/ui";
-import { useStepAgentKind } from "../../shared/agents/stepAgentKind";
 import { StepKindChip, stepLane } from "../kit";
 import { BOX_PAD_X, layoutPipeline, type LaidArrow, type Rect } from "./layout";
 import { WORK_STATE_FILL, WORK_STATE_WORDS, WORK_STATES } from "../../shared/items/workState";
@@ -112,6 +111,7 @@ export function PipelineDrawing({
   selectedStepId = null,
   onSelectStep,
   newStepIds,
+  agentKindOf = () => null,
   className,
 }: {
   steps: PipelineStepView[];
@@ -136,9 +136,15 @@ export function PipelineDrawing({
    * on a new one every step would be new, which says nothing.
    */
   newStepIds?: ReadonlySet<string>;
+  /**
+   * The kind of the agent an agent step names (EO-875), for its chip: a
+   * step carries no role of its own. The screen drawing it passes
+   * `useStepAgentKind()`; absent, a chip says "agent".
+   */
+  agentKindOf?: (step: PipelineStepView) => string | null;
   className?: string;
 }) {
-  const kindOf = useStepAgentKind();
+  const kindOf = agentKindOf;
   const layout = useMemo(() => layoutPipeline(steps, routes, elsewhere), [steps, routes, elsewhere]);
   const describedBy = useId();
   if (layout.steps.length === 0) return null;

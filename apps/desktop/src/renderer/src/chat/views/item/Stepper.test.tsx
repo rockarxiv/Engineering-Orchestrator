@@ -11,7 +11,7 @@ const STEPS = ["Ready", "Implement", "Review", "Done"].map((name, position) =>
     position,
     name,
     type: "agent",
-    ownerRole: null,
+    agentId: null,
     entryAction: null,
     instructionsSummary: null,
     isTerminal: name === "Done",

@@ -18,6 +18,10 @@ import { createQueryClient } from "../../../query/client";
 import { AskAssistantContext, type AskAssistant } from "../../askAssistant";
 import { GraphView } from "./GraphView";
 
+/** An agent of each kind the fixtures' steps name, as `agent-<kind>` (EO-875): a step's kind is its agent's. */
+const kindAgent = (role: string) => ({ id: `agent-${role}`, name: role, role, provider: "fake", model: null, enabled: true, archivedAt: null });
+
+
 /** The graph, held to what the classic routing band's suite holds it to (`pipeline/PipelineGraph.test.tsx`). */
 
 function step(id: string, name: string, position: number, overrides: Partial<PipelineStepView> = {}): PipelineStepView {
@@ -27,7 +31,7 @@ function step(id: string, name: string, position: number, overrides: Partial<Pip
     position,
     name,
     type: "agent",
-    ownerRole: "implementer",
+    agentId: "agent-implementer",
     entryAction: "implement",
     instructionsSummary: null,
     isTerminal: false,
@@ -50,8 +54,8 @@ function route(id: string, fromStepId: string, resultKey: string, label: string,
 
 const STEPS = [
   step("todo", "To Do", 0),
-  step("review", "Review", 1, { ownerRole: "reviewer" }),
-  step("done", "Done", 2, { type: "user", ownerRole: null, entryAction: null, isTerminal: true }),
+  step("review", "Review", 1, { agentId: "agent-reviewer" }),
+  step("done", "Done", 2, { type: "user", agentId: null, entryAction: null, isTerminal: true }),
 ];
 
 const ELSEWHERE: HandOffTargets[] = [{ pipelineId: "merge", pipelineName: "Merge", steps: [step("merge_land", "Merge It", 0, { pipelineId: "merge" })] }];
@@ -189,6 +193,8 @@ function mockIpc({
   const invoke = vi.fn(async (channel: string, payload?: unknown) => {
     void payload;
     switch (channel) {
+      case "agents:list":
+        return { ok: true, data: { agents: ["implementer", "reviewer"].map(kindAgent) } };
       case "pipelineSteps:list":
         return {
           ok: true,
@@ -545,7 +551,7 @@ function detailsOf(): Record<string, string> {
 
 const DEPLOY = step("deploy", "Deploy", 1, {
   type: "module",
-  ownerRole: null,
+  agentId: null,
   entryAction: "mod-deploy",
   inputs: { dryRun: true },
   timeoutMs: 20 * 60_000,
@@ -576,7 +582,7 @@ describe("a step's details, read-only (EO-524)", () => {
    * script's step, and none for where work ends.
    */
   it("shows the step's kind beside its name in the header, and none for an end", async () => {
-    mockIpc({ steps: [STEPS[0]!, DEPLOY, step("approve", "Approve", 2, { type: "user", ownerRole: null, entryAction: null }), { ...STEPS[2]!, position: 3 }] });
+    mockIpc({ steps: [STEPS[0]!, DEPLOY, step("approve", "Approve", 2, { type: "user", agentId: null, entryAction: null }), { ...STEPS[2]!, position: 3 }] });
     renderGraph();
     const chipIn = (name: string) => {
       const details = screen.getByRole("region", { name });
@@ -596,7 +602,7 @@ describe("a step's details, read-only (EO-524)", () => {
   });
 
   it("names the built-in function a step runs, by its label", async () => {
-    mockIpc({ steps: [step("pr", "Open PR", 0, { type: "builtin", ownerRole: null, entryAction: "open_pull_request" })] });
+    mockIpc({ steps: [step("pr", "Open PR", 0, { type: "builtin", agentId: null, entryAction: "open_pull_request" })] });
     renderGraph();
 
     fireEvent.click(await screen.findByRole("button", { name: "Open PR" }));
@@ -606,7 +612,7 @@ describe("a step's details, read-only (EO-524)", () => {
 
   it("says who a person's step waits on", async () => {
     mockIpc({
-      steps: [step("approve", "Approve", 0, { type: "user", ownerRole: null, entryAction: null })],
+      steps: [step("approve", "Approve", 0, { type: "user", agentId: null, entryAction: null })],
       verification: [{ stepId: "approve", checks: [], verifiesAction: false, kindVerifies: false, waitsOn: "Dana", waitsOnKind: "person" }],
     });
     renderGraph();
@@ -704,7 +710,7 @@ describe("a step's details, read-only (EO-524)", () => {
   });
 
   it("parks a route-free built-in step's results and asks when there is no step after it", async () => {
-    mockIpc({ steps: [STEPS[0]!, step("pr", "Open PR", 5, { type: "builtin", ownerRole: null, entryAction: "open_pull_request" })] });
+    mockIpc({ steps: [STEPS[0]!, step("pr", "Open PR", 5, { type: "builtin", agentId: null, entryAction: "open_pull_request" })] });
     renderGraph();
 
     fireEvent.click(await screen.findByRole("button", { name: "Open PR" }));
@@ -716,7 +722,7 @@ describe("a step's details, read-only (EO-524)", () => {
   });
 
   it("says a step that keeps checking holds work on waiting, which no route can name", async () => {
-    const WAITS = step("wait", "Wait for deploy", 1, { type: "module", ownerRole: null, entryAction: "mod-waits", watch: { everyMinutes: 5, giveUpAfterHours: 24 } });
+    const WAITS = step("wait", "Wait for deploy", 1, { type: "module", agentId: null, entryAction: "mod-waits", watch: { everyMinutes: 5, giveUpAfterHours: 24 } });
     mockIpc({
       steps: [STEPS[0]!, WAITS, STEPS[2]!],
       routes: [route("r1", "wait", "deployed", "Deployed", "done")],
@@ -731,7 +737,7 @@ describe("a step's details, read-only (EO-524)", () => {
   });
 
   it("says a real checking builtin waits, though its declared results leave waiting out", async () => {
-    const WATCH = step("watch", "Watch PR", 1, { type: "builtin", ownerRole: null, entryAction: "watch_pull_request", watch: { everyMinutes: 10, giveUpAfterHours: 72 } });
+    const WATCH = step("watch", "Watch PR", 1, { type: "builtin", agentId: null, entryAction: "watch_pull_request", watch: { everyMinutes: 10, giveUpAfterHours: 72 } });
     mockIpc({ steps: [STEPS[0]!, WATCH, STEPS[2]!], routes: [route("r1", "watch", "merged", "Merged", "done")] });
     renderGraph();
 
@@ -745,7 +751,7 @@ describe("a step's details, read-only (EO-524)", () => {
   });
 
   it("says a watch-capable module that runs once parks on waiting, though its results leave waiting out", async () => {
-    const ONCE = step("once", "Deploy once", 1, { type: "module", ownerRole: null, entryAction: "mod-deploy", watch: null });
+    const ONCE = step("once", "Deploy once", 1, { type: "module", agentId: null, entryAction: "mod-deploy", watch: null });
     mockIpc({ steps: [STEPS[0]!, ONCE, STEPS[2]!], routes: [route("r1", "once", "deployed", "Deployed", "done"), route("r2", "once", "rolled_back", "Rolled back", "todo")] });
     renderGraph();
 
@@ -756,7 +762,7 @@ describe("a step's details, read-only (EO-524)", () => {
   });
 
   it("names nothing waiting on a function that cannot wait", async () => {
-    mockIpc({ steps: [STEPS[0]!, step("pr", "Open PR", 1, { type: "builtin", ownerRole: null, entryAction: "open_pull_request" }), STEPS[2]!] });
+    mockIpc({ steps: [STEPS[0]!, step("pr", "Open PR", 1, { type: "builtin", agentId: null, entryAction: "open_pull_request" }), STEPS[2]!] });
     renderGraph();
 
     fireEvent.click(await screen.findByRole("button", { name: "Open PR" }));

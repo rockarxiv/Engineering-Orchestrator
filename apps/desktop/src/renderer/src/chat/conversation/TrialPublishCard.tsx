@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useStepAgentKind } from "../../shared/agents/stepAgentKind";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { GitFork } from "lucide-react";
 import { MODULE_COVERAGE_BAR, type AssistCardDetail, type AssistCardView, type DiscussionMessage, type TrialItemVerdict, type TrialStepOutcome } from "@eo/core";
@@ -67,6 +68,7 @@ export function TrialPublishCard({
   conversationId: string;
   onDone: () => void;
 }) {
+  const agentKindOf = useStepAgentKind();
   const queryClient = useQueryClient();
   const { index, outcome } = card;
   const open = message.canApprove && outcome === null;
@@ -129,7 +131,7 @@ export function TrialPublishCard({
 
       {detail !== null ? (
         <>
-          <PipelineDrawing steps={detail.steps} routes={detail.routes} elsewhere={[]} entryStepId={detail.entryStepId} />
+          <PipelineDrawing steps={detail.steps} routes={detail.routes} elsewhere={[]} entryStepId={detail.entryStepId} agentKindOf={agentKindOf} />
           <Changes detail={detail} />
           {detail.modules.length > 0 ? (
             <ul aria-label="Modules this pipeline runs" className="flex flex-col gap-2">

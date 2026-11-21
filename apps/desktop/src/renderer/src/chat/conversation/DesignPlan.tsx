@@ -1,5 +1,4 @@
 import type { AssistTrialCard, PipelineStepView } from "@eo/core";
-import { useStepAgentKind } from "../../shared/agents/stepAgentKind";
 import { Chip, StepKindChip, type Tone } from "../kit";
 
 const MODE: Record<AssistTrialCard["steps"][number]["mode"], { label: string; tone: Tone }> = {
@@ -31,13 +30,16 @@ const REACHES: Record<"sends" | "creates", string> = {
 export function DesignPlan({
   trial,
   steps,
+  agentKindOf = () => null,
 }: {
   trial: AssistTrialCard;
   /** The draft's steps, as the graph above draws them. */
   steps: readonly Pick<PipelineStepView, "id" | "type" | "agentId" | "entryAction" | "isTerminal">[];
+  /** The kind of the agent an agent step names (EO-875), as the graph above reads it (`useStepAgentKind`). */
+  agentKindOf?: (step: Pick<PipelineStepView, "type" | "agentId">) => string | null;
 }) {
   const stepOf = (stepId: string) => steps.find((step) => step.id === stepId);
-  const kindOf = useStepAgentKind();
+  const kindOf = agentKindOf;
   return (
     <div className="flex flex-col gap-2.5">
       {trial.changes.length > 0 ? (

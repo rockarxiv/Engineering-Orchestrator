@@ -7,6 +7,10 @@ import { chatViewFor, movedAddressOf, tabKeyOf } from "./views/registry";
 import { setBridge } from "../ipc/bridge";
 import { THEME_STORAGE_KEY, THEME_TOKENS, setThemeChoice } from "./theme";
 
+/** An agent of each kind the fixtures' steps name, as `agent-<kind>` (EO-875): a step's kind is its agent's. */
+const kindAgent = (role: string) => ({ id: `agent-${role}`, name: role, role, provider: "fake", model: null, enabled: true, archivedAt: null });
+
+
 /**
  * The chat-centric layout — the window, and the only layout there is
  * (EO-529) — drawn as ARCHITECTURE.md, "The chat-centric layout",
@@ -86,7 +90,7 @@ function step(id: string, name: string, position: number, overrides: Record<stri
     position,
     name,
     type: "agent",
-    ownerRole: "reporter",
+    agentId: "agent-reporter",
     entryAction: null,
     instructionsSummary: null,
     isTerminal: false,
@@ -99,7 +103,7 @@ function step(id: string, name: string, position: number, overrides: Record<stri
 const STEPS = [
   step("s-gather", "Gather", 0),
   step("s-draft", "Draft", 1),
-  step("s-approve", "Approve", 2, { type: "user", ownerRole: null }),
+  step("s-approve", "Approve", 2, { type: "user", agentId: null }),
   step("s-filed", "Filed", 3, { isTerminal: true }),
 ];
 
@@ -211,7 +215,7 @@ function bridge(overrides: Record<string, unknown> = {}) {
     if (channel in overrides) return { ok: true, data: overrides[channel] };
     switch (channel) {
       case "agents:list":
-        return { ok: true, data: { agents: [SYSTEM_AGENT] } };
+        return { ok: true, data: { agents: [SYSTEM_AGENT, kindAgent("reporter")] } };
       case "assist:open":
         return { ok: true, data: { conversation: conversation() } };
       case "pipelines:list":
@@ -485,7 +489,7 @@ describe("the chat layout's home", () => {
 
   it("marks the steps a draft adds to an existing pipeline, and only those (EO-680)", async () => {
     const draft = message({ id: "d1", body: "Adds a check by hand.", canApprove: true, approves: "pipeline" });
-    const steps = [...STEPS.slice(0, 3), step("s-check", "Check by hand", 3, { type: "user", ownerRole: null }), { ...STEPS[3]!, position: 4 }];
+    const steps = [...STEPS.slice(0, 3), step("s-check", "Check by hand", 3, { type: "user", agentId: null }), { ...STEPS[3]!, position: 4 }];
     open(
       "/chat",
       bridge({

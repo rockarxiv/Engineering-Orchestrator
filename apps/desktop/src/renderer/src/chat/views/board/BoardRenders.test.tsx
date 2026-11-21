@@ -98,8 +98,8 @@ function item(overrides: Partial<ItemSummary> = {}): ItemSummary {
 }
 
 const STATES = [
-  { id: "todo", pipelineId: "default", position: 0, name: "To Do", type: "agent", ownerRole: "implementer", entryAction: "implement", instructionsSummary: null, isTerminal: false },
-  { id: "pending_approval", pipelineId: "default", position: 1, name: "Pending Approval", type: "user", ownerRole: null, entryAction: null, instructionsSummary: null, isTerminal: false },
+  { id: "todo", pipelineId: "default", position: 0, name: "To Do", type: "agent", agentId: "agent-implementer", entryAction: "implement", instructionsSummary: null, isTerminal: false },
+  { id: "pending_approval", pipelineId: "default", position: 1, name: "Pending Approval", type: "user", agentId: null, entryAction: null, instructionsSummary: null, isTerminal: false },
 ];
 
 /**

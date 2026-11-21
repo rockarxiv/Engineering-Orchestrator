@@ -46,9 +46,9 @@ function item(overrides: Partial<ItemSummary> = {}): ItemSummary {
 }
 
 const STATES = [
-  { id: "todo", pipelineId: "default", position: 0, name: "To Do", type: "agent", ownerRole: "implementer", entryAction: "implement", instructionsSummary: null, isTerminal: false },
-  { id: "pending_approval", pipelineId: "default", position: 1, name: "Pending Approval", type: "user", ownerRole: null, entryAction: null, instructionsSummary: null, isTerminal: false },
-  { id: "review", pipelineId: "default", position: 2, name: "Review", type: "agent", ownerRole: "reviewer", entryAction: "review", instructionsSummary: null, isTerminal: false },
+  { id: "todo", pipelineId: "default", position: 0, name: "To Do", type: "agent", agentId: "agent-implementer", entryAction: "implement", instructionsSummary: null, isTerminal: false },
+  { id: "pending_approval", pipelineId: "default", position: 1, name: "Pending Approval", type: "user", agentId: null, entryAction: null, instructionsSummary: null, isTerminal: false },
+  { id: "review", pipelineId: "default", position: 2, name: "Review", type: "agent", agentId: "agent-reviewer", entryAction: "review", instructionsSummary: null, isTerminal: false },
 ];
 
 describe("resolveDropTarget", () => {

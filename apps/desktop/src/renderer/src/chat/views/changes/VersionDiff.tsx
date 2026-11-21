@@ -1,5 +1,4 @@
 import type { VersionDiff as VersionDiffValue } from "@eo/core";
-import { useStepAgentKind } from "../../../shared/agents/stepAgentKind";
 import { CardSection, Chip, StepKindChip, type Tone } from "../../kit";
 
 /**
@@ -35,6 +34,7 @@ function Fields({ fields }: { fields: readonly FieldChange[] }) {
 export function VersionDiff({
   diff,
   kinds = false,
+  agentKindOf = () => null,
 }: {
   diff: Pick<VersionDiffValue, "steps" | "routes"> & Partial<Pick<VersionDiffValue, "entryRules">>;
   /**
@@ -43,8 +43,10 @@ export function VersionDiff({
    * suggestion review on an item's page keeps its own look.
    */
   kinds?: boolean;
+  /** The kind of the agent a step names (EO-875), for its chip (`useStepAgentKind`). */
+  agentKindOf?: (step: { type: string; agentId: string | null }) => string | null;
 }) {
-  const kindOf = useStepAgentKind();
+  const kindOf = agentKindOf;
   return (
     <>
       <CardSection title="Steps">

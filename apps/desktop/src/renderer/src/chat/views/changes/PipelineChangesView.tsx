@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import { useStepAgentKind } from "../../../shared/agents/stepAgentKind";
 import { useSearchParams } from "react-router-dom";
 import { changesComparedOf, changesShown, templateUpdateOfAuthor, templateVersionLabel, versionLabel, type PipelineVersion } from "@eo/core";
 import { ipcQuery } from "../../../query/client";
@@ -28,6 +29,7 @@ import { VersionDiff } from "./VersionDiff";
  */
 export function PipelineChangesView({ pipelineId }: { pipelineId: string }) {
   const name = usePipelineName(pipelineId);
+  const agentKindOf = useStepAgentKind();
   const [searchParams] = useSearchParams();
   const compared = changesComparedOf((param) => searchParams.get(param));
   const shown = changesShown(compared);
@@ -82,7 +84,7 @@ export function PipelineChangesView({ pipelineId }: { pipelineId: string }) {
               published nowhere until you suggest it and an administrator approves it. To throw it away, ask the assistant to discard your edits.
             </p>
           </div>
-          <VersionDiff diff={local.diff} kinds />
+          <VersionDiff diff={local.diff} kinds agentKindOf={agentKindOf} />
         </section>
       )}
 
@@ -108,7 +110,7 @@ export function PipelineChangesView({ pipelineId }: { pipelineId: string }) {
               <Version number={diff.to} version={versionOf(diff.to)} />
             </p>
           </CardSection>
-          <VersionDiff diff={diff} kinds />
+          <VersionDiff diff={diff} kinds agentKindOf={agentKindOf} />
         </section>
       )}
     </div>
