@@ -184,6 +184,8 @@ export interface IsolatedTurnRequest {
   run: Run;
   /** Its own copy of the item's workspace, where it works. */
   cwd: string;
+  /** What its processes' environment must carry for its copy (`MemberCopy.environment`), layered over the run's own variables. Absent where the copy asks nothing. */
+  environment?: (variables: Readonly<Record<string, string>>) => Record<string, string>;
   /** The item's own workspace, for what an ordinary dispatch is lent from it — the repository index. Null for an item with no disk. */
   workspace: PreparedWorkspace | null;
   /** The team framing: what is added after the agent's own instructions, and after the ordinary context. */
@@ -360,7 +362,9 @@ export function evidenceContentKey(baseline: TeamEvidenceBaseline | null): strin
   if (baseline === null) return null;
   const ref = readEvidenceBaseline(baseline);
   if (ref === null) return `unreadable:${baseline.kind}:${baseline.ref}`;
-  return JSON.stringify({ kind: ref.workspaceKind, source: ref.source, attachments: ref.attachments.map((attachment) => [attachment.id, attachment.sha256]), task: ref.task?.sha256 ?? null });
+  // Which new files the index tracked (EO-872) is how a copy is laid out, not content: staging alone makes nothing stale.
+  const source = ref.source.kind === "git" ? { kind: ref.source.kind, tree: ref.source.tree, head: ref.source.head, files: ref.source.files, bytes: ref.source.bytes } : ref.source;
+  return JSON.stringify({ kind: ref.workspaceKind, source, attachments: ref.attachments.map((attachment) => [attachment.id, attachment.sha256]), task: ref.task?.sha256 ?? null });
 }
 
 /** The report an accepted attempt posted, without the heading EO put over it. */
@@ -486,7 +490,7 @@ export function isolatedCopyRefusal(slug: string | null): string {
 
 /** What EO says of a member's changed copy where the member left no report to carry it (EO-867). */
 export function memberCopyNote(key: string, agentName: string, changed: readonly string[]): string {
-  return `**${key}** (${agentName}) changed its own copy of the workspace, which EO has removed and none of which reached the item's work: ${changed.join("; ")}.`;
+  return `**${key}** (${agentName}) changed its own copy of the workspace, which EO has removed and from which nothing was merged into the item's work: ${changed.join("; ")}.`;
 }
 
 /**
@@ -512,7 +516,7 @@ export function reportMemberCopy(db: Db, attemptId: string, changed: readonly st
 
 /** The line a member's report carries where it changed its copy (EO-867), as a reference checkout's removal says it. */
 function copyChangedLine(changed: readonly string[]): string {
-  return `**In its own copy of the workspace**, which EO has removed and none of which reached the item's work: ${changed.join("; ")}.`;
+  return `**In its own copy of the workspace**, which EO has removed and from which nothing was merged into the item's work: ${changed.join("; ")}.`;
 }
 
 function abortError(): Error {
@@ -753,13 +757,15 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
     // An isolated member's turn is the host's to build, as an ordinary
     // dispatch of the step builds one (EO-867).
     let isolated: Extract<IsolatedTurnAnswer, { ok: true }> | null = null;
+    const ownCopy = copy;
+    const copyEnvironment = ownCopy?.environment === undefined ? undefined : (variables: Readonly<Record<string, string>>) => ownCopy.environment!(variables);
     if (copy !== null) {
       let built: IsolatedTurnAnswer;
       try {
         built =
           deps.isolatedTurn === undefined
             ? { ok: false, problem: `EO did not start ${agent.name} as an isolated team member, because this desktop has no way to build its turn.` }
-            : await deps.isolatedTurn({ item, step: input.step, agent, attemptId: attempt.id, run: getRun(db, run.id) ?? run, cwd, workspace: input.workspace?.prepared ?? null, framing: { instructions: input.turn.instructions, context: input.turn.context }, boundary: input.boundary });
+            : await deps.isolatedTurn({ item, step: input.step, agent, attemptId: attempt.id, run: getRun(db, run.id) ?? run, cwd, ...(copyEnvironment === undefined ? {} : { environment: copyEnvironment }), workspace: input.workspace?.prepared ?? null, framing: { instructions: input.turn.instructions, context: input.turn.context }, boundary: input.boundary });
       } catch (error) {
         built = { ok: false, problem: `EO could not build its turn: ${error instanceof Error ? error.message : String(error)}` };
       }
