@@ -301,6 +301,25 @@ describe("an isolated member has its role's agent's rights (EO-867)", () => {
   });
 });
 
+describe("an isolated member's MCP servers (EO-886)", () => {
+  it("says on the item which of the servers it was given did not come up, as an ordinary run does, and carries on", async () => {
+    setTeam(isolated([{ key: "own", role: "qa" }]));
+    script = () =>
+      (async function* (): AsyncGenerator<AgentEvent> {
+        yield { type: "thread_started", threadId: `thread-${uuidv7()}` };
+        yield { type: "server_status", servers: [{ name: "eo", status: "connected" }, { name: "plugin:eo-attachments:github", status: "failed" }] };
+        yield { type: "result", data: { outcome: "clear", report: "Read it without GitHub." } };
+      })();
+    await supervisor({ prepareToolDirectory: () => ({ path: join(scratch, "tools"), serverNames: ["github"] }) }).runOnce();
+    const memberRun = listRunsForItem(handle.db, item.id).find((run) => run.action === TEAM_PARTICIPANT_ACTION)!;
+    const said = listCommentsForItem(handle.db, item.id).filter((comment) => comment.body.includes("MCP server that did not start"));
+    expect(said).toHaveLength(1);
+    expect(said[0]).toMatchObject({ authorType: "engine", runId: memberRun.id });
+    expect(said[0]!.body).toContain(`${quinn.name} was given an MCP server that did not start, and is running without it:\n\n- **github**`);
+    expect(getItem(handle.db, item.id)?.stepId).toBe("accepted");
+  });
+});
+
 describe("an isolated member's own copy (EO-867)", () => {
   it("is removed when its attempt ends, its report saying first what it changed there", async () => {
     copyChanges = ["1 file changed: `export.ts`", "HEAD moved from aaaaaaaaaaaa to bbbbbbbbbbbb"];

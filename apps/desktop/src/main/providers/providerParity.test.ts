@@ -142,7 +142,7 @@ function signInsObserved(signIn: readonly AgentEvent[][], notSignIn: readonly Ag
   };
 }
 
-/** What the supervisor makes of a turn — the reading in `processStream` (`runSupervisor.ts`), restated. */
+/** What the supervisor makes of a turn — the reading in `readTurn` (`runSupervisor.ts`), restated. */
 type Outcome = { kind: "result"; data: unknown } | { kind: "error"; message: string } | { kind: "none" };
 
 /**

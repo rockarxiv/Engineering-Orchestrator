@@ -619,11 +619,14 @@ describe("an independent team's evidence (EO-846)", () => {
     let changed = false;
     script = ({ agent }) =>
       (async function* () {
-        yield* answer(changed ? "clear" : "blocking", `${agent.name} on the ${changed ? "new" : "old"} brief.`);
+        // Changed while Tess's turn runs, before its answer: a turn ends on its answer.
+        const read = changed ? "clear" : "blocking";
+        const words = `${agent.name} on the ${changed ? "new" : "old"} brief.`;
         if (!changed && agent.name === "Tess") {
           changed = true;
           attach("addendum.txt", "a person added this");
         }
+        yield* answer(read, words);
       })();
     await supervisor().runOnce();
     expect(started).toHaveLength(4);
@@ -638,11 +641,12 @@ describe("an independent team's evidence (EO-846)", () => {
     let versions = 0;
     script = ({ agent }) =>
       (async function* () {
-        yield* answer("clear", `${agent.name} read it.`);
+        // Changed while Tess's turn runs, before its answer: a turn ends on its answer.
         if (agent.name === "Tess") {
           versions += 1;
           attach(`brief-v${versions}.txt`, `v${versions}`);
         }
+        yield* answer("clear", `${agent.name} read it.`);
       })();
     await supervisor().runOnce();
     expect(getItem(handle.db, item.id)?.stepId).toBe("check");

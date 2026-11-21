@@ -715,11 +715,13 @@ describe("the integrated failure matrix (EO-850)", () => {
     turns = {
       fact_checker: () =>
         (async function* () {
-          yield* says(verdict(replaced ? "ready" : "blocking", replaced ? "The corrected figure is sourced." : "The 12% is wrong."));
+          // Replaced while its turn runs, before its answer: a turn ends on its answer.
+          const answer = verdict(replaced ? "ready" : "blocking", replaced ? "The corrected figure is sourced." : "The 12% is wrong.");
           if (!replaced) {
             replaced = true;
             attach(item, "draft-v2.md", "# Spring newsletter\n\nMembership grew by 9% this quarter.");
           }
+          yield* says(answer);
         })(),
       counsel: () => says(verdict("ready", "No legal risk.")),
       copy_editor: () => says(verdict("ready", "In house style.")),

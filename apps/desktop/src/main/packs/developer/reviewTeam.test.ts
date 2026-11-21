@@ -498,9 +498,14 @@ describe("the template's Review team, on either backend (EO-868)", () => {
       const members = listRunsForItem(handle.db, item.id).filter((run) => run.action === TEAM_PARTICIPANT_ACTION);
       expect(members).toHaveLength(1 + reviewTeam().limits.maxRetries);
       expect(members.every((run) => run.status === "failed" && run.error === MEMBER_NO_BRIDGE)).toBe(true);
+      const memberRunIds = new Set<string | null>(members.map((run) => run.id));
       const said = listCommentsForItem(handle.db, item.id).filter((comment) => comment.authorType === "engine" && comment.body.includes(MEMBER_NO_BRIDGE));
-      expect(said.map((comment) => comment.runId).sort()).toEqual(members.map((run) => run.id).sort());
-      expect(said[0]!.body).toContain("did not start");
+      const onAttempts = said.filter((comment) => memberRunIds.has(comment.runId));
+      expect(onAttempts.map((comment) => comment.runId).sort()).toEqual(members.map((run) => run.id).sort());
+      expect(onAttempts[0]!.body).toContain("did not start");
+      // And the team's own stop says it last (EO-886): the reason the last attempt failed.
+      expect(said.filter((comment) => !memberRunIds.has(comment.runId)).map((comment) => comment.body.includes(`The last of them: ${MEMBER_NO_BRIDGE}`))).toEqual([true]);
+      expect(listRunsForItem(handle.db, item.id).find((run) => run.action !== TEAM_PARTICIPANT_ACTION)?.error?.endsWith(`The last of them: ${MEMBER_NO_BRIDGE}`)).toBe(true);
       const attempts = listTeamSessionsForItem(handle.db, item.id).at(-1)!.attempts;
       expect(attempts.every((attempt) => attempt.status === "failed" && attempt.error === MEMBER_NO_BRIDGE)).toBe(true);
     });
