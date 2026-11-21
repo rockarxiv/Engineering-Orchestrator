@@ -25,6 +25,7 @@ export interface TeamProblem {
  *   EO can build from a result and a summary (`deterministicAnswerProblem`);
  *   a leader-led team's leader answers it, so the action must be defined
  *   for its answer to be held to anything;
+ * - what an outcome rules out (EO-873) must be results the action declares;
  * - a team's own time limit can only be tighter than the run timeout;
  * - every agent dispatch could staff one of its roles with must be one EO
  *   can hold to report-only (EO-848, `reportOnlyRoleProblems`), so a team
@@ -93,6 +94,16 @@ export function teamProblems(
     }
     if (step.ownerRole !== null && step.entryAction !== null && step.entryAction !== "") {
       const facts = actionFactsFor(context.registry, step.ownerRole, step.entryAction);
+      if (facts !== undefined) {
+        // What an outcome rules out is a result of this action (EO-873):
+        // a key it cannot return would rule out nothing, silently.
+        const results = new Set(facts.results.map((result) => result.key));
+        for (const outcome of team.outcomes) {
+          for (const key of outcome.rulesOut ?? []) {
+            if (!results.has(key)) error(`The team on "${step.name}": the outcome "${outcome.key}" rules out "${key}", which "${step.entryAction}" cannot return.`);
+          }
+        }
+      }
       if (team.coordination === "independent") {
         const answer = deterministicAnswerProblem(step.name, step.entryAction, facts);
         if (answer !== null) error(answer);

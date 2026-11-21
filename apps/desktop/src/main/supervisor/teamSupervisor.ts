@@ -37,6 +37,7 @@ import {
   leaderFinalProblems,
   leaderLedger,
   planIndependentTeam,
+  ruledOutProblems,
   planLeaderTeam,
   type BudgetCeiling,
   type LeaderAttemptState,
@@ -391,6 +392,22 @@ function leaderRecordOf(db: Db, attempt: TeamAttemptRow): LeaderTurnRecord | nul
 
 function outcomeLines(outcomes: readonly TeamOutcome[]): string[] {
   return outcomes.map((outcome) => `- \`${outcome.key}\` — ${outcome.label}${outcome.meaning === "" ? "" : `: ${outcome.meaning}`}`);
+}
+
+/**
+ * What the leader is told its reports rule out (EO-873): each outcome
+ * that rules out a result, and what EO does about an answer naming one.
+ * Empty where the team declares none.
+ */
+function rulesOutLines(outcomes: readonly TeamOutcome[]): string[] {
+  const ruling = outcomes.filter((outcome) => (outcome.rulesOut ?? []).length > 0);
+  if (ruling.length === 0) return [];
+  return [
+    "",
+    "What a report rules out: EO refuses a final answer whose result an accepted report's outcome rules out, unless your disagreements overrule that report on a line of its own — `Overruled <assignment key>: <why you overruled it>`. Mentioning the report anywhere else is not overruling it, and an override with no reason is refused.",
+    "",
+    ...ruling.map((outcome) => `- \`${outcome.key}\` rules out ${(outcome.rulesOut ?? []).map((key) => `\`${key}\``).join(", ")}`),
+  ];
 }
 
 const REPORT_ONLY =
@@ -1509,6 +1526,9 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
                 }
               }
             }
+            // A result its own reports rule out (EO-873), by what the
+            // team declares, unless the leader says which it overruled.
+            if (resultKey !== null) problems.push(...ruledOutProblems(teamNow.outcomes, ledger.contributions, resultKey, read.final.disagreements));
             const verdict: LeaderVerdict = { decision: "final", accepted: problems.length === 0, problems, contributions: read.final.contributions };
             record = { leader: true, answer, verdict, ...(verdict.accepted ? { value, ...(resultKey === null ? {} : { resultKey }) } : {}) };
             const summary = (read.final.answer as { summary?: unknown } | null)?.summary;
@@ -1602,7 +1622,7 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
         teamNow.leader.instructions,
         "",
         `Roles you may assign: ${teamNow.roles.join(", ")}. Rounds used: ${ledger.roundsUsed} of ${teamNow.limits.maxRounds}. Participants: ${ledger.keys.length} of ${teamNow.limits.maxParticipants}.`,
-        ...(teamNow.outcomes.length === 0 ? [] : ["", "Each participant reports one of these outcomes:", "", ...outcomeLines(teamNow.outcomes)]),
+        ...(teamNow.outcomes.length === 0 ? [] : ["", "Each participant reports one of these outcomes:", "", ...outcomeLines(teamNow.outcomes), ...rulesOutLines(teamNow.outcomes)]),
         "",
         "## This turn",
         "",

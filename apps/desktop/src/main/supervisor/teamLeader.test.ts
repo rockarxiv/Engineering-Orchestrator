@@ -555,6 +555,75 @@ describe("a leader-led team (EO-847)", () => {
 
 // ── Leaderless ───────────────────────────────────────────────────────
 
+/**
+ * What a team's reports rule out (EO-873): a leader whose result one of
+ * its accepted reports rules out, by the outcome the team declares, is
+ * refused unless it names that report as one it overruled, and corrects
+ * it in another turn.
+ */
+describe("a leader-led team whose outcomes rule out a result (EO-873)", () => {
+  beforeEach(() => {
+    setup();
+    setTeam(
+      leaderTeam({
+        outcomes: [
+          { key: "clear", label: "Nothing found" },
+          { key: "blocking", label: "Blocking issue", rulesOut: ["aligned"] },
+        ],
+      }),
+    );
+  });
+
+  const auth = [{ key: "auth", role: "sec", instructions: "Look at the login." }];
+  const finalSaying = (result: string, disagreements: string) =>
+    sayingThen(() => ({ outcome: { decision: "final", answer: { result, summary: `It is ${result}.` }, contributions: [reportId("auth")], disagreements, limitations: "Only read." } }));
+  const refusals = () => notes().filter((body) => body.startsWith("EO did not accept the leader's final answer"));
+
+  it("refuses a result an accepted report rules out when the leader does not say it overruled that report, and takes the corrected answer", async () => {
+    leaderTurns = [says(assign(auth)), finalSaying("aligned", "None: they agree."), finalSaying("gaps_found", "None: they agree.")];
+    participants = { Sasha: says({ outcome: { outcome: "blocking", report: "The login takes any password." } }) };
+    await supervisor().runOnce();
+
+    expect(refusals()).toHaveLength(1);
+    expect(refusals()[0]).toContain(`Its result "aligned" is one **auth**'s report (comment ${reportId("auth")}) rules out: it concluded "Blocking issue" (blocking).`);
+    // The leader is told, before it answers, what rules out what; and on the next turn why it was refused.
+    const leaderContexts = turnsOf("Lee").map((one) => one.opts.context);
+    expect(leaderContexts[0]).toContain("- `blocking` rules out `aligned`");
+    expect(leaderContexts[2]).toContain("Why EO refused your final answer:");
+    expect(leaderContexts[2]).toContain('Its result "aligned" is one **auth**\'s report');
+    expect(getItem(handle.db, item.id)?.stepId).toBe("rework");
+  });
+
+  it("refuses that result where the leader's disagreements only mention the report, and takes the corrected answer", async () => {
+    leaderTurns = [says(assign(auth)), finalSaying("aligned", "No disagreements with auth."), finalSaying("gaps_found", "None: they agree.")];
+    participants = { Sasha: says({ outcome: { outcome: "blocking", report: "The login takes any password." } }) };
+    await supervisor().runOnce();
+
+    expect(refusals()).toHaveLength(1);
+    expect(refusals()[0]).toContain("`Overruled auth: <why>`");
+    expect(getItem(handle.db, item.id)?.stepId).toBe("rework");
+  });
+
+  it("accepts that result where the leader's disagreements overrule the report and say why", async () => {
+    leaderTurns = [says(assign(auth)), finalSaying("aligned", "Overruled auth: the login it names is the test fixture's, which never ships.")];
+    participants = { Sasha: says({ outcome: { outcome: "blocking", report: "The login takes any password." } }) };
+    await supervisor().runOnce();
+
+    expect(refusals()).toEqual([]);
+    expect(notes().some((body) => body.includes("**Disagreements:** Overruled auth: the login it names is the test fixture's"))).toBe(true);
+    expect(getItem(handle.db, item.id)?.stepId).toBe("accepted");
+  });
+
+  it("accepts that result where no accepted report concluded an outcome that rules it out", async () => {
+    leaderTurns = [says(assign(auth)), finalSaying("aligned", "None: they agree.")];
+    participants = { Sasha: says({ outcome: { outcome: "clear", report: "The login checks the password." } }) };
+    await supervisor().runOnce();
+
+    expect(refusals()).toEqual([]);
+    expect(getItem(handle.db, item.id)?.stepId).toBe("accepted");
+  });
+});
+
 describe("a leaderless team (EO-847)", () => {
   beforeEach(() => {
     setup();

@@ -129,6 +129,21 @@ export const TeamOutcomeSchema = z.strictObject({
   label: z.string().trim().min(1),
   /** When a participant reports it — the sentence it is given beside the key. */
   meaning: z.string().default(""),
+  /**
+   * The results of the step's action an accepted report with this outcome
+   * rules out (EO-873). A leader-led team's final answer naming one of
+   * them is refused unless its `disagreements` overrules that report on a
+   * line of its own, `Overruled <assignment key or comment id>: <why>`.
+   * Data, so the team says what contradicts what
+   * and EO knows no outcome or result by name. Left out, it rules out
+   * nothing.
+   */
+  rulesOut: z
+    .array(TeamKeySchema)
+    .optional()
+    .describe(
+      "Leader-led teams only: result keys of the step's action that an accepted report with this outcome rules out. The leader's final answer may name one only by overruling that report on a line of its disagreements: \"Overruled <assignment key or comment id>: <why>\".",
+    ),
 });
 export type TeamOutcome = z.infer<typeof TeamOutcomeSchema>;
 
@@ -229,6 +244,15 @@ export function teamConfigProblems(team: StepTeam): string[] {
   // The administrative role is never a participant: it is the only holder
   // of `eo_admin` (invariant 11), and a team member is report-only.
   if (teamRoles(team).includes(SYSTEM_ROLE)) problems.push(`The "${SYSTEM_ROLE}" role administers EO and cannot be a team participant.`);
+  for (const outcome of team.outcomes) {
+    if (outcome.rulesOut === undefined) continue;
+    for (const key of duplicates(outcome.rulesOut)) problems.push(`The outcome "${outcome.key}" rules out "${key}" twice.`);
+    // An independent team's result is EO's own, from its table: there is
+    // no answer of anybody's to hold to what its reports rule out.
+    if (team.coordination === "independent" && outcome.rulesOut.length > 0) {
+      problems.push(`The outcome "${outcome.key}" rules out results, which only a leader-led team's answer is held to: an independent team's completion table decides its result.`);
+    }
+  }
 
   if (team.coordination === "leader") {
     for (const role of duplicates(team.roles)) problems.push(`The role "${role}" is permitted twice.`);
@@ -420,6 +444,11 @@ function teamSummary(team: IndependentTeam, byKey: ReadonlyMap<string, TeamContr
   return [head, "", ...lines].join("\n");
 }
 
+/** What an outcome rules out (EO-873), as a clause after it: empty where it rules out nothing. */
+function rulesOutWords(outcome: TeamOutcome): string {
+  return outcome.rulesOut === undefined || outcome.rulesOut.length === 0 ? "" : ` rules out ${outcome.rulesOut.join("/")}`;
+}
+
 /**
  * A team in words, for the version diff and anywhere a step's settings
  * are listed. Whole, instructions included, because the diff compares
@@ -440,7 +469,7 @@ export function teamWords(team: StepTeam | null | undefined): string {
   const outcomes =
     team.outcomes.length === 0
       ? ""
-      : `; outcomes ${team.outcomes.map((outcome) => `${outcome.key} "${outcome.label}"${outcome.meaning === "" ? "" : ` (${JSON.stringify(outcome.meaning)})`}`).join(", ")}`;
+      : `; outcomes ${team.outcomes.map((outcome) => `${outcome.key} "${outcome.label}"${outcome.meaning === "" ? "" : ` (${JSON.stringify(outcome.meaning)})`}${rulesOutWords(outcome)}`).join(", ")}`;
   // The member mode leads (EO-867), so a diff of a team whose members
   // went from report-only to isolated says so in its first words.
   const mode = `${memberModeWords(teamMemberMode(team))} members`;
@@ -526,7 +555,10 @@ function durationWords(ms: number): string {
 export function teamFacts(team: StepTeam): TeamFacts {
   const labels = new Map(team.outcomes.map((outcome) => [outcome.key, outcome.label]));
   const label = (key: string) => labels.get(key) ?? key;
-  const outcomes = team.outcomes.map((outcome) => `${outcome.label} (${outcome.key})${outcome.meaning === "" ? "" : ` — ${outcome.meaning}`}`);
+  const outcomes = team.outcomes.map(
+    (outcome) =>
+      `${outcome.label} (${outcome.key})${outcome.meaning === "" ? "" : ` — ${outcome.meaning}`}${outcome.rulesOut === undefined || outcome.rulesOut.length === 0 ? "" : ` (rules out ${outcome.rulesOut.join(", ")})`}`,
+  );
   const counted = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
   const limits = [
     `${counted(team.limits.maxParallel, "participant", "participants")} at a time`,
@@ -547,6 +579,9 @@ export function teamFacts(team: StepTeam): TeamFacts {
       completion: [
         "The leader answers the step's action itself, citing the reports it used.",
         "EO refuses an answer that misses a required assignment, cites a superseded report, does not fit the action or names a result the action does not declare.",
+        ...(team.outcomes.some((outcome) => (outcome.rulesOut ?? []).length > 0)
+          ? ["EO also refuses a result an accepted report's outcome rules out, unless the leader's disagreements overrule that report by name and say why."]
+          : []),
       ],
       limits,
       mode: teamMemberMode(team),

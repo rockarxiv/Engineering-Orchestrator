@@ -369,6 +369,14 @@ exports[`the JSON Schema each provider receives > is unchanged for assist (undef
                                         "meaning": {
                                           "default": "",
                                           "type": "string"
+                                        },
+                                        "rulesOut": {
+                                          "description": "Leader-led teams only: result keys of the step's action that an accepted report with this outcome rules out. The leader's final answer may name one only by overruling that report on a line of its disagreements: \\"Overruled <assignment key or comment id>: <why>\\".",
+                                          "type": "array",
+                                          "items": {
+                                            "type": "string",
+                                            "pattern": "^[a-z0-9_]+$"
+                                          }
                                         }
                                       },
                                       "required": [
@@ -530,6 +538,14 @@ exports[`the JSON Schema each provider receives > is unchanged for assist (undef
                                         "meaning": {
                                           "default": "",
                                           "type": "string"
+                                        },
+                                        "rulesOut": {
+                                          "description": "Leader-led teams only: result keys of the step's action that an accepted report with this outcome rules out. The leader's final answer may name one only by overruling that report on a line of its disagreements: \\"Overruled <assignment key or comment id>: <why>\\".",
+                                          "type": "array",
+                                          "items": {
+                                            "type": "string",
+                                            "pattern": "^[a-z0-9_]+$"
+                                          }
                                         }
                                       },
                                       "required": [
@@ -1030,6 +1046,14 @@ exports[`the JSON Schema each provider receives > is unchanged for assist (undef
                                           "meaning": {
                                             "default": "",
                                             "type": "string"
+                                          },
+                                          "rulesOut": {
+                                            "description": "Leader-led teams only: result keys of the step's action that an accepted report with this outcome rules out. The leader's final answer may name one only by overruling that report on a line of its disagreements: \\"Overruled <assignment key or comment id>: <why>\\".",
+                                            "type": "array",
+                                            "items": {
+                                              "type": "string",
+                                              "pattern": "^[a-z0-9_]+$"
+                                            }
                                           }
                                         },
                                         "required": [
@@ -1191,6 +1215,14 @@ exports[`the JSON Schema each provider receives > is unchanged for assist (undef
                                           "meaning": {
                                             "default": "",
                                             "type": "string"
+                                          },
+                                          "rulesOut": {
+                                            "description": "Leader-led teams only: result keys of the step's action that an accepted report with this outcome rules out. The leader's final answer may name one only by overruling that report on a line of its disagreements: \\"Overruled <assignment key or comment id>: <why>\\".",
+                                            "type": "array",
+                                            "items": {
+                                              "type": "string",
+                                              "pattern": "^[a-z0-9_]+$"
+                                            }
                                           }
                                         },
                                         "required": [
