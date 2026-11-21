@@ -31,7 +31,7 @@ function addQuietStep(home: string): string {
     const pipeline = db.prepare("SELECT id FROM pipelines WHERE entry_step_id IS NOT NULL LIMIT 1").get() as { id: string } | undefined;
     if (!pipeline) throw new Error("addQuietStep: the app has no pipeline yet");
     db.prepare(
-      `INSERT INTO pipeline_steps (id, pipeline_id, position, name, type, owner_role, entry_action, instructions_summary, is_terminal, plan_mode, off_board)
+      `INSERT INTO pipeline_steps (id, pipeline_id, position, name, type, agent_id, entry_action, instructions_summary, is_terminal, plan_mode, off_board)
        VALUES ('waiting', ?, 20, 'Waiting', 'user', NULL, NULL, NULL, 0, 0, 0)`,
     ).run(pipeline.id);
     return "waiting";

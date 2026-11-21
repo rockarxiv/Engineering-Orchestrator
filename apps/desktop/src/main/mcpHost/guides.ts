@@ -393,11 +393,12 @@ scratch unless you intend to replace everything.
   the display and nothing else.
 - **\`isTerminal\`** — the engine stops here. A pipeline with no reachable
   terminal step is work that never finishes.
-- **\`type\`** — \`agent\` (a role does it), \`user\` (a person does it), or
+- **\`type\`** — \`agent\` (an agent does it), \`user\` (a person does it), or
   \`builtin\` / a module (EO does it).
-- **\`ownerRole\`** — which role staffs an agent step. Read the roles that
-  exist with \`agents_list\`; a step owned by a role no agent staffs will
-  never dispatch.
+- **\`agentId\`** — the agent an agent step runs, by id: that agent and no
+  other. Read the agents with \`agents_list\`; the step's action must be one
+  of its agent's kind's actions, and a step whose agent is disabled,
+  archived or deleted does not dispatch.
 - **Routes** — \`(fromStepId, resultKey) → target\`. The **result key** must
   be one the step's agent actually returns; a key nothing produces is a
   route never taken, and a result nothing routes parks the ticket and ends

@@ -36,7 +36,7 @@ function addQuietSteps(home: string): { id: string; name: string }[] {
     ];
     for (const step of steps) {
       db.prepare(
-        `INSERT INTO pipeline_steps (id, pipeline_id, position, name, type, owner_role, entry_action, instructions_summary, is_terminal, plan_mode, off_board)
+        `INSERT INTO pipeline_steps (id, pipeline_id, position, name, type, agent_id, entry_action, instructions_summary, is_terminal, plan_mode, off_board)
          VALUES (?, ?, ?, ?, 'user', NULL, NULL, NULL, 0, 0, 0)`,
       ).run(step.id, pipeline.id, step.position, step.name);
     }
