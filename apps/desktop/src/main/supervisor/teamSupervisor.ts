@@ -201,10 +201,11 @@ export interface IsolatedTurnRequest {
  * directory, its team framing, a thread its team's reports are kept out
  * of, and an `eo` credential that posts nothing on the item. `observe` is
  * handed each event, for what the host records of any run's turn, and
- * answers true for one it recorded itself.
+ * answers true for one it recorded itself. `done` is handed the same
+ * buffer when the turn ends, before it is disposed.
  */
 export type IsolatedTurnAnswer =
-  | { ok: true; provider: Pick<AgentProvider, "start">; options: Omit<AgentProviderStartOptions, "signal" | "outputSchema">; observe?: (event: AgentEvent, buffer: RunEventBuffer) => boolean; done?: () => void }
+  | { ok: true; provider: Pick<AgentProvider, "start">; options: Omit<AgentProviderStartOptions, "signal" | "outputSchema">; observe?: (event: AgentEvent, buffer: RunEventBuffer) => boolean; done?: (buffer: RunEventBuffer) => void }
   | { ok: false; problem: string };
 
 export interface TeamSupervisorDeps {
@@ -864,7 +865,9 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
     } finally {
       guard?.release();
       release();
-      isolated?.done?.();
+      // What the host closes the turn's run with goes through the turn's
+      // own buffer, after every event it appended (EO-867).
+      isolated?.done?.(buffer);
       buffer.dispose();
     }
 
