@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, isAbsolute } from "node:path";
 import type { Item } from "@eo/core";
@@ -8,6 +8,7 @@ import { createWorkspace } from "../../../db/repos/index.js";
 import { openMigratedTestDb } from "../../../db/testHelpers.js";
 import type { MemberCopy } from "../../../supervisor/teamEvidence.js";
 import type { PreparedWorkspace } from "../../../supervisor/workspaceKind.js";
+import { samePath } from "./git.js";
 import { gitEvidenceCapability } from "./gitEvidence.js";
 import { inspectCopy, listMemberCopies, makeMemberCopy, releaseMemberCopies, teamCopiesRoot } from "./memberCopies.js";
 
@@ -35,7 +36,10 @@ function gitAs(copy: MemberCopy, cwd: string, ...args: string[]): string {
 
 /** A repository with a remote, and an item's worktree on its own branch with committed, modified, deleted and untracked work. */
 function itemWorktree(): { root: string; repo: string; remote: string; worktree: string; copies: string } {
-  const root = mkdtempSync(join(tmpdir(), "eo-member-copies-"));
+  // Canonical, as Git prints paths: macOS's temporary directory is behind
+  // a link (`/var` is `/private/var`) and Windows's is a short name
+  // (`RUNNER~1`).
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "eo-member-copies-")));
   scratch.push(root);
   const remote = join(root, "remote.git");
   const repo = join(root, "repo");
@@ -96,6 +100,14 @@ function filesOf(root: string, under = ""): Map<string, Buffer> {
 }
 
 /** Is `path` the directory `container` or inside it? */
+/** The worktrees `git worktree list` names, as Git spells them (forward slashes on Windows). */
+function worktreesOf(repo: string): string[] {
+  return git(repo, "worktree", "list", "--porcelain")
+    .split("\n")
+    .filter((line) => line.startsWith("worktree "))
+    .map((line) => line.slice("worktree ".length));
+}
+
 function inside(path: string, container: string): boolean {
   const between = relative(container, path);
   return between === "" || (!between.startsWith("..") && !isAbsolute(between));
@@ -146,7 +158,7 @@ describe("an isolated member's copy (EO-867, EO-872)", () => {
       for (const container of containers) expect(inside(directory, container), `${directory} is inside ${container}`).toBe(false);
     }
     expect(git(copy, "rev-parse", "--path-format=absolute", "--git-common-dir")).toBe(git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir"));
-    expect(git(repo, "worktree", "list")).toContain(copy);
+    expect(worktreesOf(repo).some((listed) => samePath(listed, copy))).toBe(true);
   }, 30_000);
 
   it("keeps whatever a member writes, commits and resets to its own copy: the item's worktree, branch, a sibling's copy and the remote are untouched", async () => {
@@ -316,7 +328,8 @@ describe("an isolated member's copy (EO-867, EO-872)", () => {
 
       const said: { attemptId: string; changed: string[] }[] = [];
       const removed = await releaseMemberCopies(handle.db, { keep: (attemptId) => attemptId === "attempt-live", report: (attemptId, changed) => said.push({ attemptId, changed }) }, copies);
-      expect(removed.sort()).toEqual([legacy, left.copy.cwd].sort());
+      expect(removed).toHaveLength(2);
+      for (const gone of [legacy, left.copy.cwd]) expect(removed.some((one) => samePath(one, gone)), `${gone} was removed`).toBe(true);
       expect(said.map((one) => one.attemptId).sort()).toEqual(["attempt-left", "attempt-old"]);
       expect(said.find((one) => one.attemptId === "attempt-old")?.changed).toEqual(["1 file added: `b.ts`"]);
       expect((await listMemberCopies(repo, copies)).map((one) => one.attemptId)).toEqual(["attempt-live"]);
