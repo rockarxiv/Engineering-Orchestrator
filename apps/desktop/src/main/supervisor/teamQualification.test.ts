@@ -759,17 +759,33 @@ describe("the integrated failure matrix (EO-850)", () => {
 
 // ── Opt-in ───────────────────────────────────────────────────────────
 
+/** A bundled template document, as far as which of its steps have a team. */
+interface Shipped {
+  steps: { id: string; team?: unknown }[];
+  boards?: { steps: { id: string; team?: unknown }[] }[];
+}
+
 describe("the team examples (EO-850)", () => {
   beforeEach(() => setup());
 
-  it("are opt-in: a new installation and every bundled template have no team, and nothing but importing an example adds one", () => {
+  it("are opt-in: no seed or migration gives a step a team, the software template's Review is the only bundled step with one, and nothing but importing an example adds another", () => {
     expect(listPipelineSteps(handle.db).filter((step) => step.team !== null)).toEqual([]);
+    // Every bundled template, every version that ships, every board: the
+    // one team is Review's in the software template (EO-868), from 1.5.
     const gallery = new URL("../../../resources/gallery/", import.meta.url);
-    for (const name of readdirSync(gallery).filter((file) => file.endsWith(".json"))) {
-      const document = JSON.parse(readFileSync(new URL(name, gallery), "utf8")) as { steps: { team?: unknown }[]; boards?: { steps: { team?: unknown }[] }[] };
-      const steps = [...document.steps, ...(document.boards ?? []).flatMap((board) => board.steps)];
-      expect(steps.filter((step) => step.team !== undefined), name).toEqual([]);
+    const withTeams: string[] = [];
+    const documents = [
+      ...readdirSync(gallery)
+        .filter((file) => file.endsWith(".json"))
+        .map((name) => ({ name, document: JSON.parse(readFileSync(new URL(name, gallery), "utf8")) as Shipped })),
+      ...readdirSync(new URL("history/", gallery)).flatMap((slug) =>
+        readdirSync(new URL(`history/${slug}/`, gallery)).map((name) => ({ name: `history/${slug}/${name}`, document: (JSON.parse(readFileSync(new URL(`history/${slug}/${name}`, gallery), "utf8")) as { pack: Shipped }).pack })),
+      ),
+    ];
+    for (const { name, document } of documents) {
+      for (const step of [...document.steps, ...(document.boards ?? []).flatMap((board) => board.steps)]) if (step.team !== undefined) withTeams.push(`${name}:${step.id}`);
     }
+    expect(withTeams.sort()).toEqual(["history/software-feature-to-merge/1.5.json:review", "software-feature-to-merge.json:review"]);
     importExample("publication-review", ROSTERS[0]!);
     expect(listPipelineSteps(handle.db).filter((step) => step.team !== null).map((step) => step.name)).toEqual(["Specialist review"]);
   });

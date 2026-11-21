@@ -569,7 +569,11 @@ describe("role prompts", () => {
       // always were — they belong to whichever implementation is behind
       // the port, and "names no implementation" below is the rule.
       for (const role of ["implementer", "reviewer"]) {
-        expect(flat(instruction(role)), role).toContain(`an MCP server EO registers as \`${REPOSITORY_MCP_SERVER_NAME}\``);
+        // The reviewer's prompt is the generic template's, which names the
+        // platform rather than EO (EO-868); the server name is the same.
+        expect(flat(instruction(role)), role).toContain(
+          role === "reviewer" ? `an MCP server the platform registers as \`${REPOSITORY_MCP_SERVER_NAME}\`` : `an MCP server EO registers as \`${REPOSITORY_MCP_SERVER_NAME}\``,
+        );
         // And says when to reach for them: ahead of a search, not after one.
         expect(flat(instruction(role)), role).toContain("before broad filesystem exploration");
       }

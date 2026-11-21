@@ -289,6 +289,17 @@ export function createRoleWiring(db: Db, contributed: Registry = developerRegist
       return routeResult(db, currentStep, steps, resultKeyFor(db, contributed, action, parsedResult, item, ownFunctions), item);
     },
 
+    /**
+     * The result key `resolveNextState` routes on, without routing it
+     * (EO-868): what a team leader's answer to a review is, checked
+     * before it is used. `undefined` where this pack has no opinion.
+     */
+    resultKeyOf(parsedResult: unknown, action: string, item: Item, role: string | null): string | null | undefined {
+      if (!claimed.has(action)) return undefined;
+      if (!packMeaningInForce(db, item, role, action)) return undefined;
+      return resultKeyFor(db, contributed, action, parsedResult, item, ownFunctions);
+    },
+
     onRunSucceeded(item: Item, agent: Agent, action: string, parsedResult: unknown, runId: Uuid): void {
       // Everything below is what this pack leaves in the thread for an
       // action *it* means something by. A role that defined the action
