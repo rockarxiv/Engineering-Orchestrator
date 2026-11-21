@@ -1,4 +1,4 @@
-import type { ActionResultFacts, CustomModule, EntryRule, IncomingHandOff, ItemTypeEntry, OutsideReachByStep, PipelineStep, RegistryFacts, StepHoldingItems, StepOutsideReach, StepResult, StepRoute } from "@eo/core";
+import type { ActionResultFacts, CustomModule, StepAgentFacts, EntryRule, IncomingHandOff, ItemTypeEntry, OutsideReachByStep, PipelineStep, RegistryFacts, StepHoldingItems, StepOutsideReach, StepResult, StepRoute } from "@eo/core";
 import {
   actionFactsFor,
   builtinCanWait,
@@ -43,11 +43,18 @@ export interface ValidatePipelineInput {
   /** Where work enters (ARCHITECTURE.md, "Vocabulary"). Null is itself a problem, not a default. */
   entryStepId: string | null;
   /**
-   * Roles somebody would be dispatched for on this pipeline's work —
-   * `rolesStaffedFor` in `@eo/core`, asked of the pipeline's project, so
-   * the warning below and the scheduler share one staffing rule (EO-474).
+   * The installation's agents, archived and deleted ones included, so a
+   * step naming one can be told apart from a step naming nobody (EO-875).
+   * An agent step names one of these, and the scheduler runs that one and
+   * no other.
    */
-  staffedRoles: string[];
+  agents: readonly StepAgentFacts[];
+  /**
+   * The project the pipeline belongs to, or null for one that belongs to
+   * none (EO-875). A step may name a global agent or this project's own,
+   * and a pipeline on no project only global ones.
+   */
+  projectId: string | null;
   /** How many items currently sit on each step — a step in use cannot be removed. */
   itemCountByStep: Record<string, number>;
   /**
@@ -69,7 +76,7 @@ export interface ValidatePipelineInput {
   /**
    * The module catalog, as data (KAN-104).
    *
-   * Passed in rather than read, exactly as `staffedRoles` is, because
+   * Passed in rather than read, exactly as `agents` is, because
    * `packages/engine` is pure (invariant #2) — it must never learn what a
    * module is by opening a database. Defaulted so that every existing
    * caller and test keeps working: an installation with no modules
@@ -229,7 +236,8 @@ export function validatePipeline(input: ValidatePipelineInput): WorkflowProblem[
     steps,
     routes,
     entryStepId,
-    staffedRoles,
+    agents,
+    projectId,
     itemCountByStep,
     archivedCountByStep = {},
     existingSteps,
@@ -455,7 +463,7 @@ export function validatePipeline(input: ValidatePipelineInput): WorkflowProblem[
   }
 
   // ── Steps ───────────────────────────────────────────────────
-  const staffed = new Set(staffedRoles);
+  const agentById = new Map(agents.map((agent) => [agent.id as string, agent] as const));
   const moduleById = new Map<string, CustomModule>(modules.map((module) => [module.id, module]));
   // Each module step's module as its pin makes it (EO-770): the manifest
   // and the approval of the version it runs.
@@ -467,41 +475,66 @@ export function validatePipeline(input: ValidatePipelineInput): WorkflowProblem[
   const trialGranted = new Set(trialGrantedModuleIds);
   for (const step of steps) {
     if (step.type === "agent") {
-      if (step.ownerRole === null) {
+      // The agent the step names (EO-875). The kind the step needs — what
+      // its action is looked up by — is that agent's, and the step has no
+      // other.
+      const agent = step.agentId === null ? undefined : agentById.get(step.agentId);
+      if (step.agentId === null) {
         problems.push({
           severity: "error",
           stateId: step.id,
-          message: `"${step.name}" is an agent step with no role, so there is nobody to dispatch it to.`,
+          message: `"${step.name}" is an agent step with no agent, so there is nobody to dispatch it to.`,
         });
-      } else if (!staffed.has(step.ownerRole)) {
+      } else if (agent === undefined) {
+        problems.push({
+          severity: "error",
+          stateId: step.id,
+          message: `"${step.name}" names an agent this installation does not have, so there is nobody to dispatch it to. Choose another agent for it.`,
+        });
+      } else if (agent.projectId !== null && agent.projectId !== projectId) {
+        problems.push({
+          severity: "error",
+          stateId: step.id,
+          message:
+            projectId === null
+              ? `"${step.name}" names ${agent.name}, which works for one project only, and this pipeline belongs to no project — choose a global agent.`
+              : `"${step.name}" names ${agent.name}, which works for another project than this pipeline's — choose this project's own agent or a global one.`,
+        });
+      } else if (agent.deletedAt !== null || agent.archivedAt !== null) {
         problems.push({
           severity: "warning",
           stateId: step.id,
-          message: `"${step.name}" is owned by "${step.ownerRole}", which has no enabled agent — tickets will wait there indefinitely.`,
+          message: `"${step.name}" names ${agent.name}, which has been ${agent.deletedAt !== null ? "deleted" : "archived"} — tickets will wait there until the step names another agent.`,
+        });
+      } else if (!agent.enabled) {
+        problems.push({
+          severity: "warning",
+          stateId: step.id,
+          message: `"${step.name}" names ${agent.name}, which is disabled — tickets will wait there until it is enabled or the step names another agent.`,
         });
       }
       if (!step.entryAction) {
         problems.push({
           severity: "warning",
           stateId: step.id,
-          message: `"${step.name}" has an owner but no entry action, so the engine will not know what to ask for.`,
+          message: `"${step.name}" has an agent but no entry action, so the engine will not know what to ask for.`,
         });
-      } else if (step.ownerRole !== null) {
+      } else if (agent !== undefined) {
         // What the action can return, against what the step routes
-        // (EO-423). Only once there is a role: a definition is keyed by
-        // role and action, and a step with nobody to dispatch already
+        // (EO-423). A definition is keyed by kind and action, and the
+        // kind is the agent's; a step with nobody to dispatch already
         // has an error saying so.
-        const action = actionFactsFor(registry, step.ownerRole, step.entryAction);
+        const action = actionFactsFor(registry, agent.role, step.entryAction);
         if (action === undefined) {
           problems.push({
-            severity: "warning",
+            severity: "error",
             stateId: step.id,
-            // A warning, because nothing here is wrong in a way a person
-            // must fix before publishing: the step runs. What they are
-            // owed is what it runs *as*.
+            // An error since EO-875: a step's action must be one of its
+            // agent's kind's actions, so an agent of a kind without it is
+            // the wrong agent for the step, or the wrong action.
             message:
-              `"${step.name}" asks "${step.ownerRole}" for "${step.entryAction}", which neither that role nor an installed pack defines — ` +
-              `its answer is not validated and will route as "done".`,
+              `"${step.name}" asks ${agent.name} for "${step.entryAction}", but ${agent.name} is a "${agent.role}" agent and that kind has no "${step.entryAction}" action — ` +
+              `choose an agent of a kind that has it, or define "${step.entryAction}" for "${agent.role}".`,
           });
         } else {
           problems.push(...actionResultProblems(step, routes, step.entryAction, action.results));

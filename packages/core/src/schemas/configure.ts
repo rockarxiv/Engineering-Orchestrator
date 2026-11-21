@@ -108,7 +108,12 @@ export const DraftStepSchema = PipelineStepViewSchema.omit({
   // save pins it to that module's newest approved version.
   moduleVersion: true,
   brief: true,
+  // A draft names a kind, not an agent (EO-875): publishing binds it to
+  // one of the project's agents of that kind.
+  agentId: true,
 }).extend({
+  /** The kind of agent an agent step needs, bound to an agent when the draft is published. Null on every other kind of step. */
+  ownerRole: z.string().nullable(),
   /**
    * What a person step's decision bar shows behind "Show details"
    * (EO-827), as entry rules are set: left out keeps the step's brief,

@@ -712,7 +712,14 @@ export const ExportedPipelineHeadSchema = z.object({
  * which version the author pinned; it names nothing on the far side,
  * where an import pins the version it creates or matches.
  */
-export const ExportedStepSchema = PipelineStepViewSchema.omit({ pipelineId: true, inputs: true, timeoutMs: true, workspaceMode: true, workspaceId: true }).extend({
+export const ExportedStepSchema = PipelineStepViewSchema.omit({ pipelineId: true, inputs: true, timeoutMs: true, workspaceMode: true, workspaceId: true, agentId: true }).extend({
+  /**
+   * The kind of agent an agent step needs — never an agent's id or name,
+   * which mean nothing on another installation (EO-875, ARCHITECTURE.md
+   * §12.1). Export writes the step's agent's kind; import binds it to one
+   * of the importing project's agents of that kind.
+   */
+  ownerRole: z.string().nullable(),
   // Optional rather than defaulted: written on a module step that pins a
   // version and absent everywhere else, so a document with no module step
   // reads exactly as it did at format 13.

@@ -175,8 +175,14 @@ const same = (a: unknown, b: unknown): boolean => JSON.stringify(a ?? null) === 
  * the target pipeline as it was when the draft was applied. Both graphs
  * are in the same step ids.
  */
-export function resolvedGraphChanges(before: ResolvedGraph, after: ResolvedGraph): string[] {
+export function resolvedGraphChanges(
+  before: ResolvedGraph,
+  after: ResolvedGraph,
+  /** Agent names by id, so a change of agent reads by name (EO-875). Absent, by id. */
+  agentNames: ReadonlyMap<string, string> = new Map(),
+): string[] {
   const changes: string[] = [];
+  const agent = (id: string | null): string => (id === null ? "nobody" : (agentNames.get(id) ?? id));
   const was = new Map(before.steps.map((step) => [step.id, step]));
   const now = new Map(after.steps.map((step) => [step.id, step]));
   const name = (id: string | null): string => (id === null ? "nowhere" : (now.get(id)?.name ?? was.get(id)?.name ?? id));
@@ -188,7 +194,7 @@ export function resolvedGraphChanges(before: ResolvedGraph, after: ResolvedGraph
     if (old === undefined) continue;
     if (old.name !== step.name) changes.push(`"${old.name}" is renamed "${step.name}"`);
     if (old.type !== step.type) changes.push(`"${step.name}" becomes a ${step.type} step instead of a ${old.type} step`);
-    if (old.ownerRole !== step.ownerRole) changes.push(`"${step.name}" is done by ${step.ownerRole ?? "nobody"} instead of ${old.ownerRole ?? "nobody"}`);
+    if (old.agentId !== step.agentId) changes.push(`"${step.name}" is done by ${agent(step.agentId)} instead of ${agent(old.agentId)}`);
     if (old.entryAction !== step.entryAction) changes.push(`"${step.name}" runs ${step.entryAction ?? "nothing"} instead of ${old.entryAction ?? "nothing"}`);
     if ((old.instructionsSummary ?? null) !== (step.instructionsSummary ?? null)) changes.push(`the instructions of "${step.name}"`);
     if (old.isTerminal !== step.isTerminal) changes.push(step.isTerminal ? `work ends on "${step.name}" now` : `work no longer ends on "${step.name}"`);

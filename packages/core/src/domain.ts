@@ -214,23 +214,22 @@ export function projectHasOwnAgent(agents: readonly StaffingAgent[], role: strin
 }
 
 /**
- * Every agent that may be dispatched for this item at a step owned by
- * this role, in the order given (EO-474, ARCHITECTURE.md, "An agent is
- * a row").
+ * Every agent of this kind that could run this item, in the order given,
+ * best first (EO-474, EO-875, ARCHITECTURE.md §12.1).
  *
- * The one staffing rule. The scheduler picks from it, its "no enabled
- * agent" blocker asks whether it is empty, the dispatch preflight asks
- * whether the agent a rerun named is in it, and the pipeline validator
- * asks which roles it is non-empty for — four readers of one function,
- * so none of them can come to promise what another refuses.
+ * **Not how a step is staffed.** A step names its agent (`agentId`) and
+ * dispatch runs that agent and no other (`stepAgentRefusal`). This is
+ * the rule for *binding* a kind to an agent where something names a kind
+ * and nothing has chosen an agent yet: migration 0181 gave every
+ * existing step the first of these for its pipeline's project, and a
+ * document, template or draft that names a kind is bound the same way.
  *
- * Live (`isDispatchable`), in the role, reaching the item (`staffsItem`)
+ * Live (`isDispatchable`), of the kind, reaching the item (`staffsItem`)
  * — and then the precedence: where the item's project has an agent of
- * its own in the role, only the project's own are candidates; otherwise
- * the global ones are, exactly as before agents could be scoped.
- * Capacity is not asked: a busy agent is a queue, not a reason.
+ * its own of the kind, only the project's own are candidates; otherwise
+ * the global ones are.
  *
- * Empty for a null role, which is a step nobody is dispatched at.
+ * Empty for a null role.
  */
 export function staffingAgents<A extends StaffingAgent>(agents: readonly A[], role: string | null, item: Pick<Item, "previewAt" | "projectId">): A[] {
   if (role === null) return [];
@@ -239,19 +238,53 @@ export function staffingAgents<A extends StaffingAgent>(agents: readonly A[], ro
   return own.length > 0 ? own : eligible;
 }
 
+/** What a step reads of the agent it names (EO-875). */
+export type StepAgentFacts = Pick<Agent, "id" | "name" | "role" | "enabled" | "archivedAt" | "deletedAt" | "config" | "projectId">;
+
 /**
- * The roles somebody would be dispatched for on this item — the roles
- * `staffingAgents` is non-empty for (EO-474).
- *
- * What `validatePipeline` is handed as `staffedRoles`, asked of an item
- * standing for the pipeline's work: real (not a preview) and on the
- * pipeline's project. A role only another project's agent holds is
- * therefore unstaffed for this pipeline, which is what the scheduler
- * will find when an item arrives.
+ * The agent row an `agent` step names, whatever state it is in, or
+ * undefined for a step that names none, a step of another kind, and a
+ * name whose row is not among `agents`.
  */
-export function rolesStaffedFor(agents: readonly StaffingAgent[], item: Pick<Item, "previewAt" | "projectId">): string[] {
-  const roles = [...new Set(agents.map((agent) => agent.role))];
-  return roles.filter((role) => staffingAgents(agents, role, item).length > 0);
+export function stepAgentOf<A extends Pick<Agent, "id">>(agents: readonly A[], step: Pick<PipelineStep, "type" | "agentId">): A | undefined {
+  if (step.type !== "agent" || step.agentId === null) return undefined;
+  return agents.find((agent) => agent.id === step.agentId);
+}
+
+/**
+ * The kind an `agent` step needs: its agent's role (EO-875).
+ *
+ * Everything that was keyed on a step's role is keyed on this — the
+ * pause and cap exceptions of the `system` kind, thread reuse, action
+ * definitions, the pack's default prompt. Null where the step names no
+ * agent, or one whose row is not among `agents`.
+ */
+export function stepAgentKind(agents: readonly Pick<Agent, "id" | "role">[], step: Pick<PipelineStep, "type" | "agentId">): string | null {
+  return stepAgentOf(agents, step)?.role ?? null;
+}
+
+/**
+ * Why the agent a step names cannot run this item (EO-875), or null when
+ * it can.
+ *
+ * In the order a person fixes them: a deleted agent is gone, an archived
+ * one does not come back, a disabled one can be switched on. An agent of
+ * another project, or a preview's own on a real item, never runs it.
+ * Capacity is not asked: a busy agent is a queue, not a reason.
+ *
+ * There is no fallback. An item whose step names an agent that cannot
+ * run is never handed to another agent of the same kind: the step says
+ * who runs it, and only a person changing the step changes that.
+ */
+export type StepAgentRefusal = "deleted" | "archived" | "disabled" | "other_project" | "preview_only";
+
+export function stepAgentRefusal(agent: StepAgentFacts, item: Pick<Item, "previewAt" | "projectId">): StepAgentRefusal | null {
+  if (agent.deletedAt !== null) return "deleted";
+  if (agent.archivedAt !== null) return "archived";
+  if (!agent.enabled) return "disabled";
+  if (!servesProject(agent, item)) return "other_project";
+  if (!staffsItem(agent, item)) return "preview_only";
+  return null;
 }
 
 /**
@@ -402,8 +435,9 @@ export const DEFAULT_PIPELINE_ID = "default";
  *
  * Three kinds, and the difference between them is *who acts*:
  *
- * - `agent` — a role is dispatched to a coding agent. `entryAction` names
- *   the action (`implement`, `review`) and `ownerRole` names the role.
+ * - `agent` — the agent the step names is dispatched (EO-875). `entryAction`
+ *   names the action (`implement`, `review`), which must be one of the
+ *   agent's kind's actions, and `agentId` names the agent.
  * - `user` — a person. The engine does not dispatch; it hands off and
  *   waits, which is what `owner_role IS NULL` used to mean on its own.
  * - `builtin` — EO does it itself, by running a named function.
@@ -436,8 +470,18 @@ export interface PipelineStep {
   position: number;
   name: string;
   type: PipelineStepType;
-  /** The role dispatched on an `agent` step. Null on every other kind. */
-  ownerRole: string | null;
+  /**
+   * The agent an `agent` step runs (EO-875, ARCHITECTURE.md §12.1). Null on
+   * every other kind, and on an agent step nobody has chosen an agent for,
+   * which dispatches nothing until somebody does.
+   *
+   * The step carries no role of its own: the kind it needs — what its
+   * prompt default, thread reuse, actions and action definitions are
+   * keyed by — is the named agent's `role`, read through `stepAgentKind`.
+   * Exported documents and templates name kinds instead (`ownerRole` on
+   * `ExportedStepSchema`), and installing one binds each kind to an agent.
+   */
+  agentId: Uuid | null;
   /**
    * What this step does — an agent action on an `agent` step, a builtin
    * function on a `builtin` one. Null on a `user` step, which does not act.

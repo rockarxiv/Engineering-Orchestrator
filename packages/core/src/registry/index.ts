@@ -478,7 +478,7 @@ export interface BuiltinInput {
 }
 
 export interface RegistryOf<R extends RoleFacts> {
-  /** By role slug — the `agents.role` column, and a step's `ownerRole`. */
+  /** By role slug — the `agents.role` column: an agent's kind, which is what a step's agent brings it. */
   roles: ReadonlyMap<string, R>;
   /**
    * The functions a `builtin` step can run, by action name, each with

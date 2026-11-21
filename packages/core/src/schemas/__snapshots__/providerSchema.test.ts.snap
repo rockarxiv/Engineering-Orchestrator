@@ -132,16 +132,6 @@ exports[`the JSON Schema each provider receives > is unchanged for assist (undef
                           "module"
                         ]
                       },
-                      "ownerRole": {
-                        "anyOf": [
-                          {
-                            "type": "string"
-                          },
-                          {
-                            "type": "null"
-                          }
-                        ]
-                      },
                       "entryAction": {
                         "anyOf": [
                           {
@@ -167,6 +157,16 @@ exports[`the JSON Schema each provider receives > is unchanged for assist (undef
                       },
                       "planMode": {
                         "type": "boolean"
+                      },
+                      "ownerRole": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
                       },
                       "brief": {
                         "description": "Only on a user step: what its decision shows behind \\"Show details\\", in order. Leave out to keep the step's brief; [] for the default (instructions summary, current output, the previous step's verdict).",
@@ -305,11 +305,11 @@ exports[`the JSON Schema each provider receives > is unchanged for assist (undef
                       "position",
                       "name",
                       "type",
-                      "ownerRole",
                       "entryAction",
                       "instructionsSummary",
                       "isTerminal",
-                      "planMode"
+                      "planMode",
+                      "ownerRole"
                     ]
                   }
                 },
@@ -496,16 +496,6 @@ exports[`the JSON Schema each provider receives > is unchanged for assist (undef
                             "module"
                           ]
                         },
-                        "ownerRole": {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
                         "entryAction": {
                           "anyOf": [
                             {
@@ -531,6 +521,16 @@ exports[`the JSON Schema each provider receives > is unchanged for assist (undef
                         },
                         "planMode": {
                           "type": "boolean"
+                        },
+                        "ownerRole": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         },
                         "brief": {
                           "description": "Only on a user step: what its decision shows behind \\"Show details\\", in order. Leave out to keep the step's brief; [] for the default (instructions summary, current output, the previous step's verdict).",
@@ -669,11 +669,11 @@ exports[`the JSON Schema each provider receives > is unchanged for assist (undef
                         "position",
                         "name",
                         "type",
-                        "ownerRole",
                         "entryAction",
                         "instructionsSummary",
                         "isTerminal",
-                        "planMode"
+                        "planMode",
+                        "ownerRole"
                       ]
                     }
                   },
