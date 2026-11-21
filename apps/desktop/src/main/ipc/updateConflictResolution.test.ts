@@ -608,7 +608,7 @@ describe("the person's edits since the base", () => {
     replacePipelineGraph(
       handle.db,
       "default",
-      conflict.template.steps as Parameters<typeof replacePipelineGraph>[2],
+      conflict.template.steps.map(({ ownerRole: _kind, ...step }) => step) as Parameters<typeof replacePipelineGraph>[2],
       conflict.template.routes.map(({ id: _id, ...route }) => route) as Parameters<typeof replacePipelineGraph>[3],
       { createdBy: dana.id },
     );
