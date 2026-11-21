@@ -368,6 +368,19 @@ function leaderTurnsOf(attempts: readonly LeaderAttemptState[]): LeaderAttemptSt
   return attempts.filter((attempt) => attempt.key === LEADER_ASSIGNMENT_KEY);
 }
 
+/** Why a leader's turn counted as a correction (EO-886): the error a failed turn recorded, or what EO refused of its answer. */
+function leaderTurnFailure(turn: LeaderAttemptState): string {
+  if (turn.status === "failed") return turn.error ?? "its turn failed, and recorded no reason.";
+  const verdict = turn.verdict ?? null;
+  if (verdict === null) return "EO could not read what it made of the answer.";
+  if (verdict.decision === "assign") {
+    return verdict.refused.length === 0
+      ? "it asked for no work EO could accept."
+      : `EO refused the work it asked for — ${verdict.refused.map((one) => `**${one.key}**: ${one.reason}`).join("; ")}`;
+  }
+  return verdict.problems.length === 0 ? "EO refused its final answer." : `EO refused its final answer — ${verdict.problems.join(" ")}`;
+}
+
 function refusedAnswer(verdict: LeaderVerdict | null | undefined): boolean {
   if (verdict === null || verdict === undefined) return false;
   return verdict.decision === "assign" ? verdict.accepted.length === 0 : !verdict.accepted;
@@ -585,6 +598,8 @@ export function planLeaderTeam(input: PlanLeaderTeamInput): LeaderPlan {
   const working: string[] = [];
   const asking: string[] = [];
   const exhausted: string[] = [];
+  /** What each exhausted assignment last failed with, for the words the team stops with. */
+  const lastErrors: { key: string; error: string }[] = [];
 
   for (const assignment of ledger.assignments) {
     const all = attempts.filter((attempt) => attempt.key === assignment.key);
@@ -593,7 +608,10 @@ export function planLeaderTeam(input: PlanLeaderTeamInput): LeaderPlan {
     needs.push(...state.needs);
     working.push(...state.working);
     if (state.asking) asking.push(assignment.key);
-    if (state.settled?.status === "failed") exhausted.push(assignment.key);
+    if (state.settled?.status === "failed") {
+      exhausted.push(assignment.key);
+      lastErrors.push({ key: assignment.key, error: state.settled.attempt.error ?? "It could not contribute." });
+    }
   }
 
   const done = (next: LeaderPlan["next"], extra: { start?: TeamStart[]; waiting?: TeamPlan["waiting"] } = {}): LeaderPlan => ({
@@ -620,11 +638,18 @@ export function planLeaderTeam(input: PlanLeaderTeamInput): LeaderPlan {
     const { start, waiting } = allot([{ key: LEADER_ASSIGNMENT_KEY, supersedes: latest?.id ?? null, why, round }], 0, team.limits.maxParallel);
     return done({ kind: "continue" }, { start, waiting });
   };
+  // Ends with why (EO-886): the last failure's reason, and each member
+  // that also ran out of retries with its own, so a usage limit is told
+  // apart from a bug without reading the database.
   const tooMany = (): LeaderPlan | null =>
     ledger.corrections > team.limits.maxRetries
       ? done({
           kind: "failed",
-          reason: `The leader's turns failed or were refused ${ledger.corrections} time${ledger.corrections === 1 ? "" : "s"}, more than the team's ${team.limits.maxRetries} ${team.limits.maxRetries === 1 ? "retry" : "retries"} allow, so EO stopped rather than finalise on an answer it could not accept.`,
+          reason: [
+            `The leader's turns failed or were refused ${ledger.corrections} time${ledger.corrections === 1 ? "" : "s"}, more than the team's ${team.limits.maxRetries} ${team.limits.maxRetries === 1 ? "retry" : "retries"} allow, so EO stopped rather than finalise on an answer it could not accept.`,
+            ...(latest === null ? [] : [`The last of them: ${leaderTurnFailure(latest)}`]),
+            ...(lastErrors.length === 0 ? [] : [`These members ran out of retries too:\n${lastErrors.map((one) => `- **${one.key}**: ${one.error}`).join("\n")}`]),
+          ].join("\n\n"),
         })
       : null;
 

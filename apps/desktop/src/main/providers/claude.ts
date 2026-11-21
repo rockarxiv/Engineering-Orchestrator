@@ -2193,7 +2193,7 @@ export function createClaudeProvider(options: ClaudeProviderOptions = {}): Agent
    *   - `now` **interrupts**. The running turn ends immediately with an
    *     empty `result`, and a fresh `system/init` opens a second turn
    *     carrying the message. For EO that is fatal, not merely untidy:
-   *     `processStream` ends the run on the first `result` it sees, so
+   *     `readTurn` ends the run on the first `result` it sees, so
    *     steering would have finished every run it touched on an empty
    *     result and thrown away the work the agent had done.
    *   - `later` waits for the turn to finish and then starts another —
@@ -2547,7 +2547,7 @@ export function createClaudeProvider(options: ClaudeProviderOptions = {}): Agent
           }
           if (message.type === "result") notOurs = null;
           // Before the events are yielded rather than after, because a
-          // yield is where a consumer walks away: `processStream`
+          // yield is where a consumer walks away: `readTurn`
           // returns on the first `result` it sees, and the session has
           // to already be winding itself up by then.
           if (message.type === "result") {

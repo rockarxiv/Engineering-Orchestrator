@@ -311,7 +311,7 @@ describe.skipIf(!OPTED_IN)("a message said into a turn the CLI is already runnin
       expect(bodies).toHaveLength(1);
 
       // And the turn's own answer is the first result, which is the only
-      // one anything acts on: `processStream` returns on it and the run
+      // one anything acts on: `readTurn` returns on it and the run
       // is routed from it. The CLI does emit a trailing empty result as
       // its stdin closes — drained here because this test reads to the
       // end, never seen in a run, and carrying nothing either way.

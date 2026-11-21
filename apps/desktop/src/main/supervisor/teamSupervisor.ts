@@ -1,4 +1,5 @@
 import {
+  createQuotaRefusals,
   LEADER_ASSIGNMENT_KEY,
   leaderTurnSchema,
   participantTurnSchema,
@@ -51,7 +52,7 @@ import type { Db } from "../db/client.js";
 import { getAgent, listAgents } from "../db/repos/agentsRepo.js";
 import { getComment, listCommentsForItem, postComment } from "../db/repos/commentsRepo.js";
 import { getItem } from "../db/repos/itemsRepo.js";
-import { createRunEventBuffer, type RunEventBuffer } from "../db/repos/runEventBuffer.js";
+import { createRunEventBuffer } from "../db/repos/runEventBuffer.js";
 import { createRun, getRun, listActiveParticipantRuns, listRunsForItem, updateRun } from "../db/repos/runsRepo.js";
 import {
   acceptTeamReport,
@@ -76,6 +77,7 @@ import type { AgentWriteBridge } from "../mcp/writeBridge.js";
 import { postClarificationQuestions, unansweredQuestions } from "../roles/clarificationQuestions.js";
 import { captureTeamEvidence, type MemberCopy, type TeamEvidence } from "./teamEvidence.js";
 import { reportOnlyCredential, type TeamParticipantScopes, type ThreadBoundary } from "./teamParticipants.js";
+import type { TurnDrive, TurnOutcome } from "./turnOutcome.js";
 import { createUsageTally } from "./usageTally.js";
 import type { PreparedWorkspace, WorkspaceKind } from "./workspaceKind.js";
 
@@ -130,7 +132,7 @@ import type { PreparedWorkspace, WorkspaceKind } from "./workspaceKind.js";
  * against none of those caps, and against no machine-wide limit: only the
  * team's own `maxParallel` holds them back. Each is
  * still a run of its own, for the budgets, and each is held to the
- * wall-clock and inactivity guards as an ordinary run is (`guardTurn`);
+ * wall-clock and inactivity guards as an ordinary run is (`driveTurn`);
  * the parent is held to neither, and to the team's own `timeoutMs` where
  * one is declared. What cannot start waits and the item is told why, once.
  *
@@ -199,13 +201,17 @@ export interface IsolatedTurnRequest {
  * it, standing in its copy (EO-867): the agent's ordinary provider and the
  * options an ordinary dispatch starts it with — but its own working
  * directory, its team framing, a thread its team's reports are kept out
- * of, and an `eo` credential that posts nothing on the item. `observe` is
- * handed each event, for what the host records of any run's turn, and
- * answers true for one it recorded itself. `done` is handed the same
- * buffer when the turn ends, before it is disposed.
+ * of, and an `eo` credential that posts nothing on the item. Its turn is
+ * then driven as every other team turn is (`driveTurn`).
  */
 export type IsolatedTurnAnswer =
-  | { ok: true; provider: Pick<AgentProvider, "start">; options: Omit<AgentProviderStartOptions, "signal" | "outputSchema">; observe?: (event: AgentEvent, buffer: RunEventBuffer) => boolean; done?: (buffer: RunEventBuffer) => void }
+  | {
+      ok: true;
+      provider: Pick<AgentProvider, "start">;
+      options: Omit<AgentProviderStartOptions, "signal" | "outputSchema">;
+      /** The servers its tool directory was written with, which its backend's startup report is checked against (EO-107). */
+      expectedServers: string[];
+    }
   | { ok: false; problem: string };
 
 export interface TeamSupervisorDeps {
@@ -222,12 +228,20 @@ export interface TeamSupervisorDeps {
   scopes: TeamParticipantScopes;
   writeBridge: () => Pick<AgentWriteBridge, "tokenFor"> | null;
   /**
-   * Holds one turn to the guards an ordinary run is held to (EO-871): the
-   * wall clock and the inactivity guard, which call `stop` with why. Each
-   * event the turn's backend says is handed to `observe`; `release` is
-   * called once the turn is over. Absent, a turn answers to no such guard.
+   * Drives one turn's stream to its end with the code that drives an
+   * ordinary run's (EO-886, `driveTurn`): its limit and sign-in refusals,
+   * the wall-clock and inactivity guards (EO-871), the answer said only
+   * as its last message (#141) and its MCP startup check. A guard that
+   * trips stops the turn through `abort` and is its outcome.
    */
-  guardTurn?: (turn: { runId: string; agent: Agent; stop: (reason: string) => void }) => { observe: (event: AgentEvent) => void; release: () => void };
+  driveTurn: (turn: TeamTurnDrive) => Promise<TurnOutcome>;
+  /**
+   * Holds the runtime that refused a turn — at a plan limit, or signed
+   * out — as an ordinary run's refusal holds it, telling the person and
+   * the item; answers why, for the attempt. `held` false where the agent
+   * runs on no runtime EO can hold, and the attempt is then a failure.
+   */
+  holdRuntime: (turn: { runId: Uuid; item: Item; agent: Agent }, refused: Extract<TurnOutcome, { kind: "limitReached" | "signedOut" }>) => { held: boolean; reason: string };
   /** What stands between this agent and a turn on this item now, or null. */
   restriction: (agent: Agent, item: Item) => ParticipantRestriction | null;
   /**
@@ -245,8 +259,6 @@ export interface TeamSupervisorDeps {
   onChange: () => void;
   /** How often a waiting team looks again at what may have changed — a pause lifted, a slot freed. */
   pollMs?: number;
-  /** How long a stopped participant's backend is read for what it still reports before it is let go. */
-  stopGraceMs?: number;
 }
 
 /**
@@ -317,11 +329,28 @@ type TakeResult =
   /** An answer for a session that has ended or an item that has moved on: kept out of every decision. */
   | { kind: "late"; problem: string };
 
+/** One team turn's stream, as the host's turn driver reads it (`TeamSupervisorDeps.driveTurn`): what only an item's own run has is left out, and `abort` stops it. */
+export type TeamTurnDrive = Omit<TurnDrive, "pushEvent" | "itemRun"> & { stream: ReturnType<AgentProvider["start"]>; abort: () => void };
+
+/** What a team turn that ended without an answer it could take failed with: counted against its retries. */
+function turnFailure(outcome: TurnOutcome): string {
+  switch (outcome.kind) {
+    case "error":
+      return outcome.message;
+    case "guardTripped":
+      return outcome.reason;
+    default:
+      return "Its turn ended without an answer.";
+  }
+}
+
 /** One turn, as its provider is started and its answer taken. */
 interface TurnSpec {
   instructions: string;
   context: string;
   outputSchema: JsonSchema;
+  /** Whether an answer is one this turn could take at all — the bar a message it ends on must clear to be its answer (#141). */
+  accepts: (answer: unknown) => boolean;
   /** `appendix`: the line an isolated member's report carries about its copy, or null. */
   take: (answer: unknown, runId: Uuid, at: number, appendix: string | null) => TakeResult;
 }
@@ -532,7 +561,6 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
   /** Team parents in this process, by run. */
   const parents = new Set<string>();
   const pollMs = deps.pollMs ?? 2000;
-  const stopGraceMs = deps.stopGraceMs ?? 5000;
 
   function note(item: Item, runId: Uuid, body: string): void {
     postComment(db, { itemId: item.id, runId, author: { type: "engine" }, kind: "note", body });
@@ -783,21 +811,14 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
     const release = reportOnly === null ? () => undefined : deps.scopes.register({ attemptId: attempt.id, itemId: item.id, evidence: input.evidence, thread: input.boundary });
     const buffer = createRunEventBuffer(db);
     const tally = createUsageTally();
-    let answer: unknown = undefined;
-    let failure: string | null = null;
-    // The wall clock and the inactivity guard, as on an ordinary run
-    // (EO-871): what trips one is this turn's failure, counted against its
-    // retries as any other — never EO stopping it, which would replace it
-    // for ever.
-    const guard = deps.guardTurn?.({
-      runId: run.id,
-      agent,
-      stop: (reason) => {
-        if (entry.stoppedBecause !== null || failure !== null) return;
-        failure = reason;
-        entry.controller.abort();
-      },
-    });
+    const refusals = createQuotaRefusals();
+    const shareReason = (): string => `It reached its share of the budget (${entry.allocation ?? 0}¢) before it answered.`;
+    let outcome: TurnOutcome | null = null;
+    let thrown: string | null = null;
+    // Its share of the team's budget is the team's to hold it to: reached,
+    // the turn is stopped and read on, so what it reports as it winds down
+    // is kept (EO-846), and the share is its failure.
+    let overShare: string | null = null;
     try {
       // Stopped while its turn was being built: nothing is started.
       if (entry.controller.signal.aborted && entry.stoppedBecause !== null) throw abortError();
@@ -815,59 +836,44 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
               ...(bridge === null ? {} : { writeBridge: reportOnlyCredential(bridge, item.id, attempt.id) }),
               signal: entry.controller.signal,
             });
-      // Read to its end even once stopped: a backend reports what it spent
-      // as it winds down, and every cent reported is kept. A stopped turn's
-      // answer is never taken, and a backend that does not end its turn
-      // within the grace after the stop is let go.
-      const iterator = stream[Symbol.asyncIterator]();
-      const givenUp = new Promise<"gave_up">((resolve) => {
-        const arm = () => {
-          const timer = setTimeout(() => resolve("gave_up"), stopGraceMs);
-          timer.unref?.();
-        };
-        if (entry.controller.signal.aborted) arm();
-        else entry.controller.signal.addEventListener("abort", arm, { once: true });
-      });
-      for (;;) {
-        const step = await Promise.race([iterator.next(), givenUp]);
-        if (step === "gave_up") {
-          void Promise.resolve(iterator.return?.(undefined)).catch(() => undefined);
-          break;
-        }
-        if (step.done === true) break;
-        const event = step.value;
-        guard?.observe(event);
-        const stopped = entry.controller.signal.aborted;
-        // What the host records of an isolated member's event as it would
-        // of any run's — skill usage — is not recorded again as it came.
-        if (isolated?.observe?.(event, buffer) === true) continue;
-        if (event.type !== "output_delta" && event.type !== "heartbeat") buffer.append(run.id, event.type, event);
-        if (event.type === "thread_started") updateRun(db, run.id, { threadId: event.threadId });
-        else if (event.type === "usage") {
-          if (tally.record(event)) {
-            const totals = tally.totals();
-            // Every reading, a stopped turn's included, so an interruption keeps all of it.
-            updateRun(db, run.id, totals);
-            entry.spent = totals.costCents;
-            if (entry.allocation !== null && entry.spent >= entry.allocation && entry.stoppedBecause === null && failure === null) {
-              failure = `It reached its share of the budget (${entry.allocation}¢) before it answered.`;
-              entry.controller.abort();
-            }
+      // Driven by the code that drives an ordinary run's turn (EO-886):
+      // its limit, its sign-in, its guards, an answer said only as its
+      // last message and the servers it was given are read as an
+      // ordinary run's are. Read on once stopped, as any turn is: a
+      // backend reports what it spent as it winds down, and every cent
+      // reported is kept. A stopped turn's answer is never taken.
+      outcome = await deps.driveTurn({
+        stream,
+        runId: run.id,
+        buffer,
+        item,
+        agent,
+        signal: entry.controller.signal,
+        abort: () => entry.controller.abort(),
+        expectedServers: isolated?.expectedServers ?? [],
+        accepts: (text) => input.turn.accepts(text),
+        refusals,
+        onThreadId: (threadId) => updateRun(db, run.id, { threadId }),
+        onUsage: (event) => {
+          if (!tally.record(event)) return;
+          const totals = tally.totals();
+          // Every reading, a stopped turn's included, so an interruption keeps all of it.
+          updateRun(db, run.id, totals);
+          entry.spent = totals.costCents;
+          if (entry.allocation !== null && entry.spent >= entry.allocation && entry.stoppedBecause === null && overShare === null) {
+            overShare = shareReason();
+            entry.controller.abort();
           }
-        } else if (stopped) continue;
-        else if (event.type === "result") answer = event.data;
-        else if (event.type === "error" && event.fatal !== false) {
-          failure = event.budget === true ? `It reached its share of the budget (${entry.allocation ?? 0}¢) before it answered.` : event.message;
-        }
-      }
+        },
+        budgetGuard: () => null,
+        budgetStop: shareReason,
+      });
     } catch (error) {
-      if (entry.stoppedBecause === null && failure === null) failure = error instanceof Error ? error.message : String(error);
+      if (entry.stoppedBecause === null) thrown = error instanceof Error ? error.message : String(error);
     } finally {
-      guard?.release();
       release();
-      // What the host closes the turn's run with goes through the turn's
+      // What the host closes the turn's run with went through the turn's
       // own buffer, after every event it appended (EO-867).
-      isolated?.done?.(buffer);
       buffer.dispose();
     }
 
@@ -889,8 +895,36 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
       noteCopy();
       return;
     }
+    // Refused by its runtime — a plan limit, or a sign-in that is no good —
+    // or cut off by a limit with an answer EO could not take: stopped as
+    // an ordinary run's limit stops it (EO-886). No retry spent; the
+    // runtime is held, and the attempt is started again once it lifts.
+    const refused: Extract<TurnOutcome, { kind: "limitReached" | "signedOut" }> | null =
+      overShare !== null
+        ? null
+        : outcome?.kind === "limitReached" || outcome?.kind === "signedOut"
+        ? outcome
+        : outcome?.kind === "result" && !input.turn.accepts(outcome.data) && refusals.blocking(at) !== null
+          ? { kind: "limitReached", quota: refusals.blocking(at)! }
+          : null;
+    if (refused !== null) {
+      const hold = deps.holdRuntime({ runId: run.id, item: getItem(db, item.id) ?? item, agent }, refused);
+      updateRun(db, run.id, { status: hold.held ? "cancelled" : "failed", error: hold.reason, endedAt: at });
+      endTeamAttempt(db, attempt.id, { status: hold.held ? "cancelled" : "failed", error: hold.reason }, at);
+      noteCopy();
+      deps.onChange();
+      return;
+    }
     const taken: TakeResult =
-      failure !== null ? { kind: "failed", error: failure } : answer === undefined ? { kind: "failed", error: "Its turn ended without an answer." } : input.turn.take(answer, run.id, at, appendix);
+      overShare !== null
+        ? { kind: "failed", error: overShare }
+        : thrown !== null
+        ? { kind: "failed", error: thrown }
+        : outcome === null
+          ? { kind: "failed", error: "Its turn ended without an answer." }
+          : outcome.kind === "result"
+            ? input.turn.take(outcome.data, run.id, at, appendix)
+            : { kind: "failed", error: turnFailure(outcome) };
     switch (taken.kind) {
       case "accepted":
         updateRun(db, run.id, { status: "succeeded", result: taken.result as Record<string, unknown>, endedAt: at });
@@ -1318,7 +1352,8 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
             kind: "undecided",
             event: {
               type: "error",
-              message: `The team on "${step.name}" could not decide: ${plan.decision.failed.map((key) => `**${key}**`).join(", ")} could not contribute after ${team.limits.maxRetries} ${team.limits.maxRetries === 1 ? "retry" : "retries"}, and a required participant that did not contribute is never read as a finding.\n\n${plan.decision.summary}\n\n${TEAM_RETRY_WORDS}`,
+              // Ends with why (EO-886): each participant's last error is in the summary.
+              message: `The team on "${step.name}" could not decide: ${plan.decision.failed.map((key) => `**${key}**`).join(", ")} could not contribute after ${team.limits.maxRetries} ${team.limits.maxRetries === 1 ? "retry" : "retries"}, and a required participant that did not contribute is never read as a finding. ${TEAM_RETRY_WORDS}\n\n${plan.decision.summary}`,
               retryable: false,
             },
           };
@@ -1343,6 +1378,7 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
               instructions: participantInstructions(agent, step, teamNow),
               context: participantContext(itemNow(), teamNow.outcomes, participant.key, participant.instructions, exchange.lines, isolatedTeam(teamNow)),
               outputSchema: participantTurnSchema(teamNow.outcomes),
+              accepts: (raw) => readParticipantAnswer(teamNow.outcomes, raw).kind !== "invalid",
               take: takeReport(attempt.id, teamNow.outcomes),
             }),
           });
@@ -1378,7 +1414,8 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
         }
         // Parked rather than ended (EO-849), for the independent team's reason.
         if (plan.next.kind === "failed") {
-          return { kind: "end", event: { type: "error", message: `The team on "${step.name}" could not finish: ${plan.next.reason}\n\n${TEAM_RETRY_WORDS}`, retryable: false } };
+          // Ends with why (EO-886): the last failure's reason, and each member's that ran out too.
+          return { kind: "end", event: { type: "error", message: `The team on "${step.name}" could not finish. ${TEAM_RETRY_WORDS}\n\n${plan.next.reason}`, retryable: false } };
         }
         if (plan.next.kind === "park") return parkOn(attempts);
 
@@ -1426,6 +1463,7 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
             instructions: participantInstructions(agent, step, teamNow),
             context: participantContext(itemNow(), teamNow.outcomes, assignment.key, assignment.instructions, extra, isolatedTeam(teamNow)),
             outputSchema: participantTurnSchema(teamNow.outcomes),
+            accepts: (raw) => readParticipantAnswer(teamNow.outcomes, raw).kind !== "invalid",
             // A contributor that tries to hand work on is refused, and the
             // refusal is recorded where the person and the leader read it.
             take: takeReport(attempt.id, teamNow.outcomes, (error) => note(item, parentRunId, `**${assignment.key}** tried to assign work, which only the leader may do: ${error}`)),
@@ -1459,6 +1497,7 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
             instructions: leaderInstructions(agent, step, teamNow),
             context: leaderContext(teamNow, start, previous, attempts, states, ledger, exchange.lines),
             outputSchema: leaderTurnSchema(teamNow, input.answer!.document!),
+            accepts: (raw) => readLeaderAnswer(raw).kind !== "invalid",
             take: takeLeader(teamNow, attempt),
           }),
         });

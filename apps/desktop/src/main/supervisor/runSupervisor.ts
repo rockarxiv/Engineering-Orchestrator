@@ -138,7 +138,6 @@ import {
   type ForkCopy,
   type Item,
   type JobRunsOn,
-  type UsageEvent,
   type Uuid,
   type SuggestionOutcome,
   type SuggestionSpend,
@@ -359,7 +358,8 @@ import { archiveReachOf, archiveUnusedSkills } from "../skills/archival.js";
 import { currentWatch, markCheckInFlight, ownerMention, recordQuietCheck, waitingLine, watchArrival, watchHold, watchRoundTrips, WATCH_ROUTED_REASON, WATCH_VERIFICATION_FAILED_REASON } from "./watches.js";
 import { agentMentionChain } from "./escalation.js";
 import { answerTeamCall, createTeamParticipantScopes, memberAttemptOf, MEMBER_NO_BRIDGE, memberCredential, memberWrites, withinBoundary, type TeamParticipantScopes } from "./teamParticipants.js";
-import { createTeamSupervisor, reportMemberCopy, TEAM_RETRY_WORDS, type IsolatedTurnAnswer, type IsolatedTurnRequest, type ReportOnlyProviderAnswer, type TeamAnswerContract } from "./teamSupervisor.js";
+import type { TurnDrive, TurnOutcome } from "./turnOutcome.js";
+import { createTeamSupervisor, reportMemberCopy, type TeamTurnDrive, TEAM_RETRY_WORDS, type IsolatedTurnAnswer, type IsolatedTurnRequest, type ReportOnlyProviderAnswer, type TeamAnswerContract } from "./teamSupervisor.js";
 import { currentTeamSession, endTeamSession, getTeamAttempt, getTeamSession, getTeamSessionRecord, runsOfTeamSession } from "../db/repos/teamSessionsRepo.js";
 import { teamNotHereProblem, type TeamControlSite } from "./teamSessionView.js";
 
@@ -1598,7 +1598,7 @@ function defaultIsOurLiveProcess(run: Run): boolean {
 /** What `untilTurnEnded` yields when the turn has been ended over the agent write bridge. */
 const TURN_ENDED = Symbol("turn ended over the agent write bridge");
 
-/** A turn `processStream` is reading, as the agent write bridge finds it (EO-543). */
+/** A turn `readTurn` is reading, as the agent write bridge finds it (EO-543). */
 interface LiveTurn {
   item: Item;
   agent: Agent;
@@ -2004,49 +2004,6 @@ function refusedTurn(reason: string): InterruptibleStream<AgentEvent> {
   };
 }
 
-type StreamOutcome =
-  | { kind: "escalated" }
-  | { kind: "result"; data: unknown }
-  /**
-   * `retryable` is the backend's own word on whether trying again could
-   * end differently (EO-437). It is carried rather than dropped because
-   * the two answers end the run in different places: a failure worth
-   * retrying is a failed run the scheduler offers again, and one that is
-   * not is parked for a person after the one attempt.
-   */
-  | { kind: "error"; message: string; retryable: boolean }
-  /**
-   * The stream stopped without ever saying it was done.
-   *
-   * `finalText` is the last thing the agent wrote that *looked* like an
-   * answer rather than prose — the raw text, unparsed, exactly as it
-   * arrived. It is carried because a turn can deliver a perfectly good
-   * terminal result and still end this way: the payload is in the
-   * agent's own message and only the `result` event that would have
-   * announced it is missing (#141).
-   */
-  | { kind: "ended"; finalText: string | null }
-  | { kind: "paused" }
-  /**
-   * The backend refused because a plan window is full (EO-172).
-   *
-   * Its own outcome rather than a `guardTripped` with a different
-   * sentence in it, because the two are opposite claims about whose
-   * fault the stop was: a tripped guard is EO deciding to stop, and this
-   * is EO being told it may not carry on. Only this one is exempt from
-   * the correction attempts every other malformed result gets, and
-   * making that exemption a distinct outcome is what keeps it from
-   * quietly widening to cover a genuinely malformed result later.
-   */
-  | { kind: "limitReached"; quota: QuotaEvent }
-  /**
-   * The backend refused the turn because its sign-in is no good (EO-797,
-   * `AgentEvent`'s `signIn`). Its own outcome for the reason
-   * `limitReached` is: neither the agent's failure nor a guard EO chose
-   * to trip, so neither an attempt nor a park for a person on this item.
-   */
-  | { kind: "signedOut"; message: string }
-  | { kind: "guardTripped"; reason: string };
 
 /**
  * Which of the servers this turn was given the backend did not bring
@@ -2733,7 +2690,7 @@ export function createRunSupervisor(
 
   /**
    * The turns being read right now, by run: what an agent's write over
-   * the bridge is made as (EO-543). Set by `processStream` for exactly
+   * the bridge is made as (EO-543). Set by `readTurn` for exactly
    * the span it reads one turn, so a write arriving from a turn nobody is
    * reading — one already given up on, or a process that outlived its
    * run — finds nothing to be made as, and is refused.
@@ -3908,7 +3865,7 @@ export function createRunSupervisor(
    * sentence, because neither is consulted (invariant 12).
    *
    * `open` is not called on a refusal, so nothing is spawned. What comes
-   * back instead is a stream that says why, which `processStream` reads
+   * back instead is a stream that says why, which `readTurn` reads
    * as a tripped guard: the run ends awaiting a person and the reason is
    * a comment on the item (invariants 8 and 9). A stream rather than a
    * verdict for each caller to act on, because the five call sites end a
@@ -4067,7 +4024,7 @@ export function createRunSupervisor(
     // stops a suggested reply still being made after the last one, and
     // one that asks for a suggestion is opened so that it can be stopped
     // after its result (EO-809). Outermost, so the stream it knows a turn
-    // by is the one `processStream` is handed.
+    // by is the one `readTurn` is handed.
     if (!capturing) return suggestedReplies.wrap(inner, item.id, run.id);
     capturedRuns.add(run.id);
     return suggestedReplies.wrap(capturingProvider(
@@ -4441,7 +4398,10 @@ export function createRunSupervisor(
     isolatedTurn: (request) => isolatedMemberTurn(request),
     scopes: teamScopes,
     writeBridge: () => options.agentWriteBridge?.() ?? null,
-    guardTurn: (turn) => guardMemberTurn(turn),
+    // Its turns driven by the code that drives an ordinary run's, and
+    // ended as one's is where the runtime refused them (EO-886).
+    driveTurn: (turn) => driveTeamTurn(turn),
+    holdRuntime: (turn, refused) => holdTeamRuntime(turn, refused),
     restriction: participantRestriction,
     budgetLeft: (itemId) => {
       const guards = readGuards();
@@ -5290,34 +5250,80 @@ export function createRunSupervisor(
     }
   }
 
-  async function processStream(
-    stream: InterruptibleStream<AgentEvent>,
-    ctx: {
-      /** The run's own: once it is aborted, a backend that does not end its turn is not waited on for long (`untilStopped`). */
-      signal: AbortSignal;
-      runId: Uuid;
-      buffer: RunEventBuffer;
-      item: Item;
-      agent: Agent;
-      /** Which action's outcome shape a message would have to match to end this run (#144). */
-      action: string;
-      /** What this turn was actually given, not what the catalogue says now (EO-107). */
-      expectedServers: string[];
-      /** Where this run may attach files from, as its turns were told — null when it has nowhere (EO-412). */
-      attachFrom: AttachmentSource | null;
-      onThreadId: (threadId: string) => void;
-      onUsage: (usage: UsageEvent) => void;
-      /**
-       * Every reading of the backend's own allowance (EO-172).
-       *
-       * All of them, not only the refusals: a window that has *stopped*
-       * refusing is no longer holding the work up, and the tracker can
-       * only forget it if it is told.
-       */
-      onQuota: (quota: QuotaEvent) => void;
-      pushEvent: (event: AgentEvent) => void;
-    },
-  ): Promise<StreamOutcome> {
+  /**
+   * Drives one turn's stream to its end (EO-886): the one reading of a
+   * turn's stream there is, for an item's own run and its corrective
+   * turns (`driveToCompletion`) and for a team's leader and members
+   * (`driveTeamTurn`) alike. It reads the stream (`readTurn`), takes an
+   * answer said only as the turn's last message where it is a valid one
+   * (#141), and ends a turn that came back with nothing usable while a
+   * plan limit stood against it as stopped by that limit (EO-172) — so a
+   * refusal, a sign-in, a guard, a final-message answer and the MCP
+   * startup check are read the same way whoever's turn it was. What is
+   * made of the outcome — checking a result against the step's action,
+   * correcting it, moving the item, holding the runtime — is the caller's.
+   */
+  async function driveTurn(stream: InterruptibleStream<AgentEvent>, ctx: TurnDrive): Promise<TurnOutcome> {
+    let outcome = await readTurn(stream, ctx);
+    // Whatever the turn left unfinished goes with it, however it
+    // ended: a corrective turn on the same run must not have its
+    // words joined onto the last one's half-written block.
+    liveDrafts.endTurn(ctx.runId);
+
+    // The answer arrived; only the event that announces it did not
+    // (#141). A reviewer returned a well-formed
+    // `{"outcome":{"verdict":"approve",...}}` as its last message
+    // and the stream then closed after the trailing usage event,
+    // with no `result` event behind it — so the approval was read,
+    // recorded in `run_events`, and thrown away, and the item sat
+    // at Review with a reviewer shown as working on it forever.
+    //
+    // The bar for treating a message as the answer is deliberately
+    // the same bar a `result` event has to clear: it must parse and
+    // it must satisfy the turn's own schema (`accepts`). Anything less
+    // stays `ended` and is reported as a turn that produced nothing,
+    // which is what it is. This is not prose being read for meaning
+    // (ARCHITECTURE.md, "A run") — a message that is not the exact shape
+    // the turn declared never becomes a result here.
+    //
+    // Asked before the limit check below, and not after: a turn that
+    // finished its answer and *then* ran the window dry has done the
+    // work, and reporting it as stopped by a limit would throw away a
+    // result EO already holds (EO-172).
+    if (outcome.kind === "ended" && outcome.finalText !== null && ctx.accepts(outcome.finalText)) {
+      // The raw text, not the parsed value: what the agent actually
+      // said, which the caller's validation turns into what it acts on
+      // — exactly as it would have for a result the provider announced.
+      outcome = { kind: "result", data: outcome.finalText };
+    }
+
+    // A limit was reached and the turn came back with nothing usable
+    // (EO-172). Either of these would otherwise be re-prompted or
+    // reported as the agent's failure, and both are wrong for the same
+    // reason: the allowance is spent, so asking again cannot produce a
+    // different answer, and the thing that needs saying is the limit
+    // rather than the shape of what a cut-off turn managed to write.
+    //
+    // `escalated`, `paused` and `guardTripped` are deliberately not
+    // here. Each is EO or a person having already decided how this
+    // turn ends, and a refusal arriving alongside does not overrule
+    // that. `result` is not here either — the caller asks again once it
+    // has checked it, because a valid one is work that got done.
+    //
+    // Whichever outstanding refusal holds the work longest, so that
+    // waiting out the time this names waits out every other window
+    // too. Asked for here rather than remembered from the stream,
+    // because a window that stopped refusing during the turn no
+    // longer counts and the answer can only shrink after it arrives.
+    const blockingRefusal = ctx.refusals.blocking(now());
+    if (blockingRefusal !== null && (outcome.kind === "ended" || outcome.kind === "error")) {
+      outcome = { kind: "limitReached", quota: blockingRefusal };
+    }
+    return outcome;
+  }
+
+  /** `driveTurn`'s reading of the stream itself: each event recorded and acted on, to the event the turn ends on. */
+  async function readTurn(stream: InterruptibleStream<AgentEvent>, ctx: TurnDrive): Promise<TurnOutcome> {
     // Set once the agent has escalated. From then on the loop is only
     // draining what the backend says on its way out — see below.
     let escalated = false;
@@ -5376,18 +5382,20 @@ export function createRunSupervisor(
       if (finalText === null) return;
       const dropped = finalText;
       finalText = null;
-      if (progressReported) return;
+      // Said on an item's own run only: a team's turn posts nothing on
+      // the item but what EO makes of its answer.
+      if (progressReported || ctx.itemRun === undefined) return;
       // Only worth a word if it would actually have ended the run. An
       // agent narrating in JSON for its own reasons is not making this
       // mistake, and telling it off for one it did not make is noise.
-      if (!validateResult(ctx.item, ctx.action, dropped, definingRole(ctx.item, ctx.agent), ctx.runId).ok) return;
+      if (!ctx.accepts(dropped)) return;
       progressReported = true;
       droppedOutcome = dropped;
     };
 
     /** Says on the item what `superseded` dropped, if anything. Called once the stream has been read. */
     const reportDroppedOutcome = (): void => {
-      if (droppedOutcome === null) return;
+      if (droppedOutcome === null || ctx.itemRun === undefined) return;
       const dropped = droppedOutcome;
       droppedOutcome = null;
       postComment(db, {
@@ -5396,7 +5404,7 @@ export function createRunSupervisor(
         author: { type: "engine" },
         kind: "note",
         body:
-          `${ctx.agent.name} sent a complete "${ctx.action}" outcome and then carried on working, so EO has read it as a ` +
+          `${ctx.agent.name} sent a complete "${ctx.itemRun.action}" outcome and then carried on working, so EO has read it as a ` +
           `progress update rather than as an answer and has not acted on it. Nothing in it has been recorded as this ` +
           `ticket's branch or as what this run produced.\n\n` +
           "```json\n" +
@@ -5419,6 +5427,8 @@ export function createRunSupervisor(
     // blocking comment having been posted over the bridge, which ends
     // the turn — the reader is woken by it rather than by anything the
     // backend goes on to say about the call (ARCHITECTURE.md §13.1).
+    // An item's own run's only: a team's turn writes over the bridge as
+    // its attempt, never as the item's run.
     let wake: () => void = () => undefined;
     const turnEnded = new Promise<void>((resolve) => {
       wake = resolve;
@@ -5426,14 +5436,14 @@ export function createRunSupervisor(
     const live: LiveTurn = {
       item: ctx.item,
       agent: ctx.agent,
-      attachFrom: ctx.attachFrom,
+      attachFrom: ctx.itemRun?.attachFrom ?? null,
       ended: false,
       end: () => {
         live.ended = true;
         wake();
       },
     };
-    liveTurns.set(ctx.runId, live);
+    if (ctx.itemRun !== undefined) liveTurns.set(ctx.runId, live);
 
     // A turn that asked for a suggested reply (EO-809) is read on past its
     // `result` beside the run's ending rather than ended there: the run
@@ -5475,8 +5485,9 @@ export function createRunSupervisor(
         // The words of a block as they are written: shown to whoever is
         // watching and never stored (`OutputDeltaEvent`). The block they
         // belong to arrives whole a moment later, and that is the record.
+        // An item's own run's only: a team's turn is shown as its report.
         if (event.type === "output_delta") {
-          liveDrafts.append(ctx.runId, ctx.item.id, event.stream, event.text);
+          if (ctx.itemRun !== undefined) liveDrafts.append(ctx.runId, ctx.item.id, event.stream, event.text);
           continue;
         }
         // What the adapter says about EO's skills (EO-715) is recorded as
@@ -5531,7 +5542,9 @@ export function createRunSupervisor(
           // full — restating it again would only fill it again.
           const activity = runActivity.get(ctx.runId);
           const earned = (activity?.callsSinceReminder ?? 1) > 0;
-          if (!isManualAction(ctx.action) && earned) {
+          // The item's brief is an item's own run's: a team's turn was
+          // briefed with its assignment, which is not restated here.
+          if (ctx.itemRun !== undefined && !isManualAction(ctx.itemRun.action) && earned) {
             if (activity) activity.callsSinceReminder = 0;
             const reminder = restatedBrief(ctx.item);
             // Recorded with whether it got through, as a person's message
@@ -5627,7 +5640,7 @@ export function createRunSupervisor(
           ctx.onUsage(event);
           // Recorded above whoever's it is: the system agent's spend still
           // counts in the totals and can still stop other agents' work.
-          const guardReason = isSystemAgent(ctx.agent) ? null : checkBudgetGuard(ctx.item.id);
+          const guardReason = ctx.budgetGuard();
           if (guardReason) {
             return { kind: "guardTripped", reason: guardReason };
           }
@@ -5646,7 +5659,7 @@ export function createRunSupervisor(
         // matter is the tracker's job, and it needs the ones that are not
         // refusals to know when a window has come back.
         if (event.type === "quota") {
-          ctx.onQuota(event);
+          ctx.refusals.record(event);
           continue;
         }
 
@@ -5661,7 +5674,7 @@ export function createRunSupervisor(
         // (`budgetCents`): the budget guard tripping, during the turn
         // rather than after it, and ended as that guard ends a run.
         if (event.type === "error" && event.budget) {
-          return { kind: "guardTripped", reason: checkBudgetGuard(ctx.item.id) ?? budgetStopReason() };
+          return { kind: "guardTripped", reason: ctx.budgetStop() };
         }
         // The backend's sign-in is no good (EO-797): read before the
         // ordinary failure below, which would be retried.
@@ -6530,7 +6543,7 @@ export function createRunSupervisor(
       return { ...options, ...turnEnvironment(item) };
     };
 
-    let outcome: StreamOutcome;
+    let outcome: TurnOutcome;
     let validatedResult: unknown;
     /** Set when the agent answered with questions rather than an answer (KAN-29). */
     let askedFor: ClarificationRequired | null = null;
@@ -6551,15 +6564,16 @@ export function createRunSupervisor(
       let stream = initialStream;
       let resultRetries = 0;
       for (;;) {
-        outcome = await processStream(stream, {
+        outcome = await driveTurn(stream, {
           signal: controller.signal,
           runId: run.id,
           buffer,
           item,
           agent,
-          action,
           expectedServers: runOpts.toolServerNames ?? [],
-          attachFrom: attachSourceOf(item, run),
+          // The bar a message the turn ends on must clear to be its answer
+          // (#141): the action's own schema, as for a `result`.
+          accepts: (text) => validateResult(item, action, text, definingRole(item, agent), run.id).ok,
           onThreadId: (id) => {
             // Written the moment it is known, not only when the run ends:
             // a run EO is killed under never reaches an ending, and the
@@ -6589,68 +6603,18 @@ export function createRunSupervisor(
               postComment(db, { itemId: item.id, runId: run.id, author: { type: "engine" }, kind: "note", body: unpricedRunNote(agent.name, event.unpriced.model) });
             }
           },
-          onQuota: (quota) => {
-            refusals.record(quota);
-          },
+          budgetGuard: () => (isSystemAgent(agent) ? null : checkBudgetGuard(item.id)),
+          budgetStop: () => checkBudgetGuard(item.id) ?? budgetStopReason(),
+          refusals,
           pushEvent,
+          itemRun: { action, attachFrom: attachSourceOf(item, run) },
         });
-        // Whatever the turn left unfinished goes with it, however it
-        // ended: a corrective turn on the same run must not have its
-        // words joined onto the last one's half-written block.
-        liveDrafts.endTurn(run.id);
-
-        // The answer arrived; only the event that announces it did not
-        // (#141). A reviewer returned a well-formed
-        // `{"outcome":{"verdict":"approve",...}}` as its last message
-        // and the stream then closed after the trailing usage event,
-        // with no `result` event behind it — so the approval was read,
-        // recorded in `run_events`, and thrown away, and the item sat
-        // at Review with a reviewer shown as working on it forever.
-        //
-        // The bar for treating a message as the answer is deliberately
-        // the same bar a `result` event has to clear: it must parse and
-        // it must satisfy the action's own schema. Anything less stays
-        // `ended` and is reported as a run that produced nothing, which
-        // is what it is. This is not prose being read for meaning
-        // (ARCHITECTURE.md, "A run") — a message that is not the exact shape the action
-        // declared never becomes a result here.
-        //
-        // Asked before the limit check below, and not after: a turn that
-        // finished its answer and *then* ran the window dry has done the
-        // work, and reporting it as stopped by a limit would throw away a
-        // result EO already holds (EO-172).
-        if (outcome.kind === "ended" && outcome.finalText !== null && validateResult(item, action, outcome.finalText, definingRole(item, agent), run.id).ok) {
-          // The raw text, not the parsed value: `persisted.raw` is what
-          // the agent actually said, and the validation below is what
-          // turns it into what the engine acts on — exactly as it would
-          // have for a result the provider announced.
-          outcome = { kind: "result", data: outcome.finalText };
-        }
-
-        // A limit was reached and the turn came back with nothing usable
-        // (EO-172). Every one of these three would otherwise be
-        // re-prompted or reported as the agent's failure, and both are
-        // wrong for the same reason: the allowance is spent, so asking
-        // again cannot produce a different answer, and the thing that
-        // needs saying on the item is the limit rather than the shape
-        // of what a cut-off turn managed to write.
-        //
-        // `escalated`, `paused` and `guardTripped` are deliberately not
-        // here. Each is EO or a person having already decided how this
-        // run ends, and a refusal arriving alongside does not overrule
-        // that. `result` is not here either — it is checked below, after
-        // validation, because a valid one is work that got done.
-        //
-        // Whichever outstanding refusal holds the work longest, so that
-        // waiting out the time this names waits out every other window
-        // too. Asked for here rather than remembered from the callback,
-        // because a window that stopped refusing during the turn no
-        // longer counts and the answer can only shrink after it arrives.
+        // Stopped by a plan limit with nothing usable (`driveTurn`): the
+        // run ends on the limit, never re-prompted against it (EO-172).
+        if (outcome.kind === "limitReached") break;
+        // Asked again once a result has been checked, below: a valid one
+        // is work that got done, whatever the window says.
         const blockingRefusal = refusals.blocking(now());
-        if (blockingRefusal !== null && (outcome.kind === "ended" || outcome.kind === "error")) {
-          outcome = { kind: "limitReached", quota: blockingRefusal };
-          break;
-        }
 
         // A-02: a result is a *claim* until it matches its action's
         // schema. Re-prompt with the exact validation error rather than
@@ -7163,7 +7127,7 @@ export function createRunSupervisor(
         // note, not an escalation: nobody needs to reply, and nothing
         // parks the item (invariant 6).
         const reason = quotaStopReason({ agentName: agent.name, event: outcome.quota, now: now() });
-        const limitedOn = runtimeOf(runsOn(agent, item));
+        const limitedOn = limitRuntimeOf(agent, item);
         if (limitedOn === null) {
           // A backend no runtime names — the fake one previews and tests
           // run on — has no hold to wait in, and a cancelled run nothing
@@ -7183,9 +7147,7 @@ export function createRunSupervisor(
           endedAt: now(),
           threadId,
         });
-        blockRuntimeForLimit(limitedOn, outcome.quota, agent, item);
-        postComment(db, { itemId: item.id, runId: run.id, author: { type: "engine" }, kind: "note", body: runtimeLimitStopNote(limitedOn, reason) });
-        onItemChanged(item.id);
+        holdForLimit(run.id, item, agent, limitedOn, outcome.quota, reason);
         announceRun(run.id, item.id, "cancelled");
         return;
       }
@@ -7223,8 +7185,7 @@ export function createRunSupervisor(
    * in, and fails as any other run does.
    */
   function endSignedOut(runId: Uuid, item: Item, agent: Agent, threadId: string | null, message: string): void {
-    const runningOn = runsOn(agent, item);
-    const runtime = runtimeOf(runningOn) ?? runtimeOf(agent);
+    const runtime = signInRuntimeOf(agent, item);
     if (runtime === null) {
       updateRun(db, runId, { status: "failed", error: message, endedAt: now(), threadId });
       postRunFailure(item.id, runId, message);
@@ -7232,10 +7193,100 @@ export function createRunSupervisor(
       return;
     }
     updateRun(db, runId, { status: "failed", error: signInStopError(message), endedAt: now(), threadId });
+    holdForSignIn(runId, item, agent, runtime, message);
+    announceRun(runId, item.id, "failed");
+  }
+
+  /** The runtime a plan limit an agent's turn on this item met holds (EO-798), or null for a backend no runtime names. */
+  function limitRuntimeOf(agent: Agent, item: Item): RuntimeId | null {
+    return runtimeOf(runsOn(agent, item));
+  }
+
+  /** The runtime whose sign-in refused an agent's turn on this item (EO-797), or null for a backend no runtime names. */
+  function signInRuntimeOf(agent: Agent, item: Item): RuntimeId | null {
+    return runtimeOf(runsOn(agent, item)) ?? runtimeOf(agent);
+  }
+
+  /**
+   * A turn a plan limit stopped (EO-172, EO-798), whoever's — an item's
+   * own run or a team's turn (EO-886): the runtime held on this device
+   * until the window refreshes, the person told once, and the item told on
+   * the turn's run.
+   */
+  function holdForLimit(runId: Uuid, item: Item, agent: Agent, runtime: RuntimeId, quota: QuotaEvent, reason: string): void {
+    blockRuntimeForLimit(runtime, quota, agent, item);
+    postComment(db, { itemId: item.id, runId, author: { type: "engine" }, kind: "note", body: runtimeLimitStopNote(runtime, reason) });
+    onItemChanged(item.id);
+  }
+
+  /**
+   * A turn its backend's sign-in stopped (EO-797), whoever's (EO-886): the
+   * cached probe answer forgotten, the runtime blocked as a mid-run refusal
+   * blocks it — one message to the person, lifted by a sign-in or Try
+   * again — and the item told on the turn's run.
+   */
+  function holdForSignIn(runId: Uuid, item: Item, agent: Agent, runtime: RuntimeId, message: string): void {
+    const runningOn = runsOn(agent, item);
     invalidateRuntimeAuth(runtime);
     blockRuntime({ runtime, executablePath: null }, runtimeOf(runningOn) === runtime ? runningOn : agent, item, "midRun");
     postComment(db, { itemId: item.id, runId, author: { type: "engine" }, kind: "note", body: runtimeSignInStopNote(runtime, message) });
-    announceRun(runId, item.id, "failed");
+  }
+
+  /**
+   * A team's turn its runtime refused (EO-886): held as an ordinary run's
+   * is (`holdForLimit`, `holdForSignIn`), answering why, for the attempt
+   * to be stopped with — no retry spent, and started again once the hold
+   * lifts, since no turn starts on a held runtime (`participantRestriction`).
+   * `held` false for a backend no runtime names, which nothing can hold:
+   * the attempt fails, as an ordinary run on one does.
+   */
+  function holdTeamRuntime(turn: { runId: Uuid; item: Item; agent: Agent }, refused: Extract<TurnOutcome, { kind: "limitReached" | "signedOut" }>): { held: boolean; reason: string } {
+    const { runId, item, agent } = turn;
+    if (refused.kind === "limitReached") {
+      const reason = quotaStopReason({ agentName: agent.name, event: refused.quota, now: now() });
+      const runtime = limitRuntimeOf(agent, item);
+      if (runtime === null) return { held: false, reason };
+      holdForLimit(runId, item, agent, runtime, refused.quota, reason);
+      return { held: true, reason };
+    }
+    const runtime = signInRuntimeOf(agent, item);
+    if (runtime === null) return { held: false, reason: refused.message };
+    holdForSignIn(runId, item, agent, runtime, refused.message);
+    onItemChanged(item.id);
+    return { held: true, reason: signInStopError(refused.message) };
+  }
+
+  /**
+   * A team's turn, a leader's or a member's, report-only or isolated,
+   * driven by the code that drives an ordinary run's (EO-886): `driveTurn`,
+   * with what is only an item's own run's left out, and held to the wall
+   * clock and the inactivity guard as an ordinary run is
+   * (`guardMemberTurn`, EO-871) — a trip of either is the turn's outcome.
+   * The skills it was given are settled through its own buffer once it
+   * ends (EO-867).
+   */
+  async function driveTeamTurn(turn: TeamTurnDrive): Promise<TurnOutcome> {
+    const trip: { reason: string | null } = { reason: null };
+    const guard = guardMemberTurn({
+      runId: turn.runId,
+      agent: turn.agent,
+      stop: (reason) => {
+        trip.reason = reason;
+        turn.abort();
+      },
+    });
+    try {
+      const outcome = await driveTurn(turn.stream, { ...turn, pushEvent: () => undefined });
+      return trip.reason !== null ? { kind: "guardTripped", reason: trip.reason } : outcome;
+    } catch (error) {
+      if (trip.reason !== null) return { kind: "guardTripped", reason: trip.reason };
+      throw error;
+    } finally {
+      guard.release();
+      liveDrafts.clear(turn.runId);
+      settleSkillUsage(turn.runId, turn.buffer);
+      runSkills.delete(turn.runId);
+    }
   }
 
   /**
@@ -8228,15 +8279,8 @@ export function createRunSupervisor(
         ...(scopes.length > 0 ? { memoryScopes: memoryReadScopes(scopes) } : {}),
         writeBridge: memberCredential(bridge, item.id, request.attemptId, memberWrites(memoryNoteEnabled(agent)), request.boundary),
       },
-      observe: (event, buffer) => {
-        if (event.type !== "skills_delivered" && event.type !== "skill_loaded") return false;
-        recordSkillUsage(run.id, buffer, item, agent, event);
-        return true;
-      },
-      done: (buffer) => {
-        settleSkillUsage(run.id, buffer);
-        runSkills.delete(run.id);
-      },
+      // Checked against its startup report, as an ordinary dispatch's is (EO-107).
+      expectedServers: toolDirectory?.serverNames ?? [],
     };
   }
 
@@ -11990,7 +12034,7 @@ export function createRunSupervisor(
    * the turn's own run is not in `activeControllers`, so nothing else of
    * an ordinary run's ending reaches it.
    */
-  function guardMemberTurn(turn: { runId: string; agent: Agent; stop: (reason: string) => void }): { observe: (event: AgentEvent) => void; release: () => void } {
+  function guardMemberTurn(turn: { runId: string; agent: Agent; stop: (reason: string) => void }): { release: () => void } {
     const guards = readGuards();
     let over = false;
     const release = (): void => {
@@ -12008,7 +12052,8 @@ export function createRunSupervisor(
     timer?.unref?.();
     runActivity.set(turn.runId, { lastAt: now(), events: 0, seenEvents: 0, openCalls: new Set(), callsSinceReminder: 1, lastWord: null, agentName: turn.agent.name, systemAgent: isSystemAgent(turn.agent) });
     memberTurnStops.set(turn.runId, stop);
-    return { observe: (event) => noteActivity(turn.runId, event), release };
+    // What it says is noted as any turn's is, by `readTurn`.
+    return { release };
   }
 
   /**

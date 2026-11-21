@@ -105,6 +105,36 @@ describe("planLeaderTeam (EO-847)", () => {
     expect(plan(crashed).next).toMatchObject({ kind: "failed" });
   });
 
+  it("stops with the reason for the last failure: a failed turn's error, or what EO refused (EO-886)", () => {
+    const limited = chain(
+      attempt(LEADER_ASSIGNMENT_KEY, "failed", { error: "Crashed." }),
+      attempt(LEADER_ASSIGNMENT_KEY, "failed", { error: "You've hit your usage limit." }),
+    );
+    const failed = plan(limited).next;
+    if (failed.kind !== "failed") throw new Error("failed");
+    expect(failed.reason).toMatch(/failed or were refused 2 times[^]*\n\nThe last of them: You've hit your usage limit\.$/);
+
+    const refused = (problems: string[]) => finalTurn({ decision: "final", accepted: false, problems, contributions: [] });
+    const twice = plan(chain(refused(["No."]), refused(["It relies on no report."]))).next;
+    if (twice.kind !== "failed") throw new Error("failed");
+    expect(twice.reason).toContain("The last of them: EO refused its final answer — It relies on no report.");
+    expect(twice.reason).not.toContain("ran out of retries");
+  });
+
+  it("names each member that ran out of retries with its last error when the leader stops (EO-886)", () => {
+    const lead = assigned([want("auth"), want("suite", "tester")]);
+    const auth = [attempt("auth", "failed", { error: "Crashed." }), attempt("auth", "failed", { error: "The backend refused: rate limited." })];
+    const suite = [attempt("suite", "failed", { error: "Timed out." }), attempt("suite", "failed", { error: "Its turn ended without an answer." })];
+    // Each retry supersedes the attempt before it, as the supervisor writes them.
+    auth[0]!.supersededBy = auth[1]!.id;
+    suite[0]!.supersededBy = suite[1]!.id;
+    const after = [attempt(LEADER_ASSIGNMENT_KEY, "failed", { error: "Crashed.", round: 2 }), attempt(LEADER_ASSIGNMENT_KEY, "failed", { error: "Signed out.", round: 2 })];
+    const next = plan(chain(lead, ...auth, ...suite, ...after)).next;
+    if (next.kind !== "failed") throw new Error("failed");
+    expect(next.reason).toContain("The last of them: Signed out.");
+    expect(next.reason).toContain("These members ran out of retries too:\n- **auth**: The backend refused: rate limited.\n- **suite**: Its turn ended without an answer.");
+  });
+
   it("parks on a question nobody has answered, and carries the asker on once it is answered — participant or leader", () => {
     const lead = assigned([want("auth"), want("suite", "tester")]);
     const asking = attempt("auth", "cancelled", { question: "open" });

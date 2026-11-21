@@ -4358,7 +4358,7 @@ describe("a suggested next message on a prediction-mode fork (EO-808)", () => {
   });
 
   /**
-   * As `processStream` reads a chat's turn (EO-810): handed on for the
+   * As `readTurn` reads a chat's turn (EO-810): handed on for the
    * suggestion at its result, and let go of at its first fatal error,
    * before the adapter has seen the turn end.
    */
@@ -4715,7 +4715,7 @@ describe("a suggested next message on a prediction-mode fork (EO-808)", () => {
 
     const told: SuggestionOutcome[] = [];
     const stream = replies.wrap(provider, "chat-ask78", "run-ask78").resume("thr-ask78", "give me your recommendation", { cwd: worktree, suggestNextMessage: true, onSuggestionOutcome: (said) => told.push(said) });
-    // As `processStream` does: read to the result, hand the rest on, and let go.
+    // As `readTurn` does: read to the result, hand the rest on, and let go.
     const reading = replies.reading(stream);
     for await (const event of reading.stream) {
       if (event.type === "result") {
