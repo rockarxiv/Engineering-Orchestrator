@@ -1549,7 +1549,7 @@ export function importPipeline(db: Db, input: ImportPipelineInput): ImportResult
   let keptDefinitions: { role: string; action: string }[] = [];
   try {
     db.transaction(() => {
-      ({ pipelineId, boardPipelineIds, stepIds, keptDefinitions } = writeImport(db, document, toCreate, idBySlug, input.projectId ?? null, input.signedInBackends ?? []));
+      ({ pipelineId, boardPipelineIds, stepIds, keptDefinitions } = writeImport(db, document, toCreate, idBySlug, input.projectId ?? null, input.signedInBackends ?? [], input.preview === true));
     });
   } catch (error) {
     // Rolled back by the transaction, so there is nothing half-written to
@@ -1586,6 +1586,8 @@ function writeImport(
   idBySlug: Map<string, string>,
   projectId: Uuid | null,
   signedInBackends: readonly string[],
+  /** Binding for a rehearsal (`ImportPipelineInput.preview`). */
+  preview: boolean,
 ): { pipelineId: string; boardPipelineIds: string[]; stepIds: Record<string, string>; keptDefinitions: { role: string; action: string }[] } {
   writeItemTypes(db, document, projectId);
   const keptDefinitions = writeRoles(db, document, signedInBackends, projectId);
@@ -1650,7 +1652,7 @@ function writeImport(
   // Each agent step's kind, bound to one of the project's agents of that
   // kind (EO-875) — read after the roles above are written, so a kind this
   // import gave an agent names that agent.
-  const agentFor = kindBinder(listAgents(db), projectId, [], { preview: input.preview === true });
+  const agentFor = kindBinder(listAgents(db), projectId, [], { preview });
 
   // Every board, each a pipeline of its own, in this one transaction
   // (EO-762): a template whose second board failed to write is not
