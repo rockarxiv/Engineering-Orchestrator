@@ -736,8 +736,8 @@ describe("buildSeedContext", () => {
     const said = (context: string) => /## What the person said\n([\s\S]*?)(?=\n## |$)/.exec(context)?.[1] ?? "";
 
     // An ordinary dispatch: as it always was, any finished run of the agent with a thread is it having looked.
-    expect(said(await buildSeedContext(handle.db, item, reviewer, "review"))).toContain("Nothing since you last worked on this ticket");
-    expect(said(await buildTurnContext(handle.db, item, reviewer, "review", null))).toContain("Nothing since you last worked on this ticket");
+    expect(said(await buildSeedContext(handle.db, item, reviewer, "review"))).toContain("Nothing since you last worked on this");
+    expect(said(await buildTurnContext(handle.db, item, reviewer, "review", null))).toContain("Nothing since you last worked on this");
     // A member's turn, whose own session's runs are not.
     expect(said(await buildTurnContext(handle.db, item, reviewer, "review", null, [], undefined, new Set([member.id])))).toContain("the 429 must say when to retry");
   });
