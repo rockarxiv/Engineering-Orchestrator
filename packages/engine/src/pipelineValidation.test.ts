@@ -1825,7 +1825,7 @@ describe("validatePipeline: the agent a step names (EO-875)", () => {
     // The step, the agent, its kind and the action, each named.
     expect(problem?.message).toContain('"review"');
     expect(problem?.message).toContain("Ada two");
-    expect(problem?.message).toContain('"implementer" agent');
+    expect(problem?.message).toContain('kind, "implementer"');
     expect(problem?.message).toContain('no "triage" action');
   });
 
