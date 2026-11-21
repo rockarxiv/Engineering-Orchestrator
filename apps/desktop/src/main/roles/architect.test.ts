@@ -1,7 +1,7 @@
-import { proposedActionDraft, stepAgentOf, type ConfigureOutput, type PipelineDraft } from "@eo/core";
+import { proposedActionDraft, stepAgentOf, type ConfigureOutput, type PipelineDraft, type Uuid } from "@eo/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DbHandle } from "../db/client.js";
-import { createAgent, createPipeline, createProject, createRoute, createStep, listAgents, listRoutesForPipeline, listStepsForPipeline } from "../db/repos/index.js";
+import { createAgent, createPipeline, createProject, createRoute, createStep, listAgents, listRoutesForPipeline, listStepsForPipeline, setStepAgent } from "../db/repos/index.js";
 import { savePipeline } from "../ipc/configCommands.js";
 import { listPipelineStepViews } from "../ipc/domainQueries.js";
 import { agentOfKind, createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
@@ -108,6 +108,39 @@ describe("rendering a draft", () => {
     expect(body).toContain("**Added**");
     expect(body).toContain("QA");
     expect(body).toContain("**Routing**");
+  });
+
+  /**
+   * Who runs an agent step the card lists (EO-876): a rename, new
+   * instructions or a removal of a step on the second of two agents of
+   * one kind still names that agent, and a change of agent names both,
+   * once.
+   */
+  it("names the agent of a step it renames, gives new instructions, removes or moves to another agent", () => {
+    const codex = createAgent(handle.db, { name: "Codex Reviewer", role: "reviewer", provider: "codex", model: null, instructions: "Review." });
+    setStepAgent(handle.db, "review", codex.id);
+    createStep(handle.db, { id: "second_look", pipelineId: "default" as Uuid, position: 40, name: "Second look", type: "agent", agentId: codex.id, entryAction: "review" });
+    const draft = currentGraph();
+    const reply = (steps: PipelineDraft["steps"]): Reply => ({
+      message: "Here it is.",
+      questions: [],
+      agents: [],
+      runtimes: [],
+      modules: [],
+      draft: { ...draft, rationale: "Tidy.", removes: ["second_look"], steps: steps.filter((step) => step.id !== "second_look") },
+    });
+
+    const renamed = render(reply(draft.steps.map((step) => (step.id === "review" ? { ...step, name: "Code review" } : step))));
+    expect(renamed.rejection).toBeUndefined();
+    expect(renamed.card).toContain("- Review (Codex Reviewer runs review) — renamed to **Code review**");
+    expect(renamed.card).toContain("- Second look (Codex Reviewer runs review)");
+
+    const retold = render(reply(draft.steps.map((step) => (step.id === "review" ? { ...step, instructionsSummary: "Look harder." } : step))));
+    expect(retold.card).toContain("- Review (Codex Reviewer runs review) — new instructions");
+
+    // A change of agent says both, in the change, and not again beside the name.
+    const moved = render(reply(draft.steps.map((step) => (step.id === "review" ? { ...step, agent: "Reviewer" } : step))));
+    expect(moved.card).toContain("- Review — Codex Reviewer runs review → Reviewer runs review");
   });
 
   /**

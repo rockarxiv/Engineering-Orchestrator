@@ -617,6 +617,11 @@ export function renderDraft(
   const refusal = removalRefusal(draft, removed, counts);
   if (refusal !== null) return { ok: false, reason: refusal };
 
+  // Who runs an agent step the card lists as changed or removed (EO-876),
+  // beside its name, so a rename or a removal still says which agent it
+  // is. Not where the change itself already says it ("A runs x → B runs x").
+  const runBy = (step: { type: string; agent: string | null; entryAction: string | null; isTerminal: boolean }) =>
+    step.type === "agent" && !step.isTerminal ? ` (${describeStep(step)})` : "";
   if (added.length > 0) {
     lines.push("**Added**", "", ...added.map((step) => `- ${step.name} — ${describeStep(named(step))}${limitsOf(step, draft.routes, workspaceName, stepNames)}`), "");
   }
@@ -624,14 +629,16 @@ export function renderDraft(
     lines.push("**Changed**", "");
     for (const step of changed) {
       const was = beforeById.get(step.id)!;
-      const sentence = changesOf(was, named(step));
-      lines.push(`- ${was.name}${sentence.length > 0 ? ` — ${sentence.join("; ")}` : ""}${holding(counts, step.id)}`);
+      const now = named(step);
+      const sentence = changesOf(was, now);
+      const who = describeStep(was) === describeStep(now) ? runBy(now) : "";
+      lines.push(`- ${was.name}${who}${sentence.length > 0 ? ` — ${sentence.join("; ")}` : ""}${holding(counts, step.id)}`);
       // Each setting the draft changes, under its step, old → new (EO-520).
       lines.push(...settingsOf(step, was).map((change) => `  - ${change}`));
     }
     lines.push("");
   }
-  if (removed.length > 0) lines.push("**Removed**", "", ...removed.map((step) => `- ${step.name}${holding(counts, step.id)}`), "");
+  if (removed.length > 0) lines.push("**Removed**", "", ...removed.map((step) => `- ${step.name}${runBy(step)}${holding(counts, step.id)}`), "");
 
   const routeLines = renderRouteDiff(draft, beforeRoutes, [...draft.steps, ...before]);
   if (routeLines.length > 0) lines.push("**Routing**", "", ...routeLines, "");
