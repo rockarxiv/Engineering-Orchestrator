@@ -152,7 +152,8 @@ function asPublished(draft: PipelineDraft) {
   };
 }
 
-const UNDEFINED_ACTION = 'its answer is not validated and will route as "done"';
+// A step's action must be one of its agent's kind's actions (EO-875).
+const UNDEFINED_ACTION = 'has no "alignment" action';
 
 describe("validating a draft with the definitions it proposes", () => {
   it("validates a step on (qa, alignment) when the draft brings the definition", () => {
@@ -164,12 +165,12 @@ describe("validating a draft with the definitions it proposes", () => {
     expect(listActionDefinitions(handle.db)).toEqual([]);
   });
 
-  it("reports the same draft without the definition with the undefined-action warning", () => {
+  it("refuses the same draft without the definition: the agent's kind has no such action", () => {
     const problems = validateDraft(handle.db, "default", withQaStep());
     const about = problems.filter((problem) => problem.stateId === "qa_check" && problem.message.includes(UNDEFINED_ACTION));
 
     expect(about).toHaveLength(1);
-    expect(about[0]!.severity).toBe("warning");
+    expect(about[0]!.severity).toBe("error");
   });
 
   it("holds the step to the proposed keys: a route on a key the definition does not declare is an error", () => {

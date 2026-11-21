@@ -5,6 +5,7 @@ import type { DbHandle } from "../db/client.js";
 import {
   addDependency,
   addWorkspaceToProject,
+  createAgent,
   createProject,
   createRun,
   projectForWorkspace,
@@ -524,7 +525,8 @@ describe("changing work that already exists", () => {
     // to rewrite them. `owner_role` is free text, so it was a second
     // hardcoded slug wearing the first one's clothes.
     const pipeline = createPipeline(handle.db, { name: "With QA", projectId: null });
-    const step = createStep(handle.db, { id: "qa", pipelineId: pipeline.id, position: 0, name: "QA", agentId: agentOfKind(handle.db, "qa"), entryAction: "review" });
+    const qa = createAgent(handle.db, { name: "QA", role: "qa", provider: "fake", model: null, instructions: "" });
+    const step = createStep(handle.db, { id: "qa", pipelineId: pipeline.id, position: 0, name: "QA", agentId: qa.id, entryAction: "review" });
     const target = createTestItem(handle.db, {
       type: "story",
       title: "Add the limiter",

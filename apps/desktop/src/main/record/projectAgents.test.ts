@@ -11,6 +11,8 @@ import { createProject, getProject } from "../db/repos/projectsRepo.js";
 import { createPerson } from "../db/repos/peopleRepo.js";
 import { issueDevice } from "../db/repos/devicesRepo.js";
 import { createRun, updateRun } from "../db/repos/runsRepo.js";
+import { createPipeline, createStep } from "../db/repos/pipelineStepsRepo.js";
+import { transitionItem } from "../db/repos/transitionsRepo.js";
 import { getSkill, saveSkill, upsertReplicaSkill } from "../db/repos/skillsRepo.js";
 import { saveMcpServer } from "../db/repos/mcpServersRepo.js";
 import { setSetting } from "../db/repos/settingsRepo.js";
@@ -216,8 +218,14 @@ describe("handing a solo project to the record (EO-476)", () => {
     expect(countProjectRows(recordDb.db, support.id)).toEqual(countProjectRows(annaDb.db, support.id));
   });
 
-  it("makes them the record's staffing for the project: the record offers the project's work to its own agent", async () => {
+  it("keeps them dispatchable on the record: a step of the project's that names its own agent runs that agent there", async () => {
+    // A step names its agent (EO-875), so the project's own agent runs
+    // where the project's own pipeline names it — not by a precedence
+    // over the global one.
     const { support, own, item } = supportWithItsOwnAgents();
+    const pipeline = createPipeline(annaDb.db, { projectId: support.id, name: "Support delivery" });
+    const build = createStep(annaDb.db, { pipelineId: pipeline.id, position: 0, name: "Build", type: "agent", agentId: own.id, entryAction: "implement" });
+    transitionItem(annaDb.db, { itemId: item.id, toStepId: build.id, toPipelineId: pipeline.id, actor: "human" });
     await move(support.id);
     // The run that was already there is over; this is the step's next one.
     const offers = await serving.offerWork(anna.deviceId, 1);
