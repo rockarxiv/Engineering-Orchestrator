@@ -2,8 +2,13 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { TEAM_PARTICIPANT_ACTION, uuidv7, type Agent, type AgentEvent, type AgentProvider, type AgentProviderStartOptions, type Item, type LeaderTeam, type StepTeam } from "@eo/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { createClaudeProvider } from "../../providers/claude.js";
+import { createCodexProvider } from "../../providers/codex.js";
+import { CodexClient, dropWarmCodexThread } from "../../providers/codexClient.js";
+import { fakeAppServer, note, type FakeAppServer } from "../../testing/fakeCodexAppServer.js";
 import type { DbHandle } from "../../db/client.js";
 import { createAgent, listAgents, updateAgent } from "../../db/repos/agentsRepo.js";
 import { listCommentsForItem, postComment } from "../../db/repos/commentsRepo.js";
@@ -30,15 +35,22 @@ import { createRunSupervisor, type RunSupervisor } from "../../supervisor/runSup
  * through the supervisor on the Delivery pipeline a fresh installation
  * has once its first launch brought it to the template's newest version.
  *
- * Mocked: the backends, scripted per turn. Real: the template, the
- * seeded agents and their prompts, the developer pack's review schema,
- * verdict and routing, the team supervisor and the member copies (on no
- * disk, the kind an item without a repository works in).
+ * Mocked: what each backend answers, scripted per turn. Real: the two
+ * adapters a Claude or Codex agent is dispatched through — the Claude
+ * provider over a stubbed SDK `query`, and the Codex provider and client
+ * over a stubbed `codex app-server` child process — so a turn's
+ * instructions, context and answer schema cross each backend's own
+ * delivery, and its answer comes back through each backend's own
+ * parsing (invariant 12). Real too: the template, the seeded agents and
+ * their prompts, the developer pack's review schema, verdict and routing,
+ * the team supervisor and the member copies (on no disk, the kind an
+ * item without a repository works in).
  */
 
 const GALLERY_DIRECTORY = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..", "resources", "gallery");
 const LIMITS = { globalConcurrency: 1, perAgentConcurrency: 2, perRepositoryConcurrency: 1 };
 const CRITERIA = ["A key over its limit gets a 429", "The 429 carries a Retry-After header", "The limit is configurable per key"];
+const CODEX_EXECUTABLE = "/opt/eo/runtimes/codex/bin/codex";
 const DIFF = "diff --git a/src/limit.ts b/src/limit.ts\n+export function limit(key: string) { return counts[key]++ > 100 ? 429 : 200; }";
 
 type Backend = "claude" | "codex";
@@ -61,9 +73,18 @@ interface Started {
 /** What a turn answers, given who it is and what it was told. */
 type Script = (turn: { agent: Agent; opts: AgentProviderStartOptions; leader: boolean; assignment: string | null }) => unknown;
 
+/** What reached a backend on one turn: the backend that was reached, the turn's text as it crossed, and the answer schema it was handed. */
+interface Crossed {
+  backend: Backend;
+  agent: Agent;
+  said: () => Promise<string>;
+  schema: () => unknown;
+}
+
 let handle: DbHandle;
 let scratch: string;
 let started: Started[];
+let crossed: Crossed[];
 let script: Script;
 const supervisors: RunSupervisor[] = [];
 
@@ -74,13 +95,73 @@ async function* says(data: unknown, afterMs = 0): AsyncGenerator<AgentEvent> {
   yield { type: "result", data };
 }
 
+/** One Claude turn through the real adapter, over an SDK `query` that answers `data` as structured output. */
+function claudeTurn(agent: Agent, opts: AgentProviderStartOptions, data: unknown, afterMs: number): ReturnType<AgentProvider["start"]> {
+  const calls: { prompt: unknown; options: Record<string, unknown> }[] = [];
+  const session = `sess-${uuidv7()}`;
+  const runQuery = ((params: { prompt: unknown; options?: Record<string, unknown> }) => {
+    calls.push({ prompt: params.prompt, options: params.options ?? {} });
+    return (async function* () {
+      yield { type: "system", subtype: "init", session_id: session } as unknown as SDKMessage;
+      if (afterMs > 0) await new Promise((resolve) => setTimeout(resolve, afterMs));
+      yield { type: "result", subtype: "success", result: JSON.stringify(data), structured_output: data, total_cost_usd: 0.01, usage: { input_tokens: 10, output_tokens: 10 }, session_id: session } as unknown as SDKMessage;
+    })();
+  }) as never;
+  crossed.push({
+    backend: "claude",
+    agent,
+    said: async () => {
+      for await (const message of (calls[0]?.prompt ?? []) as AsyncIterable<SDKUserMessage>) {
+        const content = message.message.content;
+        return typeof content === "string" ? content : content.map((block) => ("text" in block ? block.text : "")).join("");
+      }
+      return typeof calls[0]?.prompt === "string" ? calls[0].prompt : "";
+    },
+    schema: () => (calls[0]?.options["outputFormat"] as { schema?: unknown } | undefined)?.schema,
+  });
+  return createClaudeProvider({ runQuery, enableCommentTool: false }).start(opts);
+}
+
+/** One Codex turn through the real adapter and client, over an app-server child process that answers `data` as the turn's final message. */
+function codexTurn(agent: Agent, opts: AgentProviderStartOptions, data: unknown, afterMs: number): ReturnType<AgentProvider["start"]> {
+  const fake: FakeAppServer = fakeAppServer({
+    after: {
+      "turn/start": [
+        note.turnStarted(),
+        ...(afterMs > 0 ? [{ wait: afterMs }] : []),
+        note.agentMessage(JSON.stringify(data)),
+        note.tokenUsage({ input: 10, output: 10 }),
+        note.turnCompleted(),
+      ],
+    },
+  });
+  crossed.push({
+    backend: "codex",
+    agent,
+    said: () => Promise.resolve(((fake.paramsOf("turn/start")?.["input"] as { text: string }[] | undefined) ?? []).map((part) => part.text).join("")),
+    schema: () => fake.paramsOf("turn/start")?.["outputSchema"],
+  });
+  return createCodexProvider({ executablePath: CODEX_EXECUTABLE, createCodex: () => new CodexClient({ executablePath: CODEX_EXECUTABLE, spawn: fake.spawn, shutdownGraceMs: 200 }) }).start(opts);
+}
+
+/**
+ * The provider each agent is dispatched through: a Claude or Codex agent
+ * through its own backend's real adapter, answering what the script says
+ * for this turn. The seeded `fake` agent, which no real backend serves,
+ * answers in memory.
+ */
 function providerFor(agent: Agent): AgentProvider {
   return {
     start: (opts) => {
       started.push({ agent, opts });
       const assignment = /## Your assignment: (\w+)/.exec(opts.context)?.[1] ?? null;
       const leader = opts.context.includes("## What you lead");
-      return says(script({ agent, opts, leader, assignment }), assignment === null ? 0 : 30)[Symbol.asyncIterator]() as unknown as ReturnType<AgentProvider["start"]>;
+      const data = script({ agent, opts, leader, assignment });
+      // A member's turn takes a moment, so the passes overlap as they do on a real backend.
+      const afterMs = assignment === null ? 0 : 30;
+      if (agent.provider === "claude") return claudeTurn(agent, opts, data, afterMs);
+      if (agent.provider === "codex") return codexTurn(agent, opts, data, afterMs);
+      return says(data, afterMs)[Symbol.asyncIterator]() as unknown as ReturnType<AgentProvider["start"]>;
     },
     resume: () => {
       throw new Error("Nothing here resumes.");
@@ -197,10 +278,12 @@ beforeEach(() => {
   handle = openMigratedTestDb();
   scratch = mkdtempSync(join(tmpdir(), "eo-review-team-"));
   started = [];
+  crossed = [];
 });
 
 afterEach(async () => {
   for (const made of supervisors.splice(0)) await made.shutdown();
+  dropWarmCodexThread();
   handle.close();
   rmSync(scratch, { recursive: true, force: true });
 });
@@ -209,16 +292,32 @@ describe("the template's Review team, on either backend (EO-868)", () => {
   describe.each(ROSTERS)("$name", (roster) => {
     beforeEach(() => freshInstallation(roster));
 
-    /** What every scenario leaves true: one team session, settled; every member on its agent's backend. */
-    function settledOnce(item: Item): void {
+    /**
+     * What every scenario leaves true: one team session, settled; every
+     * turn reached its own agent's backend, through that backend's
+     * adapter, carrying the turn's context and an answer schema.
+     */
+    async function settledOnce(item: Item): Promise<void> {
       expect(listTeamSessionsForItem(handle.db, item.id).map((record) => record.session.status)).toEqual(["finalized"]);
       expect(new Set(started.map((one) => one.agent.provider))).toEqual(new Set(roster.reviewers));
       expect(started.every((one) => one.agent.role === "reviewer")).toBe(true);
+      expect(crossed.map((one) => [one.agent.id, one.backend])).toEqual(started.map((one) => [one.agent.id, one.agent.provider]));
+      expect(new Set(crossed.map((one) => one.backend))).toEqual(new Set(roster.reviewers));
+      for (const [index, one] of crossed.entries()) {
+        const context = started[index]!.opts.context;
+        const said = await one.said();
+        const heading = /## Your assignment: \w+|## What you lead/.exec(context)![0];
+        expect(said, `${one.backend} turn ${index}`).toContain(heading);
+        expect(said, `${one.backend} turn ${index}`).toContain(CRITERIA[0]);
+        expect(one.schema(), `${one.backend} turn ${index}`).toBeTypeOf("object");
+      }
+      // Every report and the leader's answer came back through the adapters' parsing, and nothing failed on the way.
+      expect(listRunsForItem(handle.db, item.id).filter((run) => run.status === "failed")).toEqual([]);
     }
 
     /** The item moved once, to where the verdict's route sends it. */
-    function movedOnceTo(item: Item, resultKey: string): void {
-      settledOnce(item);
+    async function movedOnceTo(item: Item, resultKey: string): Promise<void> {
+      await settledOnce(item);
       const moves = listTransitionsForItem(handle.db, item.id);
       expect(moves).toHaveLength(1);
       expect(moves[0]!.toStepId).toBe(routeOf(resultKey));
@@ -233,7 +332,7 @@ describe("the template's Review team, on either backend (EO-868)", () => {
 
       await supervisor().runOnce();
 
-      movedOnceTo(item, "approved");
+      await movedOnceTo(item, "approved");
       expect(memberTurns().map((one) => /## Your assignment: (\w+)/.exec(one.opts.context)![1]).sort()).toEqual([...passes].sort());
       expect(leaderTurns()).toHaveLength(2);
       // The leader is told what to assign, in the template's own words.
@@ -248,7 +347,7 @@ describe("the template's Review team, on either backend (EO-868)", () => {
 
       await supervisor().runOnce();
 
-      movedOnceTo(item, "changes_requested");
+      await movedOnceTo(item, "changes_requested");
       expect(memberTurns()).toHaveLength(6);
       // One rejection, carrying all six faults — the duplicate the impact pass also reported counted once.
       const verdicts = listReviewVerdicts(handle.db, item.id);
@@ -270,7 +369,7 @@ describe("the template's Review team, on either backend (EO-868)", () => {
       await supervisor().runOnce();
 
       // Its route is to the person: the item is flagged where it stands, and the step's run waits on them.
-      settledOnce(item);
+      await settledOnce(item);
       expect(routeOf("needs_user_input")).toBe("user_attention");
       expect(listTransitionsForItem(handle.db, item.id)).toEqual([]);
       expect(getItem(handle.db, item.id)?.stepId).toBe("review");

@@ -68,6 +68,16 @@ const EO_ONLY: (string | RegExp)[] = [
   /\bitems?\b/i,
   "domain-neutral",
   "EO's own",
+  // EO itself, by name: the platform is "the platform" here, as it is to
+  // any repository under review.
+  /\bEO\b/,
+  // A tool id spelled in one backend's punctuation, or one of the tools
+  // EO serves by its own name. The prompt names what the tool does.
+  /\bmcp__/,
+  /\b(eo|eo_admin|repo)\/[a-z]/,
+  /\b(comment|attachment|memory|skill)_(search|read|note|add|view|create|patch)\b/,
+  "item_detail",
+  "ticket_detail",
 ];
 const eoOnlyIn = (text: string): string[] => EO_ONLY.filter((term) => (typeof term === "string" ? text.includes(term) : term.test(text))).map(String);
 
@@ -157,6 +167,10 @@ describe("the software template's Review team (EO-868)", () => {
   it("names nothing of EO's own, in the team or the template's reviewer prompt", () => {
     // The list is not a list of nothing: it catches what the reviewer prompt said before.
     expect(eoOnlyIn("Over EO's own 136 rejections … recomputed from `run_events` … `scripts/review-census.mts`")).not.toEqual([]);
+    // Nor what it said after that: EO by name, and a tool id in Claude's punctuation, Codex's, or bare.
+    for (const said of ["EO does not dispatch a review", "an MCP server EO registers as", "reachable with `mcp__eo__comment_search`", "`eo/comment_search`", "`comment_search`"]) {
+      expect(eoOnlyIn(said), said).not.toEqual([]);
+    }
     expect(eoOnlyIn(JSON.stringify(TEAM))).toEqual([]);
     const prompt = bundled.roles.find((role) => role.slug === "reviewer")!.prompt;
     expect(prompt).not.toBeNull();
@@ -185,7 +199,7 @@ describe("the template's reviewer prompt on a team (EO-868)", () => {
     expect(prompt()).toContain("When they say nothing of a team, you are the only reviewer and everything above is your whole job.");
     expect(prompt()).toContain("**Report every blocking issue you found, in one verdict.**");
     expect(prompt()).toContain("**A rejection has to say what became of every acceptance criterion.**");
-    expect(Number(/prompt-version:\s*(\d+)/.exec(loadRolePrompt("reviewer")!)![1])).toBeGreaterThanOrEqual(17);
+    expect(Number(/prompt-version:\s*(\d+)/.exec(loadRolePrompt("reviewer")!)![1])).toBeGreaterThanOrEqual(18);
   });
 });
 

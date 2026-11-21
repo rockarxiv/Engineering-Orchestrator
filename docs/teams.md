@@ -179,7 +179,7 @@ Review is a leader-led team in isolated mode. The template's `reviewer` leads, a
 
 Each member works as the template's reviewer does, in a copy of its own. The leader's final answer is the step's ordinary review verdict: an approval with its pull request body, a rejection carrying every blocking issue the passes found, merged and de-duplicated, with coverage for every criterion, or a question for the person. The step's routes are unchanged. Nothing in the team names anything of EO's own: every rule a pass checks comes from the repository under review (`gallery/templateTeam.test.ts`). A review is several runs rather than one, and the template's description says so.
 
-An installation on 1.4 receives the team as any template update. Where a person already gave Review a team of their own, the update keeps theirs and holds as a conflict. Removing the team, through the assistant's draft, gives back the single-reviewer review. `packs/developer/reviewTeam.test.ts` runs the step end to end on Claude, on Codex and on both.
+An installation on 1.4 receives the team as any template update. Where a person already gave Review a team of their own, the update keeps theirs and holds as a conflict. Removing the team, through the assistant's draft, gives back the single-reviewer review. `packs/developer/reviewTeam.test.ts` runs the step end to end on Claude, on Codex and on both, every turn through that backend's real adapter over a stubbed SDK `query` or `codex app-server`.
 
 ## Examples (opt-in)
 
