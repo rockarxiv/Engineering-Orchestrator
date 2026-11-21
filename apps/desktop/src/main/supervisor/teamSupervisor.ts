@@ -121,12 +121,17 @@ import type { PreparedWorkspace, WorkspaceKind } from "./workspaceKind.js";
  * assignment — or the leader — is started again with the question and the
  * answer, and every report that is still current is kept, not run again.
  *
- * **Capacity is counted in provider turns.** The parent waits and runs no
- * turn, so it holds its item's slot and nothing a participant needs. A
- * participant's turn, and a leader's, counts against the team's
- * `maxParallel`, the machine's participant limit across every team, and its
- * agent's own limit beside that agent's ordinary runs. What cannot start
- * waits and the item is told why, once.
+ * **A session is one run against EO's caps** (EO-871). The parent is the
+ * step's run, and holds the slot a single run of the step would — the
+ * global one, its item's capacity key and its agent's — for as long as the
+ * session is active: it ends when the session settles, parks or is
+ * cancelled. The turns inside it, a leader's and its members', count
+ * against none of those caps, and against no machine-wide limit: only the
+ * team's own `maxParallel` holds them back. Each is
+ * still a run of its own, for the budgets, and each is held to the
+ * wall-clock and inactivity guards as an ordinary run is (`guardTurn`);
+ * the parent is held to neither, and to the team's own `timeoutMs` where
+ * one is declared. What cannot start waits and the item is told why, once.
  *
  * **Restrictions are the participant's own.** Before each turn: EO
  * pausing or closing, the item held, the agent's runtime blocked, the
@@ -158,9 +163,6 @@ import type { PreparedWorkspace, WorkspaceKind } from "./workspaceKind.js";
 
 /** What a parked team tells the person it can do (EO-849). */
 export const TEAM_RETRY_WORDS = "Retry the team, or reply, to try again what failed: every report already accepted is kept. Cancel the session to run the whole team afresh.";
-
-/** The machine's participant turns at once, across every team, unless a host says otherwise: the most any one team may run. */
-export const MACHINE_PARTICIPANT_LIMIT = 4;
 
 /** Why a participant may not start now: wait for it to pass, or refuse the attempt outright. */
 export type ParticipantRestriction = { kind: "wait"; reason: string } | { kind: "refuse"; reason: string };
@@ -215,12 +217,13 @@ export interface TeamSupervisorDeps {
   isolatedTurn?: (request: IsolatedTurnRequest) => Promise<IsolatedTurnAnswer>;
   scopes: TeamParticipantScopes;
   writeBridge: () => Pick<AgentWriteBridge, "tokenFor"> | null;
-  /** How many participant turns this machine runs at once, across every team. */
-  machineLimit: () => number;
-  /** The per-agent concurrency cap, as the scheduler holds an agent to it. */
-  perAgentLimit: () => number;
-  /** How many provider turns this agent is running outside any team: its ordinary runs, a team's waiting parent not among them. */
-  ordinaryTurnsOf: (agentId: string) => number;
+  /**
+   * Holds one turn to the guards an ordinary run is held to (EO-871): the
+   * wall clock and the inactivity guard, which call `stop` with why. Each
+   * event the turn's backend says is handed to `observe`; `release` is
+   * called once the turn is over. Absent, a turn answers to no such guard.
+   */
+  guardTurn?: (turn: { runId: string; agent: Agent; stop: (reason: string) => void }) => { observe: (event: AgentEvent) => void; release: () => void };
   /** What stands between this agent and a turn on this item now, or null. */
   restriction: (agent: Agent, item: Item) => ParticipantRestriction | null;
   /**
@@ -324,8 +327,6 @@ export interface TeamSupervisor {
   run(input: TeamTurnInput): AsyncGenerator<AgentEvent>;
   /** Whether this run is a team's waiting parent: holding its item, running no provider turn. */
   isWaitingParent(runId: string): boolean;
-  /** The agents of the participant turns running now, one entry per turn. */
-  participantAgentIds(): string[];
   /** How many participant turns are running now. */
   liveCount(): number;
   /** The isolated member's turn running now on this attempt (EO-867) — its run, agent and item — or null. */
@@ -511,21 +512,23 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
   const pollMs = deps.pollMs ?? 2000;
   const stopGraceMs = deps.stopGraceMs ?? 5000;
 
-  function liveOn(agentId: string): number {
-    let count = 0;
-    for (const one of live.values()) if (one.agentId === agentId) count += 1;
-    return count;
-  }
-
   function note(item: Item, runId: Uuid, body: string): void {
     postComment(db, { itemId: item.id, runId, author: { type: "engine" }, kind: "note", body });
     deps.onChange();
   }
 
-  /** The agent an assignment runs as now: the first of its role's staff with room, else the first of them. */
+  /**
+   * The agent an assignment runs as, asked as its turn starts: of its
+   * role's staff, the one running fewest turns now, the first in staffing
+   * order among equals — so a role staffed by several agents shares the
+   * work between them. No agent's concurrency cap decides it (EO-871): the
+   * session holds its one slot, and the turns inside it count against no cap.
+   */
   function staffFor(item: Item, role: string): Agent | null {
-    const staff = staffingAgents(listAgents(db), role, item);
-    return staff.find((agent) => deps.perAgentLimit() - deps.ordinaryTurnsOf(agent.id) - liveOn(agent.id) > 0) ?? staff[0] ?? null;
+    const turnsOf = (agentId: string): number => [...live.values()].filter((one) => one.agentId === agentId).length;
+    let chosen: Agent | null = null;
+    for (const agent of staffingAgents(listAgents(db), role, item)) if (chosen === null || turnsOf(agent.id) < turnsOf(chosen.id)) chosen = agent;
+    return chosen;
   }
 
   /** Ends what a participant's run left running, as EO stopping it — not a failure and not a finding. */
@@ -758,6 +761,19 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
     const tally = createUsageTally();
     let answer: unknown = undefined;
     let failure: string | null = null;
+    // The wall clock and the inactivity guard, as on an ordinary run
+    // (EO-871): what trips one is this turn's failure, counted against its
+    // retries as any other — never EO stopping it, which would replace it
+    // for ever.
+    const guard = deps.guardTurn?.({
+      runId: run.id,
+      agent,
+      stop: (reason) => {
+        if (entry.stoppedBecause !== null || failure !== null) return;
+        failure = reason;
+        entry.controller.abort();
+      },
+    });
     try {
       // Stopped while its turn was being built: nothing is started.
       if (entry.controller.signal.aborted && entry.stoppedBecause !== null) throw abortError();
@@ -796,6 +812,7 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
         }
         if (step.done === true) break;
         const event = step.value;
+        guard?.observe(event);
         const stopped = entry.controller.signal.aborted;
         // What the host records of an isolated member's event as it would
         // of any run's — skill usage — is not recorded again as it came.
@@ -822,6 +839,7 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
     } catch (error) {
       if (entry.stoppedBecause === null && failure === null) failure = error instanceof Error ? error.message : String(error);
     } finally {
+      guard?.release();
       release();
       isolated?.done?.();
       buffer.dispose();
@@ -1084,12 +1102,12 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
         instructions: string;
         round: number;
         supersedes: string | null;
-        agent: Agent | null;
         outstanding: number;
         boundary: (attempt: TeamAttemptRow) => ThreadBoundary;
         turn: (attempt: TeamAttemptRow, agent: Agent) => TurnSpec;
       }): "started" | "skipped" | "broke" => {
-        const { key, role, agent } = launch;
+        const { key, role } = launch;
+        const agent = staffFor(item, role);
         const base = { sessionId, assignmentKey: key, role, instructions: launch.instructions, round: launch.round, evidenceBaseline: current.baseline, ...(launch.supersedes === null ? {} : { supersedes: launch.supersedes }) };
         if (agent === null) {
           const made = startTeamAttempt(db, { ...base, agentId: null, now: deps.now() });
@@ -1264,14 +1282,7 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
 
       // ── An independent team (EO-846) ───────────────────────────
       function independentPass(teamNow: IndependentTeam, attempts: readonly TeamAttemptRow[], stateOf: (attempt: TeamAttemptRow) => TeamAttemptState): Pass {
-        const agents = new Map<string, Agent | null>();
-        const agentOf = new Map<string, string | null>();
-        for (const participant of teamNow.participants) {
-          const agent = staffFor(item, participant.role);
-          agents.set(participant.key, agent);
-          agentOf.set(participant.key, agent?.id ?? null);
-        }
-        const plan = planIndependentTeam({ team: teamNow, attempts: attempts.map(stateOf), baseline: currentKey, capacity: capacityFor(agents, agentOf) });
+        const plan = planIndependentTeam({ team: teamNow, attempts: attempts.map(stateOf), baseline: currentKey });
         // Reconciled before anything replaces them.
         if (fenceAll(plan.fence, attempts)) return { kind: "again" };
 
@@ -1300,7 +1311,6 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
             instructions: participant.instructions,
             round: 1,
             supersedes: start.supersedes,
-            agent: agents.get(start.key) ?? null,
             outstanding: outstanding - started,
             boundary: () => ({ visibleThrough, exposedCommentIds: exchange.ids, hiddenCommentIds: sessionReportIds(sessionId) }),
             turn: (attempt, agent) => ({
@@ -1325,10 +1335,7 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
           verdict: attempt.assignmentKey === LEADER_ASSIGNMENT_KEY && attempt.status === "completed" ? (leaderRecordOf(db, attempt)?.verdict ?? null) : null,
         }));
         const ledger = leaderLedger(states, currentKey);
-        const agents = new Map<string, Agent | null>([[LEADER_ASSIGNMENT_KEY, staffFor(item, teamNow.leader.role)]]);
-        for (const assignment of ledger.assignments) agents.set(assignment.key, staffFor(item, assignment.role));
-        const agentOf = new Map([...agents].map(([key, agent]) => [key, agent?.id ?? null] as const));
-        const plan = planLeaderTeam({ team: teamNow, attempts: states, baseline: currentKey, capacity: capacityFor(agents, agentOf) });
+        const plan = planLeaderTeam({ team: teamNow, attempts: states, baseline: currentKey });
         if (fenceAll(plan.fence, attempts)) return { kind: "again" };
 
         if (plan.next.kind === "finalize") {
@@ -1353,7 +1360,7 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
         let started = 0;
         for (const start of plan.start) {
           const previous = supersededAttempt(attempts, start.supersedes);
-          const launched = start.key === LEADER_ASSIGNMENT_KEY ? startLeader(teamNow, start, previous, attempts, states, ledger, agents, outstanding - started) : startAssignment(teamNow, start, previous, attempts, ledger, agents, outstanding - started);
+          const launched = start.key === LEADER_ASSIGNMENT_KEY ? startLeader(teamNow, start, previous, attempts, states, ledger, outstanding - started) : startAssignment(teamNow, start, previous, attempts, ledger, outstanding - started);
           if (launched === "broke") return { kind: "broke", key: start.key };
           if (launched === "started") started += 1;
         }
@@ -1367,7 +1374,6 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
         previous: TeamAttemptRow | undefined,
         attempts: readonly TeamAttemptRow[],
         ledger: LeaderLedger,
-        agents: ReadonlyMap<string, Agent | null>,
         outstanding: number,
       ): "started" | "skipped" | "broke" {
         const assignment = ledger.assignments.find((one) => one.key === start.key)!;
@@ -1384,7 +1390,6 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
           instructions: assignment.instructions,
           round: start.round ?? assignment.round,
           supersedes: start.supersedes,
-          agent: agents.get(start.key) ?? null,
           outstanding,
           boundary: () => ({
             visibleThrough,
@@ -1409,7 +1414,6 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
         attempts: readonly TeamAttemptRow[],
         states: readonly LeaderAttemptState[],
         ledger: LeaderLedger,
-        agents: ReadonlyMap<string, Agent | null>,
         outstanding: number,
       ): "started" | "skipped" | "broke" {
         const exchange = exchangeOf(item.id, attempts, previous);
@@ -1421,7 +1425,6 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
           instructions: teamNow.leader.instructions,
           round: start.round ?? 1,
           supersedes: start.supersedes,
-          agent: agents.get(LEADER_ASSIGNMENT_KEY) ?? null,
           outstanding,
           // The leader reads every current report, its own earlier turns
           // and what it asked: the reports are why its next turn exists.
@@ -1526,14 +1529,6 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
           if (refusal !== null) note(item, parentRunId, refusal);
           return { kind: "accepted", result: record };
         };
-      }
-
-      function capacityFor(agents: ReadonlyMap<string, Agent | null>, agentOf: Map<string, string | null>) {
-        const agentFree = new Map<string, number>();
-        for (const agent of agents.values()) {
-          if (agent !== null) agentFree.set(agent.id, Math.max(0, deps.perAgentLimit() - deps.ordinaryTurnsOf(agent.id) - liveOn(agent.id)));
-        }
-        return { machineFree: Math.max(0, deps.machineLimit() - live.size), agentOf, agentFree };
       }
     } finally {
       parents.delete(parentRunId);
@@ -1678,7 +1673,7 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
     }
     const latestCompleted = states.filter((state) => state.supersededBy === null && state.status === "completed");
     if (latestCompleted.some((state) => state.baseline !== currentKey)) return { kind: "stale" };
-    const plan = planIndependentTeam({ team: session.team, attempts: states, baseline: currentKey, capacity: { machineFree: 0, agentOf: new Map(), agentFree: new Map() } });
+    const plan = planIndependentTeam({ team: session.team, attempts: states, baseline: currentKey });
     if (plan.decision.status !== "decided" || plan.decision.result !== session.result) return { kind: "none" };
     return { kind: "replay", answer: { result: plan.decision.result, summary: plan.decision.summary } };
   }
@@ -1712,7 +1707,6 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
   return {
     run,
     isWaitingParent: (runId) => parents.has(runId),
-    participantAgentIds: () => [...live.values()].map((one) => one.agentId),
     liveCount: () => live.size,
     liveMember: (attemptId) => {
       const one = live.get(attemptId);
@@ -1728,13 +1722,7 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
   };
 }
 
-function waitWords(reason: TeamWaitReason, team: StepTeam): string {
-  switch (reason) {
-    case "team":
-      return `the team runs ${team.limits.maxParallel} participant${team.limits.maxParallel === 1 ? "" : "s"} at a time, and that many are working. It starts as one finishes.`;
-    case "machine":
-      return "every participant slot on this machine is in use by a team. It starts as one frees.";
-    case "agent":
-      return "the agent it runs as is already working as much as its concurrency limit allows. It starts as that agent frees up.";
-  }
+/** Why an assignment waits for room: the team's own limit, the only one its turns answer to (EO-871). */
+function waitWords(_reason: TeamWaitReason, team: StepTeam): string {
+  return `the team runs ${team.limits.maxParallel} participant${team.limits.maxParallel === 1 ? "" : "s"} at a time, and that many are working. It starts as one finishes.`;
 }

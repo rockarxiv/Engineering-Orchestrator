@@ -4,10 +4,10 @@ import { readTeamWaitNote, teamWaitNote } from "./teamSessionView.js";
 /** The wait note is both what a person reads and what a later read takes the reason from (EO-849). */
 describe("a team's wait note", () => {
   it("reads back the assignment, the kind and the reason it was written with", () => {
-    expect(readTeamWaitNote(teamWaitNote("tests", "capacity", "every participant slot on this machine is in use by a team."))).toEqual({
+    expect(readTeamWaitNote(teamWaitNote("tests", "capacity", "the team runs 2 participants at a time, and that many are working. It starts as one finishes."))).toEqual({
       key: "tests",
       kind: "capacity",
-      reason: "every participant slot on this machine is in use by a team.",
+      reason: "the team runs 2 participants at a time, and that many are working. It starts as one finishes.",
     });
     expect(readTeamWaitNote(teamWaitNote("security", "restricted", "EO is paused, so no new participant starts until it is resumed."))).toEqual({
       key: "security",

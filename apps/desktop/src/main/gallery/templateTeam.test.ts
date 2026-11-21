@@ -1,15 +1,19 @@
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { StepTeamSchema, type LeaderTeam, type StepTeam, type Uuid } from "@eo/core";
+import { FOLDER_KIND, GIT_WORKTREE_KIND, StepTeamSchema, type LeaderTeam, type StepTeam, type Uuid } from "@eo/core";
 import type { DbHandle } from "../db/client.js";
 import { adoptPipeline, getPipeline, getPipelineOrigin, getStep, listStepsForPipeline, openUpdateConflict, replacePipelineGraph, listRoutesForPipeline } from "../db/repos/index.js";
-import { createProject } from "../db/repos/projectsRepo.js";
+import { addWorkspaceToProject, createProject } from "../db/repos/projectsRepo.js";
+import { createWorkspace } from "../db/repos/workspacesRepo.js";
 import { openMigratedTestDb } from "../db/testHelpers.js";
-import { storedGraphProblems } from "../ipc/configCommands.js";
+import { savePipeline, storedGraphProblems } from "../ipc/configCommands.js";
 import { importPipeline, parseExport } from "../modules/pipelineTransfer.js";
 import { loadRolePrompt } from "../roles/prompts.js";
+import type { WorkspaceKind } from "../supervisor/workspaceKind.js";
+import { useWorkspaceKinds } from "../workspaceKinds.js";
 import { compareTemplateVersions, loadTemplateHistory, type TemplateVersion } from "./history.js";
 import { templateHistoryUpTo } from "./historyTestHelpers.js";
 import { backfillPipelineOrigins } from "./origins.js";
@@ -210,18 +214,38 @@ describe("the template's reviewer prompt on a team (EO-868)", () => {
  */
 describe("an installation on 1.4, when 1.5 ships", () => {
   let handle: DbHandle;
+  let shop: Uuid;
+  let drive: string;
 
   beforeEach(() => {
     handle = openMigratedTestDb();
+    drive = mkdtempSync(join(tmpdir(), "eo-template-team-"));
     const onFourteen = templateHistoryUpTo(GALLERY_DIRECTORY, SOFTWARE, "1.4");
     // Adopted first, so the board 1.4 adds is made on the same project (EO-763).
     backfillPipelineOrigins(handle.db, onFourteen);
-    adoptPipeline(handle.db, "default", createProject(handle.db, { name: "Shop", keyPrefix: "SHOP" }).id as Uuid);
+    shop = createProject(handle.db, { name: "Shop", keyPrefix: "SHOP" }).id as Uuid;
+    adoptPipeline(handle.db, "default", shop);
     applyTemplateUpdates(handle.db, onFourteen, { isTheRecord: false });
     expect(getPipelineOrigin(handle.db, "default")?.version).toBe("1.4");
   });
 
-  afterEach(() => handle.close());
+  afterEach(() => {
+    useWorkspaceKinds(new Map());
+    handle.close();
+    rmSync(drive, { recursive: true, force: true });
+  });
+
+  /** A workspace of `kind` on Shop: a Git repository, or a folder on this machine. */
+  function shopWorks(kind: typeof GIT_WORKTREE_KIND | typeof FOLDER_KIND): void {
+    const workspace =
+      kind === FOLDER_KIND ? createWorkspace(handle.db, { kind: FOLDER_KIND, config: { path: drive } }) : createWorkspace(handle.db, { config: { name: "shop", repoPath: join(drive, "shop.git") } });
+    addWorkspaceToProject(handle.db, shop, workspace.id as Uuid);
+  }
+
+  /** The git kind installed, as the developer pack installs it: one that makes each member a copy. */
+  function gitInstalled(): void {
+    useWorkspaceKinds(new Map([[GIT_WORKTREE_KIND, { slug: GIT_WORKTREE_KIND, evidence: { copy: {} } } as unknown as WorkspaceKind]]));
+  }
 
   const review = () => listStepsForPipeline(handle.db, "default").find((step) => step.id === "review")!;
 
@@ -258,6 +282,40 @@ describe("an installation on 1.4, when 1.5 ships", () => {
     expect(openUpdateConflict(handle.db, "default")?.conflicts).toEqual([
       expect.objectContaining({ key: { kind: "setting", stepId: "review", field: "team" }, current: theirs, template: TEAM }),
     ]);
+  });
+
+  it("is applied for a project with a Git and a folder workspace, its origin moving to 1.5, and Publish warns of the folder rather than refusing (EO-871)", () => {
+    gitInstalled();
+    shopWorks(GIT_WORKTREE_KIND);
+    shopWorks(FOLDER_KIND);
+
+    expect(applyTemplateUpdates(handle.db, shipped, { isTheRecord: false })).toContainEqual(expect.objectContaining({ pipelineId: "default", outcome: "applied", from: "1.4", to: "1.5" }));
+    expect(openUpdateConflict(handle.db, "default")).toBeUndefined();
+    expect(review().team).toEqual(TEAM);
+    expect(getPipelineOrigin(handle.db, "default")?.version).toBe("1.5");
+
+    const problems = storedGraphProblems(handle.db, "default", listStepsForPipeline(handle.db, "default"), listRoutesForPipeline(handle.db, "default"), getPipeline(handle.db, "default")!.entryStepId);
+    expect(problems.filter((problem) => problem.severity === "error")).toEqual([]);
+    const warned = problems.filter((problem) => problem.severity === "warning" && problem.message.includes("has isolated members"));
+    expect(warned).toHaveLength(1);
+    expect(warned[0]!.message).toContain('"folder"');
+    expect(warned[0]!.message).not.toContain('"git-worktree"');
+    // And Publish saves it, warning and all.
+    const steps = listStepsForPipeline(handle.db, "default");
+    const published = savePipeline(handle.db, { notifyStateChange: () => {} }, { pipelineId: "default", steps: steps.map((step) => ({ ...step })), routes: listRoutesForPipeline(handle.db, "default"), entryStepId: getPipeline(handle.db, "default")!.entryStepId });
+    expect(published.saved).toBe(true);
+  });
+
+  it("is applied for a project whose only workspace is a folder, its origin moving to 1.5, though Publish refuses the team there (EO-871)", () => {
+    shopWorks(FOLDER_KIND);
+
+    expect(applyTemplateUpdates(handle.db, shipped, { isTheRecord: false })).toContainEqual(expect.objectContaining({ pipelineId: "default", outcome: "applied", from: "1.4", to: "1.5" }));
+    expect(openUpdateConflict(handle.db, "default")).toBeUndefined();
+    expect(review().team).toEqual(TEAM);
+    expect(getPipelineOrigin(handle.db, "default")?.version).toBe("1.5");
+    // A person publishing the board is still told the team cannot run anywhere it works.
+    const problems = storedGraphProblems(handle.db, "default", listStepsForPipeline(handle.db, "default"), listRoutesForPipeline(handle.db, "default"), getPipeline(handle.db, "default")!.entryStepId);
+    expect(problems.filter((problem) => problem.severity === "error").map((problem) => problem.message)).toEqual([expect.stringContaining('"folder" workspace, which cannot give each member a copy of its own')]);
   });
 
   it("keeps an edit the person made to another of Review's settings, and adds the team beside it", () => {

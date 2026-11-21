@@ -14,7 +14,7 @@ import {
   type TeamReading,
   type Uuid,
 } from "@eo/core";
-import { teamProblems } from "@eo/engine";
+import { teamProblems, type IsolatedCopyProblem } from "@eo/engine";
 import type { Db } from "../db/client.js";
 import { projectWorkspaceList } from "../db/repos/projectsRepo.js";
 import { getWorkspace } from "../db/repos/workspacesRepo.js";
@@ -84,15 +84,29 @@ function stepKinds(db: Db, projects: readonly (Uuid | null)[], step: Pick<Pipeli
  * their own (EO-867), by step: the workspace kinds the step could work in
  * that make none (`kindMakesMemberCopies`). What `validatePipeline` is
  * handed as `isolatedCopyProblems`; only an isolated team's step is asked.
+ *
+ * An error only where none of those kinds makes copies, since the team
+ * could then never run. Where some do and some do not — a project with a
+ * Git and a folder workspace — a warning naming the kinds that cannot
+ * (EO-871): an item in one of them is refused at start with a comment
+ * naming the kind (`isolatedCopyRefusal`), and the team runs on every
+ * other item, so neither a save nor a template update is held for it.
  */
-export function isolatedCopyProblems(db: Db, projects: readonly (Uuid | null)[], steps: readonly Pick<PipelineStep, "id" | "team" | "workspaceId">[]): Record<string, string> {
-  const problems: Record<string, string> = {};
+export function isolatedCopyProblems(db: Db, projects: readonly (Uuid | null)[], steps: readonly Pick<PipelineStep, "id" | "team" | "workspaceId">[]): Record<string, IsolatedCopyProblem> {
+  const problems: Record<string, IsolatedCopyProblem> = {};
   for (const step of steps) {
     if (step.team === null || step.team === undefined || teamMemberMode(step.team) !== "isolated") continue;
-    const cannot = stepKinds(db, projects, step).filter((kind) => !kindMakesMemberCopies(kind));
+    const kinds = stepKinds(db, projects, step);
+    const cannot = kinds.filter((kind) => !kindMakesMemberCopies(kind));
     if (cannot.length === 0) continue;
     const named = cannot.map((kind) => `"${kind}"`).join(" and ");
-    problems[step.id] = `but it works in a ${named} workspace, which cannot give each member a copy of its own. Make its members report-only, or have the step work in a Git repository or on no disk.`;
+    problems[step.id] =
+      cannot.length === kinds.length
+        ? { severity: "error", why: `but it works in a ${named} workspace, which cannot give each member a copy of its own. Make its members report-only, or have the step work in a Git repository or on no disk.` }
+        : {
+            severity: "warning",
+            why: `and some of the workspaces it may work in — ${named} — cannot give each member a copy of its own. On an item that works in one of them, EO starts nobody and says so on the item; the team runs as usual everywhere else.`,
+          };
   }
   return problems;
 }

@@ -20,7 +20,7 @@ A team's `members` key chooses how every member works, the leader included:
 | What a member is given | Four evidence tools over a captured copy, and nothing else ([below](#report-only-what-a-member-can-and-cannot-do)) | Everything an ordinary dispatch of its agent on the step gets ([below](#isolated-a-member-works-as-its-roles-agent-does)) |
 | Where it stands | An empty directory of its own | A copy of the item's workspace made for its attempt alone |
 | Which agents can be members | Only agents EO can lock down (the table below) | Any agent that can run the step alone |
-| Which workspaces | Any kind that can capture evidence (not `scratch`) | A kind that can copy for each member: a Git repository, or no disk. A folder or scratch step is refused |
+| Which workspaces | Any kind that can capture evidence (not `scratch`) | A kind that can copy for each member: a Git repository, or no disk. An item in a folder or scratch workspace is refused at start ([below](#an-item-whose-workspace-cannot-make-copies)) |
 
 A team written without the key is report-only. The mode is part of the team: it is versioned, exported and imported with it, the version diff names a change to it ("report-only members" → "isolated members"), and the Graph view, the draft card and the pipeline tools say which mode a team runs in.
 
@@ -41,9 +41,14 @@ There are two ways to coordinate:
 | At once (`maxParallel`) | 2 | 4 |
 | Retries per participant (`maxRetries`) | 1 | 3 |
 | Rounds, leader-led only (`maxRounds`) | 2 | 5 |
-| `timeoutMs`, `budgetCents` | the run timeout and the item/daily budgets | can only tighten them |
+| The session's time limit (`timeoutMs`) | none: each turn is held to the run timeout, the session to its turns' guards and these limits | the run timeout |
+| `budgetCents` | the item/daily budgets | can only tighten them |
 
-A report-only member must be an agent EO can hold to report-only: Claude or Codex, not using the person's own setup, not naming its own executable, and, on Codex, naming a model. A draft or Publish that would staff a report-only team's role with any other agent is refused, and the refusal says why. None of this applies to an isolated team. Its draft or Publish is refused instead where the step works in a workspace that cannot give each member a copy, and the refusal names the kind.
+A report-only member must be an agent EO can hold to report-only: Claude or Codex, not using the person's own setup, not naming its own executable, and, on Codex, naming a model. A draft or Publish that would staff a report-only team's role with any other agent is refused, and the refusal says why. None of this applies to an isolated team. Its draft or Publish is refused instead where no workspace the step could work in can give each member a copy, and the refusal names the kind. Where some can and some cannot (a project with a Git repository and a folder, say), it is a warning naming the kinds that cannot, and the pipeline saves.
+
+### An item whose workspace cannot make copies
+
+An isolated team on an item whose workspace makes no copies — a folder or a scratch workspace — starts nobody. The team's run ends at once with a comment on the item naming the kind, and a person acts: makes the team's members report-only, or has the step work in a Git repository or on no disk. EO never runs a member in the item's own workspace instead, and never falls back to the step's single agent. A template update is never held for it: Delivery on 1.4 updates to 1.5, and its origin moves, whether the project has a Git and a folder workspace or a folder alone, and only the folder's items are refused. Publish still refuses an isolated team on a step where no workspace makes copies, so a person editing such a board is told the team cannot run there.
 
 ## How a team completes
 
@@ -149,7 +154,9 @@ First-pass participants of an independent team all get the same view and cannot 
 
 ## Resource accounting
 
-- **Concurrency.** A team's participants running side by side are the second exception to invariant 10. They are bounded by the team's `maxParallel`, a machine-wide limit of 4 participant turns across every team, and each agent's own limit. The team's waiting run does not use the provider slot its participants need. Other items still go through the global, per-agent and per-capacity-key caps exactly as before. When an assignment waits for capacity, the thread says so.
+- **A session is one run against EO's caps.** The team's own run is the step's run. It takes the slot a single run of that step would take, against the global, per-repository, per-agent and per-capacity-key caps, when the session starts, and holds it until the session settles, parks on a question or is cancelled. Another item that needs that slot waits, exactly as it would wait for a single run of the step.
+- **Concurrency inside the session.** The leader's and the members' turns count against none of those caps, so on default guardrails (every cap 1) a team of four members of one agent runs four at once. They are bounded by the team's own `maxParallel` and nothing else: there is no machine-wide participant limit, so two sessions admitted side by side each run up to their own limit. Running them side by side is the second exception to invariant 10, read as "the team is one run": no cap rises for any other item. When an assignment waits for room, the thread says so.
+- **Time.** The single-run wall clock does not stop the session: a review that is a leader turn, several member turns and another leader turn can take longer than one run may. Each turn, a leader's or a member's, is held to the wall clock and the inactivity guard as an ordinary run is, and a turn either stops is a failed contribution, retried within `maxRetries`. The session as a whole is bounded by the team's `timeoutMs` where one is declared, and otherwise by its turns' own guards and its finite limits.
 - **Money is shared, not copied.** For each budget a turn falls under (the item's, the day's, the team's own `budgetCents`), EO takes what is left, subtracts what the running turns covered by that budget still hold, and divides the rest between the assignments still owed a turn. Each turn gets the smallest of those shares. EO caps each turn at its share and stops it when its recorded spending reaches the share. Precision is only as good as the backend's usage reports: a turn can overshoot by what it reports while winding down, and that overshoot is recorded, not hidden.
 - **Spending is kept.** Every turn, participant or leader, is a `runs` row of its own, written with every usage reading. A stop, a crash or a restart loses nothing. The team's own run spends nothing, so item, daily and trial totals count each cent once.
 
@@ -162,7 +169,8 @@ First-pass participants of an independent team all get the same view and cannot 
 | **Reply** to a member's question | Resumes the step. Only the asking assignment (or the leader) reruns, with the question and answer in its context. Current sibling reports are kept |
 | **Cancel the step's run**, or a participant's run | Stops the whole team, never one participant alone |
 | **Move the item** | Refused while the team works unless you ask to stop it. Moving ends the session |
-| **Pause**, a hold, shutdown, the run or team timeout | Stops or fences every participant. A pause or hold leaves the session open to be adopted later |
+| **Pause**, a hold, shutdown, the team timeout | Stops or fences every participant. A pause or hold leaves the session open to be adopted later |
+| A turn's wall clock or inactivity guard | Stops that turn alone, as a failed contribution counted against its retries |
 | **Restart** | Reconciles first: turns nobody is running are ended as cancelled and replaced, accepted reports are kept, and a settled session is replayed only on unchanged evidence |
 | **Organisation lease handoff** | When another device takes the item, this desktop stops its team, cancels the session and moves nothing. The controls refuse a session another desktop runs |
 
@@ -197,6 +205,7 @@ The imported agents recommend Claude. Change any member to Codex (with a model) 
 - `apps/desktop/src/main/supervisor/teamQualification.test.ts` imports both examples and runs them end to end with every member on Claude, every member on Codex, and a mix of the two. It covers the positive and the negative independent result and a leader's adaptive follow-up. It then runs a failure matrix: disagreement, malformed report, participant crash, lost provider thread, restart during finalisation, duplicate delivery, capacity pressure, shared-budget exhaustion, cancellation, a human question, a source change and an organisation lease handoff. Each scenario ends in the same checks: execution stayed within limits; spending and history were kept; no report was accepted twice; nothing settled on stale evidence; the item moved at most once per settled session, to where the accepted reports route.
 - `packages/engine/src/teamExamples.test.ts` decides the publication review example in the pure engine alone, with no repository involved.
 - `teamSupervisor.test.ts`, `teamLeader.test.ts`, `teamSessionControls.test.ts`, `teamParticipants.test.ts`, `teamEvidence.test.ts` and `teamSessionsRepo.test.ts` cover the mechanisms one at a time.
+- `supervisor/teamCapacity.test.ts` runs a leader-led team of four members of one agent on default guardrails. It checks that four run at once, that two admitted sessions run four each side by side, that another item's run of that agent waits for the session to release its slot (when it settles or parks), that a session whose turns together outrun the wall clock still settles, and that each turn is held to the wall clock and the inactivity guard.
 - `providers/providerParity.test.ts` holds **both adapters** to the same report-only surface, refusals and refusal to start. It also holds them to an isolated member's surface: the ordinary `eo` server, index, servers, skills and permissions, with no report-only hook.
 - `supervisor/teamIsolated.test.ts` covers isolated members end to end. It checks that a member's turn differs from the same agent's ordinary dispatch of the step only in where it stands, its attempt, its framing and posting nothing. It checks its context, that its copy is removed with the change line on its report, and the refusal of a kind that makes no copy. It runs a team of four with `maxParallel: 2` and checks that the two members starting after the first reports see neither, in their context or through `comment_read`, `comment_search`, `thread_read` and `item_detail`. It also covers freshness, cancelling and a leader-led isolated team. `packs/developer/workspace/memberCopies.test.ts` writes, commits and resets in one member's copy of a real repository, and checks that the item's worktree, its branch, a sibling's copy and the remote are untouched. `providers/reportOnly.test.ts` covers each adapter's lock, the runtime qualification and the pin tripwire.
 
@@ -213,6 +222,6 @@ Last run for EO-850 on Linux x64, with Claude Code 0.3.322 + Claude Agent SDK 0.
 
 - **Writing participants.** An isolated member may change its own copy, but nothing it changes reaches the item's work: no member implements.
 - **Merging a member's copy back.** A copy is discarded when its attempt ends, and what changed in it is said on the report.
-- **A copy on a folder or scratch workspace.** Only a Git repository and no disk give isolated members copies. A folder step's team must be report-only.
+- **A copy on a folder or scratch workspace.** Only a Git repository and no disk give isolated members copies. An isolated team on an item in a folder or scratch workspace is refused at start; a folder step's team must be report-only to run.
 - **Recursive teams.** A member cannot lead a team or assign work. Only the configured leader assigns, and only to declared roles.
 - Editing a team on the configure screen's step form. Teams are configured through the assistant's draft.

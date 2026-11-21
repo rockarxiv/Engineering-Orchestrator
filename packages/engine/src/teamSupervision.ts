@@ -5,8 +5,8 @@ import type { IndependentTeam, LeaderAssignment, LeaderTeam, TeamContribution, T
  * What an independent team's supervisor does next (EO-846, ARCHITECTURE.md,
  * "A team on an agent step").
  *
- * Pure (invariant 2): the host reads the session's attempts, the evidence
- * it holds now and its free capacity, and hands them here as data; this
+ * Pure (invariant 2): the host reads the session's attempts and the
+ * evidence it holds now, and hands them here as data; this
  * says which assignments to start, which attempts to let go, who waits and
  * why, and what the settled contributions come to. It writes nothing,
  * starts nothing and reads no clock. The host does what it says, through
@@ -47,23 +47,14 @@ export interface TeamAttemptState {
   question?: "open" | "answered" | null;
 }
 
-/** Why an assignment that needs a turn has not been given one yet. */
-export type TeamWaitReason =
-  /** The team already runs as many participants at once as it allows. */
-  | "team"
-  /** Every participant slot on this machine is in use, by this team or another. */
-  | "machine"
-  /** The agent this assignment would run as is at its own concurrency limit. */
-  | "agent";
-
-export interface TeamCapacity {
-  /** How many more participant turns this machine may start, across every team. */
-  machineFree: number;
-  /** The agent each assignment would run as, by key; null where nobody could be staffed. */
-  agentOf: ReadonlyMap<string, string | null>;
-  /** How many more turns each agent may start, by agent id; absent is none. */
-  agentFree: ReadonlyMap<string, number>;
-}
+/**
+ * Why an assignment that needs a turn has not been given one yet: the team
+ * already runs as many participants at once as it allows. Nothing else
+ * bounds a team's turns (EO-871) — no agent's cap and no machine-wide
+ * limit: the session is one run against EO's caps, and the turns inside
+ * it are held back only by its own `maxParallel`.
+ */
+export type TeamWaitReason = "team";
 
 export interface PlanIndependentTeamInput {
   team: IndependentTeam;
@@ -71,7 +62,6 @@ export interface PlanIndependentTeamInput {
   attempts: readonly TeamAttemptState[];
   /** The evidence as it stands now, keyed as the attempts' are. */
   baseline: string;
-  capacity: TeamCapacity;
 }
 
 /** A turn to start: a new attempt at `key`, replacing `supersedes` where there was one. */
@@ -138,17 +128,16 @@ const ENDED = new Set(["completed", "failed", "cancelled"]);
  *   team's `maxRetries` times; past that it is a failed contribution,
  *   which `decideIndependentTeam` keeps apart from any conclusion.
  *
- * Turns are handed out in the team's order and only within every bound
- * at once: the team's own `maxParallel`, the machine's free participant
- * slots, and the agent's own limit. What cannot start waits, with why, so
- * a person can be told rather than left looking at nothing moving.
+ * Turns are handed out in the team's order and only within the team's own
+ * `maxParallel` (EO-871). What cannot start waits, with why, so a person
+ * can be told rather than left looking at nothing moving.
  *
  * Nothing is decided while any assignment is unsettled on the current
  * evidence, so a crash, a missing contribution or a stale report can
  * never reach the fallback.
  */
 export function planIndependentTeam(input: PlanIndependentTeamInput): TeamPlan {
-  const { team, baseline, capacity } = input;
+  const { team, baseline } = input;
   const byKey = new Map<string, TeamAttemptState[]>();
   for (const attempt of input.attempts) {
     const list = byKey.get(attempt.key) ?? [];
@@ -178,7 +167,7 @@ export function planIndependentTeam(input: PlanIndependentTeamInput): TeamPlan {
     }
   }
 
-  const { start, waiting } = allot(needs, working.length, team.limits.maxParallel, capacity);
+  const { start, waiting } = allot(needs, working.length, team.limits.maxParallel);
   const settled = needs.length === 0 && working.length === 0 && fence.length === 0 && asking.length === 0;
   const decision: TeamDecision = settled
     ? decideIndependentTeam(team, contributions)
@@ -261,14 +250,11 @@ function assignmentState(key: string, all: readonly TeamAttemptState[], round: n
 }
 
 /**
- * Turns, within every bound at once: the team's `maxParallel` less what
- * is working, the machine's free participant slots and each agent's own
- * limit. A stale turn still being stopped holds its slot until it has.
+ * Turns, within the one bound there is: the team's `maxParallel` less what
+ * is working. A stale turn still being stopped holds its slot until it has.
  */
-function allot(needs: readonly TeamStart[], workingCount: number, maxParallel: number, capacity: TeamCapacity): { start: TeamStart[]; waiting: TeamPlan["waiting"] } {
+function allot(needs: readonly TeamStart[], workingCount: number, maxParallel: number): { start: TeamStart[]; waiting: TeamPlan["waiting"] } {
   let teamFree = Math.max(0, maxParallel - workingCount);
-  let machineFree = Math.max(0, capacity.machineFree);
-  const agentFree = new Map(capacity.agentFree);
   const start: TeamStart[] = [];
   const waiting: TeamPlan["waiting"] = [];
   for (const need of needs) {
@@ -277,23 +263,7 @@ function allot(needs: readonly TeamStart[], workingCount: number, maxParallel: n
       waiting.push({ key: need.key, reason: "team" });
       continue;
     }
-    if (machineFree <= 0) {
-      waiting.push({ key: need.key, reason: "machine" });
-      continue;
-    }
-    const agent = capacity.agentOf.get(need.key) ?? null;
-    // Nobody to staff it is not a wait: the host fails the attempt with
-    // the reason, which a retry may get past and an exhausted one reports.
-    if (agent !== null) {
-      const free = agentFree.get(agent) ?? 0;
-      if (free <= 0) {
-        waiting.push({ key: need.key, reason: "agent" });
-        continue;
-      }
-      agentFree.set(agent, free - 1);
-    }
     teamFree -= 1;
-    machineFree -= 1;
     start.push(need);
   }
   return { start, waiting };
@@ -514,8 +484,6 @@ export interface PlanLeaderTeamInput {
   /** Every attempt the session made, the leader's included, in the order they were made. */
   attempts: readonly LeaderAttemptState[];
   baseline: string;
-  /** `agentOf` keyed by assignment key, the leader's under `LEADER_ASSIGNMENT_KEY`. */
-  capacity: TeamCapacity;
 }
 
 export interface LeaderPlan {
@@ -550,7 +518,7 @@ export interface LeaderPlan {
  * rather than finalising on nothing.
  */
 export function planLeaderTeam(input: PlanLeaderTeamInput): LeaderPlan {
-  const { team, attempts, baseline, capacity } = input;
+  const { team, attempts, baseline } = input;
   const ledger = leaderLedger(attempts, baseline);
   const fence: TeamPlan["fence"] = [];
   const needs: TeamStart[] = [];
@@ -581,7 +549,7 @@ export function planLeaderTeam(input: PlanLeaderTeamInput): LeaderPlan {
 
   // The round is still at work: its participants, and nothing of the leader's.
   if (fence.length > 0 || needs.length > 0 || working.length > 0) {
-    const { start, waiting } = allot(needs, working.length, team.limits.maxParallel, capacity);
+    const { start, waiting } = allot(needs, working.length, team.limits.maxParallel);
     return done({ kind: "continue" }, { start, waiting });
   }
   if (asking.length > 0) return done({ kind: "park" });
@@ -589,7 +557,7 @@ export function planLeaderTeam(input: PlanLeaderTeamInput): LeaderPlan {
   // The round has settled: the leader's move.
   const latest = ledger.leaderTurns.find((turn) => turn.supersededBy === null) ?? null;
   const leaderNeed = (why: TeamStart["why"], round: number): LeaderPlan => {
-    const { start, waiting } = allot([{ key: LEADER_ASSIGNMENT_KEY, supersedes: latest?.id ?? null, why, round }], 0, team.limits.maxParallel, capacity);
+    const { start, waiting } = allot([{ key: LEADER_ASSIGNMENT_KEY, supersedes: latest?.id ?? null, why, round }], 0, team.limits.maxParallel);
     return done({ kind: "continue" }, { start, waiting });
   };
   const tooMany = (): LeaderPlan | null =>

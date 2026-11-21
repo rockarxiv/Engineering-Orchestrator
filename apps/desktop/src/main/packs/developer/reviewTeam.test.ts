@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
-import { TEAM_PARTICIPANT_ACTION, uuidv7, type Agent, type AgentEvent, type AgentProvider, type AgentProviderStartOptions, type AgentWriteBridgeAddress, type AgentWriteTool, type Item, type LeaderTeam, type StepTeam } from "@eo/core";
+import { FOLDER_KIND, GIT_WORKTREE_KIND, TEAM_PARTICIPANT_ACTION, uuidv7, type Agent, type AgentEvent, type AgentProvider, type AgentProviderStartOptions, type AgentWriteBridgeAddress, type AgentWriteTool, type Item, type LeaderTeam, type StepTeam } from "@eo/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createClaudeProvider } from "../../providers/claude.js";
 import { createCodexProvider } from "../../providers/codex.js";
@@ -15,14 +15,18 @@ import { listCommentsForItem, postComment } from "../../db/repos/commentsRepo.js
 import { listReviewVerdicts } from "../../db/repos/index.js";
 import { getItem } from "../../db/repos/itemsRepo.js";
 import { getPipeline, listRoutesForPipeline, listStepsForPipeline } from "../../db/repos/pipelineStepsRepo.js";
+import { adoptPipeline, getPipelineOrigin } from "../../db/repos/index.js";
+import { addWorkspaceToProject, createProject } from "../../db/repos/projectsRepo.js";
+import { createWorkspace } from "../../db/repos/workspacesRepo.js";
 import { listRunsForItem } from "../../db/repos/runsRepo.js";
 import { listTeamSessionsForItem } from "../../db/repos/teamSessionsRepo.js";
 import { listTransitionsForItem } from "../../db/repos/transitionsRepo.js";
 import { createTestItem, openMigratedTestDb } from "../../db/testHelpers.js";
 import { loadTemplateHistory } from "../../gallery/history.js";
+import { templateHistoryUpTo } from "../../gallery/historyTestHelpers.js";
 import { backfillPipelineOrigins } from "../../gallery/origins.js";
 import { applyTemplateUpdates } from "../../gallery/templateUpdates.js";
-import { savePipeline, storedGraphProblems } from "../../ipc/configCommands.js";
+import { DEFAULT_GUARD_CONFIG, savePipeline, storedGraphProblems } from "../../ipc/configCommands.js";
 import { BUILTIN_RUNNERS } from "./builtins.js";
 import { developerSectionRenderers } from "./sections.js";
 import { createRoleWiring } from "./wiring.js";
@@ -30,6 +34,8 @@ import { syncRolePrompts } from "../../roles/prompts.js";
 import type { AgentWriteBridge } from "../../mcp/writeBridge.js";
 import { createRunSupervisor, type RunSupervisor } from "../../supervisor/runSupervisor.js";
 import { MEMBER_NO_BRIDGE } from "../../supervisor/teamParticipants.js";
+import type { WorkspaceKind } from "../../supervisor/workspaceKind.js";
+import { useWorkspaceKinds } from "../../workspaceKinds.js";
 
 /**
  * The bundled software template's Review step as a team (EO-868): a
@@ -50,7 +56,6 @@ import { MEMBER_NO_BRIDGE } from "../../supervisor/teamParticipants.js";
  */
 
 const GALLERY_DIRECTORY = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..", "resources", "gallery");
-const LIMITS = { globalConcurrency: 1, perAgentConcurrency: 2, perRepositoryConcurrency: 1 };
 const CRITERIA = ["A key over its limit gets a 429", "The 429 carries a Retry-After header", "The limit is configurable per key"];
 const CODEX_EXECUTABLE = "/opt/eo/runtimes/codex/bin/codex";
 const DIFF = "diff --git a/src/limit.ts b/src/limit.ts\n+export function limit(key: string) { return counts[key]++ > 100 ? 429 : 200; }";
@@ -181,7 +186,10 @@ const bridge: Pick<AgentWriteBridge, "tokenFor" | "close"> = {
 function supervisor(extra: Partial<Parameters<typeof createRunSupervisor>[0]> = {}): RunSupervisor {
   const made = createRunSupervisor({
     db: handle.db,
-    limits: LIMITS,
+    // EO's default guardrails, every cap at one (EO-871): the session is
+    // one run against them, and its turns are held back by nothing but
+    // the team's own limit.
+    limits: DEFAULT_GUARD_CONFIG,
     provider: providerFor,
     reportOnlyProvider: () => {
       throw new Error("A member of the Review team was built as a report-only participant.");
@@ -562,5 +570,61 @@ describe("the template's Review step with its team removed", () => {
     expect(listTeamSessionsForItem(handle.db, item.id)).toEqual([]);
     expect(listRunsForItem(handle.db, item.id).map((run) => run.action)).toEqual(["review"]);
     expect(getItem(handle.db, item.id)?.stepId).toBe(routeOf("changes_requested"));
+  });
+});
+
+/**
+ * Delivery updated from 1.4 on a project with a Git and a folder workspace
+ * (EO-871): the update applies, and an item in the folder — which cannot
+ * give each member a copy of its own — is refused at start with a comment
+ * naming the kind. Never a member in the item's own folder, and never the
+ * single reviewer in the team's place.
+ */
+describe.each([
+  { name: "beside a Git repository", git: true },
+  { name: "the project's only workspace", git: false },
+])("an item in a folder workspace, $name, on Delivery updated to 1.5", ({ git }) => {
+  let folder: string;
+  let item: Item;
+
+  beforeEach(() => {
+    folder = mkdtempSync(join(tmpdir(), "eo-review-folder-"));
+    syncRolePrompts(handle.db);
+    const onFourteen = templateHistoryUpTo(GALLERY_DIRECTORY, "software-feature-to-merge", "1.4");
+    backfillPipelineOrigins(handle.db, onFourteen);
+    const shop = createProject(handle.db, { name: "Shop", keyPrefix: "SHOP" }).id;
+    adoptPipeline(handle.db, "default", shop);
+    applyTemplateUpdates(handle.db, onFourteen, { isTheRecord: false });
+    // The git kind installed, as the developer pack installs it.
+    useWorkspaceKinds(new Map([[GIT_WORKTREE_KIND, { slug: GIT_WORKTREE_KIND, evidence: { copy: {} } } as unknown as WorkspaceKind]]));
+    if (git) addWorkspaceToProject(handle.db, shop, createWorkspace(handle.db, { config: { name: "shop", repoPath: join(folder, "shop.git") } }).id);
+    const docs = createWorkspace(handle.db, { kind: FOLDER_KIND, config: { path: folder } });
+    addWorkspaceToProject(handle.db, shop, docs.id);
+    // The update applies either way (EO-871): what cannot run is said on each item, at start.
+    expect(applyTemplateUpdates(handle.db, loadTemplateHistory(GALLERY_DIRECTORY), { isTheRecord: false })).toContainEqual(expect.objectContaining({ pipelineId: "default", outcome: "applied", from: "1.4", to: "1.5" }));
+    expect(getPipelineOrigin(handle.db, "default")?.version).toBe("1.5");
+    expect(reviewTeam().members).toBe("isolated");
+    item = createTestItem(handle.db, { type: "story", title: "Rewrite the setup guide", stepId: "review", projectId: shop, workspaceId: docs.id, spec: { acceptance_criteria: CRITERIA } });
+  });
+
+  afterEach(() => {
+    useWorkspaceKinds(new Map());
+    rmSync(folder, { recursive: true, force: true });
+  });
+
+  it("refuses the team at start with a comment naming the kind, and starts nobody — no member, and no single reviewer", async () => {
+    script = () => {
+      throw new Error("Nobody should have been started.");
+    };
+
+    await supervisor().runOnce();
+
+    expect(started).toEqual([]);
+    expect(listRunsForItem(handle.db, item.id).filter((run) => run.action === TEAM_PARTICIPANT_ACTION)).toEqual([]);
+    expect(listRunsForItem(handle.db, item.id).map((run) => run.action)).toEqual(["review"]);
+    expect(listTransitionsForItem(handle.db, item.id)).toEqual([]);
+    expect(getItem(handle.db, item.id)?.stepId).toBe("review");
+    const said = listCommentsForItem(handle.db, item.id).map((comment) => comment.body).join("\n");
+    expect(said).toContain('its step works in a "folder" workspace, which cannot give each member a copy of its own, so EO started nobody');
   });
 });

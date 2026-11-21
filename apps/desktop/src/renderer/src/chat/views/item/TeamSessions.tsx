@@ -1,7 +1,7 @@
 import { Fragment, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
-import type { TeamAssignmentView, TeamAttemptShown, TeamAttemptView, TeamSessionState, TeamSessionView, TeamWaitKind } from "@eo/core";
+import { memberModeWords, type TeamAssignmentView, type TeamAttemptShown, type TeamAttemptView, type TeamSessionState, type TeamSessionView, type TeamWaitKind } from "@eo/core";
 import { cn } from "@eo/ui";
 import { ipcQuery } from "../../../query/client";
 import { namesItemOrNone, useInvalidateOnPush } from "../../../query/useInvalidateOnPush";
@@ -183,7 +183,7 @@ function SessionCard({
       <div className="flex min-w-0 flex-wrap items-center gap-2">
         <GroupLabel>Team on {session.stepName}</GroupLabel>
         <Chip tone={state.tone}>{state.label}</Chip>
-        <span className="text-[12px] text-ink-subtle">{session.coordination === "leader" ? "Leader-led" : "Independent"} · report-only</span>
+        <span className="text-[12px] text-ink-subtle">{session.coordination === "leader" ? "Leader-led" : "Independent"} · {memberModeWords(session.members)}</span>
         <span className="ml-auto text-[12px] text-ink-muted" title="Every run of this session counted once: its participants' and the team's own.">
           {money(session.totals.costCents)} · {session.totals.runs} run{session.totals.runs === 1 ? "" : "s"}
         </span>
