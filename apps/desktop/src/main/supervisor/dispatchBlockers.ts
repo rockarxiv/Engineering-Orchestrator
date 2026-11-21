@@ -116,9 +116,10 @@ export type RerunBlocker =
    * archived one does not — nothing un-archives — so a person sent
    * looking for it would be sent looking for nothing.
    *
-   * `role` travels with the name so the fix can point at the thing that
-   * still exists. The step is owned by a role, not by this agent, and
-   * another agent on that role is what makes the step run again.
+   * `role` — the agent's kind — travels with the name so the fix can
+   * point at what still exists: the step names this agent (EO-875), so
+   * choosing another agent on the step is what makes it run again, and
+   * another agent of the kind is who can still be asked.
    */
   | { kind: "agent_archived"; agentName: string; role: string }
   /**
@@ -220,7 +221,7 @@ export function blockerWords(blocker: Exclude<RerunBlocker, { kind: "run_active"
         // move is to go and un-archive it, and there is nothing to
         // press: the row is kept for the record and nothing brings it
         // back into service.
-        fix: `Archiving is one way, so give the "${blocker.role}" role another agent and mention that one.`,
+        fix: `Archiving is one way, so choose another agent on the step, or mention another "${blocker.role}" agent.`,
       };
     case "mention_depth":
       return {
@@ -488,24 +489,24 @@ export function outOfProjectMentionRefusal(words: OutOfProject): string {
 export function outOfProjectDispatchRefusal(words: OutOfProject): string {
   return (
     `EO did not start this run: ${outOfProjectCondition(words)}, so it does not run here. ` +
-    "Give this ticket's project an agent of its own in this role, or use a global one. Nothing has changed."
+    "Choose an agent of this ticket's project, or a global one, on the step. Nothing has changed."
   );
 }
 
 /**
  * A parked run, a run interrupted by a restart or a run stopped for a
  * forced restart, whose agent has moved to another project since —
- * written off rather than carried on, and the item left for whoever
- * staffs the step for its own project.
+ * written off rather than carried on, and the item left for its step to
+ * name an agent that works for its own project (EO-875).
  *
  * `what` is the run in the person's words, as the start of a sentence
  * ("The run that was waiting for your answer here"), and `role` is the
- * step's role, which is who picks the work up now.
+ * agent's kind, the kind of agent the step needs.
  */
 export function outOfProjectRecoveryNote(words: OutOfProject, what: string, role: string): string {
   return (
     `${what} is closed rather than carried on: ${outOfProjectCondition(words)}. ` +
-    `This ticket is free to carry on — whoever works for its project in the "${role}" role picks the step up again.`
+    `This ticket is free to carry on once its step names a "${role}" agent that works for its project.`
   );
 }
 

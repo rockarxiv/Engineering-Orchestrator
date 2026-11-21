@@ -9802,9 +9802,9 @@ export function createRunSupervisor(
     }
 
     // Still the same step by id — but a step is data somebody can edit
-    // while preflight is open (invariant #7). Change Review's owner role
-    // to `implementer` and generic eligibility still says yes: the step
-    // is staffed, the item is on it, nothing is held. What it cannot
+    // while preflight is open (invariant #7). Change the agent Review
+    // names to the implementer and generic eligibility still says yes:
+    // the step's agent can run, the item is on it, nothing is held. What it cannot
     // see is that the request was classified against a contract that has
     // since stopped holding, and admitting it would run the reviewer at
     // a step the reviewer no longer owns, with an action it may no
@@ -10370,7 +10370,7 @@ export function createRunSupervisor(
           body: claimedElsewhere
             ? `Two runs on this ticket were interrupted by an app restart. Only one of them can carry on — a ticket has one checkout, and two agents in it is a diff nobody wrote — so attempt ${run.attempt} is marked orphaned and the other one continues. The ticket stays in "${item.stepId}".`
             : retiredAgent
-              ? `${retiredAgent.name} was archived while EO was not running, so the run it was interrupted in the middle of (attempt ${run.attempt}) is marked orphaned rather than resumed: an archived agent is dispatched to nothing, and nothing brings one back. The ticket stays in "${item.stepId}" for the next agent on the "${retiredAgent.role}" role to pick up.`
+              ? `${retiredAgent.name} was archived while EO was not running, so the run it was interrupted in the middle of (attempt ${run.attempt}) is marked orphaned rather than resumed: an archived agent is dispatched to nothing, and nothing brings one back. The ticket stays in "${item.stepId}" until its step names another agent.`
               : outOfProjectAgent
                 ? outOfProjectRecoveryNote(outOfProjectWords(outOfProjectAgent, item), `The run interrupted by the restart (attempt ${run.attempt})`, outOfProjectAgent.role)
                 : (notResumable ??
@@ -12169,7 +12169,7 @@ export function createRunSupervisor(
       body:
         `${agent.name} was waiting for your answer here, and has since been archived. An archived agent is ` +
         `dispatched to nothing and nothing brings one back, so that run is closed and this ticket is free to ` +
-        `carry on — give the "${agent.role}" role another agent if this step is still to be run.`,
+        `carry on — choose another agent on the step if it is still to be run.`,
     });
     announceRun(priorRun.id, item.id, "cancelled");
   }
