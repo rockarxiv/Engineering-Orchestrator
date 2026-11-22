@@ -12437,21 +12437,21 @@ export function createRunSupervisor(
     const item = getItem(db, run.itemId);
     if (!item) return; // deleted under the cancellation; nowhere to post and nothing to hold
 
-    // A step nothing was ever going to be dispatched at — a `user` step,
-    // a terminal one, a discussion — has nothing to resume, so nothing
-    // is held and nothing is said about it.
+    // Every step holds, a `user` or terminal one included: a person can
+    // cancel a mention's reply run there, and that cancel is told and held
+    // like any other. Only an item whose step has gone has nowhere to be
+    // held at.
     const step = stepForItem(db, item);
-    if (!step || step.isTerminal || step.type === "user") return;
+    if (!step) return;
 
     if (item.heldAt === null) setItemHeld(db, item.id, now(), run.id);
 
-    const team = step.type === "agent" && step.team !== null && step.team !== undefined;
     postComment(db, {
       itemId: item.id,
       runId: run.id,
       author: { type: "engine" },
       kind: "note",
-      body: cancelHoldNote(step.name, team),
+      body: cancelHoldNote(step),
     });
     onItemChanged(item.id);
   }

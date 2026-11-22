@@ -70,6 +70,6 @@ function adoptOne(db: Db, stop: Stop, at: number): void {
     runId: cancelled?.id ?? null,
     author: { type: "engine" },
     kind: "note",
-    body: cancelHoldNote(step.name, step.type === "agent" && step.team !== null && step.team !== undefined),
+    body: cancelHoldNote(step),
   });
 }

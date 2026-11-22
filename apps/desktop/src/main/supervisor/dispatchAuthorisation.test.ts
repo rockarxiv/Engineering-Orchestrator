@@ -426,6 +426,39 @@ describe("a run somebody stopped", () => {
     expect(getItem(handle.db, item.id)?.heldAt).not.toBeNull();
   });
 
+  it("holds an item on a person's terminal step when a mention's reply run there is cancelled, and says so", async () => {
+    // "Done" is the seeded pipeline's `user` step and its terminal one:
+    // nothing is dispatched at it, but a person can still ask an agent by
+    // name there and cancel the reply.
+    const done = createTestItem(handle.db, { type: "story", title: "Shipped", stepId: "ready_to_merge" });
+    const supervisor = slowSupervisor();
+    await postHumanComment(handle.db, supervisor, {
+      itemId: done.id,
+      body: "@implementer one more thing about this?",
+      mentions: [],
+      pinned: false,
+      parentId: null,
+    });
+    const running = supervisor.runOnce();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const [reply] = listRunsForItem(handle.db, done.id);
+    expect(reply).toMatchObject({ action: "respond" });
+    expect(cancelRun(supervisor, { runId: reply!.id })).toEqual({ cancelled: true });
+    await running;
+
+    expect(getItem(handle.db, done.id)).toMatchObject({ stepId: "ready_to_merge", heldAt: expect.any(Number) });
+    expect(heldByCancelOf(handle.db, done.id)).toBe(reply!.id);
+    expect(engineNotes(done.id).filter((body) => body.includes("Run cancelled"))).toEqual([
+      'Run cancelled, so this ticket is on hold at "Done". Resume it to take it off hold.',
+    ]);
+
+    // Resume takes it off hold. (The mention itself is still open, and is
+    // answered again as an open mention always was, held or not.)
+    resumeHeldItem(handle.db, supervisor, { itemId: done.id, cancelActiveRun: false });
+    expect(getItem(handle.db, done.id)?.heldAt).toBeNull();
+    expect(heldByCancelOf(handle.db, done.id)).toBeNull();
+  });
+
   it("says nothing and stops nothing when the cancellation belongs to a move", async () => {
     // A move already routes the item and writes its own sentence about
     // the run it cancelled. A second paragraph saying EO has stopped —

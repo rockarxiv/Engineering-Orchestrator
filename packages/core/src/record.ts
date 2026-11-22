@@ -1985,6 +1985,18 @@ export const RecordAdoptedItemSchema = RecordItemSchema.extend({
    * record holds and cannot act on.
    */
   spec: z.unknown().nullable().default(null),
+  /**
+   * The run whose cancellation holds this item, where a cancel set its
+   * hold rather than a person (EO-891).
+   *
+   * Carried so the hold arrives as what it was: a later move ends a
+   * cancel's hold and leaves a person's alone, and a record that took
+   * every hold as a person's would keep a cancelled item held through
+   * the move that should have released it. Defaulted, so a page from a
+   * build that predates it reads as a person's hold, which is the one
+   * every hold such a build sent was.
+   */
+  heldByCancelOf: z.string().nullable().default(null),
 });
 export type RecordAdoptedItem = z.infer<typeof RecordAdoptedItemSchema>;
 

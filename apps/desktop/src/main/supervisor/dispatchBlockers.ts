@@ -557,9 +557,18 @@ export function resumeOutlook(stepName: string, blocker: ItemBlocker | null): st
  * Resume, which a held item already offers, runs the step again. This is
  * the one sentence saying so, and it names what resuming will do — for a
  * team, the whole team again from its first turn, since the session the
- * cancel ended is never adopted again.
+ * cancel ended is never adopted again. On a step nothing is dispatched
+ * at — a person's step, a terminal one, where the cancelled run was a
+ * mention's reply — resuming runs nothing, and the note says only that
+ * it takes the item off hold.
  */
-export function cancelHoldNote(stepName: string, team: boolean): string {
-  const resuming = team ? "Resume it to start the team again from the beginning." : "Resume it to run the step again.";
-  return `Run cancelled, so this ticket is on hold at "${stepName}". ${resuming}`;
+export function cancelHoldNote(step: { name: string; type: string; isTerminal: boolean; team?: unknown }): string {
+  const runsNothing = step.isTerminal || step.type === "user";
+  const team = step.type === "agent" && step.team !== null && step.team !== undefined;
+  const resuming = runsNothing
+    ? "Resume it to take it off hold."
+    : team
+      ? "Resume it to start the team again from the beginning."
+      : "Resume it to run the step again.";
+  return `Run cancelled, so this ticket is on hold at "${step.name}". ${resuming}`;
 }
