@@ -20,7 +20,6 @@ import { markProjectOnTheRecord } from "../db/repos/projectsRepo.js";
 import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import { archivedProjectBlocker, buildEligibilityInput } from "../supervisor/buildTickInput.js";
 import { createItemLock } from "../supervisor/itemLock.js";
-import { recordStop, stopStands } from "../supervisor/stoppedByHand.js";
 import { archiveProjectCommand, restoreProjectCommand, stoppedByArchiveNote } from "./archiveProjectCommand.js";
 import { managedProjectRefusal } from "./deleteProjectCommand.js";
 import { listArchivedSummaries, listInbox, listItemSummaries } from "./domainQueries.js";
@@ -145,22 +144,6 @@ describe("projects:archive", () => {
     expect(notes.map((comment) => comment.body)).toEqual([stoppedByArchiveNote("Shop", "To Do")]);
     expect(notes[0]?.runId).toBe(run.id);
     expect(engine.notified).toBeGreaterThan(0);
-  });
-
-  it("clears the stand-off an earlier stop left on an item whose run it cancelled, as a resume does", () => {
-    const shop = project("Shop", "SHOP");
-    const busy = storyOn(shop.id, "Checkout");
-    const quiet = storyOn(shop.id, "Untouched");
-    recordStop(handle.db, busy.id, "entry-1");
-    recordStop(handle.db, quiet.id, "entry-1");
-    runningOn(busy.id);
-
-    archive(shop.id, true);
-
-    expect(stopStands(handle.db, busy.id, "entry-1")).toBe(false);
-    // An item the archive did not stop keeps whatever a person decided
-    // about it: this is not the archive's to undo.
-    expect(stopStands(handle.db, quiet.id, "entry-1")).toBe(true);
   });
 
   it("moves the window to another live project, or to none when none is left", () => {

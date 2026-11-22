@@ -96,7 +96,6 @@ import { resolveAndValidateMentions } from "../supervisor/escalation.js";
 import { archivedProjectBlocker, buildEligibilityInput, namedBlocker } from "../supervisor/buildTickInput.js";
 import { resumeOutlook, type ItemBlocker } from "../supervisor/dispatchBlockers.js";
 import type { Cancellation, ResumeItemOptions, SteerResult, SteeredMessage } from "../supervisor/runSupervisor.js";
-import { clearStop } from "../supervisor/stoppedByHand.js";
 import { worksOnABranch } from "../supervisor/workspaceResolution.js";
 import type { ItemLock } from "../supervisor/itemLock.js";
 import { actingCaller, actingDevice, actingPersonId, humanAuthor, type ActingCaller } from "../identity/acting.js";
@@ -1100,14 +1099,9 @@ export function resumeHeldItem(db: Db, engine: EngineHandle | undefined, input: 
   }
 
   if (activeRun) engine?.cancelRun(activeRun.id, "superseded");
+  // A hold a cancel set (EO-891) is resumed exactly as a person's is:
+  // the step runs again.
   setItemHeld(db, itemId, null);
-  // Resuming is a person handing the item back to the scheduler, and
-  // it is the one re-authorisation that leaves the item exactly where
-  // it stood — same step, same initiation — so a cancellation taken
-  // before the hold would otherwise still be standing off it (EO-175).
-  // A move needs nothing of the sort: it puts the item in a new
-  // initiation by being a move.
-  clearStop(db, itemId);
 
   const stepName = item.stepId === null ? "no pipeline" : (getStep(db, item.stepId)?.name ?? item.stepId);
   // What happens next, checked rather than assumed (EO-135, invariant #8).
@@ -2283,8 +2277,8 @@ function whoAsked(db: Db, actingDeviceId: string | null | undefined): string {
  * Stop this run, and nothing else.
  *
  * Which is why it leaves `cancellation` at its default: this channel is
- * the whole of what was asked for, so EO stops with it rather than
- * offering the same step again on the next tick (EO-175). It carries no
+ * the whole of what was asked for, so EO holds the item rather than
+ * offering the same step again on the next tick (EO-175, EO-891). It carries no
  * item and no destination — the item stays exactly where it is — and
  * that is the difference between it and every other caller of
  * `cancelRun`.

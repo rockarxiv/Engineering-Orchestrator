@@ -54,6 +54,7 @@ import { getAppliedTemplateUpdate, getPipelineOrigin, isTemplateDocument, record
 import {
   agents,
   attachments,
+  cancelHolds,
   comments,
   commentMentions,
   items,
@@ -1119,13 +1120,14 @@ export function countProjectRows(db: Db, projectId: Uuid): Omit<RecordAdoptCount
  */
 export function readProjectItems(db: Db, projectId: Uuid): RecordAdoptedItem[] {
   return db
-    .select({ item: items, typeSlug: itemTypes.slug })
+    .select({ item: items, typeSlug: itemTypes.slug, heldByCancelOf: cancelHolds.runId })
     .from(items)
     .innerJoin(itemTypes, eq(itemTypes.id, items.typeId))
+    .leftJoin(cancelHolds, eq(cancelHolds.itemId, items.id))
     .where(eq(items.projectId, projectId))
     .orderBy(asc(items.createdAt), asc(items.id))
     .all()
-    .map(({ item, typeSlug }) => ({
+    .map(({ item, typeSlug, heldByCancelOf }) => ({
       id: item.id,
       key: item.key,
       typeId: item.typeId,
@@ -1142,6 +1144,9 @@ export function readProjectItems(db: Db, projectId: Uuid): RecordAdoptedItem[] {
       priority: item.priority,
       archivedAt: item.archivedAt,
       heldAt: item.heldAt,
+      // Whose hold it is (EO-891), so a cancel's hold still ends with a
+      // move on the record rather than arriving as a person's.
+      heldByCancelOf: item.heldAt === null ? null : (heldByCancelOf ?? null),
       previewAt: item.previewAt,
       // The trial mark (EO-582): a move must not turn a trial into live work.
       trialAt: item.trialAt,
@@ -2088,6 +2093,7 @@ export function writeAdoptedPage(db: Db, project: RecordProject, page: RecordAdo
         })
         .onConflictDoNothing()
         .run();
+      keepAdoptedCancelHold(db, item);
       updateAdoptedItem(db, item);
       // After the item, which it hangs off, and after the items before
       // it on the page — oldest first, so the item it was created from
@@ -2499,6 +2505,20 @@ export function writeAdoptedPage(db: Db, project: RecordProject, page: RecordAdo
   });
 
   return counts;
+}
+
+/** Whose hold an arriving item's is, kept with it (EO-891). */
+function keepAdoptedCancelHold(db: Db, item: RecordAdoptedItem): void {
+  // Whose hold it is follows the hold (EO-891): newer wins off the same
+  // `updated_at` the hold itself does in `updateAdoptedItem`, read before
+  // that update moves the stamp. A first arrival was inserted just now
+  // with this very stamp, so it takes the page's answer too.
+  const held = db.select({ updatedAt: items.updatedAt }).from(items).where(eq(items.id, item.id)).get();
+  if (held === undefined || item.updatedAt < held.updatedAt) return;
+  db.delete(cancelHolds).where(eq(cancelHolds.itemId, item.id)).run();
+  if (item.heldAt !== null && item.heldByCancelOf !== null) {
+    db.insert(cancelHolds).values({ itemId: item.id, runId: item.heldByCancelOf }).run();
+  }
 }
 
 /**

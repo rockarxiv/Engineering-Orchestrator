@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Agent, Item, Uuid } from "@eo/core";
 import type { DbHandle } from "../db/client.js";
 import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
-import { createRun, getItem, listAgents, listCommentsForItem, listRunsForItem, recordOccurrence } from "../db/repos/index.js";
+import { createRun, getItem, listAgents, listCommentsForItem, listRunsForItem, recordOccurrence, setItemHeld } from "../db/repos/index.js";
 import { createJob } from "../jobs/jobs.js";
 import { grantLease, leaseFor, listLeases } from "../db/repos/leasesRepo.js";
 import { listTransitionsForItem } from "../db/repos/transitionsRepo.js";
@@ -116,6 +116,31 @@ describe("a dispatch this device cannot preflight", () => {
     expect(listRunsForItem(handle.db, item.id)).toEqual([]);
     expect(bodies()).toEqual([]);
     expect(leaseFor(handle.db, item.id)?.deviceId).toBe("anna-laptop");
+  });
+});
+
+describe("a dispatch that declines before its run starts", () => {
+  it("gives its claim back at once, so no note blames this device for going quiet (EO-891)", async () => {
+    const supervisor = supervisorWith({
+      // The item is held while the dispatch is in preflight — a person
+      // cancelling, or holding it — so the recheck before the run row
+      // turns the dispatch back.
+      checkAuth: async () => {
+        setItemHeld(handle.db, item.id, clock);
+        return { ok: true };
+      },
+    });
+
+    await supervisor.runOnce();
+
+    expect(listRunsForItem(handle.db, item.id)).toEqual([]);
+    expect(leaseFor(handle.db, item.id)).toBeNull();
+
+    // Past the claim's term, the sweep finds nothing of this device's to release.
+    clock += TTL + 1;
+    await supervisor.runOnce();
+    expect(bodies().filter((body) => body.includes("stopped saying it was still on it"))).toEqual([]);
+    expect(leaseFor(handle.db, item.id)).toBeNull();
   });
 });
 

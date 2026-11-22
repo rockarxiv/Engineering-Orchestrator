@@ -90,11 +90,14 @@ function withTodaysStepColumn<T>(handle: DbHandle, act: () => T): T {
   handle.db.run(sql`ALTER TABLE pipeline_steps ADD agent_id text`);
   // And the one 0182 adds (EO-843).
   handle.db.run(sql`ALTER TABLE pipeline_steps ADD team text`);
+  // And the table 0184 adds, which a move reads (EO-891).
+  handle.db.run(sql`CREATE TABLE cancel_holds (item_id text PRIMARY KEY NOT NULL, run_id text NOT NULL)`);
   try {
     return act();
   } finally {
     handle.db.run(sql`ALTER TABLE pipeline_steps DROP COLUMN agent_id`);
     handle.db.run(sql`ALTER TABLE pipeline_steps DROP COLUMN team`);
+    handle.db.run(sql`DROP TABLE cancel_holds`);
   }
 }
 

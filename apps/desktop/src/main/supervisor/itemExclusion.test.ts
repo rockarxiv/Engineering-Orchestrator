@@ -145,8 +145,8 @@ describe("the lock over the life of a run", () => {
     expect(first).toBeDefined();
 
     // Cancelled as part of something else — the shape a move or a hold
-    // has. A person's bare stop ends the initiation and the scheduler
-    // does not offer the step again (EO-175, and tested there); what is
+    // has. A person's bare stop holds the item, so the scheduler does
+    // not offer the step again (EO-891, tested in dispatchAuthorisation); what is
     // being tested here is the lock, so this asks for the cancellation
     // that leaves the scheduling alone.
     supervisor.cancelRun(first!.id, "superseded");

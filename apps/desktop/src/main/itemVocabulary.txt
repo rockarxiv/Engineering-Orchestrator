@@ -352,6 +352,7 @@ apps/desktop/src/main/roles/systemAgentReference.test.ts: expect(proposing).toCo
 apps/desktop/src/main/roles/systemAgentReviewers.test.ts: "Once a ticket exists, `reviewers` on `item_update`, on `eo_admin`, sets them, empties them with `[]`, or clears them with `null`",
 apps/desktop/src/main/roles/systemAgentReviewers.test.ts: "`pullRequestReviewers` is the list the pull request step will request: the ticket's own, else its feature's, else the repository's default.",
 apps/desktop/src/main/roles/systemAgentReviewers.test.ts: expect(flat).toContain("`reviewers` is the ticket's own list as stored — null when it inherits, `[]` when it is set to nobody");
+apps/desktop/src/main/supervisor/adoptStoppedByHand.test.ts: const HELD_NOTE = 'Run cancelled, so this ticket is on hold at "To Do". Resume it to run the step again.';
 apps/desktop/src/main/supervisor/agentComments.ts: ? `Comment posted. The mention-depth cap of ${MENTION_DEPTH_CAP} is reached on this ticket, so it went to the person instead of the agent you named. `
 apps/desktop/src/main/supervisor/agentComments.ts: body: `Escalation redirected to you: mention-depth cap of ${MENTION_DEPTH_CAP} reached on this ticket.`,
 apps/desktop/src/main/supervisor/agentComments.ts: if (!isOutput) body = `${body}\n\n(Escalation redirected to you: mention-depth cap of ${MENTION_DEPTH_CAP} reached on this ticket.)`;
@@ -370,11 +371,12 @@ apps/desktop/src/main/supervisor/codexBudget.test.ts: expect(said[0]!.body).toCo
 apps/desktop/src/main/supervisor/contextActions.test.ts: item: { key: "EO-1", title: "A ticket", body: null, acceptanceCriteria: [], actionOverrides: new Map(), workspaceKind: "none" },
 apps/desktop/src/main/supervisor/dependencyGates.test.ts: 'Nothing will pick it up from "To Do" yet, though: this ticket is waiting on another that has not finished. Finish that ticket, or remove the dependency.',
 apps/desktop/src/main/supervisor/dependencyGates.ts: `This ticket stopped waiting for ${dependency.key} when it reached "${gateName}", so it carries on and is not held again — ` +
+apps/desktop/src/main/supervisor/dispatchAuthorisation.test.ts: 'Run cancelled, so this ticket is on hold at "Done". Resume it to take it off hold.',
+apps/desktop/src/main/supervisor/dispatchAuthorisation.test.ts: const HELD_NOTE = 'Run cancelled, so this ticket is on hold at "To Do". Resume it to run the step again.';
+apps/desktop/src/main/supervisor/dispatchAuthorisation.test.ts: expect(engineNotes().some((body) => body.includes("Run cancelled, so this ticket is on hold"))).toBe(false);
 apps/desktop/src/main/supervisor/dispatchAuthorisation.test.ts: expect(engineNotes().some((body) => body.includes("Run cancelled: you moved this ticket"))).toBe(true);
 apps/desktop/src/main/supervisor/dispatchBlockers.ts: "Choose an agent of this ticket's project, or a global one, on the step. Nothing has changed."
 apps/desktop/src/main/supervisor/dispatchBlockers.ts: "Mention an agent that works for this ticket's project, or a global one. Nothing has changed."
-apps/desktop/src/main/supervisor/dispatchBlockers.ts: : `Mention ${rerunWith} to hand the step back, move the ticket, or hold it and resume it — any of the three picks it up again.`;
-apps/desktop/src/main/supervisor/dispatchBlockers.ts: ? `Move the ticket, or hold it and resume it, and it is picked up again.`
 apps/desktop/src/main/supervisor/dispatchBlockers.ts: `This ticket is free to carry on once its step names a "${role}" agent that works for its project.`
 apps/desktop/src/main/supervisor/dispatchBlockers.ts: condition: "this ticket declares no acceptance criteria, so a review would have nothing to judge it against",
 apps/desktop/src/main/supervisor/dispatchBlockers.ts: condition: "this ticket is not sitting on a step an agent is dispatched at",
@@ -388,6 +390,7 @@ apps/desktop/src/main/supervisor/dispatchBlockers.ts: fix: "Finish that ticket, 
 apps/desktop/src/main/supervisor/dispatchBlockers.ts: fix: "Say something on this ticket and they can carry on from there.",
 apps/desktop/src/main/supervisor/dispatchBlockers.ts: if (names.length === 0) return "agents on this ticket";
 apps/desktop/src/main/supervisor/dispatchBlockers.ts: return `Nothing will run "${stepName}" for this ticket: ${condition}. ${fix} It is not handed to another agent of the same kind.`;
+apps/desktop/src/main/supervisor/dispatchBlockers.ts: return `Run cancelled, so this ticket is on hold at "${step.name}". ${resuming}`;
 apps/desktop/src/main/supervisor/dispatchBlockers.ts: return { condition: "this ticket is on hold", fix: "Resume it." };
 apps/desktop/src/main/supervisor/itemExclusion.test.ts: expect(engineNotes[0]?.body).toBe(blockedByActiveRunRefusal("pick this ticket back up after your reply"));
 apps/desktop/src/main/supervisor/itemLock.test.ts: "EO did not move the ticket: an agent is working on it right now. Call ticket_move again with " +
@@ -468,6 +471,9 @@ apps/desktop/src/main/supervisor/streamFinalisation.test.ts: expect(note?.body).
 apps/desktop/src/main/supervisor/systemAgentGuardrails.test.ts: // On that same item the per-ticket total has gone, and on another the day's.
 apps/desktop/src/main/supervisor/systemAgentGuardrails.test.ts: expect(refused?.error).toContain("Per-ticket cost budget");
 apps/desktop/src/main/supervisor/systemAgentGuardrails.test.ts: expect(runsOn(sent).find((run) => run.status === "awaiting_input")?.error).toContain("Per-ticket cost budget");
+apps/desktop/src/main/supervisor/teamSessionControls.test.ts: expect(TEAM_RETRY_WORDS).toContain("Cancelling the session holds the ticket, and resuming it then starts the team again from the beginning.");
+apps/desktop/src/main/supervisor/teamSessionControls.test.ts: expect(held.map((comment) => comment.body)).toEqual(['Run cancelled, so this ticket is on hold at "Alignment". Resume it to start the team again from the beginning.']);
+apps/desktop/src/main/supervisor/teamSupervisor.ts: export const TEAM_RETRY_WORDS = "Retry the team, or reply, to try again what failed: every report already accepted is kept. Cancelling the session holds the ticket, and resuming it then starts the team again from the beginning.";
 apps/desktop/src/main/supervisor/threadReuse.test.ts: expect(reason).toContain("hasn't run on this ticket before");
 apps/desktop/src/main/supervisor/threadReuse.test.ts: expect(reasonFor(ask(), "no-thread")).toContain("hasn't run on this ticket before");
 apps/desktop/src/main/supervisor/threadReuse.test.ts: instructions: "Implement the ticket, and read ARCHITECTURE.md first.",

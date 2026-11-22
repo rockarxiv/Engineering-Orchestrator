@@ -20,10 +20,10 @@ import {
 } from "../db/repos/projectsRepo.js";
 import { createPerson } from "../db/repos/peopleRepo.js";
 import { issueDevice } from "../db/repos/devicesRepo.js";
-import { getItem, linkJiraKey, setItemAssignee, updateItem } from "../db/repos/itemsRepo.js";
+import { getItem, heldByCancelOf, linkJiraKey, setItemAssignee, setItemHeld, updateItem } from "../db/repos/itemsRepo.js";
 import { addDependency, listDependencies, removeDependency } from "../db/repos/itemDepsRepo.js";
 import { extensionsForItem, setItemExtension } from "../db/repos/itemExtensionsRepo.js";
-import { listTransitionsForItem } from "../db/repos/transitionsRepo.js";
+import { listTransitionsForItem, transitionItem } from "../db/repos/transitionsRepo.js";
 import {
   dismissOpenMentionsForComment,
   getComment,
@@ -528,6 +528,31 @@ describe("moving a project", () => {
 
     await laptop.record.sync();
     expect(unstamped(laptopDb)).toEqual(unstamped(annaDb));
+  });
+
+  it("carries whose hold an item's is, so a move on the record still ends a cancel's hold and leaves a person's (EO-891)", async () => {
+    const support = localProject("Support", "SUP");
+    const cancelled = itemOn(support.id, "A refund");
+    const personHeld = itemOn(support.id, "A chargeback");
+    const run = createRun(annaDb.db, { itemId: cancelled.id, agentId: null, action: "implement", stepId: "todo" });
+    updateRun(annaDb.db, run.id, { status: "cancelled", endedAt: 3 });
+    setItemHeld(annaDb.db, cancelled.id, 4, run.id);
+    setItemHeld(annaDb.db, personHeld.id, 5);
+
+    signIn(anna);
+    expect(await move(support.id)).toEqual({});
+
+    expect(getItem(recordDb.db, cancelled.id)?.heldAt).toBe(4);
+    expect(heldByCancelOf(recordDb.db, cancelled.id)).toBe(run.id);
+    expect(getItem(recordDb.db, personHeld.id)?.heldAt).toBe(5);
+    expect(heldByCancelOf(recordDb.db, personHeld.id)).toBeNull();
+
+    transitionItem(recordDb.db, { itemId: cancelled.id, toStepId: "review", actor: "human" });
+    transitionItem(recordDb.db, { itemId: personHeld.id, toStepId: "review", actor: "human" });
+
+    expect(getItem(recordDb.db, cancelled.id)).toMatchObject({ stepId: "review", heldAt: null });
+    expect(heldByCancelOf(recordDb.db, cancelled.id)).toBeNull();
+    expect(getItem(recordDb.db, personHeld.id)).toMatchObject({ stepId: "review", heldAt: 5 });
   });
 
   it("carries the graph its items stand on, and the key counter", async () => {

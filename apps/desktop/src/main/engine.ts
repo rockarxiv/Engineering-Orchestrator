@@ -36,6 +36,7 @@ import {
 } from "./packs/developer/repositoryIntelligence/index.js";
 import { emitPush } from "./ipc/push.js";
 import { liveDrafts } from "./supervisor/liveDrafts.js";
+import { adoptStoppedByHand } from "./supervisor/adoptStoppedByHand.js";
 import { createRunSupervisor, type ArtifactStore, type RunSupervisor } from "./supervisor/runSupervisor.js";
 import { skillRunScope } from "./supervisor/workspaceResolution.js";
 import { recordFor } from "./record/localRecord.js";
@@ -419,6 +420,9 @@ export function createEngine(options: EngineOptions, packs: readonly CodePack[] 
         }
       : null,
   );
+  // The stops EO-175 kept in a setting become holds (EO-891), before the
+  // supervisor exists and so before its first tick.
+  adoptStoppedByHand(db);
   const supervisor = createRunSupervisor({
     db,
     record,
