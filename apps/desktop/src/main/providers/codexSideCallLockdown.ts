@@ -62,6 +62,13 @@ import { join } from "node:path";
  * again, and the 21 overrides a side call is now launched with besides
  * its catalogue path (which the live test exercises) were replayed under `--strict-config` beside 0.165.0 and accepted by both,
  * while an invented feature name was refused by both.
+ *
+ * Re-measured at 0.171.0 (EO-889): `codexSideCall.live.test.ts` passed,
+ * and a side call's whole launch, catalogue included, started a thread
+ * under `--strict-config` beside 0.167.1. 0.168.0 deprecated
+ * `features.multi_agent` in favour of `agents.enabled`; the flag is still
+ * accepted and drew no warning from the app-server, and the multi-agent
+ * tools come from the catalogue entry anyway, so it stays as written.
  */
 /*
  * All of this assumes the launch is in a Codex home of the side calls'
