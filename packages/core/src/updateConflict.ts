@@ -25,11 +25,11 @@ export const UpdateConflictGraphSchema = z.object({
   steps: z.array(
     PipelineStepViewSchema.extend({
       /**
-       * The kind of agent an agent step needs, as a draft names it
-       * (EO-875); null on every other kind of step. The base and the
-       * template name kinds, not agents, so this is the one thing all
-       * three graphs can say about who runs a step — and what a draft
-       * built from any of them must carry.
+       * The kind of agent an agent step needs (EO-875); null on every
+       * other kind of step. The base and the template name kinds, not
+       * agents, so this is the one thing all three graphs can say about
+       * who runs a step — and the kind of the agent a draft built from
+       * any of them names, by name (EO-876).
        */
       ownerRole: z.string().nullable(),
     }),

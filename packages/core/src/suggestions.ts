@@ -233,8 +233,15 @@ export function suggestionDiff(input: {
   document: PipelineExport;
   /** `documentGraph`'s binding of the document's kinds to agents. */
   agentFor?: (step: { id: string; type: string; ownerRole: string | null }) => string | null;
+  /** Agent names by id, so a change of a step's agent is said by name (EO-876). */
+  agentNames?: ReadonlyMap<string, string>;
 }): VersionDiff {
-  return diffVersions({ ...input.published, ...withoutPins({ ...onBoard(input.published), ...(input.published.entryRules === undefined ? {} : { entryRules: input.published.entryRules }) }) }, { number: input.published.number + 1, ...documentGraph(input.document, input.agentFor) });
+  return diffVersions(
+    { ...input.published, ...withoutPins({ ...onBoard(input.published), ...(input.published.entryRules === undefined ? {} : { entryRules: input.published.entryRules }) }) },
+    { number: input.published.number + 1, ...documentGraph(input.document, input.agentFor) },
+    undefined,
+    input.agentNames,
+  );
 }
 
 /**

@@ -1,5 +1,5 @@
-import { backendAllowed, bindingRefusal, DEFAULT_MEMORY_DELIVERY_CHARS, DEFAULT_MEMORY_SCOPE_MAX_CHARS, DEFAULT_MEMORY_SCOPE_MAX_ENTRIES, DEFAULT_SKILL_ARCHIVE_AFTER_RUNS, DEFAULT_SKILL_MAX_BODY_CHARS, DEFAULT_SKILL_STALE_AFTER_RUNS, isBuiltinRole, isDispatchable, isPreviewAgent, settledWatch, stepAgentOf, stepAgentRefusal, stepHoldsItemsMessage, stepWorkspaceChoice, timeLimitBoundProblem, withMemoryNoteGrant } from "@eo/core";
-import type { ActionDefinitionDraft, Agent, AgentRemovalImpact, EntryRule, GuardConfigView, IpcPayload, IpcResponse, ItemTypeEntry, Registry, Uuid, PipelineStep, StepBrief, StepRoute, StepWatch } from "@eo/core";
+import { backendAllowed, bindingRefusal, DEFAULT_MEMORY_DELIVERY_CHARS, DEFAULT_MEMORY_SCOPE_MAX_CHARS, DEFAULT_MEMORY_SCOPE_MAX_ENTRIES, DEFAULT_SKILL_ARCHIVE_AFTER_RUNS, DEFAULT_SKILL_MAX_BODY_CHARS, DEFAULT_SKILL_STALE_AFTER_RUNS, isBuiltinRole, isDispatchable, isPreviewAgent, settledWatch, stepAgentOf, stepAgentProblem, stepHoldsItemsMessage, stepWorkspaceChoice, timeLimitBoundProblem, withMemoryNoteGrant } from "@eo/core";
+import type { ActionDefinitionDraft, Agent, AgentRemovalImpact, StepNamingAgent, EntryRule, GuardConfigView, IpcPayload, IpcResponse, ItemTypeEntry, Registry, Uuid, PipelineStep, StepBrief, StepRoute, StepWatch } from "@eo/core";
 import { hasBlockingProblem, outsideReachByStep, validatePipeline, type WorkflowProblem } from "@eo/engine";
 import type { Db } from "../db/client.js";
 import { registry, registryForProject, withProposedActions } from "../registry.js";
@@ -34,6 +34,7 @@ import {
   projectsWithWorkOnPipeline,
   listStepsElsewhere,
   listStepsForPipeline,
+  olderVersionsInUse,
   pipelineHasWebhookEntry,
   unreachableRetiredSteps,
   pipelineVersionByNumber,
@@ -44,6 +45,7 @@ import {
   replacePipelineGraph,
   saveActionDefinition,
   setAgentAttachment,
+  setStepAgent,
   setSetting,
   updateAgent,
   updateRun,
@@ -235,17 +237,55 @@ export function writeGuards(db: Db, input: IpcPayload<"guards:set">): IpcRespons
   return { saved: true, guards: input, problems: [] };
 }
 
-export function listAgentDetails(db: Db): IpcResponse<"agents:listDetailed"> {
-  // Counted from the steps, not stored: an agent is referenced by
-  // whatever steps happen to name it (EO-875), across every pipeline, and
-  // any stored tally would drift the moment someone rewired one.
-  const pipelinesByAgent = new Map<string, Set<string>>();
-  for (const step of listPipelineSteps(db)) {
-    if (step.type !== "agent" || step.agentId === null) continue;
-    const seen = pipelinesByAgent.get(step.agentId) ?? new Set<string>();
-    seen.add(step.pipelineId);
-    pipelinesByAgent.set(step.agentId, seen);
+/**
+ * Every pipeline step that names each agent, by agent id (EO-875,
+ * EO-876): agent steps only, in every pipeline — archived ones included,
+ * since a step there still names the agent.
+ *
+ * On the current graph, so a step a save retired names nobody there any
+ * more — and on every older version unfinished items still run on
+ * (`olderVersionsInUse`), with its number: an item finishes on the
+ * version it entered on and is dispatched by that version's step
+ * (`stepForItem`), so the agent that step names is still one it will
+ * run, whatever the current graph names now. A step is listed once for
+ * each graph that names the agent on it.
+ *
+ * Read from the steps, never stored: any tally would drift the moment
+ * somebody rewired one.
+ */
+export function stepsNamingAgents(db: Db): Map<string, StepNamingAgent[]> {
+  const pipelineNames = new Map(listPipelines(db, undefined, true).map((pipeline) => [pipeline.id as string, pipeline.name]));
+  const byAgent = new Map<string, StepNamingAgent[]>();
+  const add = (agentId: string, entry: StepNamingAgent) => byAgent.set(agentId, [...(byAgent.get(agentId) ?? []), entry]);
+  for (const [pipelineId, pipelineName] of pipelineNames) {
+    for (const step of listStepsForPipeline(db, pipelineId)) {
+      if (step.type !== "agent" || step.agentId === null) continue;
+      add(step.agentId, { stepId: step.id, stepName: step.name, pipelineId, pipelineName, version: null });
+    }
+    for (const older of olderVersionsInUse(db, pipelineId)) {
+      for (const step of older.steps) {
+        if (step.type !== "agent" || step.agentId === null) continue;
+        add(step.agentId, { stepId: step.id, stepName: step.name, pipelineId, pipelineName, version: older.number });
+      }
+    }
   }
+  return byAgent;
+}
+
+/** Steps as a sentence names them: "Review" on Delivery, and "QA" on Release's v3. */
+export function stepsInWords(steps: readonly StepNamingAgent[]): string {
+  const each = steps.map((step) => `"${step.stepName}" on ${step.pipelineName}${step.version === null ? "" : `'s v${step.version}`}`);
+  return each.length <= 1 ? (each[0] ?? "") : `${each.slice(0, -1).join(", ")} and ${each[each.length - 1]!}`;
+}
+
+/** How many pipelines these steps are in: what "Pipelines: 2" on the Agents screen counts. */
+function pipelineCountOf(steps: readonly StepNamingAgent[]): number {
+  return new Set(steps.map((step) => step.pipelineId)).size;
+}
+
+export function listAgentDetails(db: Db): IpcResponse<"agents:listDetailed"> {
+  // Who names each agent (EO-876), from the steps.
+  const naming = stepsNamingAgents(db);
 
   return {
     // A deleted agent is a tombstone kept for the names on its runs and
@@ -275,7 +315,8 @@ export function listAgentDetails(db: Db): IpcResponse<"agents:listDetailed"> {
       builtin: isBuiltinRole(registry, agent.role),
       config: agent.config,
       projectId: agent.projectId,
-      pipelineCount: pipelinesByAgent.get(agent.id)?.size ?? 0,
+      pipelineCount: pipelineCountOf(naming.get(agent.id) ?? []),
+      steps: naming.get(agent.id) ?? [],
     })),
   };
 }
@@ -432,15 +473,21 @@ export function saveAgent(db: Db, input: IpcPayload<"agents:save">): IpcResponse
         projectId: projectId as Uuid | null,
       });
 
-  // Recomputed rather than carried in: how many pipelines have a step
-  // naming this agent (EO-875).
-  const pipelineCount = new Set(listPipelineSteps(db).filter((step) => step.type === "agent" && step.agentId === saved.id).map((step) => step.pipelineId)).size;
+  // Recomputed rather than carried in: the steps naming this agent (EO-875, EO-876).
+  const steps = stepsNamingAgents(db).get(saved.id) ?? [];
+  // Disabling is allowed (EO-876), and this is what it costs: every step
+  // naming the agent stops until it is enabled again or names another.
+  const stopped = existing !== undefined && existing.enabled && !saved.enabled && steps.length > 0;
 
   return {
     saved: true,
     problem: null,
+    warning: stopped
+      ? `${saved.name} is disabled, so nothing runs on ${stepsInWords(steps)} until it is enabled again or ${steps.length === 1 ? "that step names" : "those steps name"} another agent.`
+      : null,
     agent: {
-      pipelineCount,
+      pipelineCount: pipelineCountOf(steps),
+      steps,
       id: saved.id,
       name: saved.name,
       role: saved.role,
@@ -483,20 +530,50 @@ class CopyRefused extends Error {}
 export function customiseAgent(db: Db, input: IpcPayload<"agents:customise">): IpcResponse<"agents:customise"> {
   const source = getAgent(db, input.agentId as Uuid);
   if (source === undefined || source.deletedAt !== null) {
-    return { saved: false, agent: null, problem: "EO has no agent with that id, so there is nothing to copy." };
+    return { saved: false, agent: null, problem: "EO has no agent with that id, so there is nothing to copy.", changedSteps: [], locked: null };
   }
   if (source.archivedAt !== null) {
-    return { saved: false, agent: null, problem: `${source.name} is archived. Copy an agent that is still in use, or create a new one for the project.` };
+    return { saved: false, agent: null, problem: `${source.name} is archived. Copy an agent that is still in use, or create a new one for the project.`, changedSteps: [], locked: null };
   }
   if (source.projectId !== null) {
     return {
       saved: false,
       agent: null,
       problem: `${source.name} already belongs to a project. A project's own agent is changed by editing it; only a global agent is copied for a project.`,
+      changedSteps: [],
+      locked: null,
     };
   }
   const project = getProject(db, input.projectId as Uuid);
-  if (project === undefined) return { saved: false, agent: null, problem: "EO has no project with that id, so there is nothing to make this copy for." };
+  if (project === undefined) return { saved: false, agent: null, problem: "EO has no project with that id, so there is nothing to make this copy for.", changedSteps: [], locked: null };
+
+  // The project's own steps that name the original, which the copy will
+  // name (EO-876). The current graph's steps only: an older version's
+  // document is never rewritten, and its items finish on the original,
+  // which stays. Only the pipelines the project owns: a pipeline of no
+  // project, or of another, keeps the global agent, which a project's own
+  // agent could not run there.
+  const toRepoint = (stepsNamingAgents(db).get(source.id) ?? []).filter((step) => step.version === null && getPipeline(db, step.pipelineId)?.projectId === project.id);
+  // Changing what a step names is a write to its pipeline, so where the
+  // organisation manages pipelines it is refused as `pipeline:save` would
+  // refuse it — a pipeline this machine diverged excepted, as there — and
+  // refused before anything is written: a copy no step names is not what
+  // the person pressed for.
+  for (const pipelineId of new Set(toRepoint.map((step) => step.pipelineId))) {
+    const lock = sectionLockFor(db, "pipeline:save", { pipelineId });
+    if (lock === null) continue;
+    const held = toRepoint.filter((step) => step.pipelineId === pipelineId);
+    const by = lock.publishedBy === null ? "" : ` ${lock.publishedBy} published it.`;
+    return {
+      saved: false,
+      agent: null,
+      problem:
+        `The ${lock.section} section is managed by your organisation.${by} A copy of ${source.name} for ${project.name} would change ${stepsInWords(held)} to name the copy, ` +
+        `and ${held.length === 1 ? "that step's" : "those steps'"} pipeline is your administrator's to change, so nothing was copied.`,
+      changedSteps: [],
+      locked: lock,
+    };
+  }
 
   try {
     return db.transaction(() => {
@@ -510,7 +587,7 @@ export function customiseAgent(db: Db, input: IpcPayload<"agents:customise">): I
         config: { ...source.config },
         projectId: project.id,
       });
-      if (!saved.saved || saved.agent === null) return saved;
+      if (!saved.saved || saved.agent === null) return { ...saved, changedSteps: [], locked: null };
       const copyId = saved.agent.id;
       const attached = getAgentAttachments(db, source.id);
       const ticks = [
@@ -521,48 +598,53 @@ export function customiseAgent(db: Db, input: IpcPayload<"agents:customise">): I
         const result = setAgentAttachment(db, { agentId: copyId, kind: tick.kind, id: tick.id, attached: true });
         if (!result.ok) throw new CopyRefused(`${result.problem} Nothing was copied.`);
       }
-      return saved;
+      // The project's own steps that named the original now name the copy
+      // (EO-876), so what runs there is the copy — the same in every
+      // respect but its name — and nothing else changes.
+      const changedSteps = toRepoint;
+      for (const step of changedSteps) setStepAgent(db, step.stepId, copyId as Uuid);
+      const steps = stepsNamingAgents(db).get(copyId) ?? [];
+      return { ...saved, agent: { ...saved.agent, steps, pipelineCount: pipelineCountOf(steps) }, changedSteps, locked: null };
     });
   } catch (error) {
-    if (error instanceof CopyRefused) return { saved: false, agent: null, problem: error.message };
+    if (error instanceof CopyRefused) return { saved: false, agent: null, problem: error.message, changedSteps: [], locked: null };
     throw error;
   }
 }
 
 /**
- * Who a project's work goes to, kind by kind (EO-475, `projects:staffing`).
+ * Who runs each agent step of a project's pipelines (EO-475, EO-876,
+ * `projects:staffing`).
  *
- * Read from the steps (EO-875): each agent step of the project's live
- * pipelines — `listPipelines`'s idea of the project's, so a pipeline
- * nothing has adopted yet counts, as it does everywhere else — names the
- * agent that runs it, and that is the whole answer. Grouped by the kind
- * of the agents they name, in the order the pipelines and their steps
- * come; an agent that cannot run this project's work (`stepAgentRefusal`)
- * is not counted, so a kind whose every step names one says "nobody".
+ * Read from the step and nothing else: a step names the agent that runs
+ * it (EO-875), so this is each step's agent — no staffing rule, and so
+ * no answer the scheduler could disagree with. The project's live
+ * pipelines as `listPipelines` has them, in their order and their steps'.
+ * `problem` is why nothing runs there, in the words the Graph view uses
+ * (`stepAgentProblem`), and also where the agent works for another
+ * project than this one.
  */
 export function projectStaffing(db: Db, input: IpcPayload<"projects:staffing">): IpcResponse<"projects:staffing"> {
   const projectId = input.projectId as Uuid;
-  const pipelineIds = listPipelines(db, projectId).map((pipeline) => pipeline.id);
-  const steps = listPipelineSteps(db);
   const agents = listAgents(db);
-  const item = { previewAt: null, projectId };
-  const byKind = new Map<string, Agent[]>();
-  for (const pipelineId of pipelineIds) {
-    for (const step of steps) {
-      if (step.pipelineId !== pipelineId) continue;
+  const rows: IpcResponse<"projects:staffing">["steps"] = [];
+  for (const pipeline of listPipelines(db, projectId)) {
+    for (const step of listStepsForPipeline(db, pipeline.id)) {
+      if (step.type !== "agent") continue;
       const agent = stepAgentOf(agents, step);
-      if (agent === undefined) continue;
-      const named = byKind.get(agent.role) ?? [];
-      if (stepAgentRefusal(agent, item) === null && !named.includes(agent)) named.push(agent);
-      byKind.set(agent.role, named);
+      const elsewhere = agent !== undefined && agent.projectId !== null && agent.projectId !== projectId;
+      rows.push({
+        stepId: step.id,
+        stepName: step.name,
+        pipelineId: pipeline.id,
+        pipelineName: pipeline.name,
+        version: null,
+        agent: agent === undefined ? null : { id: agent.id, name: agent.name, role: agent.role, provider: agent.provider, model: agent.model, projectId: agent.projectId },
+        problem: stepAgentProblem(agents, step, pipeline.projectId) ?? (elsewhere ? `${agent.name} works for another project, so it does not run this project's work.` : null),
+      });
     }
   }
-  return {
-    roles: [...byKind].map(([role, named]) => {
-      const from = named.length === 0 ? "nobody" : named.some((agent) => agent.projectId !== null) ? "project" : "global";
-      return { role, from, agents: named.map((agent) => ({ id: agent.id, name: agent.name })) };
-    }),
-  };
+  return { steps: rows };
 }
 
 /** Enough of the engine to stop a run, so a test can hand in a spy. */
@@ -596,11 +678,8 @@ export function agentRemovalImpact(db: Db, agent: Agent): AgentRemovalImpact {
   const coveredBy: string[] = [];
 
   // Archived pipelines included: "every pipeline" is what the person is
-  // told, and a step in an archived one still names this role.
-  const pipelineNames = new Map(listPipelines(db, undefined, true).map((pipeline) => [pipeline.id as string, pipeline.name]));
-  const steps = listPipelineSteps(db)
-    .filter((step) => step.type === "agent" && step.agentId === agent.id && pipelineNames.has(step.pipelineId))
-    .map((step) => ({ stepId: step.id, stepName: step.name, pipelineId: step.pipelineId, pipelineName: pipelineNames.get(step.pipelineId)! }));
+  // told, and a step in an archived one still names this agent.
+  const steps = stepsNamingAgents(db).get(agent.id) ?? [];
 
   const activeRuns = listActiveRuns(db)
     .filter((run) => run.agentId === agent.id)
@@ -672,6 +751,11 @@ export function archiveAgentCommand(
   if (agent.archivedAt !== null) return { archived: true, problem: null, impact: null };
 
   const impact = agentRemovalImpact(db, agent);
+  // Refused while a step names it (EO-876), confirmed or not: a step runs
+  // the agent it names and no other, so the steps are pointed elsewhere
+  // first.
+  const named = stepsStillNaming(impact, "archive");
+  if (named !== null) return { archived: false, problem: named, impact };
   if (!input.confirm) return { archived: false, problem: null, impact };
 
   cancelRunsOf(db, impact, engine);
@@ -680,6 +764,29 @@ export function archiveAgentCommand(
   // throw from an IPC boundary is not the shape this contract has.
   if (!archiveAgent(db, agent.id)) return { archived: false, problem: "That agent no longer exists.", impact: null };
   return { archived: true, problem: null, impact };
+}
+
+/**
+ * Why an agent cannot be archived or deleted yet (EO-876), or null when
+ * no step names it: the steps that do, and what to do about them.
+ */
+function stepsStillNaming(impact: AgentRemovalImpact, removal: "archive" | "delete"): string | null {
+  if (impact.steps.length === 0) return null;
+  const one = impact.steps.length === 1;
+  const current = impact.steps.filter((step) => step.version === null);
+  const older = impact.steps.filter((step) => step.version !== null);
+  // What clears each: a step of the current graph is pointed at another
+  // agent; an older version's is not edited — its items finish on it, or
+  // are moved onto the current version.
+  const remedies = [
+    ...(current.length === 0 ? [] : [`choose another agent for ${stepsInWords(current)}`]),
+    ...(older.length === 0 ? [] : [`let the items still on ${older.length === 1 ? "that older version" : "those older versions"} finish, or move them to the current version`]),
+  ];
+  const first = remedies.join(", and ");
+  return (
+    `${impact.agentName} cannot be ${removal === "archive" ? "archived" : "deleted"} while ${stepsInWords(impact.steps)} ${one ? "names" : "name"} it. ` +
+    `${first.charAt(0).toUpperCase()}${first.slice(1)} first, then ${removal} it.`
+  );
 }
 
 /**
@@ -699,6 +806,8 @@ export function deleteAgentCommand(
   if (agent === undefined || agent.deletedAt !== null) return { deleted: false, problem: "That agent no longer exists.", impact: null };
 
   const impact = agentRemovalImpact(db, agent);
+  const named = stepsStillNaming(impact, "delete");
+  if (named !== null) return { deleted: false, problem: named, impact };
   if (!input.confirm) return { deleted: false, problem: null, impact };
 
   cancelRunsOf(db, impact, engine);

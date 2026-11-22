@@ -287,6 +287,58 @@ export function stepAgentRefusal(agent: StepAgentFacts, item: Pick<Item, "previe
   return null;
 }
 
+/** What a screen or a tool reads of the agent a step names, to say who runs the step (EO-876). */
+export type ShownStepAgent = Pick<Agent, "name" | "role" | "provider" | "model" | "enabled" | "archivedAt"> & { readonly id: string; readonly deletedAt?: number | null | undefined };
+
+/**
+ * The agent a step names, in a line: its kind, its backend and its model
+ * (EO-876) — "reviewer · Codex · gpt-5". `backendLabel` names a backend
+ * for a person; absent, by its id.
+ */
+export function stepAgentFactsLine(agent: ShownStepAgent, backendLabel: (provider: string) => string = (provider) => provider): string {
+  const backend = agent.provider === UNBOUND_BACKEND ? "no backend" : backendLabel(agent.provider);
+  return `${agent.role} · ${backend} · ${agent.model ?? "default model"}`;
+}
+
+/**
+ * Why nothing runs on an agent step, in words (EO-876), or null where its
+ * agent can run.
+ *
+ * What the Graph view, the board's column head and `pipeline_get` say
+ * about a step whose agent cannot run, so the three cannot disagree: no
+ * agent chosen, an agent EO no longer has, and the agent's own state in
+ * the order `stepAgentRefusal` asks it. Null for a step of another type.
+ *
+ * Then whether the agent works for the pipeline's project
+ * (`pipelineProjectId`, null for a pipeline on no project): an agent
+ * re-scoped to another project after the step named it is refused by
+ * dispatch (`other_project`), so the step says so too rather than
+ * showing an agent that will never run there. A pipeline on no project
+ * names global agents only, as `validatePipeline` holds.
+ */
+export function stepAgentProblem(
+  agents: readonly (ShownStepAgent & { readonly projectId?: string | null | undefined })[],
+  step: { readonly type: string; readonly agentId: string | null },
+  pipelineProjectId: string | null,
+): string | null {
+  if (step.type !== "agent") return null;
+  if (step.agentId === null) return "No agent is chosen for this step, so nothing runs here until one is.";
+  const agent = stepAgentOf(agents, step);
+  if (agent === undefined) return "This step names an agent EO no longer has, so nothing runs here until it names another.";
+  if (agent.deletedAt != null) return `${agent.name} has been deleted, so nothing runs here until the step names another agent.`;
+  if (agent.archivedAt !== null) return `${agent.name} is archived, so nothing runs here until the step names another agent.`;
+  if (!agent.enabled) return `${agent.name} is disabled, so nothing runs here until it is enabled or the step names another agent.`;
+  // Absent is a listing from before agents had projects: global.
+  const agentProjectId = agent.projectId ?? null;
+  if (agentProjectId !== null && agentProjectId !== pipelineProjectId) {
+    return pipelineProjectId === null
+      ? `${agent.name} works for one project only, and this pipeline belongs to none, so the step must name a global agent before it runs anything.`
+      : `${agent.name} works for another project, so nothing runs here until the step names another agent.`;
+  }
+  if (!isBoundAgent(agent)) return `${agent.name} has no backend on this machine, so nothing runs here until one is chosen for it on the Agents screen.`;
+  return null;
+}
+
 /**
  * What an agent is for, in one line, taken from its own instructions.
  *

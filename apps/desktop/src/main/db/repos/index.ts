@@ -411,6 +411,7 @@ export {
   setWebhookUnattended,
   setStepOwner,
   updateStep,
+  setStepAgent,
   listPipelineSteps,
   offBoardStepIds,
   staysShared,

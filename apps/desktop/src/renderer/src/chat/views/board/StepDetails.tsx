@@ -20,7 +20,7 @@ import { ipcQuery } from "../../../query/client";
 import { environmentVariablesKey, environmentVariablesRootKey, moduleSecretsKey, moduleSecretsRootKey, useChromeVocabulary, useModules, useRegistry } from "../../../query/hooks";
 import { useInvalidateOnPush } from "../../../query/useInvalidateOnPush";
 import { WORKSPACE_MODES, declaredInputs, declaredResults, resultLabel } from "../../../shared/pipeline/configuration";
-import { useStepAgentKind } from "../../../shared/agents/stepAgentKind";
+import { useStepAgents } from "../../../shared/agents/stepAgentKind";
 import { CardSection, Chip, Facts, StepKindChip } from "../../kit";
 import { targetName } from "../shared";
 
@@ -59,13 +59,32 @@ export function StepDetails({
   // Whether what it runs can keep checking (EO-456): its declaration says so, and `waiting` is then an outcome it has whatever its results list.
   const canWait = step.type === "builtin" ? builtinCanWait(registry, step.entryAction) : step.type === "module" ? module?.manifest.watch === true : false;
   // The kind of the agent the step names (EO-875): what its action's results are looked up by.
-  const kindOf = useStepAgentKind();
-  const agentKind = kindOf(step);
+  const stepAgents = useStepAgents(step.pipelineId);
+  const agentKind = stepAgents.kindOf(step);
   const results = resultRows(step, steps, routes, elsewhere, declaredResults(registry, step, modules, agentKind), (key) => resultLabel(registry, key), canWait);
   const declared = declaredInputs(registry, step, modules) ?? {};
   const inputNames = [...new Set([...Object.keys(declared), ...Object.keys(step.inputs)])];
 
   const facts: { term: ReactNode; value: ReactNode }[] = [{ term: "Who acts", value: whoActs(step, verification, agentKind) }];
+  // The agent the step names (EO-876): its name, kind, backend and model,
+  // and in words why nothing runs here where it cannot.
+  if (step.type === "agent") {
+    const line = stepAgents.lineOf(step);
+    const problem = stepAgents.problemOf(step);
+    facts.push({
+      term: "Agent",
+      value: (
+        <span className="flex flex-col gap-0.5">
+          {line === null ? null : <span>{line}</span>}
+          {problem === null ? null : (
+            <span role="status" className="text-danger">
+              {problem}
+            </span>
+          )}
+        </span>
+      ),
+    });
+  }
   const runs = whatItRuns(step, module, registry.builtins.get(step.entryAction ?? "")?.label);
   if (runs !== null) facts.push(runs);
   if (step.type === "agent" && step.planMode) facts.push({ term: "Plan first", value: "Proposes a plan and changes nothing, then waits" });

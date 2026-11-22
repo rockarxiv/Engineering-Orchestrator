@@ -83,14 +83,14 @@ describe("the document, as the diff reads it", () => {
     });
 
     expect(diff.steps).toEqual([
-      { stepId: "review", name: "Second opinion", change: "changed", kind: { type: "agent", agentId: "reviewer-agent", entryAction: null }, fields: [{ field: "name", before: "Review", after: "Second opinion" }] },
+      { stepId: "review", name: "Second opinion", change: "changed", kind: { type: "agent", agentId: "reviewer-agent", entryAction: null }, agent: "reviewer-agent", fields: [{ field: "name", before: "Review", after: "Second opinion" }] },
     ]);
   });
 
   it("reports a kind bound to another agent as a change of agent (EO-875)", () => {
     const diff = suggestionDiff({ published: version([{ id: "review", agentId: "reviewer-agent" }]), document: document([STEP]), agentFor: () => "another-reviewer" });
 
-    expect(diff.steps.map((step) => step.fields)).toEqual([[{ field: "agentId", before: "reviewer-agent", after: "another-reviewer" }]]);
+    expect(diff.steps.map((step) => step.fields)).toEqual([[{ field: "agent", before: "reviewer-agent", after: "another-reviewer" }]]);
   });
 
   it("heads the comparison with the version approving it would publish", () => {

@@ -158,7 +158,8 @@ exports[`the JSON Schema each provider receives > is unchanged for assist (undef
                       "planMode": {
                         "type": "boolean"
                       },
-                      "ownerRole": {
+                      "agent": {
+                        "description": "On an agent step, the name of the agent that runs it, exactly as agents_list shows it; its kind must have the step's entryAction. Null on every other kind of step.",
                         "anyOf": [
                           {
                             "type": "string"
@@ -309,7 +310,7 @@ exports[`the JSON Schema each provider receives > is unchanged for assist (undef
                       "instructionsSummary",
                       "isTerminal",
                       "planMode",
-                      "ownerRole"
+                      "agent"
                     ]
                   }
                 },
@@ -522,7 +523,8 @@ exports[`the JSON Schema each provider receives > is unchanged for assist (undef
                         "planMode": {
                           "type": "boolean"
                         },
-                        "ownerRole": {
+                        "agent": {
+                          "description": "On an agent step, the name of the agent that runs it, exactly as agents_list shows it; its kind must have the step's entryAction. Null on every other kind of step.",
                           "anyOf": [
                             {
                               "type": "string"
@@ -673,7 +675,7 @@ exports[`the JSON Schema each provider receives > is unchanged for assist (undef
                         "instructionsSummary",
                         "isTerminal",
                         "planMode",
-                        "ownerRole"
+                        "agent"
                       ]
                     }
                   },

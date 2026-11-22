@@ -49,7 +49,7 @@ import {
   workspaceLabel,
 } from "../db/repos/index.js";
 import { sideEffectingServersByStep } from "../connectors/sideEffects.js";
-import { kindBinder, withKind } from "../stepAgents.js";
+import { agentNamed } from "../stepAgents.js";
 import { itemTypesJudged, readGuards, stepAgentsForPipeline } from "../ipc/configCommands.js";
 import { actionUsedBy, describeActionUse } from "../ipc/roleActionCommands.js";
 import { activeProjectId } from "../ipc/repositoryCommands.js";
@@ -371,17 +371,18 @@ export function draftStepResults(
 }
 
 /**
- * The agent each of a draft's agent steps names once published (EO-875).
+ * The agent each of a draft's agent steps names once published (EO-876).
  *
- * A draft names a kind, as a document does. Publishing keeps the agent
- * the step already names where that agent is still of the kind — a
- * person's choice is theirs — and otherwise binds the kind on the
- * pipeline's project (`agentForKind`). The card and Publish both read
- * this, so they cannot disagree about who runs a step.
+ * A draft names its agent by name, as the Agents screen shows it
+ * (`agentNamed`), and the step names that agent — whoever it is, so a
+ * name nobody has, an agent of another project or one whose kind lacks
+ * the step's action is refused by `validatePipeline` in the words a
+ * publish is. The card and Publish both read this, so they cannot
+ * disagree about who runs a step.
  */
-export function draftAgentBinder(db: Db, pipelineId: string): (step: { id: string; type: string; ownerRole: string | null }) => Uuid | null {
+export function draftAgentBinder(db: Db, pipelineId: string): (step: { type: string; agent: string | null }) => Uuid | null {
   const { agents, projectId } = stepAgentsForPipeline(db, pipelineId);
-  return kindBinder(agents, projectId, listStepsForPipeline(db, pipelineId));
+  return (step) => (step.type === "agent" ? agentNamed(agents, step.agent, projectId) : null);
 }
 
 /** The draft's steps as the engine sees them. `pipelineId` is stamped rather than asked for. */
@@ -389,14 +390,14 @@ export function toDomainSteps(
   pipelineId: string,
   draft: DraftWithLimits,
   existingSteps: ReadonlyMap<string, PipelineStep> = new Map(),
-  agentFor: (step: { id: string; type: string; ownerRole: string | null }) => Uuid | null = () => null,
+  agentFor: (step: { type: string; agent: string | null }) => Uuid | null = () => null,
 ): PipelineStep[] {
   return draft.steps.map((draftStep) => {
-    const { ownerRole, ...step } = withoutDraftSettings(draftStep);
+    const { agent, ...step } = withoutDraftSettings(draftStep);
     const existing = existingSteps.get(step.id);
     return {
       ...step,
-      agentId: agentFor({ id: step.id, type: step.type, ownerRole }),
+      agentId: agentFor({ type: step.type, agent }),
       pipelineId: pipelineId as Uuid,
       // Never on the wire, by design: an off-dashboard step is not a column,
       // so a draft has nothing to say about one.
@@ -563,11 +564,16 @@ export function renderDraft(
     };
   }
 
-  // Read with the kind each step's agent brings (EO-875): the draft names kinds.
+  // Each step said with the agent it names (EO-876), by name — the
+  // draft's by the agent its name binds to, so a change of agent is said
+  // whatever spelling found it.
   const agents = listAgents(db);
+  const agentName = (id: string | null): string | null => (id === null ? null : (agents.find((agent) => agent.id === id)?.name ?? null));
+  const bindAgent = draftAgentBinder(db, pipelineId);
   const before = listStepsForPipeline(db, pipelineId)
     .filter((step) => !step.offBoard)
-    .map((step) => withKind(agents, step));
+    .map((step) => ({ ...step, agent: step.type === "agent" ? agentName(step.agentId) : null }));
+  const named = <S extends { type: string; agent: string | null }>(step: S): S => ({ ...step, agent: agentName(bindAgent(step)) });
   const beforeById = new Map(before.map((step) => [step.id, step]));
   // Every step by name, as a brief that names one is said (EO-827).
   const stepNames = new Map<string, string>([...before, ...draft.steps].map((step) => [step.id, step.name]));
@@ -595,7 +601,7 @@ export function renderDraft(
   };
   const changed = draft.steps.filter((step) => {
     const was = beforeById.get(step.id);
-    return was !== undefined && (changesOf(was, step).length > 0 || settingsOf(step, was).length > 0);
+    return was !== undefined && (changesOf(was, named(step)).length > 0 || settingsOf(step, was).length > 0);
   });
 
   // Did the draft mean to drop those (EO-209)?
@@ -611,21 +617,28 @@ export function renderDraft(
   const refusal = removalRefusal(draft, removed, counts);
   if (refusal !== null) return { ok: false, reason: refusal };
 
+  // Who runs an agent step the card lists as changed or removed (EO-876),
+  // beside its name, so a rename or a removal still says which agent it
+  // is. Not where the change itself already says it ("A runs x → B runs x").
+  const runBy = (step: { type: string; agent: string | null; entryAction: string | null; isTerminal: boolean }) =>
+    step.type === "agent" && !step.isTerminal ? ` (${describeStep(step)})` : "";
   if (added.length > 0) {
-    lines.push("**Added**", "", ...added.map((step) => `- ${step.name} — ${describeStep(step)}${limitsOf(step, draft.routes, workspaceName, stepNames)}`), "");
+    lines.push("**Added**", "", ...added.map((step) => `- ${step.name} — ${describeStep(named(step))}${limitsOf(step, draft.routes, workspaceName, stepNames)}`), "");
   }
   if (changed.length > 0) {
     lines.push("**Changed**", "");
     for (const step of changed) {
       const was = beforeById.get(step.id)!;
-      const sentence = changesOf(was, step);
-      lines.push(`- ${was.name}${sentence.length > 0 ? ` — ${sentence.join("; ")}` : ""}${holding(counts, step.id)}`);
+      const now = named(step);
+      const sentence = changesOf(was, now);
+      const who = describeStep(was) === describeStep(now) ? runBy(now) : "";
+      lines.push(`- ${was.name}${who}${sentence.length > 0 ? ` — ${sentence.join("; ")}` : ""}${holding(counts, step.id)}`);
       // Each setting the draft changes, under its step, old → new (EO-520).
       lines.push(...settingsOf(step, was).map((change) => `  - ${change}`));
     }
     lines.push("");
   }
-  if (removed.length > 0) lines.push("**Removed**", "", ...removed.map((step) => `- ${step.name}${holding(counts, step.id)}`), "");
+  if (removed.length > 0) lines.push("**Removed**", "", ...removed.map((step) => `- ${step.name}${runBy(step)}${holding(counts, step.id)}`), "");
 
   const routeLines = renderRouteDiff(draft, beforeRoutes, [...draft.steps, ...before]);
   if (routeLines.length > 0) lines.push("**Routing**", "", ...routeLines, "");
@@ -843,8 +856,8 @@ function removalRefusal(draft: PipelineDraft, removed: PipelineStep[], counts: R
  * inserted above it would bury the edit that was actually made.
  */
 function changesOf(
-  was: PipelineStep & { ownerRole: string | null },
-  now: { name: string; type: string; ownerRole: string | null; entryAction: string | null; isTerminal: boolean; planMode: boolean; instructionsSummary: string | null },
+  was: PipelineStep & { agent: string | null },
+  now: { name: string; type: string; agent: string | null; entryAction: string | null; isTerminal: boolean; planMode: boolean; instructionsSummary: string | null },
 ): string[] {
   const changes: string[] = [];
   if (was.name !== now.name) changes.push(`renamed to **${now.name}**`);
@@ -955,11 +968,11 @@ function modeWords(mode: WorkspaceMode): string {
 }
 
 /** One step in a sentence: who acts and what they do. */
-function describeStep(step: { type: string; ownerRole: string | null; entryAction: string | null; isTerminal: boolean }): string {
+function describeStep(step: { type: string; agent: string | null; entryAction: string | null; isTerminal: boolean }): string {
   if (step.isTerminal) return "the end of the line";
   if (step.type === "user") return "waits for you";
   if (step.type === "builtin") return `EO runs ${step.entryAction ?? "nothing"}`;
-  return `${step.ownerRole ?? "nobody"} runs ${step.entryAction ?? "nothing"}`;
+  return `${step.agent ?? "nobody"} runs ${step.entryAction ?? "nothing"}`;
 }
 
 /**

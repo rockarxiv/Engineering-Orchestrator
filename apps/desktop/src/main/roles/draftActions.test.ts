@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { ConfigureOutputSchema, proposedActionDraft, stepAgentKind, type Agent, type ConfigureOutput, type ParsedActionDefinitionDraft, type PipelineDraft } from "@eo/core";
+import { ConfigureOutputSchema, proposedActionDraft, stepAgentOf, type Agent, type ConfigureOutput, type ParsedActionDefinitionDraft, type PipelineDraft } from "@eo/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DbHandle } from "../db/client.js";
 import { markReplica } from "../db/recordRole.js";
@@ -19,7 +19,7 @@ import {
 import { agentOfKind, openMigratedTestDb } from "../db/testHelpers.js";
 import { savePipeline, validatePipelineCommand } from "../ipc/configCommands.js";
 import { listPipelineStepViews } from "../ipc/domainQueries.js";
-import { kindBinder } from "../stepAgents.js";
+import { draftAgentBinder } from "./architect.js";
 import { renderDraft, validateDraft } from "./architect.js";
 import { sourcePromptsDir } from "./prompts.js";
 
@@ -83,13 +83,13 @@ function withQaStep(second = "gaps_found"): PipelineDraft {
         position: step.position,
         name: step.name,
         type: step.type,
-        ownerRole: stepAgentKind(listAgents(handle.db), step),
+        agent: stepAgentOf(listAgents(handle.db), step)?.name ?? null,
         entryAction: step.entryAction,
         instructionsSummary: step.instructionsSummary,
         isTerminal: step.isTerminal,
         planMode: step.planMode,
       })),
-      { id: "qa_check", position: steps.length, name: "QA", type: "agent", ownerRole: "qa", entryAction: "alignment", instructionsSummary: null, isTerminal: false, planMode: false },
+      { id: "qa_check", position: steps.length, name: "QA", type: "agent", agent: "QA", entryAction: "alignment", instructionsSummary: null, isTerminal: false, planMode: false },
     ],
     routes: [
       ...routes.map((route) => ({
@@ -131,13 +131,13 @@ function render(output: Reply): { card: string | undefined; rejections: string[]
 function asPublished(draft: PipelineDraft) {
   const views = listPipelineStepViews(handle.db, { pipelineId: "default" }).steps;
   const current = new Map(views.map((step) => [step.id, step]));
-  // The kind a draft's step names, bound to an agent as Publish binds it (EO-875).
-  const agentFor = kindBinder(listAgents(handle.db), null, views);
+  // The agent a draft's step names, bound as Publish binds it (EO-876).
+  const agentFor = draftAgentBinder(handle.db, "default");
   return {
     pipelineId: "default",
-    steps: draft.steps.map(({ ownerRole, ...step }) => ({
+    steps: draft.steps.map(({ agent, ...step }) => ({
       ...step,
-      agentId: agentFor({ ...step, ownerRole }),
+      agentId: agentFor({ ...step, agent }),
       pipelineId: "default",
       inputs: current.get(step.id)?.inputs ?? {},
       timeoutMs: current.get(step.id)?.timeoutMs ?? null,

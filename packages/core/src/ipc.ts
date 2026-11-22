@@ -57,6 +57,7 @@ const TEMPLATE_TOKEN = { token: z.string().optional() };
 import {
   AgentDetailSchema,
   AgentRemovalImpactSchema,
+  StepNamingAgentSchema,
   AgentViewSchema,
   ProjectViewSchema,
   BranchPrefixSchema,
@@ -3253,6 +3254,12 @@ export const recordContract = {
       agent: AgentDetailSchema.nullable().default(null),
       /** Empty when it saved. One sentence, naming what to change. */
       problem: z.string().nullable().default(null),
+      /**
+       * Said on a save that disabled an agent pipeline steps name
+       * (EO-876): which steps stop until it is enabled again or they name
+       * another agent. Disabling is allowed; this is what it costs.
+       */
+      warning: z.string().nullable().optional(),
     }),
   ),
   /**
@@ -3280,28 +3287,42 @@ export const recordContract = {
       saved: z.boolean(),
       agent: AgentDetailSchema.nullable().default(null),
       problem: z.string().nullable().default(null),
+      /**
+       * The project's pipeline steps that named the original and now name
+       * the copy (EO-876), changed in the copy's transaction so what runs
+       * there is the copy and nothing else changes.
+       */
+      changedSteps: z.array(StepNamingAgentSchema).default([]),
+      /**
+       * The publication lock that refused the copy, where the pipelines
+       * section is managed and a step of the project's that names the
+       * original is on a pipeline this machine has not diverged (EO-876):
+       * the copy would rewrite that step, so nothing is copied. Null
+       * otherwise.
+       */
+      locked: SectionLockSchema.nullable().default(null),
     }),
   ),
   /**
-   * Who will be dispatched on a project's work, role by role (EO-475) —
+   * Who runs each agent step of a project's pipelines (EO-475, EO-876) —
    * what a project's settings say under "Agents".
    *
-   * One entry per role an agent step of the project's pipelines names,
-   * answered by `staffingAgents` — the scheduler's own rule — asked of
-   * a real item on the project. So it cannot say "the project's own
-   * implementer" while the scheduler sends the global one: `from` is
-   * `project` when the project's own agents are the candidates,
-   * `global` when the global ones are, and `nobody` when no dispatchable
-   * agent holds the role for this project at all.
+   * Read from the step and nothing else: a step names the agent it runs,
+   * and dispatch runs that one (EO-875), so a staffing rule here would be
+   * a second opinion the scheduler does not share. One entry per agent
+   * step, in pipeline and step order; `agent` is null where the step names
+   * nobody or an agent EO no longer has, and `problem` says in words why
+   * nothing runs there (`stepAgentProblem`), null where its agent can run.
    */
   "projects:staffing": channel(
     z.object({ projectId: z.string() }),
     z.object({
-      roles: z.array(
-        z.object({
-          role: z.string(),
-          from: z.enum(["project", "global", "nobody"]),
-          agents: z.array(z.object({ id: z.string(), name: z.string() })),
+      steps: z.array(
+        StepNamingAgentSchema.extend({
+          agent: z
+            .object({ id: z.string(), name: z.string(), role: z.string(), provider: z.string(), model: z.string().nullable(), projectId: z.string().nullable() })
+            .nullable(),
+          problem: z.string().nullable(),
         }),
       ),
     }),
@@ -3448,13 +3469,26 @@ export const recordContract = {
     z.object({
       steps: z.array(PipelineStepViewSchema),
       /**
-       * The kind of each agent step's agent, by step id (EO-875). A step
-       * names an agent and carries no kind of its own, while a draft names
-       * kinds: this is what lets `pipeline_get`'s reader write one. A step
-       * naming no agent, or one this installation does not have, is absent.
-       * Optional, so a client that predates it still reads a graph.
+       * Who runs each agent step, by step id (EO-875, EO-876): the agent
+       * it names — its name, which is what a draft names it by, its kind,
+       * backend and model — and `problem`, in words, where nothing runs
+       * there (`stepAgentProblem`). The agent's fields are null where the
+       * step names nobody or an agent this installation does not have.
+       * Only agent steps. Optional, so a client that predates it still
+       * reads a graph.
        */
-      stepKinds: z.record(z.string(), z.string()).optional(),
+      stepAgents: z
+        .record(
+          z.string(),
+          z.object({ name: z.string().nullable(), kind: z.string().nullable(), provider: z.string().nullable(), model: z.string().nullable(), problem: z.string().nullable() }),
+        )
+        .optional(),
+      /**
+       * The project the pipeline belongs to, null for one on no project
+       * (EO-876): what a screen asks `stepAgentProblem` whether a step's
+       * agent works for. The pipeline's own, never the active project's.
+       */
+      pipelineProjectId: z.string().nullable().optional(),
       routes: z.array(StepRouteViewSchema),
       entryStepId: z.string().nullable(),
       /** What an item must have to enter (EO-610), as `pipeline:save` takes them. */

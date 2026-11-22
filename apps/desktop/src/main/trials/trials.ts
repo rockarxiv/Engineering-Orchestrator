@@ -1,7 +1,6 @@
 import { NONE_KIND, remapStepReferences, TERMINAL_TARGET, USER_ATTENTION_TARGET, uuidv7, type IpcPayload, type IpcResponse, type Item, type Uuid } from "@eo/core";
 import type { Db } from "../db/client.js";
 import {
-  listAgents,
   createItem,
   createPipeline,
   forkModuleForTrial,
@@ -19,7 +18,6 @@ import {
   type TrialPipeline,
   newestModuleVersion,
 } from "../db/repos/index.js";
-import { bindOnProject } from "../stepAgents.js";
 import { projectMovedToTheRecord } from "../db/repos/projectsRepo.js";
 import { readAssistDraftForPublish } from "../ipc/assistCommands.js";
 import { savePipeline } from "../ipc/configCommands.js";
@@ -228,9 +226,8 @@ export function createTrialFromRead(
         {
           pipelineId: pipeline.id,
           // A brief naming a draft step names that step's trial id (EO-831).
-          // A new pipeline's kinds bound on the trial's project (EO-875);
-          // a change to one keeps the agents its steps were bound to there.
-          steps: (target === undefined ? bindOnProject(listAgents(db), read.steps, projectId) : read.steps).map((step) => ({
+          // Each step names the agent the draft named (EO-876).
+          steps: read.steps.map((step) => ({
             ...remapStepReferences(runs(step), mapped),
             id: mapped(step.id),
             pipelineId: pipeline.id,

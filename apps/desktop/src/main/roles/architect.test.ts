@@ -1,9 +1,11 @@
-import { proposedActionDraft, stepAgentKind, type ConfigureOutput, type PipelineDraft } from "@eo/core";
+import { proposedActionDraft, stepAgentOf, type ConfigureOutput, type PipelineDraft, type Uuid } from "@eo/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DbHandle } from "../db/client.js";
-import { createPipeline, createRoute, createStep, listAgents, listRoutesForPipeline, listStepsForPipeline } from "../db/repos/index.js";
-import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
-import { renderDraft, validateDraft } from "./architect.js";
+import { createAgent, createPipeline, createProject, createRoute, createStep, listAgents, listRoutesForPipeline, listStepsForPipeline, setStepAgent } from "../db/repos/index.js";
+import { savePipeline } from "../ipc/configCommands.js";
+import { listPipelineStepViews } from "../ipc/domainQueries.js";
+import { agentOfKind, createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
+import { draftAgentBinder, renderDraft, validateDraft } from "./architect.js";
 
 /**
  * What the assistant's pipeline drafts are built on: the card a person
@@ -45,7 +47,7 @@ function currentGraph(): PipelineDraft {
       position: step.position,
       name: step.name,
       type: step.type,
-      ownerRole: stepAgentKind(listAgents(handle.db), step),
+      agent: stepAgentOf(listAgents(handle.db), step)?.name ?? null,
       entryAction: step.entryAction,
       instructionsSummary: step.instructionsSummary,
       isTerminal: step.isTerminal,
@@ -87,7 +89,7 @@ describe("rendering a draft", () => {
         rationale: "A QA gate before review.",
         steps: [
           ...draft.steps,
-          { id: "qa", position: 7, name: "QA", type: "agent", ownerRole: "reviewer", entryAction: "review", instructionsSummary: null, isTerminal: false, planMode: false },
+          { id: "qa", position: 7, name: "QA", type: "agent", agent: "Reviewer", entryAction: "review", instructionsSummary: null, isTerminal: false, planMode: false },
         ],
         routes: [
           ...draft.routes.filter((route) => !(route.fromStepId === "todo" && route.resultKey === "done")),
@@ -106,6 +108,39 @@ describe("rendering a draft", () => {
     expect(body).toContain("**Added**");
     expect(body).toContain("QA");
     expect(body).toContain("**Routing**");
+  });
+
+  /**
+   * Who runs an agent step the card lists (EO-876): a rename, new
+   * instructions or a removal of a step on the second of two agents of
+   * one kind still names that agent, and a change of agent names both,
+   * once.
+   */
+  it("names the agent of a step it renames, gives new instructions, removes or moves to another agent", () => {
+    const codex = createAgent(handle.db, { name: "Codex Reviewer", role: "reviewer", provider: "codex", model: null, instructions: "Review." });
+    setStepAgent(handle.db, "review", codex.id);
+    createStep(handle.db, { id: "second_look", pipelineId: "default" as Uuid, position: 40, name: "Second look", type: "agent", agentId: codex.id, entryAction: "review" });
+    const draft = currentGraph();
+    const reply = (steps: PipelineDraft["steps"]): Reply => ({
+      message: "Here it is.",
+      questions: [],
+      agents: [],
+      runtimes: [],
+      modules: [],
+      draft: { ...draft, rationale: "Tidy.", removes: ["second_look"], steps: steps.filter((step) => step.id !== "second_look") },
+    });
+
+    const renamed = render(reply(draft.steps.map((step) => (step.id === "review" ? { ...step, name: "Code review" } : step))));
+    expect(renamed.rejection).toBeUndefined();
+    expect(renamed.card).toContain("- Review (Codex Reviewer runs review) — renamed to **Code review**");
+    expect(renamed.card).toContain("- Second look (Codex Reviewer runs review)");
+
+    const retold = render(reply(draft.steps.map((step) => (step.id === "review" ? { ...step, instructionsSummary: "Look harder." } : step))));
+    expect(retold.card).toContain("- Review (Codex Reviewer runs review) — new instructions");
+
+    // A change of agent says both, in the change, and not again beside the name.
+    const moved = render(reply(draft.steps.map((step) => (step.id === "review" ? { ...step, agent: "Reviewer" } : step))));
+    expect(moved.card).toContain("- Review — Codex Reviewer runs review → Reviewer runs review");
   });
 
   /**
@@ -347,16 +382,46 @@ describe("validateDraft", () => {
     expect(problems.some((problem) => problem.severity === "error" && problem.message.includes("Delivery · Shipped"))).toBe(true);
   });
 
-  it("refuses a step naming a kind no agent here has, naming the step (EO-875)", () => {
+  // A draft names its agent by name (EO-876), and is refused for the
+  // agent it names in the very sentence Publish refuses that step with.
+  it("refuses a draft naming an agent nobody has, another project's agent, or one whose kind lacks the action, in Publish's words (EO-876)", () => {
+    const shop = createProject(handle.db, { name: "Shop", keyPrefix: "SHOP" });
+    createAgent(handle.db, { name: "Shop reviewer", role: "reviewer", provider: "fake", model: null, instructions: "Review.", projectId: shop.id });
+    createAgent(handle.db, { name: "Writer", role: "writer", provider: "fake", model: null, instructions: "Write." });
     const draft = currentGraph();
-    const problems = validateDraft(handle.db, "default", {
-      ...draft,
-      steps: draft.steps.map((step) => (step.id === "todo" ? { ...step, ownerRole: "tester" } : step)),
-    });
+    const reviewStep = draft.steps.find((step) => step.type === "agent" && step.entryAction === "review")!;
 
-    // A step names an agent, and no agent of "tester" exists to bind it
-    // to: the step would name nobody, which Publish refuses too.
-    expect(problems).toContainEqual(expect.objectContaining({ severity: "error", stateId: "todo", message: expect.stringContaining("with no agent") }));
+    // A pack's own action is any kind's to run (`actionFactsFor`), so the
+    // kind that lacks one is asked for an action nobody ships.
+    for (const [agent, entryAction, words] of [
+      ["Nobody Here", "review", "names an agent this installation does not have"],
+      ["Shop reviewer", "review", "names Shop reviewer, which works for one project only"],
+      ["Writer", "proofread", 'but Writer\'s kind, "writer", has no "proofread" action'],
+    ] as const) {
+      const named = { ...draft, steps: draft.steps.map((step) => (step.id === reviewStep.id ? { ...step, agent, entryAction } : step)) };
+      const judged = validateDraft(handle.db, "default", named).filter((problem) => problem.severity === "error" && problem.stateId === reviewStep.id);
+      expect(judged).toEqual([expect.objectContaining({ message: expect.stringContaining(words) })]);
+
+      // Publish's own refusal of the step naming that agent.
+      const agentId = draftAgentBinder(handle.db, "default")({ type: "agent", agent });
+      const views = listPipelineStepViews(handle.db, { pipelineId: "default" });
+      const published = savePipeline(handle.db, undefined, {
+        pipelineId: "default",
+        steps: views.steps.map((step) => (step.id === reviewStep.id ? { ...step, agentId, entryAction } : step)),
+        routes: views.routes,
+        entryStepId: views.entryStepId,
+      });
+      expect(published.saved).toBe(false);
+      expect(published.problems.filter((problem) => problem.severity === "error").map((problem) => problem.message)).toEqual(judged.map((problem) => problem.message));
+    }
+  });
+
+  it("binds a draft's agent by its name, so two agents of one kind are each named (EO-876)", () => {
+    const codexReviewer = createAgent(handle.db, { name: "Reviewer on Codex", role: "reviewer", provider: "codex", model: null, instructions: "Review." });
+    const bind = draftAgentBinder(handle.db, "default");
+    expect(bind({ type: "agent", agent: "Reviewer on Codex" })).toBe(codexReviewer.id);
+    expect(bind({ type: "agent", agent: "Reviewer" })).toBe(agentOfKind(handle.db, "reviewer"));
+    expect(bind({ type: "user", agent: null })).toBeNull();
   });
 
   // A draft says nothing about keep checking, and publishing one carries

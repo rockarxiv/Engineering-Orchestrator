@@ -1283,19 +1283,19 @@ describe("the MCP tool catalog", () => {
     const impact = {
       agentName: "Reviewer",
       role: "reviewer",
-      steps: [{ stepId: "s1", stepName: "Review", pipelineId: "p1", pipelineName: "Delivery" }],
-      leavesStepsWithNobody: true,
+      steps: [],
+      leavesStepsWithNobody: false,
       coveredBy: [],
       activeRuns: [{ runId: "r1", itemId: "i1", itemKey: "EO-7", itemTitle: "Thing" }],
-      lastSystemAgent: false,
+      lastSystemAgent: true,
     };
     const said = describeAgentRemoval(impact);
 
-    expect(said).toContain('"Review" (Delivery)');
-    expect(said).toMatch(/will have nobody/);
+    // No step: an agent a step names is refused, in the refusal's own words (EO-876).
     expect(said).toContain("EO-7");
-    expect(describeAgentRemoval({ ...impact, leavesStepsWithNobody: false, coveredBy: ["Second"], activeRuns: [] })).toMatch(/Still covered by Second/);
-    expect(describeAgentRemoval({ ...impact, leavesStepsWithNobody: false, coveredBy: ["Second"] })).not.toMatch(/nobody/);
+    expect(said).toMatch(/last enabled system agent/);
+    expect(said.indexOf("EO-7")).toBeLessThan(said.indexOf("last enabled system agent"));
+    expect(describeAgentRemoval({ ...impact, activeRuns: [], lastSystemAgent: false })).toBe("");
   });
 
   it("lets the system agent archive and restore a project, asking first before it archives (EO-347)", () => {

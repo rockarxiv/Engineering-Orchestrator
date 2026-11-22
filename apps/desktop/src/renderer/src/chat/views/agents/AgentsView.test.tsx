@@ -534,11 +534,12 @@ describe("retiring an agent", () => {
   const LIVE = agent({ provider: "fake", instructions: "Write the code." });
   const RETIRED = agent({ id: "a2", name: "Architect", role: "pipeline_architect", provider: "fake", enabled: false, archivedAt: 1_700_000_000_000 });
   const TESTER = agent({ id: "a3", name: "Tester", role: "tester", provider: "fake" });
+  // No step names it: an agent a step names is refused (EO-876), below.
   const IMPACT = {
     agentName: "Tester",
     role: "tester",
-    steps: [{ stepId: "s1", stepName: "Test", pipelineId: "p1", pipelineName: "Delivery" }],
-    leavesStepsWithNobody: true,
+    steps: [],
+    leavesStepsWithNobody: false,
     coveredBy: [],
     activeRuns: [{ runId: "r1", itemId: "i1", itemKey: "EO-7", itemTitle: "Checkout flow" }],
     lastSystemAgent: false,
@@ -586,11 +587,7 @@ describe("retiring an agent", () => {
     fireEvent.click(screen.getByRole("menuitem", { name: "Archive" }));
 
     const dialog = await screen.findByRole("dialog", { name: "Archive Tester?" });
-    expect(await within(dialog).findByText("Test")).toBeInTheDocument();
-    expect(within(dialog).getByText(/in Delivery/)).toBeInTheDocument();
-    // In the project's own word for the things that would wait.
-    expect(within(dialog).getByText(/These steps will have nobody, and tickets reaching them/)).toBeInTheDocument();
-    expect(within(dialog).getByRole("alert", { name: "Runs in progress" }).textContent).toMatch(/EO-7.*Checkout flow/);
+    expect((await within(dialog).findByRole("alert", { name: "Runs in progress" })).textContent).toMatch(/EO-7.*Checkout flow/);
     expect(calls.filter((call) => call.channel === "agents:archive").map((call) => call.payload)).toEqual([{ id: "a3", confirm: false }]);
 
     fireEvent.click(within(dialog).getByRole("button", { name: "Archive Tester" }));
@@ -613,9 +610,7 @@ describe("retiring an agent", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Actions for Tester" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Archive" }));
     const dialog = await screen.findByRole("dialog", { name: "Archive Tester?" });
-    await within(dialog).findByText("Test");
-
-    fireEvent.click(within(dialog).getByRole("button", { name: "Archive Tester" }));
+    fireEvent.click(await within(dialog).findByRole("button", { name: "Archive Tester" }));
     // In flight: Escape and the X do not take the answer away from the person.
     await waitFor(() => expect(within(dialog).getByRole("button", { name: "Close dialog" })).toBeDisabled());
     fireEvent.keyDown(document, { key: "Escape" });
@@ -625,17 +620,54 @@ describe("retiring an agent", () => {
     expect(await within(screen.getByRole("dialog", { name: "Archive Tester?" })).findByText("Tester started a run a moment ago.")).toBeInTheDocument();
   });
 
-  it("deletes nothing when the confirmation is dismissed, and says who still covers the role", async () => {
-    const calls = renderAgents({ agents: [LIVE], impact: { ...IMPACT, agentName: "Implementer", leavesStepsWithNobody: false, coveredBy: ["Second Implementer"], activeRuns: [] } });
+  it("deletes nothing when the confirmation is dismissed", async () => {
+    const calls = renderAgents({ agents: [LIVE], impact: { ...IMPACT, agentName: "Implementer", activeRuns: [] } });
     fireEvent.click(await screen.findByRole("button", { name: "Actions for Implementer" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Delete" }));
 
     const dialog = await screen.findByRole("dialog", { name: "Delete Implementer?" });
-    expect(await within(dialog).findByText("Still covered by Second Implementer.")).toBeInTheDocument();
-    fireEvent.click(within(dialog).getByRole("button", { name: "Keep it" }));
+    fireEvent.click(await within(dialog).findByRole("button", { name: "Keep it" }));
 
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(calls.filter((call) => call.channel === "agents:delete").map((call) => call.payload)).toEqual([{ id: "a1", confirm: false }]);
+  });
+
+  it("refuses to archive an agent a step names, listing the steps, with nothing to confirm (EO-876)", async () => {
+    const named = { ...IMPACT, steps: [{ stepId: "s1", stepName: "Test", pipelineId: "p1", pipelineName: "Delivery" }], activeRuns: [] };
+    const refusal = 'Tester cannot be archived while "Test" on Delivery names it. Choose another agent for that step first, then archive it.';
+    const calls = renderAgents({
+      agents: [LIVE, TESTER],
+      handle: (channel) => (channel === "agents:archive" ? { archived: false, problem: refusal, impact: named } : undefined),
+    });
+    fireEvent.click(await screen.findByRole("button", { name: "Actions for Tester" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Archive" }));
+
+    const dialog = await screen.findByRole("dialog", { name: "Archive Tester?" });
+    expect(await within(dialog).findByText(refusal)).toBeInTheDocument();
+    const steps = within(dialog).getByLabelText("Steps that name it");
+    expect(steps.textContent).toContain("Test in Delivery");
+    expect(within(dialog).queryByRole("button", { name: "Archive Tester" })).not.toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Close" })).toBeInTheDocument();
+    expect(calls.filter((call) => call.channel === "agents:archive").map((call) => call.payload)).toEqual([{ id: "a3", confirm: false }]);
+  });
+
+  it("disables an agent a step names, saying which steps stop (EO-876)", async () => {
+    const warning = 'Implementer is disabled, so nothing runs on "Build" on Delivery until it is enabled again or that step names another agent.';
+    renderAgents({
+      agents: [LIVE],
+      handle: (channel) => (channel === "agents:save" ? { saved: true, agent: { id: "a1" }, problem: null, warning } : undefined),
+    });
+    fireEvent.click(await screen.findByRole("button", { name: "Actions for Implementer" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Disable" }));
+
+    expect(await screen.findByRole("status", { name: "What changed" })).toHaveTextContent(warning);
+  });
+
+  it("says, on the agent, which pipeline steps name it (EO-876)", async () => {
+    renderAgents({ agents: [agent({ steps: [{ stepId: "s1", stepName: "Build", pipelineId: "p1", pipelineName: "Delivery" }, { stepId: "s2", stepName: "Fix", pipelineId: "p2", pipelineName: "Hotfix" }] })] });
+
+    const form = await editor();
+    expect(within(form).getByLabelText("Steps that name it")).toHaveTextContent("Named by Build in Delivery, Fix in Hotfix.");
   });
 
   it("shows a refusal as the sentence it came back as, with nothing to confirm", async () => {
@@ -981,27 +1013,27 @@ describe("the agents view opened on a role's actions", () => {
 });
 
 /**
- * A board column's owner line sends somebody to the agent on its role
- * with the instructions in view (EO-805), resolved as `?actions=` is.
+ * A board column's owner line sends somebody to the agent its step names,
+ * with the instructions in view (EO-805), by that agent's id (EO-876).
  */
-describe("the agents view opened on a role's instructions", () => {
+describe("the agents view opened on an agent's instructions", () => {
   afterEach(() => cleanup());
   const two = [agent(), agent({ id: "a2", name: "Tester", role: "qa" })];
   /** The agent the list marks as the open one. */
   const current = () => within(screen.getByRole("list", { name: "Agents" })).getAllByRole("button").filter((row) => row.getAttribute("aria-current") === "true").map((row) => row.textContent ?? "");
 
-  it("is the Agents screen with the role named", () => {
-    expect(instructionsAddress("qa lead")).toBe("/agents?instructions=qa%20lead");
+  it("is the Agents screen with the agent named", () => {
+    expect(instructionsAddress("agent 1")).toBe("/agents?instructions=agent%201");
   });
 
-  it("opens an agent on the role the address names, and brings its Instructions into sight", async () => {
+  it("opens the agent the address names, and brings its Instructions into sight", async () => {
     const scrolled: Element[] = [];
     const original = Element.prototype.scrollIntoView;
     Element.prototype.scrollIntoView = function (this: Element) {
       scrolled.push(this);
     };
     try {
-      renderAgents({ agents: two }, instructionsAddress("qa"));
+      renderAgents({ agents: two }, instructionsAddress("a2"));
       await screen.findByRole("region", { name: "Actions" });
       expect(within(screen.getByRole("region", { name: "Actions" })).getByText("qa")).toBeInTheDocument();
       expect(current()).toEqual([expect.stringContaining("Tester")]);
@@ -1015,33 +1047,40 @@ describe("the agents view opened on a role's instructions", () => {
     }
   });
 
-  it("opens a retired agent on the role when nobody live holds it, and a live one in preference, never another role's", async () => {
-    const retired = [agent(), agent({ id: "a2", name: "Tester", role: "qa", archivedAt: 1_700_000_000_000 })];
-    renderAgents({ agents: retired }, instructionsAddress("qa"));
-    expect(within(await screen.findByRole("region", { name: "Actions" })).getByText("qa")).toBeInTheDocument();
-    expect(current()).toEqual([expect.stringContaining("Tester")]);
-    cleanup();
-
-    renderAgents({ agents: [...retired, agent({ id: "a3", name: "Checker", role: "qa" })] }, instructionsAddress("qa"));
-    expect(within(await screen.findByRole("region", { name: "Actions" })).getByText("qa")).toBeInTheDocument();
-    expect(current()).toEqual([expect.stringContaining("Checker")]);
-    expect(within(screen.getByRole("list", { name: "Agents" })).queryByRole("button", { name: /Tester/ })).toBeNull();
-    expect(within(screen.getByRole("list", { name: "Agents" })).getAllByRole("button", { name: /Checker/ }).length).toBeGreaterThan(0);
+  it("opens the second of two agents of one kind when the address names it, with its own instructions", async () => {
+    const reviewers = [
+      agent({ id: "r1", name: "Reviewer", role: "reviewer", instructions: "Claude's review." }),
+      agent({ id: "r2", name: "Codex Reviewer", role: "reviewer", provider: "codex", instructions: "Codex's review." }),
+    ];
+    renderAgents({ agents: reviewers }, instructionsAddress("r2"));
+    const editor = await screen.findByRole("region", { name: "Edit agent" });
+    expect(within(editor).getByRole("textbox", { name: "Instructions" })).toHaveValue("Codex's review.");
+    expect(current()).toEqual([expect.stringContaining("Codex Reviewer")]);
   });
 
-  it("opens no agent when nobody holds the role, live or retired, says so, and keeps the list to pick from", async () => {
-    for (const address of [instructionsAddress("qa"), "/agents?actions=qa"]) {
-      renderAgents({ agents: [agent(), agent({ id: "a2", name: "Writer", role: "docs" })] }, address);
-      expect(await screen.findByText("No agent holds the qa role.")).toBeInTheDocument();
-      expect(screen.queryByRole("region", { name: "Edit agent" })).toBeNull();
-      expect(screen.queryByRole("region", { name: "Instructions" })).toBeNull();
-      expect(current()).toEqual([]);
+  it("opens a retired agent the address names, and keeps it listed", async () => {
+    const retired = [agent(), agent({ id: "a2", name: "Tester", role: "qa", archivedAt: 1_700_000_000_000 })];
+    renderAgents({ agents: retired }, instructionsAddress("a2"));
+    expect(within(await screen.findByRole("region", { name: "Actions" })).getByText("qa")).toBeInTheDocument();
+    expect(current()).toEqual([expect.stringContaining("Tester")]);
+  });
 
-      fireEvent.click(within(screen.getByRole("list", { name: "Agents" })).getAllByRole("button", { name: /Writer/ })[0]!);
-      expect(within(await screen.findByRole("region", { name: "Actions" })).getByText("docs")).toBeInTheDocument();
-      expect(screen.queryByText("No agent holds the qa role.")).toBeNull();
-      cleanup();
-    }
+  it("opens no agent when the agent named is gone, says so, and keeps the list to pick from", async () => {
+    renderAgents({ agents: [agent(), agent({ id: "a2", name: "Writer", role: "docs" })] }, instructionsAddress("gone"));
+    expect(await screen.findByText("The agent this link named is not here any more.")).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Edit agent" })).toBeNull();
+    expect(current()).toEqual([]);
+
+    fireEvent.click(within(screen.getByRole("list", { name: "Agents" })).getAllByRole("button", { name: /Writer/ })[0]!);
+    expect(within(await screen.findByRole("region", { name: "Actions" })).getByText("docs")).toBeInTheDocument();
+    expect(screen.queryByText("The agent this link named is not here any more.")).toBeNull();
+  });
+
+  it("opens no agent when nobody holds the role an Actions address names, says so, and keeps the list to pick from", async () => {
+    renderAgents({ agents: [agent(), agent({ id: "a2", name: "Writer", role: "docs" })] }, "/agents?actions=qa");
+    expect(await screen.findByText("No agent holds the qa role.")).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Edit agent" })).toBeNull();
+    expect(current()).toEqual([]);
   });
 });
 
@@ -1155,7 +1194,7 @@ describe("a project's own agents (EO-475)", () => {
         if (channel === "agents:listDetailed") return { agents: listed };
         if (channel === "agents:customise") {
           listed = [...listed, copy];
-          return { saved: true, agent: copy, problem: null };
+          return { saved: true, agent: copy, problem: null, changedSteps: [{ stepId: "s1", stepName: "Build", pipelineId: "p1", pipelineName: "Delivery" }] };
         }
         return undefined;
       },
@@ -1163,6 +1202,8 @@ describe("a project's own agents (EO-475)", () => {
     const form = await editor();
 
     fireEvent.click(await within(form).findByRole("button", { name: "Customise for this project" }));
+    // Which of the project's steps it changed (EO-876).
+    expect(await screen.findByRole("status", { name: "What changed" })).toHaveTextContent("Implementer (Support) is made, and now runs Build in Delivery in place of the original.");
 
     await waitFor(() => expect(calls.find((call) => call.channel === "agents:customise")?.payload).toEqual({ agentId: "a1", projectId: SUPPORT.id }));
     const support = await screen.findByRole("region", { name: "Support's own agents" });

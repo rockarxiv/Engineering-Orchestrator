@@ -314,6 +314,14 @@ export const VersionDiffSchema = z.object({
         .object({ type: PipelineStepViewSchema.shape.type, agentId: z.string().nullable().default(null), entryAction: z.string().nullable() })
         .nullable()
         .default(null),
+      /**
+       * Who runs it (EO-876): the name of the agent an `agent` step names,
+       * read from the same version as `kind`, so a step added, removed or
+       * edited in any other field still says which agent it is. The id
+       * where this side cannot name it; null for a step of another type,
+       * one that names no agent, and a diff from before the field.
+       */
+      agent: z.string().nullable().default(null),
       /** Field-level, so "the prompt changed" and "it was renamed" are not the same line. */
       fields: z.array(z.object({ field: z.string(), before: z.string().nullable(), after: z.string().nullable() })),
     }),
@@ -437,9 +445,18 @@ function moduleVersionChange(was: VersionStep, step: VersionStep, moduleNames: R
   return { field: "module", before, after };
 }
 
+/** What a diff calls a field, where that is not its key: a step's agent is "agent", and said by name (EO-876). */
+function fieldLabel(field: (typeof DIFFED_FIELDS)[number]): string {
+  return field === "agentId" ? "agent" : field;
+}
+
 /** One field of a step, as the diff prints it. */
-function shownStepField(field: (typeof DIFFED_FIELDS)[number], step: VersionStep, names: ReadonlyMap<string, string>): string | null {
+function shownStepField(field: (typeof DIFFED_FIELDS)[number], step: VersionStep, names: ReadonlyMap<string, string>, agentNames: ReadonlyMap<string, string>): string | null {
   if (field === "results") return shownResults(step.results);
+  // The agent by name (EO-876): an id says nothing to the person reading
+  // which agent a step now runs. An agent this side cannot name is said
+  // by its id rather than dropped, so a change is never read as none.
+  if (field === "agentId") return step.agentId === null ? null : (agentNames.get(step.agentId) ?? step.agentId);
   // "the default" rather than nothing, for `watch`'s reason below (EO-827).
   if (field === "brief") return briefWords(step.brief, names);
   // "runs once" rather than nothing, so turning the mode off reads as a
@@ -464,11 +481,19 @@ function stepKind(step: VersionStep): VersionDiff["steps"][number]["kind"] {
   return type.success ? { type: type.data, agentId: step.agentId, entryAction: step.entryAction } : null;
 }
 
+/** The agent a diff row says runs its step (EO-876): by name, by id where unnamed, null for none. */
+function stepAgentName(step: VersionStep, agentNames: ReadonlyMap<string, string>): string | null {
+  if (step.type !== "agent" || step.agentId === null) return null;
+  return agentNames.get(step.agentId) ?? step.agentId;
+}
+
 export function diffVersions(
   from: { number: number; steps: VersionStep[]; routes: VersionRoute[]; entryRules?: readonly EntryRule[] },
   to: { number: number; steps: VersionStep[]; routes: VersionRoute[]; entryRules?: readonly EntryRule[] },
   /** Module names by id, so a module rule is listed by name (EO-736). Absent, by id. */
   moduleNames?: ReadonlyMap<string, string>,
+  /** Agent names by id, so a change of a step's agent names both agents (EO-876). Absent, by id. */
+  agentNames: ReadonlyMap<string, string> = new Map(),
 ): VersionDiff {
   const before = new Map(from.steps.map((step) => [step.id, step] as const));
   const after = new Map(to.steps.map((step) => [step.id, step] as const));
@@ -478,20 +503,21 @@ export function diffVersions(
   for (const [id, step] of after) {
     const was = before.get(id);
     if (!was) {
-      steps.push({ stepId: id, name: step.name, change: "added", kind: stepKind(step), fields: [] });
+      steps.push({ stepId: id, name: step.name, change: "added", kind: stepKind(step), agent: stepAgentName(step, agentNames), fields: [] });
       continue;
     }
+    // An agent compared by id, and shown by name: two agents of one name are still a change.
+    const same = (field: (typeof DIFFED_FIELDS)[number]) =>
+      field === "agentId" ? was.agentId === step.agentId : shownStepField(field, was, names, agentNames) === shownStepField(field, step, names, agentNames);
     const fields: VersionDiff["steps"][number]["fields"] = DIFFED_FIELDS.flatMap((field) =>
-      shownStepField(field, was, names) === shownStepField(field, step, names)
-        ? []
-        : [{ field, before: shownStepField(field, was, names), after: shownStepField(field, step, names) }],
+      same(field) ? [] : [{ field: fieldLabel(field), before: shownStepField(field, was, names, agentNames), after: shownStepField(field, step, names, agentNames) }],
     );
     const pin = moduleVersionChange(was, step, moduleNames);
     if (pin !== null) fields.push(pin);
-    if (fields.length > 0) steps.push({ stepId: id, name: step.name, change: "changed", kind: stepKind(step), fields });
+    if (fields.length > 0) steps.push({ stepId: id, name: step.name, change: "changed", kind: stepKind(step), agent: stepAgentName(step, agentNames), fields });
   }
   for (const [id, step] of before) {
-    if (!after.has(id)) steps.push({ stepId: id, name: step.name, change: "removed", kind: stepKind(step), fields: [] });
+    if (!after.has(id)) steps.push({ stepId: id, name: step.name, change: "removed", kind: stepKind(step), agent: stepAgentName(step, agentNames), fields: [] });
   }
 
   // A route is identified by the step it leaves and the result it is

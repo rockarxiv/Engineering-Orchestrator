@@ -69,21 +69,29 @@ export function kindBinder(
 }
 
 /**
- * A new pipeline's agent steps, bound again on the project it is being
- * created on (EO-875).
- *
- * A draft for a pipeline that does not exist yet is judged before it has
- * a project, so its kinds were bound on the one on screen. The pipeline
- * is created on the project the draft's conversation goes to, which can
- * be another, and a step there names that project's agent of its kind —
- * its own before a global one, as `agentForKind` binds it. A step whose
- * kind nobody has on that project keeps what it had, and the save says
- * what is wrong with it.
+ * What an assistant draft's step that names no agent this installation
+ * has is given for an id (EO-876): an id no agent holds, so
+ * `validatePipeline` refuses it in the words a publish of such a step is
+ * refused with — "names an agent this installation does not have".
  */
-export function bindOnProject<S extends { readonly type: string; readonly agentId: string | null }>(agents: readonly Agent[], steps: readonly S[], projectId: string | null): S[] {
-  return steps.map((step) => {
-    if (step.type !== "agent") return step;
-    const bound = agentForKind(agents, stepAgentKind(agents, step), projectId);
-    return bound === undefined ? step : { ...step, agentId: bound.id };
-  });
+export const UNKNOWN_AGENT_ID = "unknown-agent" as Uuid;
+
+/**
+ * The agent a draft's step names, by its name as the Agents screen shows
+ * it (EO-876).
+ *
+ * A deleted agent is a tombstone and is never named. Where names are
+ * shared — nothing stops two agents having one — the one that can work
+ * for the pipeline's project is chosen, its own before a global one, a
+ * live one before a retired one; and then the first. Null for a step
+ * that names nobody, `UNKNOWN_AGENT_ID` for a name nobody here has.
+ */
+export function agentNamed(agents: readonly Agent[], name: string | null, projectId: string | null): Uuid | null {
+  if (name === null) return null;
+  const wanted = name.trim();
+  const named = agents.filter((agent) => agent.deletedAt === null && agent.name.trim() === wanted);
+  if (named.length === 0) return UNKNOWN_AGENT_ID;
+  const rank = (agent: Agent): number =>
+    (agent.projectId === null ? 1 : agent.projectId === projectId ? 0 : 3) + (agent.archivedAt === null && agent.enabled ? 0 : 0.5);
+  return [...named].sort((a, b) => rank(a) - rank(b))[0]!.id;
 }

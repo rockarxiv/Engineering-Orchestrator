@@ -13,17 +13,17 @@ export function actionsAddress(role: string): string {
 }
 
 /**
- * `/agents?instructions=<role>`: the agent screen opened on the agent a
- * role names, with its instructions in view (EO-805) — where a board
- * column's owner line sends somebody who wants to know what the agent on
- * that step is told.
+ * `/agents?instructions=<agent id>`: the agent screen opened on one
+ * agent, with its instructions in view (EO-805) — where a board column's
+ * owner line sends somebody who wants to know what the agent on that
+ * step is told.
  *
- * By role for the same reason as `actionsAddress`: a step names a role,
- * not an agent. The screen resolves it the same way — a live agent on
- * the role, otherwise a retired one, never another role's.
+ * By agent, unlike `actionsAddress` (EO-876): a step names an agent, and
+ * two agents of one kind — a Reviewer on Claude and one on Codex — are
+ * told different things, so an address by kind could open the other.
  */
 export const INSTRUCTIONS_FACET = "instructions";
 
-export function instructionsAddress(role: string): string {
-  return `/agents?${INSTRUCTIONS_FACET}=${encodeURIComponent(role)}`;
+export function instructionsAddress(agentId: string): string {
+  return `/agents?${INSTRUCTIONS_FACET}=${encodeURIComponent(agentId)}`;
 }

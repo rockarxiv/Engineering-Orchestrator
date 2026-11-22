@@ -2600,15 +2600,7 @@ const AGENT_SAVE_TOOL: ToolSpec = {
  */
 export function describeAgentRemoval(impact: AgentRemovalImpact): string {
   const parts: string[] = [];
-  if (impact.steps.length > 0) {
-    const steps = impact.steps.map((step) => `"${step.stepName}" (${step.pipelineName})`).join(", ");
-    parts.push(`\`${impact.role}\` owns ${steps}.`);
-    if (impact.leavesStepsWithNobody) {
-      parts.push(`${impact.agentName} is the last enabled agent on that role: those steps will have nobody, and tickets reaching them will wait until another agent takes the role.`);
-    } else if (impact.coveredBy.length > 0) {
-      parts.push(`Still covered by ${impact.coveredBy.join(", ")}.`);
-    }
-  }
+  // No step names it (EO-876): a step that did would have refused the removal outright, in its own words.
   if (impact.activeRuns.length > 0) {
     parts.push(`${impact.agentName} is working on ${impact.activeRuns.map((run) => run.itemKey).join(", ")} now; confirming cancels that run.`);
   }
@@ -2653,15 +2645,15 @@ const AGENT_ARCHIVE_TOOL: ToolSpec = channelTool({
   name: "agent_archive",
   channel: "agents:archive",
   description:
-    "Retire an agent. It is dispatched to nothing afterwards, it staffs no role, and it stops being offered as a " +
-    "step's owner — but the row is kept rather than deleted, so its runs and the comments it wrote still read as " +
+    "Retire an agent. It is dispatched to nothing afterwards, and it stops being offered as a " +
+    "step's agent — but the row is kept rather than deleted, so its runs and the comments it wrote still read as " +
     "its own, and agents_list goes on showing it marked archived. Nothing brings it back, so a person who wants " +
     "that agent again has to create one afresh; agent_save with `enabled: false` is the reversible half and is what " +
     "to reach for while you are working out whether an agent is helping. Call it without confirm first: nothing is " +
-    "archived, and the answer names every pipeline step the agent's role owns, whether those steps are left with " +
-    "nobody (tickets reaching them then wait until another agent takes the role) or who still covers them, the " +
-    "ticket of any run it has in progress (confirming cancels it), and whether it is the last system agent. Tell " +
-    "the person, and call again with confirm: true only once they have said to go ahead.",
+    "archived, and the answer names the ticket of any run it has in progress (confirming cancels it) and whether it " +
+    "is the last system agent. Tell the person, and call again with confirm: true only once they have said to go " +
+    "ahead. An agent a pipeline step names cannot be archived: the refusal names the steps, and each has to name " +
+    "another agent first (pipeline_save).",
   kind: "write",
   annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
   render: () => "Agent archived. Nothing dispatches it now; the row is kept, so its runs and comments still resolve and agents_list still shows it.",
@@ -4478,11 +4470,10 @@ const GATED_TOOLS: readonly ToolSpec[] = [
       "Delete an agent, archived ones included. Its name and role are kept so its past runs and comments still say " +
       "who did them; everything else about it goes, it disappears from the Agents screen and agents_list stops " +
       "offering it, and nothing dispatches it again. Call it without confirm first: nothing is deleted, and the " +
-      "answer names every pipeline step the agent's role owns, whether those steps are left with nobody (tickets " +
-      "reaching them then wait until another agent takes the role) or who still covers them, the ticket of any run " +
-      "it has in progress (confirming cancels it), and whether it is the last system agent. Tell the person, and " +
-      "call again with confirm: true only once they have said to delete it. agent_save with `enabled: false` is the " +
-      "reversible alternative.",
+      "answer names the ticket of any run it has in progress (confirming cancels it) and whether it is the last " +
+      "system agent. Tell the person, and call again with confirm: true only once they have said to delete it. An " +
+      "agent a pipeline step names cannot be deleted: the refusal names the steps, and each has to name another " +
+      "agent first (pipeline_save). agent_save with `enabled: false` is the reversible alternative.",
     kind: "dangerous",
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
     render: () => "Agent deleted. Nothing dispatches it now; its past runs and comments still show its name.",

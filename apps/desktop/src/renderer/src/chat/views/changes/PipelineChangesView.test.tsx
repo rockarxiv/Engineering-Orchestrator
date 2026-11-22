@@ -3,7 +3,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest";
 import { ThemeProvider } from "@eo/ui";
 import { MemoryRouter } from "react-router-dom";
-import { pipelineChangesPath } from "@eo/core";
+import { diffVersions, pipelineChangesPath, type VersionStep } from "@eo/core";
 import { createQueryClient } from "../../../query/client";
 import { AskAssistantContext, type AskAssistant } from "../../askAssistant";
 import { PipelineChangesView } from "./PipelineChangesView";
@@ -224,6 +224,61 @@ describe("the read-only diff between two versions", () => {
  * files no version, so the local edit exists only in the live graph and
  * arrives here as `local`.
  */
+/**
+ * Who runs each agent step the diff lists (EO-876), from what
+ * `diffVersions` itself returns: a step added on an agent, one removed,
+ * and one edited in another field each say their agent by name, and a
+ * change of agent says both.
+ */
+describe("the agent each step of the diff runs", () => {
+  const agentStep = (id: string, name: string, agentId: string): VersionStep => ({
+    id,
+    position: 0,
+    name,
+    type: "agent",
+    agentId,
+    entryAction: "review",
+    instructionsSummary: null,
+    isTerminal: false,
+    planMode: false,
+    offBoard: false,
+    results: [],
+    watch: null,
+    moduleVersion: null,
+    brief: null,
+  });
+  const names = new Map([
+    ["reviewer-claude", "Reviewer"],
+    ["reviewer-codex", "Codex Reviewer"],
+    ["architect", "Architect"],
+  ]);
+  const diff = diffVersions(
+    { number: 1, steps: [agentStep("review", "Review", "reviewer-claude"), agentStep("plan", "Plan", "architect"), agentStep("swap", "Swap", "reviewer-claude")], routes: [] },
+    { number: 2, steps: [agentStep("review", "First review", "reviewer-claude"), agentStep("second", "Second review", "reviewer-codex"), agentStep("swap", "Swap", "reviewer-codex")], routes: [] },
+    undefined,
+    names,
+  );
+  /** The diff's row for a step, by the name at its head (a name can also be a field's value). */
+  const rowOf = (name: string) => {
+    const rows = [...document.querySelectorAll("li")].filter((row) => row.querySelector(":scope > span > span")?.textContent === name);
+    expect(rows).toHaveLength(1);
+    return rows[0]!;
+  };
+
+  it("names the agent on a step added, removed, edited in another field, and both on a change of agent", async () => {
+    mockIpc({ ...ANSWER, diff });
+    renderChanges();
+
+    await screen.findByText("Second review");
+    expect(rowOf("Second review").textContent).toContain("Runs Codex Reviewer");
+    expect(rowOf("Plan").textContent).toContain("Ran Architect");
+    expect(rowOf("First review").textContent).toContain("Runs Reviewer");
+    const swap = rowOf("Swap").textContent ?? "";
+    expect(swap).toContain("Runs Codex Reviewer");
+    expect(swap).toContain("agent: Reviewer → Codex Reviewer");
+  });
+});
+
 describe("the diff a person's own edits make", () => {
   const LOCAL = {
     basedOn: 6,

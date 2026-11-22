@@ -131,7 +131,7 @@ export function classifyDesignChange(approved: DesignShape, proposed: DesignShap
     if (was === undefined) continue;
     if (was.type !== step.type) design.push(`"${step.name}" becomes a ${step.type} step instead of a ${was.type} step`);
     else if (was.entryAction !== step.entryAction) design.push(`"${step.name}" runs ${step.entryAction ?? "nothing"} instead of ${was.entryAction ?? "nothing"}`);
-    if (was.ownerRole !== step.ownerRole) design.push(`"${step.name}" is done by ${step.ownerRole ?? "nobody"} instead of ${was.ownerRole ?? "nobody"}`);
+    if (was.agent !== step.agent) design.push(`"${step.name}" is done by ${step.agent ?? "nobody"} instead of ${was.agent ?? "nobody"}`);
     if (was.isTerminal !== step.isTerminal) design.push(step.isTerminal ? `work ends on "${step.name}" now` : `work no longer ends on "${step.name}"`);
     if ((was.instructionsSummary ?? null) !== (step.instructionsSummary ?? null)) within.push(`the instructions of "${step.name}"`);
     if (was.name !== step.name) within.push(`"${was.name}" is renamed "${step.name}"`);

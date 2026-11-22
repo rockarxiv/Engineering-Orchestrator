@@ -43,6 +43,8 @@ import {
   entryRuleWords,
   shownEntryRule,
   stepAgentKind,
+  stepAgentOf,
+  stepAgentProblem,
 } from "@eo/core";
 import type { Db } from "../db/client.js";
 import type { Project } from "../db/repos/projectsRepo.js";
@@ -2225,6 +2227,10 @@ export function listAgentViews(db: Db): IpcResponse<"agents:list"> {
       model: agent.model,
       enabled: agent.enabled,
       archivedAt: agent.archivedAt,
+      // So a step naming a tombstone says "deleted" (EO-876).
+      deletedAt: agent.deletedAt,
+      // So a step whose agent moved to another project says nothing runs there (EO-876).
+      projectId: agent.projectId,
     })),
   };
 }
@@ -2467,14 +2473,24 @@ export function listPipelineStepViews(
   const { entryRules = [], name: pipelineName = "" } = getPipeline(db, input.pipelineId) ?? {};
   const moduleNames = new Map(listModules(db, true).map((module) => [module.id as string, module.name]));
   const agents = listAgents(db);
-  const stepKinds: Record<string, string> = {};
+  const stepAgents: NonNullable<IpcResponse<"pipelineSteps:list">["stepAgents"]> = {};
   for (const step of onBoard) {
-    const kind = stepAgentKind(agents, step);
-    if (kind !== null) stepKinds[step.id] = kind;
+    if (step.type !== "agent") continue;
+    const agent = stepAgentOf(agents, step);
+    stepAgents[step.id] = {
+      name: agent?.name ?? null,
+      kind: agent?.role ?? null,
+      provider: agent?.provider ?? null,
+      model: agent?.model ?? null,
+      // Asked of the pipeline's own project, not the active one: an agent
+      // that works for another project is refused by dispatch here.
+      problem: stepAgentProblem(agents, step, getPipeline(db, input.pipelineId)?.projectId ?? null),
+    };
   }
   return {
     steps: onBoard.map(toStepView),
-    stepKinds,
+    stepAgents,
+    pipelineProjectId: getPipeline(db, input.pipelineId)?.projectId ?? null,
     // Where work enters, alongside the graph it enters: the configuration
     // screen edits and publishes all three together (ARCHITECTURE.md, "Vocabulary").
     entryStepId: getPipeline(db, input.pipelineId)?.entryStepId ?? null,

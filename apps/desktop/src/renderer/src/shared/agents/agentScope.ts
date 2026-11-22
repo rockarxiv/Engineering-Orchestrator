@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
-import type { AgentDetail, IpcResponse } from "@eo/core";
+import { stepAgentFactsLine, type AgentDetail, type IpcResponse } from "@eo/core";
+import { runtimeLabel } from "./catalog";
 import { ipcQuery } from "../../query/client";
 import { agentsKey, projectsKey } from "../../query/hooks";
 import { agentDetailsKey } from "../settings/primitives";
@@ -12,9 +13,9 @@ import { useInvalidateOnPush } from "../../query/useInvalidateOnPush";
  * One module for the classic Agents screen, the chat layout's Agents
  * view and both layouts' project settings, so the four cannot come to
  * describe one scope four ways — `skillScope` is the same idea for
- * skills. The rule about which agent a project's work goes to is not
- * here: that is `staffingAgents` in `packages/core`, which the main
- * process asks on `projects:staffing`, and this only says its answer.
+ * skills. Who runs a project's work is not decided here or anywhere by a
+ * rule: each step names its agent (EO-875), `projects:staffing` reads
+ * them off the steps, and this only says its answer (EO-876).
  */
 
 /** The `<select>` value for a global agent. A project's own is its project's id. */
@@ -110,9 +111,9 @@ export function groupHeading(group: AgentGroup<unknown>): string {
 /** Which runs an agent is dispatched for, in a line. */
 export function scopeLine(agent: Pick<AgentDetail, "projectId">, projects: readonly ScopeProject[]): string {
   const projectId = agentProjectId(agent);
-  if (projectId === null) return "Global — every project without an agent of its own in this role";
+  if (projectId === null) return "Global — any project's pipeline steps may name it";
   const project = projects.find((candidate) => candidate.id === projectId);
-  return project === undefined ? "A project that no longer exists — dispatched for nothing" : `Only ${project.name}'s work, ahead of the global agents in this role`;
+  return project === undefined ? "A project that no longer exists — dispatched for nothing" : `Only ${project.name}'s — that project's pipeline steps may name it`;
 }
 
 /**
@@ -129,13 +130,13 @@ export function projectStaffingKey(projectId: string) {
   return [...agentsKey, "staffing", projectId] as const;
 }
 
-export type RoleStaffing = IpcResponse<"projects:staffing">["roles"][number];
+export type StepStaffing = IpcResponse<"projects:staffing">["steps"][number];
 
 /**
- * Who a project's work goes to, role by role — `projects:staffing`,
- * which is the scheduler's rule asked by the main process. Refreshed on
+ * Who runs each agent step of a project's pipelines — `projects:staffing`,
+ * read off the steps by the main process (EO-876). Refreshed on
  * `config:changed` as well, since a pipeline published elsewhere changes
- * which roles the project uses.
+ * its steps.
  */
 export function useProjectStaffing(projectId: string) {
   const key = projectStaffingKey(projectId);
@@ -143,17 +144,11 @@ export function useProjectStaffing(projectId: string) {
   return useQuery({ queryKey: key, queryFn: () => ipcQuery("projects:staffing", { projectId }) });
 }
 
-/** One role's line in project settings: who will be dispatched, and why it is them. */
-export function staffingLine(entry: RoleStaffing): string {
-  const names = entry.agents.map((agent) => agent.name).join(" or ");
-  switch (entry.from) {
-    case "project":
-      return `${names} — this project's own`;
-    case "global":
-      return `${names} — global`;
-    case "nobody":
-      return "Nobody — no enabled agent holds this role";
-  }
+/** One step's line in project settings: the agent it names, with its kind, backend and model — or why nothing runs there. */
+export function staffingLine(entry: StepStaffing): string {
+  if (entry.agent === null) return entry.problem ?? "No agent";
+  const facts = `${entry.agent.name} (${stepAgentFactsLine({ ...entry.agent, enabled: true, archivedAt: null }, runtimeLabel)})`;
+  return entry.problem === null ? facts : `${facts} — ${entry.problem}`;
 }
 
 /**

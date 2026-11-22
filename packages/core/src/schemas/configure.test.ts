@@ -23,8 +23,8 @@ function graph() {
     rationale: "A QA gate before review.",
     entryStepId: "implement",
     steps: [
-      { id: "implement", position: 0, name: "Implementer", type: "agent" as const, ownerRole: "implementer", entryAction: "implement", instructionsSummary: null, isTerminal: false, planMode: false },
-      { id: "done", position: 1, name: "Done", type: "user" as const, ownerRole: null, entryAction: null, instructionsSummary: null, isTerminal: true, planMode: false },
+      { id: "implement", position: 0, name: "Implementer", type: "agent" as const, agent: "Implementer", entryAction: "implement", instructionsSummary: null, isTerminal: false, planMode: false },
+      { id: "done", position: 1, name: "Done", type: "user" as const, agent: null, entryAction: null, instructionsSummary: null, isTerminal: true, planMode: false },
     ],
     routes: [
       { fromStepId: "implement", resultKey: "done", label: "Done", tone: "success" as const, target: "done", position: 0 },

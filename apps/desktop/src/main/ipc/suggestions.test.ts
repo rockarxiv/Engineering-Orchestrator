@@ -230,6 +230,7 @@ describe("suggesting a change from a desktop", () => {
       name: "Second opinion",
       change: "changed",
       kind: { type: "agent", agentId: agentOfKind(record.db, "reviewer"), entryAction: "review" },
+      agent: "Reviewer",
       fields: [{ field: "name", before: "Review", after: "Second opinion" }],
     });
   });
@@ -442,6 +443,7 @@ describe("a pipeline this machine diverged", () => {
       name: "Second opinion",
       change: "changed",
       kind: { type: "agent", agentId: agentOfKind(device.db, "reviewer"), entryAction: "review" },
+      agent: "Reviewer",
       fields: [{ field: "name", before: "Review", after: "Second opinion" }],
     });
   });

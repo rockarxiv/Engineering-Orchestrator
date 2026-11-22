@@ -929,9 +929,41 @@ export const AgentViewSchema = z.object({
    * picker filters on this instead.
    */
   archivedAt: z.number().nullable(),
+  /**
+   * When this agent was deleted, or null (EO-350). Optional, so a
+   * listing from before it reads as no agent deleted. What lets a step
+   * naming a tombstone say "deleted" rather than "archived" (EO-876).
+   */
+  deletedAt: z.number().nullable().optional(),
+  /**
+   * The project this agent works for, or null for a global one (EO-474).
+   * What lets a step whose agent was moved to another project say that
+   * nothing runs there (EO-876). Optional, so a listing from before it
+   * reads as every agent global.
+   */
+  projectId: z.string().nullable().optional(),
 });
 
 export type AgentView = z.infer<typeof AgentViewSchema>;
+
+/**
+ * A pipeline step that names an agent (EO-876): what the Agents screen
+ * lists under it, and what archiving it is refused for.
+ *
+ * `version` is the older version of the pipeline the step names it on,
+ * where unfinished items still run on that version and its step names
+ * the agent although the current graph's may not; null for the current
+ * graph. Defaulted, so an answer from before it reads as the current
+ * graph.
+ */
+export const StepNamingAgentSchema = z.object({
+  stepId: z.string(),
+  stepName: z.string(),
+  pipelineId: z.string(),
+  pipelineName: z.string(),
+  version: z.number().int().positive().nullable().default(null),
+});
+export type StepNamingAgent = z.infer<typeof StepNamingAgentSchema>;
 
 /**
  * One step of a pipeline, as the renderer sees it (KAN-59).
@@ -1251,6 +1283,12 @@ export const AgentDetailSchema = AgentViewSchema.extend({
    * places rather than one.
    */
   pipelineCount: z.number().int().nonnegative(),
+  /**
+   * Every pipeline step that names this agent, in every pipeline,
+   * archived ones included (EO-876): what the Agents screen lists under
+   * it. Defaulted, so a listing from before it reads as naming none.
+   */
+  steps: z.array(StepNamingAgentSchema).default([]),
   instructions: z.string(),
   /**
    * The prompt this build of EO ships for the role, or null for a role it
@@ -1300,8 +1338,8 @@ export type AgentDetail = z.infer<typeof AgentDetailSchema>;
 export const AgentRemovalImpactSchema = z.object({
   agentName: z.string(),
   role: z.string(),
-  /** Every agent step, in every live pipeline, owned by this agent's role. */
-  steps: z.array(z.object({ stepId: z.string(), stepName: z.string(), pipelineId: z.string(), pipelineName: z.string() })),
+  /** Every agent step, in every pipeline, that names this agent (EO-875). While there is one, archiving and deleting are refused (EO-876). */
+  steps: z.array(StepNamingAgentSchema),
   /**
    * Whether `steps` are left with nobody once this agent goes: it is the
    * last enabled, non-preview agent on the role, and the role owns at

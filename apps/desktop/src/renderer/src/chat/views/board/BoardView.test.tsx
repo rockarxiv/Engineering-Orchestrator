@@ -1,11 +1,13 @@
 import type { ReactNode } from "react";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { MemoryRouter, useLocation } from "react-router-dom";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   EMPTY_SPEC_SHAPE,
   NO_GIT_STATE,
+  NO_POLICY,
+  SECTION_LOCK_TEXT,
   developerRegistry,
   toRegistryView,
   type InboxItem,
@@ -18,11 +20,14 @@ import { ItemReferenceProvider } from "../../conversation/ItemReferenceProvider"
 import { ViewPublisher } from "../../../shared/view/ViewPublisher";
 import { AskAssistantContext, type AskAssistant } from "../../askAssistant";
 import { instructionsAddress } from "../agents/address";
+import { AgentsView } from "../agents/AgentsView";
 import { moduleAddress } from "../settings/org/moduleAddress";
 import { BoardView } from "./BoardView";
 
 /** An agent of each kind the fixtures' steps name, as `agent-<kind>` (EO-875): a step's kind is its agent's. */
-const kindAgent = (role: string) => ({ id: `agent-${role}`, name: role, role, provider: "fake", model: null, enabled: true, archivedAt: null });
+const kindAgent = (role: string) => ({ id: `agent-${role}`, name: role, role, provider: "fake", model: null, enabled: true, archivedAt: null, projectId: null as string | null });
+/** The owner line of a step naming `kindAgent("implementer")`: its name, kind, backend and model (EO-876). */
+const IMPLEMENTER_LINE = "implementer — implementer · Built in (fake) · default model";
 
 
 /**
@@ -194,6 +199,9 @@ function mockIpc(
     /** A project with a repository, and whether its Jira is connected. Absent is a project with none. */
     jira?: boolean;
     modules?: unknown[];
+    agents?: unknown[];
+    /** The project the pipeline belongs to (EO-876). Absent is the board's own project. */
+    pipelineProjectId?: string | null;
     onMove?: (payload: unknown) => unknown;
     onHold?: (payload: unknown) => unknown;
     onResume?: (payload: unknown) => unknown;
@@ -220,6 +228,7 @@ function mockIpc(
           ok: true,
           data: {
             steps: options.states ?? STATES,
+            pipelineProjectId: options.pipelineProjectId === undefined ? "b1" : options.pipelineProjectId,
             routes: [],
             verification: options.verification ?? [],
             version: options.version ?? null,
@@ -231,7 +240,7 @@ function mockIpc(
       case "pipelines:list":
         return { ok: true, data: { pipelines: [...(options.pipelines ?? [])] } };
       case "agents:list":
-        return { ok: true, data: { agents: ["implementer", "reviewer", "tester"].map(kindAgent) } };
+        return { ok: true, data: { agents: options.agents ?? ["implementer", "reviewer", "tester"].map(kindAgent) } };
       case "people:list":
         return { ok: true, data: { people: options.people ?? [], groups: options.groups ?? [], fromServer: false } };
       case "modules:list":
@@ -324,7 +333,7 @@ describe("the board's columns", () => {
     renderBoard();
 
     const todo = await column("To Do");
-    expect(within(todo).getByText("implementer")).toBeInTheDocument();
+    expect(within(todo).getByText(IMPLEMENTER_LINE)).toBeInTheDocument();
     expect(screen.getByTitle(/Human-owned/)).toBeInTheDocument();
   });
 
@@ -370,7 +379,7 @@ describe("the board's columns", () => {
     // a 3px cap and its mono owner line leaning 35% toward it, on the same neutral raised
     // surface and hairline as EO's own column, with no fill or outline tint (EO-694).
     for (const [name, colour, cap, owner] of [
-      ["To Do", "--color-kind-agent", "border-t-kind-agent", "implementer"],
+      ["To Do", "--color-kind-agent", "border-t-kind-agent", IMPLEMENTER_LINE],
       ["Pending Approval", "--color-paused", "border-t-paused", "you"],
       ["Merge", "--color-kind-script", "border-t-kind-script", "merge_branch"],
     ] as const) {
@@ -401,7 +410,7 @@ describe("the board's columns", () => {
     const head = within(todo).getByRole("heading", { level: 2, name: "To Do" }).parentElement!;
     expect([...head.children].map((child) => child.textContent)).toEqual(["To Do", "1", "agent"]);
     // The action line under it, in mono.
-    expect(within(todo).getByText("implementer").className).toContain("font-mono");
+    expect(within(todo).getByText(IMPLEMENTER_LINE).className).toContain("font-mono");
 
     // A card is one step up from its column, on a hairline.
     const card = within(todo).getByText("On to do").closest("article")!;
@@ -516,15 +525,84 @@ describe("a column's owner line", () => {
     expect(within(merge).queryByRole("link")).toBeNull();
   });
 
-  it("opens an agent step's role on the Agents screen with its instructions in view", async () => {
+  it("opens an agent step's agent on the Agents screen with its instructions in view", async () => {
     mockIpc();
     renderBoard();
 
     const todo = await column("To Do");
-    const link = within(todo).getByRole("link", { name: "implementer" });
-    expect(link).toHaveAttribute("href", instructionsAddress("implementer"));
+    const link = within(todo).getByRole("link", { name: IMPLEMENTER_LINE });
+    expect(link).toHaveAttribute("href", instructionsAddress("agent-implementer"));
     fireEvent.click(link);
-    expect(where()).toBe("/agents?instructions=implementer");
+    expect(where()).toBe("/agents?instructions=agent-implementer");
+  });
+
+  // Two agents of one kind are told different things (EO-876): the
+  // header of a step naming the second opens the second, not the first
+  // agent of the kind.
+  it("opens the agent the step names, not another of its kind, when two agents share it", async () => {
+    const claude = { ...kindAgent("reviewer"), id: "reviewer-claude", name: "Reviewer", provider: "claude" };
+    const codex = { ...kindAgent("reviewer"), id: "reviewer-codex", name: "Codex Reviewer", provider: "codex" };
+    const detailed = [claude, codex].map((agent) => ({
+      ...agent,
+      instructions: `${agent.name}'s own instructions.`,
+      defaultInstructions: null,
+      builtin: true,
+      config: {},
+      pipelineCount: 1,
+    }));
+    const board = mockIpc({ agents: [...["implementer", "tester"].map(kindAgent), claude, codex], states: STATES.map((step) => (step.id === "review" ? { ...step, agentId: codex.id } : step)) });
+    window.eo.ipc.invoke = vi.fn(async (channel: string, payload: unknown) => {
+      switch (channel) {
+        case "agents:listDetailed":
+          return { ok: true, data: { agents: detailed } };
+        case "runtime:status":
+          return { ok: true, data: { runtime: null } };
+        case "providers:capabilities": {
+          const { provider } = payload as { provider: string };
+          return { ok: true, data: { capabilities: { provider, models: [], modelsAreLive: false, reasoningEfforts: [] }, models: [], problem: null } };
+        }
+        case "mcpServers:list":
+          return { ok: true, data: { servers: [], keychain: { available: true, backend: "gnome_libsecret", weak: false, warning: null } } };
+        case "skills:list":
+          return { ok: true, data: { skills: [] } };
+        case "agentAttachments:list":
+          return { ok: true, data: { attachments: [] } };
+        case "policy:get":
+          return { ok: true, data: { policy: NO_POLICY, fromServer: false, yours: null } };
+        case "sections:list":
+          return { ok: true, data: { published: [], locked: [], lockText: SECTION_LOCK_TEXT } };
+        default:
+          return board(channel, payload);
+      }
+    }) as never;
+    render(
+      <QueryClientProvider client={createQueryClient()}>
+        <MemoryRouter initialEntries={["/pipelines/default"]}>
+          <ViewPublisher>
+            <ItemReferenceProvider>
+              <Routes>
+                <Route path="/agents" element={<AgentsView />} />
+                <Route path="*" element={<BoardView pipelineId="default" />} />
+              </Routes>
+              <Where />
+            </ItemReferenceProvider>
+          </ViewPublisher>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    const review = await column("Review");
+    const link = await within(review).findByRole("link", { name: /^Codex Reviewer — reviewer · / });
+    expect(link).toHaveAttribute("href", instructionsAddress(codex.id));
+    fireEvent.click(link);
+
+    const editor = await screen.findByRole("region", { name: "Edit agent" });
+    await waitFor(() => expect(within(editor).getByRole("textbox", { name: "Instructions" })).toHaveValue("Codex Reviewer's own instructions."));
+    const open = within(screen.getByRole("list", { name: "Agents" }))
+      .getAllByRole("button")
+      .filter((row) => row.getAttribute("aria-current") === "true")
+      .map((row) => row.textContent ?? "");
+    expect(open).toEqual([expect.stringContaining("Codex Reviewer")]);
   });
 
   it("leaves an agent step with no role, a person's step, EO's own step and an end as they were, with nothing to press", async () => {
@@ -541,7 +619,8 @@ describe("a column's owner line", () => {
 
     for (const [name, text] of [
       ["Worktree", "create_worktree"],
-      ["Unowned", "agent"],
+      // Said in words, since nothing runs there (EO-876).
+      ["Unowned", "No agent is chosen for this step, so nothing runs here until one is."],
       ["Approve", "you"],
       ["Done", "end"],
     ] as const) {
@@ -551,6 +630,31 @@ describe("a column's owner line", () => {
       expect(line, name).toBeDefined();
     }
     expect(within(await column("Approve")).getByText("you")).toHaveAttribute("title", "Human-owned — the engine won't act here");
+  });
+
+  it("names a step's agent that cannot run, and says in words that nothing runs there (EO-876)", async () => {
+    mockIpc({
+      states: [{ id: "todo", pipelineId: "default", position: 0, name: "To Do", type: "agent", agentId: "agent-tester", entryAction: "test", instructionsSummary: null, isTerminal: false }],
+      items: [],
+      agents: [{ ...kindAgent("tester"), name: "Tester", provider: "codex", model: "gpt-5", enabled: false }],
+    });
+    renderBoard();
+
+    const todo = await column("To Do");
+    expect(await within(todo).findByText("Tester — tester · Codex · gpt-5")).toBeInTheDocument();
+    expect(within(todo).getByRole("status")).toHaveTextContent("Tester is disabled, so nothing runs here until it is enabled or the step names another agent.");
+  });
+
+  it("says nothing runs there where the step's agent was moved to another project after the step named it (EO-876)", async () => {
+    mockIpc({
+      states: [{ id: "todo", pipelineId: "default", position: 0, name: "To Do", type: "agent", agentId: "agent-tester", entryAction: "test", instructionsSummary: null, isTerminal: false }],
+      items: [],
+      agents: [{ ...kindAgent("tester"), name: "Tester", projectId: "elsewhere" }],
+    });
+    renderBoard();
+
+    const todo = await column("To Do");
+    expect(await within(todo).findByRole("status")).toHaveTextContent("Tester works for another project, so nothing runs here until the step names another agent.");
   });
 });
 

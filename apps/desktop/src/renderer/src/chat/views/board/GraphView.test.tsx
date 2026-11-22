@@ -19,7 +19,7 @@ import { AskAssistantContext, type AskAssistant } from "../../askAssistant";
 import { GraphView } from "./GraphView";
 
 /** An agent of each kind the fixtures' steps name, as `agent-<kind>` (EO-875): a step's kind is its agent's. */
-const kindAgent = (role: string) => ({ id: `agent-${role}`, name: role, role, provider: "fake", model: null, enabled: true, archivedAt: null });
+const kindAgent = (role: string) => ({ id: `agent-${role}`, name: role, role, provider: "fake", model: null, enabled: true, archivedAt: null, projectId: null as string | null });
 
 
 /** The graph, held to what the classic routing band's suite holds it to (`pipeline/PipelineGraph.test.tsx`). */
@@ -168,6 +168,10 @@ interface World {
   entrySentence?: string | null;
   /** Each rule as a line (EO-736). Absent is a pipeline that asks for nothing. */
   entryRuleLines?: string[];
+  /** What `agents:list` answers. Absent is one global agent of each shipped kind. */
+  agents?: ReturnType<typeof kindAgent>[];
+  /** The project the pipeline belongs to (EO-876). */
+  pipelineProjectId?: string | null;
 }
 
 function mockIpc({
@@ -189,17 +193,20 @@ function mockIpc({
   templateStatus = { origin: null, updated: null, waiting: null, problem: null },
   entrySentence = null,
   entryRuleLines = [],
+  agents,
+  pipelineProjectId = "p1",
 }: World = {}) {
   const invoke = vi.fn(async (channel: string, payload?: unknown) => {
     void payload;
     switch (channel) {
       case "agents:list":
-        return { ok: true, data: { agents: ["implementer", "reviewer"].map(kindAgent) } };
+        return { ok: true, data: { agents: agents ?? ["implementer", "reviewer"].map(kindAgent) } };
       case "pipelineSteps:list":
         return {
           ok: true,
           data: {
             steps,
+            pipelineProjectId,
             routes,
             entrySentence,
             entryRuleLines,
@@ -570,10 +577,30 @@ describe("a step's details, read-only (EO-524)", () => {
     const details = screen.getByRole("region", { name: "To Do" });
     expect(within(details).getByText("An agent — implementer")).toBeInTheDocument();
     expect(detailsOf()).toMatchObject({ "Who acts": "An agent — implementer", Action: "implement" });
+    // The agent the step names, with its kind, backend and model (EO-876).
+    expect(detailsOf().Agent).toMatch(/ — implementer · .+ · /);
     expect(screen.getByRole("button", { name: "To Do" })).toHaveAttribute("aria-pressed", "true");
     // Pressed again, it closes.
     fireEvent.click(screen.getByRole("button", { name: "To Do" }));
     expect(screen.queryByRole("region", { name: "To Do" })).toBeNull();
+  });
+
+  it("says in words when a step names no agent, or one EO no longer has (EO-876)", async () => {
+    mockIpc({ steps: [step("todo", "To Do", 0, { type: "agent", agentId: null, entryAction: "implement" }), step("check", "Check", 1, { type: "agent", agentId: "agent-gone", entryAction: "review" }), { ...STEPS[2]!, position: 2 }] });
+    renderGraph();
+
+    fireEvent.click(await screen.findByRole("button", { name: "To Do" }));
+    expect(detailsOf().Agent).toBe("No agent is chosen for this step, so nothing runs here until one is.");
+    fireEvent.click(screen.getByRole("button", { name: "Check" }));
+    expect(detailsOf().Agent).toBe("This step names an agent EO no longer has, so nothing runs here until it names another.");
+  });
+
+  it("says so where the step's agent was moved to another project after the step named it, as dispatch refuses it (EO-876)", async () => {
+    mockIpc({ agents: [{ ...kindAgent("implementer"), name: "Implementer", projectId: "p2" }, kindAgent("reviewer")], pipelineProjectId: "p1" });
+    renderGraph();
+
+    fireEvent.click(await screen.findByRole("button", { name: "To Do" }));
+    expect(detailsOf().Agent).toContain("Implementer works for another project, so nothing runs here until the step names another agent.");
   });
 
   /**

@@ -1,4 +1,4 @@
-import { PROPOSED_MODULE_NEEDS_TESTS, validateActionResult, stepAgentKind, type ConfigureOutput, type ModuleManifest, type PipelineDraft, type ProposedModule } from "@eo/core";
+import { PROPOSED_MODULE_NEEDS_TESTS, validateActionResult, stepAgentOf, type ConfigureOutput, type ModuleManifest, type PipelineDraft, type ProposedModule } from "@eo/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DbHandle } from "../db/client.js";
 import { listAgents, listRoutesForPipeline, listStepsForPipeline, saveModule } from "../db/repos/index.js";
@@ -59,7 +59,7 @@ function currentGraph(): PipelineDraft {
       position: step.position,
       name: step.name,
       type: step.type,
-      ownerRole: stepAgentKind(listAgents(handle.db), step),
+      agent: stepAgentOf(listAgents(handle.db), step)?.name ?? null,
       entryAction: step.entryAction,
       instructionsSummary: step.instructionsSummary,
       isTerminal: step.isTerminal,
@@ -87,7 +87,7 @@ function graphWithDeploy(entryAction: string): PipelineDraft {
     rationale: "Deploy to staging before review sees it.",
     steps: [
       ...base.steps,
-      { id: "deploy", position: 15, name: "Deploy", type: "module", ownerRole: null, entryAction, instructionsSummary: null, isTerminal: false, planMode: false },
+      { id: "deploy", position: 15, name: "Deploy", type: "module", agent: null, entryAction, instructionsSummary: null, isTerminal: false, planMode: false },
     ],
     routes: [
       ...base.routes.filter((route) => !(route.fromStepId === "todo" && route.resultKey === "done")),

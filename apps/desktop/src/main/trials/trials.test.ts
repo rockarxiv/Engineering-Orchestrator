@@ -164,7 +164,7 @@ const step = (id: string, position: number, name: string, extra: Record<string, 
   position,
   name,
   type: "user",
-  ownerRole: null,
+  agent: null,
   entryAction: null,
   instructionsSummary: null,
   isTerminal: false,
@@ -189,13 +189,14 @@ function hotfix(): string {
 }
 
 /** A draft of Hotfix with a person checking the fix before Done. */
-function hotfixWithCheck(target: Record<string, string>, routes: Record<string, unknown>[] = []) {
+/** `fixer` is the agent the Fix step names, by name (EO-876). */
+function hotfixWithCheck(target: Record<string, string>, routes: Record<string, unknown>[] = [], fixer = "Implementer") {
   return {
     rationale: "A person checks the fix before it is done.",
     entryStepId: "hotfix_fix",
     target,
     steps: [
-      step("hotfix_fix", 0, "Fix", { type: "agent", ownerRole: "implementer", entryAction: "implement" }),
+      step("hotfix_fix", 0, "Fix", { type: "agent", agent: fixer, entryAction: "implement" }),
       step("hotfix_check", 1, "Check"),
       step("hotfix_done", 2, "Done", { isTerminal: true }),
     ],
@@ -209,9 +210,9 @@ function hotfixWithCheck(target: Record<string, string>, routes: Record<string, 
 }
 
 /** The draft card for a change to Hotfix, and the conversation it is in. */
-async function draftOfHotfix(pipelineId: string): Promise<{ conversation: Item; messageId: Uuid }> {
+async function draftOfHotfix(pipelineId: string, fixer?: string): Promise<{ conversation: Item; messageId: Uuid }> {
   const conversation = await conversationOn(`/pipelines/${pipelineId}`);
-  const [messageId] = turn(conversation, { message: "Here.", draft: hotfixWithCheck({ pipelineId }) }, pipelineId);
+  const [messageId] = turn(conversation, { message: "Here.", draft: hotfixWithCheck({ pipelineId }, [], fixer) }, pipelineId);
   return { conversation, messageId: messageId! };
 }
 
@@ -368,7 +369,8 @@ describe("trial items", () => {
     const claude = createAgent(handle.db, { name: "Claude implementer", role: "implementer", provider: "claude", instructions: "x", projectId });
     const live = hotfix();
     handle.db.run(sql`UPDATE pipeline_steps SET agent_id = ${claude.id} WHERE id = 'hotfix_fix'`);
-    const { conversation, messageId } = await draftOfHotfix(live);
+    // The draft names it, by name (EO-876).
+    const { conversation, messageId } = await draftOfHotfix(live, claude.name);
     const item = fileOn(trialFrom(conversation, messageId).trial.id);
 
     const dispatches = tick(buildTickInput(handle.db, { globalConcurrency: 1, perAgentConcurrency: 1, perRepositoryConcurrency: 1 }, false));

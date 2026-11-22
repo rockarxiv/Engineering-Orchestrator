@@ -8,15 +8,26 @@ import { ProjectAgents } from "./ProjectAgents";
 /**
  * What a project's settings say about its agents (EO-475), in the chat
  * layout (held to both layouts' cases until the classic one went, EO-529):
- * the project's own agents, and for each role its pipelines
- * use, who `projects:staffing` says will be dispatched.
+ * the project's own agents, and for each agent step of its pipelines the
+ * agent the step names, as `projects:staffing` reads it off the step (EO-876).
  */
 
+const step = (stepName: string, agent: IpcResponse<"projects:staffing">["steps"][number]["agent"], problem: string | null = null) => ({
+  stepId: `s-${stepName}`,
+  stepName,
+  pipelineId: "p-delivery",
+  pipelineName: "Delivery",
+  version: null,
+  agent,
+  problem,
+});
+
 const STAFFING: IpcResponse<"projects:staffing"> = {
-  roles: [
-    { role: "implementer", from: "project", agents: [{ id: "a-own", name: "Support implementer" }] },
-    { role: "reviewer", from: "global", agents: [{ id: "a-rev", name: "Reviewer" }] },
-    { role: "writer", from: "nobody", agents: [] },
+  steps: [
+    step("Implement", { id: "a-own", name: "Support implementer", role: "implementer", provider: "claude", model: "opus", projectId: "p-support" }),
+    step("Review", { id: "a-rev", name: "Reviewer", role: "reviewer", provider: "codex", model: null, projectId: null }),
+    step("Write", { id: "a-off", name: "Writer", role: "writer", provider: "fake", model: null, projectId: null }, "Writer is disabled, so nothing runs here until it is enabled or the step names another agent."),
+    step("Check", null, "No agent is chosen for this step, so nothing runs here until one is."),
   ],
 };
 
@@ -59,20 +70,27 @@ describe("a project's agents in its settings (chat layout)", () => {
     expect(own.textContent).not.toMatch(/\bImplementer \(/);
   });
 
-  it("says, role by role, whether the project's own agent or the global one will be dispatched", async () => {
+  it("says, step by step, the agent the step names, with its kind, backend and model", async () => {
     const calls = mount([agent("a-own", "Support implementer", "implementer", "p-support")]);
 
-    const roles = await screen.findByRole("list", { name: "Who is dispatched, by role" });
-    expect(within(roles).getByRole("listitem", { name: "implementer" }).textContent).toBe("implementer → Support implementer — this project's own");
-    expect(within(roles).getByRole("listitem", { name: "reviewer" }).textContent).toBe("reviewer → Reviewer — global");
-    expect(within(roles).getByRole("listitem", { name: "writer" }).textContent).toBe("writer → Nobody — no enabled agent holds this role");
+    const steps = await screen.findByRole("list", { name: "Who runs each step" });
+    expect(within(steps).getByRole("listitem", { name: "Delivery · Implement" }).textContent).toBe("Delivery · Implement → Support implementer (implementer · Claude Code · opus)");
+    expect(within(steps).getByRole("listitem", { name: "Delivery · Review" }).textContent).toBe("Delivery · Review → Reviewer (reviewer · Codex · default model)");
     expect(calls.find((call) => call.channel === "projects:staffing")?.payload).toEqual({ projectId: "p-support" });
   });
 
-  it("says a project with no agents of its own uses the global ones", async () => {
-    mount([agent("a-glob", "Implementer", "implementer", null)], { roles: [{ role: "implementer", from: "global", agents: [{ id: "a-glob", name: "Implementer" }] }] });
+  it("says in words when a step's agent cannot run, or the step names none", async () => {
+    mount([]);
+
+    const steps = await screen.findByRole("list", { name: "Who runs each step" });
+    expect(within(steps).getByRole("listitem", { name: "Delivery · Write" }).textContent).toContain("Writer (writer · Built in (fake) · default model) — Writer is disabled, so nothing runs here");
+    expect(within(steps).getByRole("listitem", { name: "Delivery · Check" }).textContent).toBe("Delivery · Check → No agent is chosen for this step, so nothing runs here until one is.");
+  });
+
+  it("says a project with no agents of its own names global ones", async () => {
+    mount([agent("a-glob", "Implementer", "implementer", null)], { steps: [step("Implement", { id: "a-glob", name: "Implementer", role: "implementer", provider: "fake", model: null, projectId: null })] });
 
     expect((await screen.findByLabelText("Agents of this project's own")).textContent).toContain("No agents of its own");
-    expect((await screen.findByRole("listitem", { name: "implementer" })).textContent).toBe("implementer → Implementer — global");
+    expect((await screen.findByRole("listitem", { name: "Delivery · Implement" })).textContent).toContain("Implementer (implementer");
   });
 });

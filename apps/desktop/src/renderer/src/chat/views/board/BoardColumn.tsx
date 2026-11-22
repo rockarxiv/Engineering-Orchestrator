@@ -8,7 +8,7 @@ import { ownerOf } from "../../parts";
 import { NotFullyTested } from "../../modules/NotFullyTested";
 import { BoardCard } from "./BoardCard";
 import { instructionsAddress } from "../agents/address";
-import { useStepAgentKind } from "../../../shared/agents/stepAgentKind";
+import { useStepAgentKind, useStepAgents } from "../../../shared/agents/stepAgentKind";
 import { moduleAddress } from "../settings/org/moduleAddress";
 import { descriptionFor } from "../../../shared/pipeline/dashboard";
 import { WORK_STATE_FILL, WORK_STATE_WORDS, workLoad, workStateOf, type WorkStep } from "../../../shared/items/workState";
@@ -32,28 +32,40 @@ import { WORK_STATE_FILL, WORK_STATE_WORDS, workLoad, workStateOf, type WorkStep
 /**
  * The owner line under a column's name (EO-805): what runs there, and
  * where to read it. A module step says its module's name and opens it in
- * Settings → Modules; an agent step opens its role's agent on the Agents
- * screen. A module that is not found keeps its id, and a step with no
- * role, a person's step and EO's own say what they always said — none of
- * them a link, since there is nothing to open.
+ * Settings → Modules; an agent step names its agent with its kind,
+ * backend and model (EO-876) and opens that agent's instructions on the
+ * Agents screen — that agent's, by id, not its kind's: two agents of one
+ * kind are told different things. A module that is not found keeps its id, and a person's
+ * step and EO's own say what they always said — none of them a link,
+ * since there is nothing to open.
  */
-function ownerLineOf(step: PipelineStepView, module: ModuleView | undefined, agentKind: string | null): { label: string; to: string | null } {
+function ownerLineOf(step: PipelineStepView, module: ModuleView | undefined, agent: { id: string | null; line: string | null }): { label: string; to: string | null } {
   if (step.type === "module" && module !== undefined) return { label: module.name, to: moduleAddress(module.id) };
-  // The kind of the agent the step names (EO-875).
-  if (step.type === "agent" && agentKind !== null) return { label: agentKind, to: instructionsAddress(agentKind) };
+  if (step.type === "agent" && agent.line !== null && agent.id !== null) return { label: agent.line, to: instructionsAddress(agent.id) };
   return { label: ownerOf(step).label, to: null };
 }
 
 /** What runs here: the role, the module, the action, or "you" — a link where there is something to open. */
 function OwnerLine({ step, module, ink }: { step: PipelineStepView; module: ModuleView | undefined; ink: string }) {
-  const kindOf = useStepAgentKind();
-  const { label, to } = ownerLineOf(step, module, kindOf(step));
+  const stepAgents = useStepAgents(step.pipelineId);
+  const { label, to } = ownerLineOf(step, module, { id: stepAgents.agentOf(step)?.id ?? null, line: stepAgents.lineOf(step) });
+  // Why nothing runs here, in words, where the step's agent cannot run (EO-876).
+  const problem = stepAgents.problemOf(step);
   const className = cn("min-w-0 truncate font-mono text-[11.5px]", ink);
+  if (problem !== null)
+    return (
+      <span className="flex min-w-0 flex-col">
+        {stepAgents.lineOf(step) === null ? null : <span className={className}>{label}</span>}
+        <span role="status" title={problem} className="min-w-0 truncate text-[11.5px] text-danger">
+          {problem}
+        </span>
+      </span>
+    );
   if (to !== null)
     return (
       <Link
         to={to}
-        title={step.type === "module" ? `Open ${label} in Settings → Modules` : `Open the ${label} agent's instructions`}
+        title={step.type === "module" ? `Open ${label} in Settings → Modules` : `Open ${stepAgents.agentOf(step)?.name ?? ""}'s instructions`}
         className={cn(className, "self-start underline-offset-2 hover:underline")}
       >
         {label}
