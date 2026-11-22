@@ -65,10 +65,10 @@ export const CLAUDE_SDK: PackageSetSpec = {
   label: "Claude Agent SDK",
   publisher: "Anthropic PBC",
   termsUrl: "https://code.claude.com/docs/en/legal-and-compliance",
-  version: "0.3.322",
+  version: "0.3.329",
   entry: join("node_modules", "@anthropic-ai", "claude-agent-sdk", "sdk.mjs"),
   packages: [
-    { name: "@anthropic-ai/claude-agent-sdk", version: "0.3.322" },
+    { name: "@anthropic-ai/claude-agent-sdk", version: "0.3.329" },
     // The closure below is MIT, and is here only because Node resolves
     // bare specifiers relative to the importing file.
     { name: "ajv", version: "8.20.0" },
