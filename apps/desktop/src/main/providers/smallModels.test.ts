@@ -23,7 +23,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 
 /** What the pinned Codex reports, through the same reader the Agents screen and a side call use. */
 async function pinnedCodexModels(): Promise<ProviderModel[]> {
-  const fixture = JSON.parse(readFileSync(join(here, "__fixtures__", "codex-0.167.1-model-list.json"), "utf8")) as { data: unknown[] };
+  const fixture = JSON.parse(readFileSync(join(here, "__fixtures__", "codex-0.171.0-model-list.json"), "utf8")) as { data: unknown[] };
   const listed = await fetchCodexModels("/opt/codex", async () => fixture.data as never);
   if (!listed.ok) throw new Error(listed.reason);
   return listed.models;
@@ -47,9 +47,9 @@ describe("the small model", () => {
     expect(codexModels).not.toHaveBeenCalled();
   });
 
-  it("defaults on Codex to the smallest model the runtime reports — the cheapest, of the pinned CLI's eight gpt-6-luna", async () => {
+  it("defaults on Codex to the smallest model the runtime reports — the cheapest, of the pinned CLI's ten gpt-6-luna", async () => {
     const models = await pinnedCodexModels();
-    expect(models.length).toBe(8);
+    expect(models.length).toBe(10);
     expect(smallestCodexModel(models)).toBe("gpt-6-luna");
     expect(await resolveSmallModel(handle.db, "codex", { codexModels: async () => ({ ok: true, models }) })).toBe("gpt-6-luna");
   });
@@ -113,10 +113,10 @@ describe("the small model", () => {
 
 /** What a side call on the system agent's model runs on where that agent names none, and the effort it is configured with (EO-578). */
 describe("the system agent's model, where it names none", () => {
-  it("is the model the Codex runtime marks default — of the pinned CLI's eight, gpt-6.1-sol", async () => {
+  it("is the model the Codex runtime marks default — of the pinned CLI's ten, gpt-6.2-sol", async () => {
     const models = await pinnedCodexModels();
-    expect(models.filter((model) => model.isDefault === true).map((model) => model.value)).toEqual(["gpt-6.1-sol"]);
-    expect(await defaultAgentModel("codex", { codexModels: async () => ({ ok: true, models }) })).toBe("gpt-6.1-sol");
+    expect(models.filter((model) => model.isDefault === true).map((model) => model.value)).toEqual(["gpt-6.2-sol"]);
+    expect(await defaultAgentModel("codex", { codexModels: async () => ({ ok: true, models }) })).toBe("gpt-6.2-sol");
   });
 
   it("is null on Codex where the runtime cannot be asked or marks none, and on Claude, whose CLI picks its own, without asking anything", async () => {

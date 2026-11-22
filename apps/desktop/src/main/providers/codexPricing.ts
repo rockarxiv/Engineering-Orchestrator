@@ -26,16 +26,22 @@
 // - **Other tiers.** Batch and Flex are not how Codex runs, and EO does
 //   not ask for the Fast tier (`serviceTier`), so Standard is the price.
 //
-// GPT-5.6 Sol's price is promotional, "available at least through
-// November 21, 2026" — read the page again after that date.
+// GPT-5.6 Sol's price is promotional: the page said "available at least
+// through November 21, 2026" when it was read, and on 2026-11-22 "GPT-5.6
+// Sol's promotional pricing is available until November 30, 2026", the
+// figures unchanged — read the page again after that date.
 //
 // Every model the pinned Codex lists has a row; `codexPricing.test.ts`
-// holds this table against `__fixtures__/codex-0.167.1-model-list.json`,
+// holds this table against `__fixtures__/codex-0.171.0-model-list.json`,
 // captured from that binary's `model/list`: 0.161.0's and 0.163.0's seven
 // models (EO-453), plus gpt-6.1-terra, which 0.165.0 added and whose row
 // was read off the same page and tier on 2026-10-29 (EO-599). 0.166.0
 // lists the same eight, every field as 0.165.0 had it (EO-644), and so
-// does 0.167.1, every field as 0.166.0 had it (EO-774). A Codex bump that adds a
+// does 0.167.1, every field as 0.166.0 had it (EO-774). 0.171.0 lists ten
+// (EO-889): gpt-6.2-sol, now the default, and gpt-6.2-astra beside the
+// eight, whose rows were read off the same page and tier on 2026-11-22.
+// The list is the account's, served by OpenAI, not the binary's: signed
+// in, 0.167.1 answered the same ten that day. A Codex bump that adds a
 // model fails that test until somebody reads the page and adds its price.
 // A model the table does not know — a newer one, or one typed in by hand
 // — is not priced at zero: the run posts a note saying the budgets cannot
@@ -69,6 +75,10 @@ export const CODEX_PRICES_SOURCE = { url: "https://developers.openai.com/api/doc
  * is here because the page prices it and a person can still name it.
  */
 export const CODEX_MODEL_PRICES: Readonly<Record<string, CodexModelPrice>> = {
+  // $2.00 / $0.10 / $10.00 — read 2026-11-22 (EO-889)
+  "gpt-6.2-sol": { inputCentsPerMillion: 200, cachedInputCentsPerMillion: 10, outputCentsPerMillion: 1_000 },
+  // $8.00 / $0.40 / $40.00 — read 2026-11-22 (EO-889)
+  "gpt-6.2-astra": { inputCentsPerMillion: 800, cachedInputCentsPerMillion: 40, outputCentsPerMillion: 4_000 },
   // $2.00 / $0.10 / $10.00
   "gpt-6.1-sol": { inputCentsPerMillion: 200, cachedInputCentsPerMillion: 10, outputCentsPerMillion: 1_000 },
   // $10.00 / $1.00 / $50.00

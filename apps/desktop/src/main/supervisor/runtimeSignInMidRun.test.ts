@@ -23,7 +23,7 @@ import { isSignInStop, RUNTIME_BLOCK_RECHECK_MS, RUNTIME_SIGN_IN_SOURCE, TRY_AGA
  *
  * Driven through the real supervisor over an in-memory database, and
  * through the real Claude adapter replaying what the pinned CLI said
- * (`providers/__fixtures__/claude-0.3.322-auth-errors.json`). The probe
+ * (`providers/__fixtures__/claude-0.3.329-auth-errors.json`). The probe
  * says signed in throughout, as `claude auth status` does over a dead
  * token.
  */

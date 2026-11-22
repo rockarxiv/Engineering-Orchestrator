@@ -46,6 +46,20 @@ import { AppServerConnection, type AppServerExit, AppServerExitedError, type App
 // `commandExecution` with its `aggregatedOutput`, `agentMessage`,
 // `RateLimitWindow`, `thread/tokenUsage/updated` — are unchanged.
 //
+// 0.171.0's set beside 0.167.1's (EO-889): one notification added,
+// `thread/search/partial`, a batch of results for a `thread/search/stream`
+// request — EO sends none, and it is listed with the ignored ones below.
+// No server request was added or removed, and `ServerRequest`, `Turn`,
+// `ThreadStartParams`, `ThreadResumeParams`, `TurnStartParams` and
+// `RateLimitWindow` are the same files byte for byte. What moved is what
+// EO does not send or read: four client requests EO does not make
+// (`account/securitySetup/read`, `modelProvider/list`,
+// `modelProvider/default/set`, `modelProvider/config/write`); an
+// `agentMessage` item gains `moderation`; an MCP server status gains an
+// `environmentId`; `model/list` may name a `modelProvider`; and
+// `CodexErrorInfo` gains `inferenceHookDenied` and `bioPolicy` (EO reads
+// only `usageLimitExceeded` and a sign-in failure out of it).
+//
 // 0.167.1's set beside 0.166.0's (EO-774): one notification added,
 // `thread/section/changed`, broadcast after a client moves a thread into
 // or out of a sidebar section — EO moves none, and it is listed with the
@@ -1213,6 +1227,9 @@ const IGNORED_NOTIFICATIONS = new Set([
   // New at 0.167.0 (EO-774): a thread moved into or out of a sidebar
   // section, which only a client moving it causes.
   "thread/section/changed",
+  // New at 0.171.0 (EO-889): the partial results of a thread search,
+  // which only a client that asked for one is sent.
+  "thread/search/partial",
   "project/changed",
   "skills/changed",
   "remoteControl/status/changed",

@@ -33,8 +33,8 @@ function load<K extends string, T>(file: string, key: K): { signIn: AuthErrorCas
   return { signIn: cases(recorded.signIn), notSignIn: cases(recorded.notSignIn) };
 }
 
-/** Claude CLI 2.1.322's messages after `system/init`, as the SDK hands them over. */
-export const CLAUDE_AUTH_ERRORS = load<"messages", SDKMessage>("claude-0.3.322-auth-errors.json", "messages");
+/** Claude CLI 2.1.329's messages after `system/init`, as the SDK hands them over. */
+export const CLAUDE_AUTH_ERRORS = load<"messages", SDKMessage>("claude-0.3.329-auth-errors.json", "messages");
 
 /** A notification from the Codex app-server, as `fakeCodexAppServer` plays one. */
 export interface AppServerNotification {
@@ -42,10 +42,10 @@ export interface AppServerNotification {
   params: Record<string, unknown>;
 }
 
-const recordedCodex = load<"notifications", AppServerNotification>("codex-0.167.1-auth-errors.json", "notifications");
+const recordedCodex = load<"notifications", AppServerNotification>("codex-0.171.0-auth-errors.json", "notifications");
 
 /**
- * The app-server 0.167.1's notifications, with the recorded thread and
+ * The app-server 0.171.0's notifications, with the recorded thread and
  * turn ids put back to the ones `fakeCodexAppServer` hands out
  * (`thr-fake`, `turn-1`): the client drops a notification about any
  * other thread or turn as somebody else's. Nothing else is changed.

@@ -12,6 +12,7 @@ exports[`the Claude adapter's prompt, pinned > sends the same bare start turn 1`
     "env": {
       "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
       "CLAUDE_CODE_FORK_SUBAGENT": "0",
+      "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "200000",
       "[process.env]": true,
     },
     "includePartialMessages": true,
@@ -89,6 +90,7 @@ exports[`the Claude adapter's prompt, pinned > sends the same fully configured s
     "env": {
       "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
       "CLAUDE_CODE_FORK_SUBAGENT": "0",
+      "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "200000",
       "[process.env]": true,
     },
     "hooks": {
@@ -133,6 +135,7 @@ exports[`the Claude adapter's prompt, pinned > sends the same fully configured s
         "type": "stdio",
       },
     },
+    "mcpServersDelivery": "argv",
     "model": "claude-opus-4-1",
     "outputFormat": {
       "schema": {
@@ -231,6 +234,7 @@ exports[`the Claude adapter's prompt, pinned > sends the same resumed turn 1`] =
     "env": {
       "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
       "CLAUDE_CODE_FORK_SUBAGENT": "0",
+      "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "200000",
       "[process.env]": true,
     },
     "hooks": {
@@ -258,6 +262,7 @@ exports[`the Claude adapter's prompt, pinned > sends the same resumed turn 1`] =
         "type": "stdio",
       },
     },
+    "mcpServersDelivery": "argv",
     "model": "claude-sonnet-4-5",
     "outputFormat": {
       "schema": {
@@ -308,6 +313,7 @@ exports[`the Claude adapter's prompt, pinned > sends the same start turn minus t
     "env": {
       "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
       "CLAUDE_CODE_FORK_SUBAGENT": "0",
+      "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "200000",
       "[process.env]": true,
     },
     "includePartialMessages": true,
@@ -325,6 +331,7 @@ exports[`the Claude adapter's prompt, pinned > sends the same start turn minus t
         "type": "stdio",
       },
     },
+    "mcpServersDelivery": "argv",
     "model": "claude-sonnet-4-5",
     "permissionMode": "bypassPermissions",
     "settingSources": [

@@ -441,10 +441,16 @@ function isHomeOfItsOwn(fs: Pick<CodexHomeFs, "lstatSync">, path: string): boole
  * names, fewer of SQLite's `-wal` and `-shm` files left after the turn,
  * and with EO's switches still neither memory store.
  *
+ * Re-checked at 0.171.0 (EO-889) beside 0.167.1, each turn answered by a
+ * local scripted model: the same names but for two more of SQLite's
+ * `-wal` and `-shm` files (`logs_2.sqlite`'s), and with EO's switches
+ * still neither memory store. 0.171.0 still carries
+ * `.sqlite-maintenance.lock` in its binary.
+ *
  * Re-checked for `.sqlite-maintenance.lock` (EO-829), which a Codex on
  * Windows wrote into a home and this list did not keep, so the scrub of a
  * home whose app-server held it open failed with EPERM. The version there
- * was not recorded. 0.167.1, EO's pin, carries the name in its binary
+ * was not recorded. 0.167.1, EO's pin at the time, carries the name in its binary
  * inside its own SQLite state code (`codex_state::sqlite`, between
  * `PRAGMA freelist_count` and `PRAGMA wal_checkpoint(PASSIVE)`, beside the
  * database names above): it is the lock Codex takes while it maintains

@@ -1,5 +1,5 @@
 {
-  "recordedWith": "codex-cli 0.167.1 (EO's managed codex@0.167.1-linux-x64) `app-server` over stdio: initialize, thread/start, turn/start \"say hi\". Kept: the last `error` notification the server retried on (if any), the fatal one, and `turn/completed`; `emittedAtMs` dropped. Everything else is verbatim.",
+  "recordedWith": "codex-cli 0.171.0 (EO's managed codex@0.171.0-linux-x64) `app-server` over stdio: initialize, thread/start, turn/start \"say hi\". Kept: the last `error` notification the server retried on (if any), the fatal one, and `turn/completed`; `emittedAtMs` dropped. Everything else is verbatim.",
   "signIn": [
     {
       "case": "a ChatGPT sign-in whose tokens are dead and cannot be refreshed, last refreshed long ago (`codex login status` still says \"Logged in using ChatGPT\")",
@@ -14,17 +14,17 @@
               "misalignment": null
             },
             "willRetry": false,
-            "threadId": "01a1e146-f8c5-77e2-bafb-dc20bde5f966",
-            "turnId": "01a1e146-fa04-7703-91ab-24260eb8fb3a"
+            "threadId": "01a204d7-ec9c-7fe2-9390-4cf546436969",
+            "turnId": "01a204d7-ee27-74f3-b6b9-720224eacf67"
           }
         },
         {
           "method": "turn/completed",
           "params": {
-            "threadId": "01a1e146-f8c5-77e2-bafb-dc20bde5f966",
+            "threadId": "01a204d7-ec9c-7fe2-9390-4cf546436969",
             "turn": {
-              "id": "01a1e146-fa04-7703-91ab-24260eb8fb3a",
-              "rootTurnId": "01a1e146-fa04-7703-91ab-24260eb8fb3a",
+              "id": "01a204d7-ee27-74f3-b6b9-720224eacf67",
+              "rootTurnId": "01a204d7-ee27-74f3-b6b9-720224eacf67",
               "items": [],
               "itemsView": "notLoaded",
               "status": "failed",
@@ -34,9 +34,9 @@
                 "additionalDetails": null,
                 "misalignment": null
               },
-              "startedAt": 1794780887,
-              "completedAt": 1794780888,
-              "durationMs": 990
+              "startedAt": 1795377589,
+              "completedAt": 1795377591,
+              "durationMs": 1521
             }
           }
         }
@@ -55,17 +55,17 @@
               "misalignment": null
             },
             "willRetry": false,
-            "threadId": "01a1e146-febd-7670-bac9-80451649ee58",
-            "turnId": "01a1e146-ffe9-7e03-a0d8-af9805a65068"
+            "threadId": "01a204d7-f6b7-7e13-96b8-4bcc73dad901",
+            "turnId": "01a204d7-f93c-7972-847f-a3a018fddd48"
           }
         },
         {
           "method": "turn/completed",
           "params": {
-            "threadId": "01a1e146-febd-7670-bac9-80451649ee58",
+            "threadId": "01a204d7-f6b7-7e13-96b8-4bcc73dad901",
             "turn": {
-              "id": "01a1e146-ffe9-7e03-a0d8-af9805a65068",
-              "rootTurnId": "01a1e146-ffe9-7e03-a0d8-af9805a65068",
+              "id": "01a204d7-f93c-7972-847f-a3a018fddd48",
+              "rootTurnId": "01a204d7-f93c-7972-847f-a3a018fddd48",
               "items": [],
               "itemsView": "notLoaded",
               "status": "failed",
@@ -75,9 +75,9 @@
                 "additionalDetails": null,
                 "misalignment": null
               },
-              "startedAt": 1794780889,
-              "completedAt": 1794780890,
-              "durationMs": 1408
+              "startedAt": 1795377592,
+              "completedAt": 1795377598,
+              "durationMs": 5946
             }
           }
         }
@@ -96,19 +96,19 @@
                   "httpStatusCode": 401
                 }
               },
-              "additionalDetails": "unexpected status 401 Unauthorized: Incorrect API key provided: sk-inval*******************alid. You can find your API key at https://platform.openai.com/account/api-keys., url: https://api.openai.com/v1/responses, cf-ray: a5b19bf8fdd3c6c7-EVN, request id: req_da5a7e7832944d8b98a32477df4a9158, auth error: 401, auth error code: invalid_api_key",
+              "additionalDetails": "unexpected status 401 Unauthorized: Incorrect API key provided: sk-proj-***************************-key. You can find your API key at https://platform.openai.com/account/api-keys., url: https://api.openai.com/v1/responses, cf-ray: a5ea84deaedf410d-EVN, request id: req_f504600cf2684515968674a571d6d301, auth error: 401, auth error code: invalid_api_key",
               "misalignment": null
             },
             "willRetry": true,
-            "threadId": "01a1e146-7b9b-7dc2-b9dc-28f7d156e410",
-            "turnId": "01a1e146-7d23-7002-a860-22abe691d965"
+            "threadId": "01a204d8-1389-7212-b4dc-8adca13943d6",
+            "turnId": "01a204d8-16db-7f01-b859-756839a96dc5"
           }
         },
         {
           "method": "error",
           "params": {
             "error": {
-              "message": "unexpected status 401 Unauthorized: Incorrect API key provided: sk-inval*******************alid. You can find your API key at https://platform.openai.com/account/api-keys., url: https://api.openai.com/v1/responses, cf-ray: a5b19c10dd20410d-EVN, request id: req_bb7e482f391e48b3ba74f2d5b3013a00, auth error: 401, auth error code: invalid_api_key",
+              "message": "unexpected status 401 Unauthorized: Incorrect API key provided: sk-proj-***************************-key. You can find your API key at https://platform.openai.com/account/api-keys., url: https://api.openai.com/v1/responses, cf-ray: a5ea84f4187cd94c-EVN, request id: req_88de817809424fe89639e0c1550c5481, auth error: 401, auth error code: invalid_api_key",
               "codexErrorInfo": {
                 "httpConnectionFailed": {
                   "httpStatusCode": 401
@@ -118,22 +118,22 @@
               "misalignment": null
             },
             "willRetry": false,
-            "threadId": "01a1e146-7b9b-7dc2-b9dc-28f7d156e410",
-            "turnId": "01a1e146-7d23-7002-a860-22abe691d965"
+            "threadId": "01a204d8-1389-7212-b4dc-8adca13943d6",
+            "turnId": "01a204d8-16db-7f01-b859-756839a96dc5"
           }
         },
         {
           "method": "turn/completed",
           "params": {
-            "threadId": "01a1e146-7b9b-7dc2-b9dc-28f7d156e410",
+            "threadId": "01a204d8-1389-7212-b4dc-8adca13943d6",
             "turn": {
-              "id": "01a1e146-7d23-7002-a860-22abe691d965",
-              "rootTurnId": "01a1e146-7d23-7002-a860-22abe691d965",
+              "id": "01a204d8-16db-7f01-b859-756839a96dc5",
+              "rootTurnId": "01a204d8-16db-7f01-b859-756839a96dc5",
               "items": [],
               "itemsView": "notLoaded",
               "status": "failed",
               "error": {
-                "message": "unexpected status 401 Unauthorized: Incorrect API key provided: sk-inval*******************alid. You can find your API key at https://platform.openai.com/account/api-keys., url: https://api.openai.com/v1/responses, cf-ray: a5b19c10dd20410d-EVN, request id: req_bb7e482f391e48b3ba74f2d5b3013a00, auth error: 401, auth error code: invalid_api_key",
+                "message": "unexpected status 401 Unauthorized: Incorrect API key provided: sk-proj-***************************-key. You can find your API key at https://platform.openai.com/account/api-keys., url: https://api.openai.com/v1/responses, cf-ray: a5ea84f4187cd94c-EVN, request id: req_88de817809424fe89639e0c1550c5481, auth error: 401, auth error code: invalid_api_key",
                 "codexErrorInfo": {
                   "httpConnectionFailed": {
                     "httpStatusCode": 401
@@ -142,9 +142,9 @@
                 "additionalDetails": null,
                 "misalignment": null
               },
-              "startedAt": 1794780855,
-              "completedAt": 1794780874,
-              "durationMs": 18901
+              "startedAt": 1795377600,
+              "completedAt": 1795377616,
+              "durationMs": 15888
             }
           }
         }
@@ -163,19 +163,19 @@
                   "httpStatusCode": 401
                 }
               },
-              "additionalDetails": "unexpected status 401 Unauthorized: Missing bearer or basic authentication in header, url: https://api.openai.com/v1/responses, cf-ray: a5b19d0e0e282af4-EVN, request id: req_afc8f3135fee490e9fc76cb2f08559f7",
+              "additionalDetails": "unexpected status 401 Unauthorized: Missing bearer or basic authentication in header, url: https://api.openai.com/v1/responses, cf-ray: a5ea85366b73410d-EVN, request id: req_f93570a0e2e94f059151f6641ecabcaf",
               "misalignment": null
             },
             "willRetry": true,
-            "threadId": "01a1e147-3c71-7142-b278-4444bdec3850",
-            "turnId": "01a1e147-3c7d-7481-9e4e-6c18b9e39c26"
+            "threadId": "01a204d8-557f-7951-a11c-502e13b548a1",
+            "turnId": "01a204d8-5588-7153-8a54-ece091f88dc3"
           }
         },
         {
           "method": "error",
           "params": {
             "error": {
-              "message": "unexpected status 401 Unauthorized: Missing bearer or basic authentication in header, url: https://api.openai.com/v1/responses, cf-ray: a5b19d2408c42af4-EVN, request id: req_763e9f5bed6b4581ba5d9babd55c2a2a",
+              "message": "unexpected status 401 Unauthorized: Missing bearer or basic authentication in header, url: https://api.openai.com/v1/responses, cf-ray: a5ea854cfe54d94c-EVN, request id: req_e724073d84ad4697be7bbb232d18dad7",
               "codexErrorInfo": {
                 "httpConnectionFailed": {
                   "httpStatusCode": 401
@@ -185,22 +185,22 @@
               "misalignment": null
             },
             "willRetry": false,
-            "threadId": "01a1e147-3c71-7142-b278-4444bdec3850",
-            "turnId": "01a1e147-3c7d-7481-9e4e-6c18b9e39c26"
+            "threadId": "01a204d8-557f-7951-a11c-502e13b548a1",
+            "turnId": "01a204d8-5588-7153-8a54-ece091f88dc3"
           }
         },
         {
           "method": "turn/completed",
           "params": {
-            "threadId": "01a1e147-3c71-7142-b278-4444bdec3850",
+            "threadId": "01a204d8-557f-7951-a11c-502e13b548a1",
             "turn": {
-              "id": "01a1e147-3c7d-7481-9e4e-6c18b9e39c26",
-              "rootTurnId": "01a1e147-3c7d-7481-9e4e-6c18b9e39c26",
+              "id": "01a204d8-5588-7153-8a54-ece091f88dc3",
+              "rootTurnId": "01a204d8-5588-7153-8a54-ece091f88dc3",
               "items": [],
               "itemsView": "notLoaded",
               "status": "failed",
               "error": {
-                "message": "unexpected status 401 Unauthorized: Missing bearer or basic authentication in header, url: https://api.openai.com/v1/responses, cf-ray: a5b19d2408c42af4-EVN, request id: req_763e9f5bed6b4581ba5d9babd55c2a2a",
+                "message": "unexpected status 401 Unauthorized: Missing bearer or basic authentication in header, url: https://api.openai.com/v1/responses, cf-ray: a5ea854cfe54d94c-EVN, request id: req_e724073d84ad4697be7bbb232d18dad7",
                 "codexErrorInfo": {
                   "httpConnectionFailed": {
                     "httpStatusCode": 401
@@ -209,9 +209,9 @@
                 "additionalDetails": null,
                 "misalignment": null
               },
-              "startedAt": 1794780904,
-              "completedAt": 1794780918,
-              "durationMs": 14033
+              "startedAt": 1795377616,
+              "completedAt": 1795377630,
+              "durationMs": 14191
             }
           }
         }
@@ -236,8 +236,8 @@
               "misalignment": null
             },
             "willRetry": true,
-            "threadId": "01a1e149-7c3f-7fd1-96a5-eb447d9c9432",
-            "turnId": "01a1e149-7c5b-7ce0-943f-d8eb82aa2910"
+            "threadId": "01a204d8-8daa-76f1-bc4e-bd8b619f4c4a",
+            "turnId": "01a204d8-8dbb-7153-9b6c-b85d56c1fae9"
           }
         },
         {
@@ -250,17 +250,17 @@
               "misalignment": null
             },
             "willRetry": false,
-            "threadId": "01a1e149-7c3f-7fd1-96a5-eb447d9c9432",
-            "turnId": "01a1e149-7c5b-7ce0-943f-d8eb82aa2910"
+            "threadId": "01a204d8-8daa-76f1-bc4e-bd8b619f4c4a",
+            "turnId": "01a204d8-8dbb-7153-9b6c-b85d56c1fae9"
           }
         },
         {
           "method": "turn/completed",
           "params": {
-            "threadId": "01a1e149-7c3f-7fd1-96a5-eb447d9c9432",
+            "threadId": "01a204d8-8daa-76f1-bc4e-bd8b619f4c4a",
             "turn": {
-              "id": "01a1e149-7c5b-7ce0-943f-d8eb82aa2910",
-              "rootTurnId": "01a1e149-7c5b-7ce0-943f-d8eb82aa2910",
+              "id": "01a204d8-8dbb-7153-9b6c-b85d56c1fae9",
+              "rootTurnId": "01a204d8-8dbb-7153-9b6c-b85d56c1fae9",
               "items": [],
               "itemsView": "notLoaded",
               "status": "failed",
@@ -270,9 +270,9 @@
                 "additionalDetails": null,
                 "misalignment": null
               },
-              "startedAt": 1794781052,
-              "completedAt": 1794781058,
-              "durationMs": 6555
+              "startedAt": 1795377630,
+              "completedAt": 1795377636,
+              "durationMs": 5997
             }
           }
         }
@@ -295,8 +295,8 @@
               "misalignment": null
             },
             "willRetry": true,
-            "threadId": "01a1e149-9873-7ae1-8a79-73b6753c8c18",
-            "turnId": "01a1e149-9882-75d0-be53-d7388f44a55e"
+            "threadId": "01a204d8-a633-7262-9a21-773f4af09d82",
+            "turnId": "01a204d8-a643-7e02-b2b7-9a903d8ffab0"
           }
         },
         {
@@ -309,17 +309,17 @@
               "misalignment": null
             },
             "willRetry": false,
-            "threadId": "01a1e149-9873-7ae1-8a79-73b6753c8c18",
-            "turnId": "01a1e149-9882-75d0-be53-d7388f44a55e"
+            "threadId": "01a204d8-a633-7262-9a21-773f4af09d82",
+            "turnId": "01a204d8-a643-7e02-b2b7-9a903d8ffab0"
           }
         },
         {
           "method": "turn/completed",
           "params": {
-            "threadId": "01a1e149-9873-7ae1-8a79-73b6753c8c18",
+            "threadId": "01a204d8-a633-7262-9a21-773f4af09d82",
             "turn": {
-              "id": "01a1e149-9882-75d0-be53-d7388f44a55e",
-              "rootTurnId": "01a1e149-9882-75d0-be53-d7388f44a55e",
+              "id": "01a204d8-a643-7e02-b2b7-9a903d8ffab0",
+              "rootTurnId": "01a204d8-a643-7e02-b2b7-9a903d8ffab0",
               "items": [],
               "itemsView": "notLoaded",
               "status": "failed",
@@ -329,9 +329,9 @@
                 "additionalDetails": null,
                 "misalignment": null
               },
-              "startedAt": 1794781059,
-              "completedAt": 1794781090,
-              "durationMs": 31207
+              "startedAt": 1795377636,
+              "completedAt": 1795377667,
+              "durationMs": 30126
             }
           }
         }

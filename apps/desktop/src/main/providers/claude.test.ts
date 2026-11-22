@@ -643,6 +643,18 @@ describe("createClaudeProvider", () => {
     });
   });
 
+  it("names the command line as how EO's servers reach the CLI, as before 0.3.329 deprecated leaving it unset (EO-889)", async () => {
+    const withServers = fakeQuery([init()]);
+    await collect(createClaudeProvider({ runQuery: withServers.runQuery, enableCommentTool: false, eoMcp: { serverPath: "/app/eoServer.mjs", dbPath: "/data/eo.db" } }).start(startOpts));
+    expect(withServers.calls[0]?.options).toMatchObject({ mcpServersDelivery: "argv" });
+
+    // Nothing to deliver, nothing said about delivering it.
+    const without = fakeQuery([init()]);
+    await collect(createClaudeProvider({ runQuery: without.runQuery }).start(startOpts));
+    expect(without.calls[0]?.options).not.toHaveProperty("mcpServers");
+    expect(without.calls[0]?.options).not.toHaveProperty("mcpServersDelivery");
+  });
+
   /**
    * Repository intelligence, as this adapter delivers it (EO-151).
    *
@@ -2726,7 +2738,7 @@ describe("the learning review's fork (EO-732)", () => {
 
 /**
  * A run its sign-in stopped (EO-797), read off what the pinned CLI really
- * said (`__fixtures__/claude-0.3.322-auth-errors.json`) and played through
+ * said (`__fixtures__/claude-0.3.329-auth-errors.json`) and played through
  * the provider as the SDK hands it over.
  */
 describe("a sign-in failure mid-run", () => {
