@@ -371,6 +371,7 @@ apps/desktop/src/main/supervisor/codexBudget.test.ts: expect(said[0]!.body).toCo
 apps/desktop/src/main/supervisor/contextActions.test.ts: item: { key: "EO-1", title: "A ticket", body: null, acceptanceCriteria: [], actionOverrides: new Map(), workspaceKind: "none" },
 apps/desktop/src/main/supervisor/dependencyGates.test.ts: 'Nothing will pick it up from "To Do" yet, though: this ticket is waiting on another that has not finished. Finish that ticket, or remove the dependency.',
 apps/desktop/src/main/supervisor/dependencyGates.ts: `This ticket stopped waiting for ${dependency.key} when it reached "${gateName}", so it carries on and is not held again — ` +
+apps/desktop/src/main/supervisor/dispatchAuthorisation.test.ts: 'Run cancelled, so this ticket is on hold at "Done". Resume it to take it off hold.',
 apps/desktop/src/main/supervisor/dispatchAuthorisation.test.ts: const HELD_NOTE = 'Run cancelled, so this ticket is on hold at "To Do". Resume it to run the step again.';
 apps/desktop/src/main/supervisor/dispatchAuthorisation.test.ts: expect(engineNotes().some((body) => body.includes("Run cancelled, so this ticket is on hold"))).toBe(false);
 apps/desktop/src/main/supervisor/dispatchAuthorisation.test.ts: expect(engineNotes().some((body) => body.includes("Run cancelled: you moved this ticket"))).toBe(true);
@@ -389,7 +390,7 @@ apps/desktop/src/main/supervisor/dispatchBlockers.ts: fix: "Finish that ticket, 
 apps/desktop/src/main/supervisor/dispatchBlockers.ts: fix: "Say something on this ticket and they can carry on from there.",
 apps/desktop/src/main/supervisor/dispatchBlockers.ts: if (names.length === 0) return "agents on this ticket";
 apps/desktop/src/main/supervisor/dispatchBlockers.ts: return `Nothing will run "${stepName}" for this ticket: ${condition}. ${fix} It is not handed to another agent of the same kind.`;
-apps/desktop/src/main/supervisor/dispatchBlockers.ts: return `Run cancelled, so this ticket is on hold at "${stepName}". ${resuming}`;
+apps/desktop/src/main/supervisor/dispatchBlockers.ts: return `Run cancelled, so this ticket is on hold at "${step.name}". ${resuming}`;
 apps/desktop/src/main/supervisor/dispatchBlockers.ts: return { condition: "this ticket is on hold", fix: "Resume it." };
 apps/desktop/src/main/supervisor/itemExclusion.test.ts: expect(engineNotes[0]?.body).toBe(blockedByActiveRunRefusal("pick this ticket back up after your reply"));
 apps/desktop/src/main/supervisor/itemLock.test.ts: "EO did not move the ticket: an agent is working on it right now. Call ticket_move again with " +
