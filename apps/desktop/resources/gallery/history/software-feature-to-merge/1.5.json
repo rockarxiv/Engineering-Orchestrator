@@ -2,7 +2,7 @@
   "eoTemplateHistory": 1,
   "notes": "Review now runs as a team of focused reviewers. The reviewer leads: it reads the change, assigns a pass on the acceptance criteria, one on impact and side effects, one on the tests and one on your repository's own written rules (skipped when it has none), adds a security pass or a user-facing pass when the change calls for them, and gives one verdict from their reports. Each member works in a copy of its own, with the diff, the repository index, a shell and the check suite, so a review is now several agent runs. A rejection carries every blocking issue the passes found. Where you already gave Review a team of your own, the update keeps yours and asks you which to use.",
   "pack": {
-    "eoPipelineExport": 16,
+    "eoPipelineExport": 17,
     "template": {
       "slug": "software-feature-to-merge",
       "title": "Software feature to merge",

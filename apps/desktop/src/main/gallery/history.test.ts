@@ -192,8 +192,10 @@ describe("Software feature to merge", () => {
     expect(current!.document.template.description).toContain("several agent runs");
     expect(current!.notes).toContain("Review now runs as a team");
     expect(current!.notes).toContain("several agent runs");
+    // The export format too: a document with a team is format 17 (EO-843).
     const strip = (document: TemplateVersion["document"]) => ({
       ...document,
+      eoPipelineExport: 0,
       template: { ...document.template, version: "", description: "" },
       steps: document.steps.map((step) => ({ ...step, team: undefined })),
     });

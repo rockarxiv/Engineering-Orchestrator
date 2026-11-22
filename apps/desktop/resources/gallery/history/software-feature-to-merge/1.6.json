@@ -2,7 +2,7 @@
   "eoTemplateHistory": 1,
   "notes": "Review's team now holds its lead to what its passes found. A pass that reports a blocking issue, or something only a person can decide, rules out an approval: the lead can approve over it only by naming that pass and saying why it overruled it, and EO refuses the verdict otherwise and asks the lead again. Where you already changed or removed Review's team, the update keeps yours and asks you which to use.",
   "pack": {
-    "eoPipelineExport": 16,
+    "eoPipelineExport": 17,
     "template": {
       "slug": "software-feature-to-merge",
       "title": "Software feature to merge",
