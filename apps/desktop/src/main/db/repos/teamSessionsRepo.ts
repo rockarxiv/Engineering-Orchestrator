@@ -395,19 +395,22 @@ export function requestTeamRetry(db: Db, attemptId: string, now: number = Date.n
 }
 
 /**
- * What a person's retry of a session would run again (EO-849). On an
- * independent team, each assignment's latest attempt that failed — on a
- * parked session, one whose retries are used up. On a leader's team, the
- * leader's latest turn, where it failed or EO refused its answer: a
- * participant's failure was already handed to the leader, which decides
- * what to do about it. Accepted reports are never among them.
+ * What a person's retry of a session would run again (EO-849). Each
+ * assignment's latest attempt that failed — on a parked session, one whose
+ * retries are used up. On a leader's team, that is its members' passes as
+ * well as the leader's own latest turn where it failed or EO refused its
+ * answer (EO-886): a pass that failed for good — on a usage limit, say —
+ * would otherwise leave the leader answering again on no reports, and
+ * being refused for it, however often the person retried. The planner runs
+ * a retried pass before the leader's next turn, as it runs any round's.
+ * Accepted reports are never among them.
  */
 export function teamRetryTargets(db: Db, record: TeamSessionRecord): TeamAttemptRow[] {
   const latest = record.attempts.filter((attempt) => attempt.supersededBy === null);
   const leaderTeam = record.session.team.coordination === "leader";
   return latest.filter((attempt) => {
-    if (leaderTeam && attempt.assignmentKey !== LEADER_ASSIGNMENT_KEY) return false;
     if (attempt.status === "failed") return true;
+    if (leaderTeam && attempt.assignmentKey !== LEADER_ASSIGNMENT_KEY) return false;
     if (!leaderTeam || attempt.status !== "completed" || attempt.runId === null) return false;
     const result = db.select({ result: runs.result }).from(runs).where(eq(runs.id, attempt.runId)).get()?.result as { leader?: unknown; verdict?: { decision?: unknown; accepted?: unknown } } | null | undefined;
     const verdict = result?.leader === true ? result.verdict : undefined;

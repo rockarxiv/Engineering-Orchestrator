@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
-import { LEADER_ASSIGNMENT_KEY, StepTeamSchema, TEAM_PARTICIPANT_ACTION, uuidv7, type Agent, type AgentProvider, type AgentProviderStartOptions, type Item, type StepTeam, type TeamAttemptRow } from "@eo/core";
+import { LEADER_ASSIGNMENT_KEY, StepTeamSchema, TEAM_PARTICIPANT_ACTION, TEAM_RETRY_REQUESTED, uuidv7, type Agent, type AgentProvider, type AgentProviderStartOptions, type Item, type StepTeam, type TeamAttemptRow } from "@eo/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DbHandle } from "../db/client.js";
 import { saveActionDefinition } from "../db/repos/actionDefinitionsRepo.js";
@@ -14,6 +14,8 @@ import { createStep } from "../db/repos/pipelineStepsRepo.js";
 import { listRunsForItem } from "../db/repos/runsRepo.js";
 import { listTeamSessionsForItem } from "../db/repos/teamSessionsRepo.js";
 import { createTestItem, messagesFrom, openMigratedTestDb, REVIEWABLE_SPEC } from "../db/testHelpers.js";
+import type { EngineHandle } from "../ipc/domainCommands.js";
+import { retryTeamSessionCommand } from "../ipc/teamCommands.js";
 import { createClaudeProvider } from "../providers/claude.js";
 import { createCodexProvider } from "../providers/codex.js";
 import { CodexClient, dropWarmCodexThread } from "../providers/codexClient.js";
@@ -341,6 +343,53 @@ describe.each(BACKENDS)("a team on %s whose runtime refuses a turn (EO-886)", (b
     expect(stepNow()).toBe("accepted");
     expect(attempts().map((attempt) => attempt.status)).toEqual(["completed", "completed", "completed", "completed"]);
     expect(listCommentsForItem(handle.db, item.id).some((comment) => comment.body.includes("Sasha checked the tokens."))).toBe(true);
+  });
+});
+
+describe.each(BACKENDS)("a person's Retry on a leader-led team on %s (EO-886)", (backend) => {
+  it("runs again every member pass that failed for good before the leader answers again, and the leader answers from their reports", async () => {
+    setup(backend);
+    // As EO-877's passes did, before a limit was told apart from a failure:
+    // each member's turn failed on the window — the attempt recorded as
+    // failed, its retry spent against the same refusal — and the leader,
+    // with no reports, was refused past its retries.
+    const refused = "The turn was refused: 429 Too Many Requests.";
+    plans = {
+      Lee: [{ kind: "answer", data: assign }, { kind: "answer", data: () => final([]) }, { kind: "answer", data: () => final([]) }],
+      Sasha: [{ kind: "fails", message: refused }, { kind: "fails", message: refused }],
+      Tess: [{ kind: "fails", message: refused }, { kind: "fails", message: refused }],
+    };
+    const engine = supervisor();
+    await engine.runOnce();
+    const parked = listRunsForItem(handle.db, item.id).find((run) => run.action === "alignment")!;
+    expect(parked.status).toBe("awaiting_input");
+    expect(parked.error).toMatch(/- \*\*auth\*\*: [^\n]*The turn was refused: 429 Too Many Requests\./);
+    expect(parked.error).toMatch(/- \*\*suite\*\*: [^\n]*The turn was refused: 429 Too Many Requests\.$/);
+    expect(attempts().filter((attempt) => attempt.assignmentKey !== LEADER_ASSIGNMENT_KEY).every((attempt) => attempt.status === "failed")).toBe(true);
+    const view = itemTeamSessions(handle.db, item.id, engine.teamControlSite())[0]!;
+    expect(view.retry).toEqual({ allowed: true, reason: null, keys: expect.arrayContaining([LEADER_ASSIGNMENT_KEY, "auth", "suite"]) as unknown as string[] });
+    expect(view.retry.keys).toHaveLength(3);
+
+    // The window is back; the person retries.
+    plans.Sasha = [{ kind: "answer", data: () => report("Sasha checked the tokens.") }];
+    plans.Tess = [{ kind: "answer", data: () => report("Tess read the CSV tests.") }];
+    plans.Lee = [{ kind: "answer", data: finalOnReports }];
+    const roundsBefore = new Set(attempts().map((attempt) => attempt.round));
+    expect(retryTeamSessionCommand(handle.db, engine as unknown as EngineHandle, { sessionId: view.id }).retried).toBe(true);
+    await vi.waitFor(() => expect(stepNow()).toBe("accepted"));
+
+    // The members ran again, both before the leader's answer, which rests on their reports.
+    const turns = started.slice(-3).map((one) => one.agent);
+    expect(turns.slice(0, 2).sort()).toEqual(["Sasha", "Tess"]);
+    expect(turns[2]).toBe("Lee");
+    expect(plans.Lee).toEqual([]);
+    // Same-round markers: no round and no retry spent.
+    const markers = attempts().filter((attempt) => attempt.error === TEAM_RETRY_REQUESTED);
+    expect(markers.map((attempt) => attempt.assignmentKey).sort()).toEqual([LEADER_ASSIGNMENT_KEY, "auth", "suite"].sort());
+    expect(new Set(attempts().map((attempt) => attempt.round))).toEqual(roundsBefore);
+    const leaderFinal = attempts().filter((attempt) => attempt.assignmentKey === LEADER_ASSIGNMENT_KEY).at(-1)!;
+    expect(leaderFinal.status).toBe("completed");
+    expect(listTeamSessionsForItem(handle.db, item.id).at(-1)!.session.status).toBe("finalized");
   });
 });
 
