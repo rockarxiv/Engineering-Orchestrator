@@ -1,4 +1,4 @@
-import { isPreviewAgent, staffingAgents, staffsItem, stepAgentKind, type Agent, type Uuid } from "@eo/core";
+import { isPreviewAgent, staffingAgents, staffsItem, stepAgentKind, stepAgentOf, type Agent, type Uuid } from "@eo/core";
 
 /**
  * The agent a kind is bound to on a project, where something names a
@@ -30,6 +30,42 @@ export function agentForKind(agents: readonly Agent[], kind: string | null, proj
   const kept = agents.filter((agent) => agent.role === kind && agent.archivedAt === null && staffsItem(agent, item));
   const own = kept.filter((agent) => agent.projectId !== null);
   return pick(own.length > 0 ? own : kept);
+}
+
+/**
+ * Every agent a kind may be bound to on a project (EO-877): the agents
+ * of the kind that are not archived and not a preview's own and whose
+ * scope reaches the project — its own and the global ones — with the
+ * one `agentForKind` binds first.
+ *
+ * What an import, a template install and the gallery's form offer the
+ * person: one is named, several are chosen between, and none is made.
+ * Disabled and unbound agents are among them, because an agent somebody
+ * switched off is still theirs to name on a step.
+ */
+export function kindCandidates(agents: readonly Agent[], kind: string, projectId: string | null): Agent[] {
+  const item = { previewAt: null, projectId: projectId as Uuid | null };
+  const candidates = agents.filter((agent) => agent.role === kind && agent.archivedAt === null && agent.deletedAt === null && staffsItem(agent, item));
+  const first = agentForKind(candidates, kind, projectId);
+  return first === undefined ? candidates : [first, ...candidates.filter((agent) => agent.id !== first.id)];
+}
+
+/**
+ * The agent a pipeline already names for a kind (EO-877), or undefined.
+ *
+ * How a step a template update adds is bound like a new import: the
+ * import bound each kind to one agent — the person's pick where there
+ * were several — and every step of the kind named it, so a new step of
+ * the kind names that one too rather than whichever the binding rule
+ * would choose.
+ */
+export function agentNamedForKind(agents: readonly Agent[], steps: readonly { readonly type: string; readonly agentId: string | null }[], kind: string | null): Agent | undefined {
+  if (kind === null) return undefined;
+  for (const step of steps) {
+    const agent = stepAgentOf(agents, step);
+    if (agent !== undefined && agent.role === kind && agent.archivedAt === null && agent.deletedAt === null) return agent;
+  }
+  return undefined;
 }
 
 /**

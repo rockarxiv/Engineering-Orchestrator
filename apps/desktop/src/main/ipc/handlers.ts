@@ -843,6 +843,7 @@ export function registerAllHandlers(db: Db, engine: EngineHandle | undefined, re
       const result = importPipeline(db, {
         document: parsed.document,
         choices: payload.choices,
+        agents: payload.agents ?? {},
         projectId: home.projectId,
         // Asked again rather than carried from the preflight: the person
         // may have signed in on the strength of the line that said they

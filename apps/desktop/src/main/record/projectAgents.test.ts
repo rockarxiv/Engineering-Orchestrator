@@ -11,7 +11,8 @@ import { createProject, getProject } from "../db/repos/projectsRepo.js";
 import { createPerson } from "../db/repos/peopleRepo.js";
 import { issueDevice } from "../db/repos/devicesRepo.js";
 import { createRun, updateRun } from "../db/repos/runsRepo.js";
-import { createPipeline, createStep, getStep } from "../db/repos/pipelineStepsRepo.js";
+import { createPipeline, createStep, getStep, setStepAgent } from "../db/repos/pipelineStepsRepo.js";
+import { bindItemToVersion, createPipelineVersion } from "../db/repos/pipelineVersionsRepo.js";
 import { listOpenMessages } from "../db/repos/messagesRepo.js";
 import { transitionItem } from "../db/repos/transitionsRepo.js";
 import { getSkill, saveSkill, upsertReplicaSkill } from "../db/repos/skillsRepo.js";
@@ -25,6 +26,7 @@ import { saveAgent } from "../ipc/configCommands.js";
 import { clearHandlerRegistry, dispatchIpc, registerHandler } from "../ipc/registry.js";
 import { MANAGED_PERSON_ID_KEY } from "../identity/viewer.js";
 import { createLocalRecord, type LocalItemRecord } from "./localRecord.js";
+import { STEP_AGENT_MISSING_HERE } from "./stepAgentsHere.js";
 import { createDeviceRecord, type DeviceRecord } from "./deviceRecord.js";
 import { moveProjectToRecord } from "./adopt.js";
 import { serveAdopt, serveApply, serveChanges, serveRelease, serveRenew, serveWork, type ServeRecordContext } from "./serveRecord.js";
@@ -693,5 +695,100 @@ describe("moving a step that names a global agent (EO-875)", () => {
 
     expect(getStep(recordDb.db, step.id)?.agentId).toBe(shared.id);
     expect(bindingNotes()).toEqual([]);
+  });
+});
+
+/**
+ * A record-held pipeline reaches a replica naming agents by the record's
+ * ids (EO-877). Where a step names one the replica does not have — a
+ * global agent the organisation never published — the replica does not
+ * run that step, never puts another agent of the kind in its place, and
+ * tells the person which step and which agent it is.
+ */
+describe("a record-held step naming an agent a replica does not have (EO-877)", () => {
+  const missingNotes = () => listOpenMessages(laptopDb.db, [annaPersonId]).filter((message) => message.source === STEP_AGENT_MISSING_HERE);
+
+  async function stepNamingAnUnpublishedAgent() {
+    const support = createProject(annaDb.db, { name: "Support", keyPrefix: "SUP", managed: false });
+    const pipeline = createPipeline(annaDb.db, { projectId: support.id, name: "Support delivery" });
+    const shared = listAgents(annaDb.db).find((agent) => agent.role === "reviewer" && agent.projectId === null)!;
+    const step = createStep(annaDb.db, { pipelineId: pipeline.id, position: 0, name: "Check", type: "agent", agentId: shared.id, entryAction: "review" });
+    const item = createTestItem(annaDb.db, { type: "story", title: "A refund", stepId: step.id, projectId: support.id });
+    expect(await move(support.id)).toEqual({});
+    // The organisation's own reviewer, on the record only, chosen on the step there.
+    const organisations = createAgent(recordDb.db, { name: "Organisation reviewer", role: "reviewer", provider: "fake", instructions: "Review." });
+    setStepAgent(recordDb.db, step.id, organisations.id);
+    return { step, item, organisations, shared };
+  }
+
+  it("does not run the step, puts no other agent of the kind in, and tells the person once", async () => {
+    const { step, item, organisations, shared } = await stepNamingAnUnpublishedAgent();
+
+    await laptop.record.sync();
+
+    expect(getStep(laptopDb.db, step.id)?.agentId).toBe(organisations.id);
+    expect(getAgent(laptopDb.db, organisations.id)).toBeUndefined();
+    // The laptop has a reviewer of its own, and it is not put in.
+    expect(getAgent(laptopDb.db, shared.id)).toBeDefined();
+    // The record offers the laptop the step's work with the agent it
+    // names, and the laptop, not having that agent, runs nothing.
+    const offerWork = serving.offerWork;
+    const offered: string[] = [];
+    serving.offerWork = async (deviceId, capacity) => {
+      const made = await offerWork(deviceId, capacity);
+      offered.push(...made.filter((offer) => offer.dispatch.item.id === item.id).map((offer) => offer.dispatch.agent?.id ?? "none"));
+      return made;
+    };
+    const offers = await laptop.record.offerWork({ deviceId: laptop.deviceId, capacity: 1, tickInput: buildTickInput(laptopDb.db, LIMITS, false) });
+    serving.offerWork = offerWork;
+    expect(offered).toEqual([organisations.id]);
+    expect(offers.find((offer) => offer.dispatch.item.id === item.id)).toBeUndefined();
+
+    const notes = missingNotes();
+    expect(notes).toHaveLength(1);
+    expect(notes[0]!.body).toContain(`"Check" on the "Support delivery" pipeline runs **Organisation reviewer**, a "reviewer" agent this machine does not have`);
+    expect(notes[0]!.body).toContain("No other agent stands in for it.");
+
+    // Said once, however many pulls.
+    await laptop.record.sync();
+    expect(missingNotes()).toHaveLength(1);
+  });
+
+  it("tells the person about a step an item still runs on an older version, though the live graph names an agent it has", async () => {
+    const { step, item, organisations, shared } = await stepNamingAnUnpublishedAgent();
+    // The item stays on the version naming the organisation's reviewer;
+    // the live graph moves on to one this machine has.
+    const pinned = createPipelineVersion(recordDb.db, getStep(recordDb.db, step.id)!.pipelineId);
+    bindItemToVersion(recordDb.db, item.id, pinned.id);
+    setStepAgent(recordDb.db, step.id, shared.id);
+    createPipelineVersion(recordDb.db, getStep(recordDb.db, step.id)!.pipelineId);
+
+    await laptop.record.sync();
+    expect(getStep(laptopDb.db, step.id)?.agentId).toBe(shared.id);
+
+    // The record dispatches the item by its version's step, which names
+    // the agent this machine lacks; the laptop runs nothing, and says so.
+    const offers = await laptop.record.offerWork({ deviceId: laptop.deviceId, capacity: 1, tickInput: buildTickInput(laptopDb.db, LIMITS, false) });
+    expect(offers.find((offer) => offer.dispatch.item.id === item.id)).toBeUndefined();
+    const notes = missingNotes();
+    expect(notes).toHaveLength(1);
+    expect(notes[0]!.body).toContain(`"Check" on the "Support delivery" pipeline runs **Organisation reviewer**, a "reviewer" agent this machine does not have`);
+    expect(getAgent(laptopDb.db, organisations.id)).toBeUndefined();
+
+    // Still open on the next pull: the item still stands on that step.
+    await laptop.record.sync();
+    expect(missingNotes()).toHaveLength(1);
+  });
+
+  it("closes the message once a publication brings the agent", async () => {
+    const { organisations } = await stepNamingAnUnpublishedAgent();
+    await laptop.record.sync();
+    expect(missingNotes()).toHaveLength(1);
+
+    publishSectionCommand(recordDb.db, { section: "agents", pipelineId: null, versionNumber: null });
+    await laptop.record.sync();
+
+    expect(getAgent(laptopDb.db, organisations.id)).toBeDefined();
+    expect(missingNotes()).toEqual([]);
   });
 });

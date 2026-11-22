@@ -34,7 +34,7 @@ import {
   sectionsKey,
   useChromeVocabulary,
 } from "../../query/hooks";
-import { Button, Checkbox, Chip, Segmented, TextInput } from "../kit";
+import { Button, Checkbox, Chip, Segmented, Select, TextInput } from "../kit";
 import { ImportNeeds } from "./ImportNeeds";
 import { assistCardKey, drawAssistReply } from "../../shared/assist/useAssistRoom";
 import { useInvalidateOnPush } from "../../query/useInvalidateOnPush";
@@ -137,6 +137,16 @@ export function OperationCard({
   const collisions = detail?.kind === "pipelineImport" ? detail.preflight.collisions : [];
   const chosen = Object.fromEntries(collisions.map((collision) => [collision.slug, choices[collision.slug] ?? "reuse"]));
 
+  // The agent each kind's steps name where the project has several
+  // (EO-877): the first offered until the person picks another. The
+  // import is refused without one, so one is always sent.
+  const [agentPicks, setAgentPicks] = useState<Record<string, string>>({});
+  const toChoose = detail?.kind === "pipelineImport" ? detail.preflight.roleSlots.filter((slot) => slot.binding === "choose") : [];
+  const pickedAgents = Object.fromEntries(toChoose.flatMap((slot) => {
+    const picked = agentPicks[slot.slug] ?? slot.agents[0]?.id;
+    return picked === undefined ? [] : [[slot.slug, picked]];
+  }));
+
   // What the person types for a step's own secret or variable. Held here
   // only until the press, and emptied by it whatever came of it.
   const [value, setValue] = useState("");
@@ -160,6 +170,7 @@ export function OperationCard({
         messageId: message.id,
         index,
         choices: chosen,
+        ...(toChoose.length > 0 ? { agents: pickedAgents } : {}),
         ...(typesValue ? { value } : {}),
         ...(kind === "jobDelete" ? { archiveItems: asksItems && archiveItems === "archive" } : {}),
         ...(kind === "cliToolsAssign" ? { unticked: { adds: [...unticked.adds], rows: [...unticked.rows].map(rowOfKey) } } : {}),
@@ -271,6 +282,30 @@ export function OperationCard({
                 options={CHOICES}
                 onChange={(choice) => setChoices((before) => ({ ...before, [collision.slug]: choice }))}
               />
+            </li>
+          ))}
+        </ul>
+      ) : null}
+
+      {open && toChoose.length > 0 ? (
+        <ul aria-label="Agents to choose" className="flex flex-col gap-1.5">
+          {toChoose.map((slot) => (
+            <li key={slot.slug} className="flex flex-wrap items-center gap-2 rounded-[10px] bg-canvas px-3 py-2 text-[12.5px]">
+              <span className="min-w-0 flex-1 text-ink-muted">
+                You have several <code className="font-mono text-ink">{slot.slug}</code> agents. Its steps run the one you choose.
+              </span>
+              <Select
+                aria-label={`Agent for the ${slot.slug} steps`}
+                disabled={disabled}
+                value={pickedAgents[slot.slug] ?? ""}
+                onChange={(event) => setAgentPicks((before) => ({ ...before, [slot.slug]: event.target.value }))}
+              >
+                {slot.agents.map((agent) => (
+                  <option key={agent.id} value={agent.id}>
+                    {agent.name} · {agent.backend}
+                  </option>
+                ))}
+              </Select>
             </li>
           ))}
         </ul>

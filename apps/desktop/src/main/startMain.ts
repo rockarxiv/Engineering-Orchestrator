@@ -3,7 +3,8 @@ import { startAgentWriteBridge, type AgentWriteBridge } from "./mcp/writeBridge.
 import { join } from "node:path";
 import { aliasNotice, aliasRetirementReached, type JobRunsOn } from "@eo/core";
 import { announceSweep, startArchiveSweep } from "./archive/schedule.js";
-import { startMessageSweep } from "./messages/messages.js";
+import { onMessageAnswered, startMessageSweep } from "./messages/messages.js";
+import { chooseTemplateAgent, TEMPLATE_AGENT_CHOICE_SOURCE } from "./gallery/updateAgents.js";
 import { removeRetiredAttachmentFiles } from "./attachments/retiredFiles.js";
 import { onPush } from "./ipc/push.js";
 import { AttachmentStorage } from "./attachments/storage.js";
@@ -569,15 +570,25 @@ export function startMain(platform: Platform): RunningMain {
   // a pipeline given its origin this launch is compared this launch.
   // A desktop leaves alone what it follows from its organisation's
   // record; the record compares those itself, running this same line.
-  for (const update of applyTemplateUpdates(db, templateHistory, { isTheRecord: !platform.hasMachine })) {
-    const what =
-      update.outcome === "applied"
-        ? `updated as v${update.version}`
-        : update.outcome === "caught-up"
-          ? "already had every change"
-          : "held: it conflicts";
-    console.log(`[eo] pipeline ${update.pipelineId}: template ${update.slug} ${update.from} → ${update.to}, ${what}`);
-  }
+  const updateTemplates = (): void => {
+    for (const update of applyTemplateUpdates(db, templateHistory, { isTheRecord: !platform.hasMachine })) {
+      const what =
+        update.outcome === "applied"
+          ? `updated as v${update.version}`
+          : update.outcome === "caught-up"
+            ? "already had every change"
+            : update.outcome === "waiting"
+              ? `waiting for the person to choose the ${update.kinds.join(", ")} agent`
+              : "held: it conflicts";
+      console.log(`[eo] pipeline ${update.pipelineId}: template ${update.slug} ${update.from} → ${update.to}, ${what}`);
+    }
+  };
+  updateTemplates();
+  // An update that waited on the person's choice of agent for the steps
+  // it adds (EO-877) is compared again the moment they answer.
+  onMessageAnswered(TEMPLATE_AGENT_CHOICE_SOURCE, (answeredIn, message) => {
+    if (answeredIn === db && chooseTemplateAgent(db, message)) updateTemplates();
+  });
   const named = (entries: readonly { role: string; action: string }[]): string => entries.map(({ role, action }) => `${role}/${action}`).join(", ");
   if (adopted.defined.length > 0) console.log(`[eo] action definitions written from agent config: ${named(adopted.defined)}`);
   for (const refused of adopted.refused) {

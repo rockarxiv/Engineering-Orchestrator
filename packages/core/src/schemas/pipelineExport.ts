@@ -242,8 +242,24 @@ import { SpecShapeSchema } from "./specShape.js";
  * build drops rather than refuses, so it parses the document and reaches
  * its format check. Reading an older document is unchanged: no step in it
  * declares a brief, so every step shows the default.
+ *
+ * **16 (EO-877).** A step's `ownerRole` is the **kind** of the agent the
+ * step names on the exporting machine, never that agent's id or name,
+ * and a role's `backend` and `model` are that agent's: the recommendation
+ * an import binds from. On import each kind is bound to one agent of the
+ * kind on the importing project — the one there is, the one the person
+ * picks where there are several, or one made from the role's prompt
+ * where there is none — and every step of the kind names it.
+ *
+ * Bumped because what the same key promises changed: a version-15 build
+ * reads `ownerRole` as a role that any of its agents in that role may be
+ * dispatched for, so it would spread the steps of a version-16 document
+ * across every agent of the kind instead of running the one somebody
+ * chose. The shape is a version-15 build's, so it parses the document
+ * and refuses it at its format check. Reading an older document is
+ * unchanged: its `ownerRole` was always a role, and a role is a kind.
  */
-export const PIPELINE_EXPORT_VERSION = 15;
+export const PIPELINE_EXPORT_VERSION = 16;
 
 /**
  * An action a role defines, as the document carries it (EO-424).

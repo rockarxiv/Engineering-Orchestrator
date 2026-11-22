@@ -244,7 +244,7 @@ function Fix({ need, projectId, template, onFixed }: { need: GalleryNeedView; pr
   if (fix.kind === "forge") return <ForgeFix label={fix.label} link={fix.link ?? null} onCheck={onFixed} />;
   if (fix.kind === "forgeKind") return <ForgeKindFix repositoryId={fix.target ?? ""} onFixed={done} />;
   if (fix.kind === "assistant") return <AssistantFix label={fix.label} backend={fix.target ?? ""} onFixed={done} />;
-  return <RoleFix label={fix.label} role={fix.target ?? ""} template={template} onFixed={done} />;
+  return <RoleFix label={fix.label} role={fix.target ?? ""} template={template} projectId={projectId} onFixed={done} />;
 }
 
 /**
@@ -257,11 +257,13 @@ function Fix({ need, projectId, template, onFixed }: { need: GalleryNeedView; pr
  * The button stays offered while locked, because the same press *binds*
  * a published agent, which stays the person's.
  */
-function RoleFix({ label, role, template, onFixed }: { label: string; role: string; template: GalleryTemplateView; onFixed: () => void }) {
+function RoleFix({ label, role, template, projectId, onFixed }: { label: string; role: string; template: GalleryTemplateView; projectId: string; onFixed: () => void }) {
   const [problem, setProblem] = useState<string | null>(null);
   const [locked, setLocked] = useState<SectionLock | null>(null);
   const staff = useMutation({
-    mutationFn: () => ipcQuery("gallery:staffRole", { slug: template.slug, token: template.token, role }),
+    // On the project the needs check is about (EO-877), so the template's
+    // steps there that name no agent of this kind name the one it staffs.
+    mutationFn: () => ipcQuery("gallery:staffRole", { slug: template.slug, token: template.token, role, projectId }),
     onSuccess: (result) => {
       setLocked(result.locked);
       setProblem(result.locked === null ? result.problem : null);

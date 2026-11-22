@@ -575,6 +575,70 @@ describe("machine-specific values in pipeline_import_check's answer", () => {
 });
 
 /**
+ * Which agent each kind a document needs would bind to (EO-877), in
+ * `pipeline_import_check`'s answer: the one here, the several to choose
+ * between in `pipeline_import`'s `agents`, or one created from the
+ * document's prompt.
+ */
+describe("the agents a document's kinds bind to, in pipeline_import_check's answer", () => {
+  const slot = (slug: string, binding: "existing" | "choose" | "create" | "none", agents: { id: string; name: string; backend: string }[]) => ({
+    slug,
+    filled: agents.length > 0,
+    carriesPrompt: true,
+    recommendedBackend: "claude",
+    recommendedModel: null,
+    backendSignedIn: true,
+    agents: agents.map((agent) => ({ ...agent, model: null, projectId: null })),
+    binding,
+  });
+
+  it("says, for each kind, the agent it would name, the agents to choose between, or that one would be created", async () => {
+    registerHandler(
+      "pipelines:importPreflight",
+      () => ({
+        preflight: {
+          pipelineName: "Shipping",
+          missingBinaries: [],
+          missingSecrets: [],
+          wantsNetwork: [],
+          readsItems: [],
+          postsComments: [],
+          attachesFiles: [],
+          createsItems: [],
+          collisions: [],
+          roleSlots: [
+            slot("implementer", "existing", [{ id: "a-1", name: "Implementer", backend: "claude" }]),
+            slot("reviewer", "choose", [
+              { id: "r-1", name: "Reviewer on Claude", backend: "claude" },
+              { id: "r-2", name: "Reviewer on Codex", backend: "codex" },
+            ]),
+            slot("writer", "create", []),
+          ],
+          connectors: [],
+          capabilities: [],
+          refusal: null,
+          itemTypes: [],
+          oldNames: [],
+          machineSpecific: [],
+          moduleCount: 0,
+        },
+        document: "{}",
+        problem: null,
+      }),
+      opts,
+    );
+
+    const outcome = await tool("pipeline_import_check").run(dispatch, { document: "{}" });
+
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.text).toContain("- implementer: its steps would name Implementer (a-1)");
+    expect(outcome.text).toContain("- reviewer: several agents here — choose one in agents: Reviewer on Claude (r-1, claude), Reviewer on Codex (r-2, codex)");
+    expect(outcome.text).toContain("- writer: no agent of this kind here, so one would be created from the document's prompt");
+  });
+});
+
+/**
  * The same advice on the other shared things eo_admin saves (EO-450): a
  * pipeline's steps, an agent's instructions, a skill's body. Each answer
  * names the warnings, and each save happens exactly as it would without them.

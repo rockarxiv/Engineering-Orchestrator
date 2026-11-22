@@ -4,9 +4,9 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { DEFAULT_PIPELINE_ID, GIT_WORKTREE_KIND, SECTION_LOCK_TEXT, type GalleryNeedView, type PipelineExport } from "@eo/core";
+import { DEFAULT_PIPELINE_ID, GIT_WORKTREE_KIND, SECTION_LOCK_TEXT, UNBOUND_BACKEND, type Uuid, type GalleryNeedView, type PipelineExport } from "@eo/core";
 import type { DbHandle } from "../db/client.js";
-import { archiveAgent, asGitWorkspace, updateWorkspace, createGitWorkspace, addWorkspaceToProject, getProject, listAgents, listGitWorkspaces, listJobs, listPipelines, listProjects, projectWorkspaceList, publishSection } from "../db/repos/index.js";
+import { archiveAgent, createAgent, createProject, listStepsForPipeline, setStepAgent, updateAgent, asGitWorkspace, updateWorkspace, createGitWorkspace, addWorkspaceToProject, getProject, listAgents, listGitWorkspaces, listJobs, listPipelines, listProjects, projectWorkspaceList, publishSection } from "../db/repos/index.js";
 import { beginAdoption } from "../db/repos/projectsRepo.js";
 import { markReplica } from "../db/recordRole.js";
 import { openMigratedTestDb } from "../db/testHelpers.js";
@@ -534,6 +534,142 @@ describe("a role nobody here can play", () => {
     const needs = await galleryNeedsCommand(handle.db, signedIn, { projectId, slug: "weekly-report" });
     expect(needs.needs.filter((need) => !need.met)).toEqual([]);
     expect(needs.jobId).toBe(installed.jobId);
+  });
+});
+
+/**
+ * A template names kinds, and installing it binds each to one of this
+ * installation's agents (EO-877): the person picks where there are
+ * several, and the staffing button names the agent it makes on the
+ * template's steps that were left naming nobody.
+ */
+describe("binding a template's kinds to agents", () => {
+  const reporterSteps = (pipelineId: string) => listStepsForPipeline(handle.db, pipelineId).filter((step) => step.type === "agent");
+
+  it("asks which of several agents of a kind its steps run, and names the one picked", async () => {
+    const early = createAgent(handle.db, { name: "Early reporter", role: "reporter", provider: "claude", instructions: "Early." });
+    const late = createAgent(handle.db, { name: "Late reporter", role: "reporter", provider: "codex", instructions: "Late." });
+
+    const card = (await listGalleryCommand(handle.db, context())).templates.find((template) => template.slug === "weekly-report")!;
+    expect(card.agentChoices).toEqual([{ kind: "reporter", agents: [{ id: early.id, name: "Early reporter", backend: "claude" }, { id: late.id, name: "Late reporter", backend: "codex" }] }]);
+
+    const answers = { folder, schedule: "monday 08:00", keyPrefix: "REP" };
+    const unanswered = await useGalleryCommand(handle.db, context(), { slug: "weekly-report", answers, roleSlots: {} });
+    expect(unanswered.problem).toContain("several");
+    expect(unanswered.projectId).toBeNull();
+
+    const used = await useGalleryCommand(handle.db, context(), { slug: "weekly-report", answers, roleSlots: {}, agents: { reporter: late.id } });
+    expect(used.problem).toBeNull();
+    const steps = reporterSteps(used.pipelineId as string);
+    expect(steps.length).toBeGreaterThan(0);
+    expect(steps.every((step) => step.agentId === late.id)).toBe(true);
+    // Nothing made beside the two there were.
+    expect(listAgents(handle.db).filter((agent) => agent.role === "reporter" && agent.archivedAt === null)).toHaveLength(2);
+  });
+
+  it("lays the agent picked onto the seeded Delivery when first run adopts it, on every board", async () => {
+    const history = loadTemplateHistory(GALLERY_DIRECTORY);
+    backfillPipelineOrigins(handle.db, history);
+    applyTemplateUpdates(handle.db, history, { isTheRecord: false });
+    const seeded = listAgents(handle.db).find((agent) => agent.role === "reviewer")!;
+    const codex = createAgent(handle.db, { name: "Reviewer on Codex", role: "reviewer", provider: "codex", instructions: "Review." });
+
+    const card = (await listGalleryCommand(handle.db, context())).templates.find((template) => template.slug === "software-feature-to-merge")!;
+    expect(card.agentChoices.find((choice) => choice.kind === "reviewer")?.agents.map((agent) => agent.id)).toEqual([seeded.id, codex.id]);
+    const unanswered = await useGalleryCommand(handle.db, context(), { slug: "software-feature-to-merge", answers: { keyPrefix: "ACME" }, roleSlots: {} });
+    expect(unanswered.problem).toContain("several");
+
+    const used = await useGalleryCommand(handle.db, context(), { slug: "software-feature-to-merge", answers: { keyPrefix: "ACME" }, roleSlots: {}, agents: { reviewer: codex.id } });
+    expect(used.problem).toBeNull();
+    // Adopted, not imported: the seeded Delivery is the pipeline.
+    expect(used.pipelineId).toBe(DEFAULT_PIPELINE_ID);
+    const reviewing = listPipelines(handle.db, used.projectId as Uuid)
+      .flatMap((pipeline) => listStepsForPipeline(handle.db, pipeline.id))
+      .filter((step) => step.type === "agent" && listAgents(handle.db).find((agent) => agent.id === step.agentId)?.role === "reviewer");
+    expect(reviewing.length).toBeGreaterThan(1);
+    expect(reviewing.every((step) => step.agentId === codex.id)).toBe(true);
+  });
+
+  it("reads a role line off the agents the steps name, and the button switches on the one the person chose", async () => {
+    const installed = await install("weekly-report", { folder, schedule: "monday 08:00", keyPrefix: "REP" });
+    const projectId = installed.projectId as string;
+    const pipelineId = installed.pipelineId as string;
+    const signedIn = { ...context(), signedInBackends: ["claude"] };
+    // The person's choice is a reporter that is switched off, beside another that runs.
+    const chosen = listAgents(handle.db).find((agent) => agent.role === "reporter")!;
+    updateAgent(handle.db, chosen.id, { provider: "claude", enabled: false });
+    const other = createAgent(handle.db, { name: "Other reporter", role: "reporter", provider: "claude", instructions: "Report." });
+
+    const before = await galleryNeedsCommand(handle.db, signedIn, { projectId, slug: "weekly-report" });
+    expect(line(before.needs, "role:reporter")).toMatchObject({ met: false, fix: { kind: "role" } });
+
+    expect(await staffRoleCommand(handle.db, signedIn, { slug: "weekly-report", role: "reporter", projectId })).toEqual({ ok: true, problem: null, locked: null });
+
+    expect(listAgents(handle.db).find((agent) => agent.id === chosen.id)?.enabled).toBe(true);
+    expect(reporterSteps(pipelineId).every((step) => step.agentId === chosen.id)).toBe(true);
+    expect(listAgents(handle.db).find((agent) => agent.id === other.id)).toMatchObject({ enabled: true, provider: "claude" });
+    expect(line((await galleryNeedsCommand(handle.db, signedIn, { projectId, slug: "weekly-report" })).needs, "role:reporter").met).toBe(true);
+  });
+
+  it("staffs only from the agents the project's work may run on, never another project's", async () => {
+    const installed = await install("weekly-report", { folder, schedule: "monday 08:00", keyPrefix: "REP" });
+    const projectId = installed.projectId as string;
+    const elsewhere = createProject(handle.db, { name: "Elsewhere", keyPrefix: "ELS" });
+    expect(elsewhere.id).not.toBe(projectId);
+    const pipelineId = installed.pipelineId as string;
+    for (const agent of listAgents(handle.db).filter((one) => one.role === "reporter")) archiveAgent(handle.db, agent.id);
+    for (const step of reporterSteps(pipelineId)) setStepAgent(handle.db, step.id, null);
+    // Another project's own reporter, unbound: not this project's to take.
+    const theirs = createAgent(handle.db, { name: "Their reporter", role: "reporter", provider: UNBOUND_BACKEND, instructions: "Theirs.", enabled: false, projectId: elsewhere.id });
+
+    const signedIn = { ...context(), signedInBackends: ["claude"] };
+    expect(line((await galleryNeedsCommand(handle.db, signedIn, { projectId, slug: "weekly-report" })).needs, "role:reporter").met).toBe(false);
+    expect(await staffRoleCommand(handle.db, signedIn, { slug: "weekly-report", role: "reporter", projectId })).toEqual({ ok: true, problem: null, locked: null });
+
+    expect(listAgents(handle.db).find((agent) => agent.id === theirs.id)).toMatchObject({ provider: UNBOUND_BACKEND, enabled: false });
+    const made = listAgents(handle.db).filter((agent) => agent.role === "reporter" && agent.archivedAt === null && agent.id !== theirs.id);
+    expect(made).toHaveLength(1);
+    expect(made[0]).toMatchObject({ provider: "claude", enabled: true, projectId: null });
+    expect(reporterSteps(pipelineId).every((step) => step.agentId === made[0]?.id)).toBe(true);
+    expect(line((await galleryNeedsCommand(handle.db, signedIn, { projectId, slug: "weekly-report" })).needs, "role:reporter").met).toBe(true);
+  });
+
+  it("names no agent on a step the organisation manages, and still points an existing agent at a backend", async () => {
+    const installed = await install("weekly-report", { folder, schedule: "monday 08:00", keyPrefix: "REP" });
+    const projectId = installed.projectId as string;
+    const pipelineId = installed.pipelineId as string;
+    const reporter = listAgents(handle.db).find((agent) => agent.role === "reporter")!;
+    for (const step of reporterSteps(pipelineId)) setStepAgent(handle.db, step.id, null);
+    publishSection(handle.db, { section: "pipelines", publishedAt: Date.now(), publishedBy: null, publishedByName: "Dana" });
+    const stop = markReplica(handle.db, () => true);
+    try {
+      const refused = await staffRoleCommand(handle.db, { ...context(), signedInBackends: ["claude"] }, { slug: "weekly-report", role: "reporter", projectId });
+      expect(refused.ok).toBe(false);
+      expect(refused.locked).toMatchObject({ locked: true, section: "pipelines", publishedBy: "Dana" });
+      expect(refused.problem).toContain(SECTION_LOCK_TEXT);
+      expect(reporterSteps(pipelineId).every((step) => step.agentId === null)).toBe(true);
+      // Binding the agent that exists stays the person's.
+      expect(listAgents(handle.db).find((agent) => agent.id === reporter.id)).toMatchObject({ provider: "claude", enabled: true });
+    } finally {
+      stop();
+    }
+  });
+
+  it("names the agent the staffing button makes on the steps left naming nobody", async () => {
+    const installed = await install("weekly-report", { folder, schedule: "monday 08:00", keyPrefix: "REP" });
+    const projectId = installed.projectId as string;
+    const pipelineId = installed.pipelineId as string;
+    // As a template whose kind this installation had no agent of, and no
+    // prompt to make one from, lands: its steps name nobody.
+    for (const agent of listAgents(handle.db).filter((one) => one.role === "reporter")) archiveAgent(handle.db, agent.id);
+    for (const step of reporterSteps(pipelineId)) setStepAgent(handle.db, step.id, null);
+
+    const signedIn = { ...context(), signedInBackends: ["claude"] };
+    expect(await staffRoleCommand(handle.db, signedIn, { slug: "weekly-report", role: "reporter", projectId })).toEqual({ ok: true, problem: null, locked: null });
+
+    const made = listAgents(handle.db).filter((agent) => agent.role === "reporter" && agent.archivedAt === null);
+    expect(made).toHaveLength(1);
+    expect(reporterSteps(pipelineId).every((step) => step.agentId === made[0]?.id)).toBe(true);
   });
 });
 

@@ -11,6 +11,7 @@ import { recordAssistBoard } from "../roles/assist.js";
 import { upsertReplicaItem } from "../db/repos/replicaRepo.js";
 import { forgetMessage, upsertReplicaMessage } from "../db/repos/messagesRepo.js";
 import { openMessageOf } from "../messages/messages.js";
+import { noticeOfferedAgentMissing } from "./stepAgentsHere.js";
 import { emitPush } from "../ipc/push.js";
 import { getRun, markRunSynced, runSyncBookmark } from "../db/repos/runsRepo.js";
 import { listRunEventsFrom } from "../db/repos/runEventsRepo.js";
@@ -181,7 +182,7 @@ export function createRemoteRecord(options: RemoteRecordOptions): RemoteRecord {
    * that lease run out is a better failure than dispatching an agent
    * against a row this machine does not have.
    */
-  function resolveOffer(offer: { itemId: string; stepId: string; action: string; agentId: string | null }): Dispatch | null {
+  function resolveOffer(offer: { itemId: string; stepId: string; action: string; agentId: string | null; agentName?: string | undefined; agentKind?: string | undefined }): Dispatch | null {
     const item = getItem(db, offer.itemId as Uuid);
     if (item === undefined) return null;
     const agent = offer.agentId === null ? null : (getAgent(db, offer.agentId as Uuid) ?? null);
@@ -190,7 +191,14 @@ export function createRemoteRecord(options: RemoteRecordOptions): RemoteRecord {
     // `agent === null` means "EO runs one of its own functions here",
     // and running a builtin because a role failed to resolve would be
     // the wrong work rather than no work.
-    if (offer.agentId !== null && agent === null) return null;
+    //
+    // Nor is another agent of the kind put in its place (EO-877): the step
+    // runs the agent it names or nothing, and the person is told which
+    // step and agent, once.
+    if (offer.agentId !== null && agent === null) {
+      if (noticeOfferedAgentMissing(db, item, { ...offer, agentId: offer.agentId })) emitPush("messages:changed", {});
+      return null;
+    }
     return { item, agent, action: offer.action, stepId: offer.stepId };
   }
 

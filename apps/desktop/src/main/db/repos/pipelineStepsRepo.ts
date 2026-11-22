@@ -512,6 +512,12 @@ export function setStepOwner(db: Db, id: string, owner: { personId: Uuid | null;
  * a pipeline's graph to its replicas on that column
  * (`listPipelinesUpdatedSince`), so a step changed without it would reach
  * nobody who had already read the pipeline.
+ *
+ * It is also how the gallery's staffing step names the agent it made for
+ * a step an import or a template install left naming nobody, because the
+ * installation had no agent of its kind yet (EO-877). The caller checks
+ * the agent is of the kind the step needs and reaches the pipeline's
+ * project.
  */
 export function setStepAgent(db: Db, id: string, agentId: Uuid | null): void {
   db.transaction((tx) => {

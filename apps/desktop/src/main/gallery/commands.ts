@@ -50,6 +50,7 @@ import {
   setSetting,
   takenKeyPrefixes,
   templateBoardHolders,
+  setStepAgent,
   updateStep,
   workspaceProblem,
   type TemplateDocument,
@@ -57,7 +58,8 @@ import {
 } from "../db/repos/index.js";
 import { createJob } from "../jobs/jobs.js";
 import { ACTIVE_PROJECT_KEY, activeProjectId } from "../ipc/repositoryCommands.js";
-import { importPipeline, type ImportPreflight } from "../modules/pipelineTransfer.js";
+import { chosenAgents, importPipeline, type ImportPreflight } from "../modules/pipelineTransfer.js";
+import { installedKindReady } from "./installedSteps.js";
 import { settleSeededPipelines } from "./sharedPipelines.js";
 import { galleryBlanks, galleryNeeds, galleryRoleSlots, runtimeName, stepInputValues, wantsRepository, type GalleryNeed } from "./form.js";
 import { createTemplateBoards } from "./templateUpdates.js";
@@ -444,6 +446,8 @@ export interface UseTemplateInput {
   projectId?: Uuid;
   /** The backends this machine is signed in to, so an imported role binds where it can (ARCHITECTURE.md, "An agent is a row"). */
   signedInBackends?: readonly string[];
+  /** The agent each kind's steps name, for a kind with several on the project (EO-877, `ImportPipelineInput.agents`). */
+  agents?: Readonly<Record<string, string>>;
 }
 
 export type UseTemplateResult =
@@ -553,6 +557,13 @@ export function useTemplate(db: Db, input: UseTemplateInput): UseTemplateResult 
   // Never onto an existing project: there, the seeded Delivery was
   // settled when that project was made.
   const already = existing === null ? pipelineAlreadyHere(db, document) : null;
+  // Adopting skips the import, and with it the import's binding of each
+  // kind (EO-877): the person's choice between several agents of a kind
+  // is checked here instead, before anything is written, and laid onto
+  // the adopted steps below. The project is new, so the agents its steps
+  // may name are the global ones.
+  const adoptedAgents = already === null ? null : chosenAgents(db, document, null, input.agents ?? {});
+  if (adoptedAgents !== null && !adoptedAgents.ok) return { ok: false, reason: adoptedAgents.reason };
 
   const files = schedule === null ? null : jobItemType(document);
   if (schedule !== null && files === null) {
@@ -610,7 +621,7 @@ export function useTemplate(db: Db, input: UseTemplateInput): UseTemplateResult 
       // The document's step ids, on every board, to the ids they have here (EO-762).
       let installed: Map<string, string>;
       if (already === null) {
-        const imported = importPipeline(db, { document, projectId: project.id, signedInBackends: input.signedInBackends ?? [] });
+        const imported = importPipeline(db, { document, projectId: project.id, signedInBackends: input.signedInBackends ?? [], agents: input.agents ?? {} });
         if (!imported.ok) throw new UseRefused(imported.reason);
         pipelineId = imported.pipelineId;
         installed = new Map(Object.entries(imported.stepIds));
@@ -636,6 +647,7 @@ export function useTemplate(db: Db, input: UseTemplateInput): UseTemplateResult 
         }
       }
 
+      if (adoptedAgents !== null && adoptedAgents.ok) chooseAdoptedAgents(db, document, installed, adoptedAgents.agents);
       writeStepInputs(db, installed, inputs.byStep);
       claimHumanSteps(db, document, installed, input.roleSlots);
 
@@ -717,6 +729,19 @@ function pipelineAlreadyHere(db: Db, document: PipelineExport): string | null {
     if (steps.every((step) => wanted.has(step.id))) return pipeline.id;
   }
   return null;
+}
+
+/**
+ * The person's agent for each kind, on every adopted step of it, on
+ * every board (EO-877) — what an import of the same template would have
+ * named. A kind nobody chose keeps the agent its steps already name.
+ */
+function chooseAdoptedAgents(db: Db, document: PipelineExport, installed: ReadonlyMap<string, string>, chosen: ReadonlyMap<string, string>): void {
+  for (const step of documentSteps(document)) {
+    const agentId = step.type === "agent" && step.ownerRole !== null ? chosen.get(step.ownerRole) : undefined;
+    const id = installed.get(step.id);
+    if (agentId !== undefined && id !== undefined) setStepAgent(db, id, agentId as Uuid);
+  }
 }
 
 /**
@@ -855,12 +880,20 @@ function localTimeZone(): string {
  * the document: somewhere to work, and something to work with.
  */
 export function projectNeeds(db: Db, input: ProjectNeedsInput): GalleryNeed[] {
+  // A role line is about the steps the project holds (EO-877): green only
+  // where every step of the kind names an agent that can run its work,
+  // whichever agent the person chose — not where the project merely has
+  // some agent of the kind.
+  const preflight = {
+    ...input.preflight,
+    roleSlots: input.preflight.roleSlots.map((slot) => ({ ...slot, filled: installedKindReady(db, input.document, input.projectId, slot.slug) ?? slot.filled })),
+  };
   return [
     // The document's count of modules is what a card and an import can
     // say before anything is written. Once the project exists, each
     // module its steps run is a line of its own, green once approved.
     ...galleryNeeds(
-      input.preflight,
+      preflight,
       // The forge CLI lines sit under the repositories they are about (EO-663).
       [workspaceNeed(db, input.projectId, input.document), ...(input.forge ?? []), backendNeed(input.preflight, input.signedInBackends)],
       // What a role could be pointed at, which decides whether its red

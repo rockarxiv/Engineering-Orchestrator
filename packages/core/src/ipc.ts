@@ -601,6 +601,23 @@ export const ImportPreflightViewSchema = z.object({
         recommendedModel: z.string().nullable().default(null),
         /** Whether that backend is signed in here; null when there is no recommendation to check. */
         backendSignedIn: z.boolean().nullable().default(null),
+        /**
+         * The agents of this kind the import may bind the role's steps
+         * to on the project it lands in (EO-877): the project's own and
+         * the global ones, not archived and not a preview's own. The
+         * first is the one it binds to where nobody chooses.
+         */
+        agents: z.array(z.object({ id: z.string(), name: z.string(), backend: z.string(), model: z.string().nullable(), projectId: z.string().nullable() })).default([]),
+        /**
+         * What the import does with the kind (EO-877, ARCHITECTURE.md
+         * §18.2): `existing` names the one agent of it here; `choose`
+         * waits for the person to pick one of several, and the import
+         * is refused until they have; `create` makes one from the
+         * prompt the document carries; `none` leaves its steps naming
+         * no agent, where there is no agent of it and no prompt to make
+         * one from.
+         */
+        binding: z.enum(["existing", "choose", "create", "none"]).default("none"),
       }),
     )
     .default([]),
@@ -3026,6 +3043,8 @@ export const recordContract = {
       index: z.number().int().min(0).default(0),
       /** An import card's choice for each colliding module slug: keep mine (`reuse`), or bring theirs in beside it (`import`). */
       choices: z.record(z.string(), z.enum(["reuse", "import"])).default({}),
+      /** An import card's choice of agent for each kind with several here (EO-877), as `pipelines:import` takes it. */
+      agents: z.record(z.string(), z.string()).optional(),
       /**
        * What the person typed on a card that sets a step's own secret or
        * variable (EO-522), and absent on every other press. Carried
@@ -4146,6 +4165,13 @@ export const recordContract = {
       document: z.string(),
       /** Per colliding slug: keep ours, or bring theirs in beside it. */
       choices: z.record(z.string(), z.enum(["reuse", "import"])).default({}),
+      /**
+       * Per kind the document's steps need, the agent of that kind here
+       * its steps name (EO-877). Required for a kind with several agents
+       * here (`binding: "choose"` on the preflight); a kind with one
+       * names that one, and a kind with none is made one.
+       */
+      agents: z.record(z.string(), z.string()).optional(),
       projectId: z.string().nullable().default(null),
       /**
        * The project it lands in, named by a caller that knows it exactly
@@ -5628,6 +5654,12 @@ export const recordContract = {
        * or a brand-new project when there is no real one.
        */
       projectId: z.string().optional(),
+      /**
+       * The agent each kind's steps name, for a kind with several here
+       * (EO-877, the card's `agentChoices`), as `pipelines:import` takes
+       * it. A kind with one names that one; a kind with none is made one.
+       */
+      agents: z.record(z.string(), z.string()).optional(),
     }),
     z.object({
       projectId: z.string().nullable(),
@@ -5689,6 +5721,12 @@ export const recordContract = {
       ...TEMPLATE_TOKEN,
       /** Which of the pack's roles to staff. */
       role: z.string().min(1),
+      /**
+       * The project the needs check is about (EO-877). The template's
+       * steps of this kind there that name no agent are given the one
+       * this press staffs. Absent binds no step.
+       */
+      projectId: z.string().optional(),
       /**
        * Which backend to point it at. Absent means the one the pack was
        * built on where this machine is signed in to it, and otherwise
