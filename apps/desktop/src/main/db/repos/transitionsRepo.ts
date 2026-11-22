@@ -2,7 +2,7 @@ import { and, asc, desc, eq, inArray, or, sql } from "drizzle-orm";
 import { onProject } from "./projectScope.js";
 import { uuidv7, type Item, type PipelineStepType, type RecordCursor, type Transition, type Uuid } from "@eo/core";
 import type { Db } from "../client.js";
-import { pipelineSteps, items, transitions } from "../schema.js";
+import { cancelHolds, pipelineSteps, items, transitions } from "../schema.js";
 import { getItem, jiraStateFor } from "./itemsRepo.js";
 import { assigneeOnArrival } from "./peopleRepo.js";
 import { boundGraphForItem, versionForArrival } from "./pipelineVersionsRepo.js";
@@ -172,11 +172,30 @@ export function transitionItem(db: Db, input: TransitionItemInput): Item {
     // The pipeline is written only when one was named. Callers that name
     // no pipeline are moving within the one the item is already on, and
     // the column must read exactly as it did before they called.
-    const patch: { stepId: string; updatedAt: number; pipelineId?: string; assigneeId?: string | null; pipelineVersionId?: string | null } = {
+    const patch: {
+      stepId: string;
+      updatedAt: number;
+      pipelineId?: string;
+      assigneeId?: string | null;
+      pipelineVersionId?: string | null;
+      heldAt?: null;
+    } = {
       stepId: input.toStepId,
       updatedAt: now,
     };
     if (toPipelineId !== null) patch.pipelineId = toPipelineId;
+
+    // A hold a cancelled run set ends with the move (EO-891). Moving the
+    // item is somebody putting it back in the scheduler's hands, which is
+    // what a resume would have done; a hold a person set is their own and
+    // stays. Here because every move comes through here: a drag, a
+    // decision, a route a mention's answer took, a move mirrored from the
+    // record.
+    const cancelHold = tx.select({ itemId: cancelHolds.itemId }).from(cancelHolds).where(eq(cancelHolds.itemId, input.itemId)).get();
+    if (cancelHold !== undefined) {
+      patch.heldAt = null;
+      tx.delete(cancelHolds).where(eq(cancelHolds.itemId, input.itemId)).run();
+    }
 
     // Arriving on *another* pipeline is entering it, so the item binds to
     // a version of that pipeline (EO-327, ARCHITECTURE.md, "Publish, lock and versions"). A move

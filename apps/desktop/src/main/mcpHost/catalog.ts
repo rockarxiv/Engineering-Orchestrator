@@ -3961,9 +3961,9 @@ const UNGATED_WRITE_TOOLS: readonly ToolSpec[] = [
     name: "run_cancel",
     channel: "runs:cancel",
     description:
-      "Interrupt an agent mid-run. Whatever it had not finished is discarded, and the ticket stays where it is — and " +
-      "stays put: EO does not start that step again by itself afterwards, until somebody mentions an agent, moves the " +
-      "ticket, or holds and resumes it. Run ids come from ticket_get.",
+      "Interrupt an agent mid-run. Whatever it had not finished is discarded, and the ticket is put on hold on the step " +
+      "it is on: EO does not start that step again by itself. Resuming the ticket (ticket_resume) runs the step again, " +
+      "and moving it ends the hold. Run ids come from ticket_get.",
     kind: "write",
     // Destructive without being gated: it throws away work in progress,
     // which a caller should be told about — but it is also the ordinary

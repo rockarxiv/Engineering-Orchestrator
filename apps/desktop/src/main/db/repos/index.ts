@@ -322,6 +322,7 @@ export {
   setItemArchived,
   setItemAssignee,
   setItemHeld,
+  heldByCancelOf,
   updateItem,
   type CreateItemInput,
   type CreateItemResult,

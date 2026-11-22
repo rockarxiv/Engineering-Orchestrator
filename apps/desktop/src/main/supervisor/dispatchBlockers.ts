@@ -551,32 +551,15 @@ export function resumeOutlook(stepName: string, blocker: ItemBlocker | null): st
 }
 
 /**
- * What EO says when somebody stops a run and nothing else (EO-175,
- * invariant 8).
+ * What EO says when somebody cancels a run (EO-891, invariant 8).
  *
- * A cancellation now ends the initiation it stopped: the scheduler does
- * not offer the same step again by itself, which is the difference
- * between a person's decision and a hiccup EO recovers from. That is a
- * change to what happens *after* the run ends, so a person who cancels
- * and watches nothing happen has no way to tell it from EO having
- * forgotten. Hence the sentence — and hence its second half, which is
- * the part that matters: what starts it again.
- *
- * The three things offered are the three that re-authorise a step, and
- * they are offered because each of them is a person: a mention hands the
- * step back to its agent, a move puts the item in a new initiation,
- * and a hold resumed gives the item back to the scheduler where it
- * stands. That last one is not filler — on a step EO runs itself there
- * is nobody to mention, so holding and resuming is the only way to have
- * the same step run again without moving the item off it and back.
- *
- * `rerunWith` is null exactly there, and the mention is then left unsaid
- * rather than pointed at nobody.
+ * A cancel holds the item where it is: the board shows it held, and
+ * Resume, which a held item already offers, runs the step again. This is
+ * the one sentence saying so, and it names what resuming will do — for a
+ * team, the whole team again from its first turn, since the session the
+ * cancel ended is never adopted again.
  */
-export function stoppedByHandNote(stepName: string, rerunWith: string | null): string {
-  const ways =
-    rerunWith === null
-      ? `Move the ticket, or hold it and resume it, and it is picked up again.`
-      : `Mention ${rerunWith} to hand the step back, move the ticket, or hold it and resume it — any of the three picks it up again.`;
-  return `Run cancelled, and EO has stopped with it: nothing will pick "${stepName}" up again on its own. ${ways}`;
+export function cancelHoldNote(stepName: string, team: boolean): string {
+  const resuming = team ? "Resume it to start the team again from the beginning." : "Resume it to run the step again.";
+  return `Run cancelled, so this ticket is on hold at "${stepName}". ${resuming}`;
 }

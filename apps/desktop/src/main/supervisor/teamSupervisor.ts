@@ -165,7 +165,7 @@ import type { PreparedWorkspace, WorkspaceKind } from "./workspaceKind.js";
  */
 
 /** What a parked team tells the person it can do (EO-849). */
-export const TEAM_RETRY_WORDS = "Retry the team, or reply, to try again what failed: every report already accepted is kept. Cancel the session to run the whole team afresh.";
+export const TEAM_RETRY_WORDS = "Retry the team, or reply, to try again what failed: every report already accepted is kept. Cancelling the session holds the ticket, and resuming it then starts the team again from the beginning.";
 
 /** Why a participant may not start now: wait for it to pass, or refuse the attempt outright. */
 export type ParticipantRestriction = { kind: "wait"; reason: string } | { kind: "refuse"; reason: string };
@@ -1283,7 +1283,7 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
             }
             // Parked rather than ended (EO-849): the session stays the item's,
             // so a person can retry what failed without the accepted reports
-            // being done again, or cancel it to start afresh.
+            // being done again, or cancel it, which holds the item until a resume starts the team again.
             if (pass.kind === "undecided") {
               yield pass.event;
               return;

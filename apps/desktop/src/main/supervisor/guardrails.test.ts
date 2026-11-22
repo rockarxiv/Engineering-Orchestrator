@@ -213,8 +213,8 @@ describe("guardrails", () => {
     // Regression guard: the timeout guard and manual cancellation both
     // abort the same controller — they must not be conflated.
     //
-    // A cancellation does now write a note saying EO has stopped with it
-    // (EO-175). That is the opposite claim to a guard's: a guard is EO
+    // A cancellation does now write a note saying the item is held
+    // (EO-175, EO-891). That is the opposite claim to a guard's: a guard is EO
     // asking for attention, and this is EO acknowledging an instruction,
     // so it is a `note` and raises no `!`. What must stay at zero is
     // escalations.

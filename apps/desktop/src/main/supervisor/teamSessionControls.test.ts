@@ -23,16 +23,16 @@ import { saveActionDefinition } from "../db/repos/actionDefinitionsRepo.js";
 import { createAgent, listAgents } from "../db/repos/agentsRepo.js";
 import { listCommentsForItem, postComment } from "../db/repos/commentsRepo.js";
 import { createRoute } from "../db/repos/index.js";
-import { getItem } from "../db/repos/itemsRepo.js";
+import { getItem, heldByCancelOf } from "../db/repos/itemsRepo.js";
 import { createStep } from "../db/repos/pipelineStepsRepo.js";
 import { createRun, getRun, listRunsForItem, updateRun } from "../db/repos/runsRepo.js";
 import { listTeamSessionsForItem, mirrorTeamSession, openTeamSession } from "../db/repos/teamSessionsRepo.js";
 import { listTransitionsForItem } from "../db/repos/transitionsRepo.js";
 import { createTestItem, openMigratedTestDb, agentOfKind } from "../db/testHelpers.js";
-import { moveItem, postCommentCommand, type EngineHandle } from "../ipc/domainCommands.js";
+import { moveItem, postCommentCommand, resumeHeldItem, type EngineHandle } from "../ipc/domainCommands.js";
 import { cancelTeamSessionCommand, retryTeamSessionCommand } from "../ipc/teamCommands.js";
 import { createRunSupervisor, type RunSupervisor } from "./runSupervisor.js";
-import type { ReportOnlyProviderAnswer } from "./teamSupervisor.js";
+import { TEAM_RETRY_WORDS, type ReportOnlyProviderAnswer } from "./teamSupervisor.js";
 import { itemTeamSessions } from "./teamSessionView.js";
 
 /**
@@ -257,7 +257,56 @@ describe("a person's controls on a team session (EO-849)", () => {
     // What it spent while it ran is still the item's, once.
     expect(view.totals.costCents).toBe(10);
     expect(listCommentsForItem(handle.db, item.id).some((comment) => comment.authorType === "human" && comment.body.startsWith("Cancelled the team session"))).toBe(true);
-    // And the step is not offered again behind the person's back.
+    // And the step is not offered again behind the person's back: the
+    // item is held, by this cancel, and the thread says what resuming does.
+    expect(getItem(handle.db, item.id)?.heldAt).not.toBeNull();
+    expect(heldByCancelOf(handle.db, item.id)).toBe(teamRun()[0]!.id);
+    const held = listCommentsForItem(handle.db, item.id).filter((comment) => comment.authorType === "engine" && comment.body.startsWith("Run cancelled"));
+    expect(held.map((comment) => comment.body)).toEqual(['Run cancelled, so this ticket is on hold at "Alignment". Resume it to start the team again from the beginning.']);
+    await engine.runOnce();
+    expect(teamRun()).toHaveLength(1);
+  });
+
+  it("starts the team again from the beginning when the item a cancel held is resumed", async () => {
+    let stopping = true;
+    script = ({ agent, opts }) => (stopping ? until(opts.signal) : answer("clear", `${agent.name} found nothing.`));
+    const engine = supervisor();
+    const done = engine.runOnce();
+    await vi.waitFor(() => expect(participantRuns().filter((run) => run.status === "running")).toHaveLength(2));
+    expect(cancelTeamSessionCommand(handle.db, engineOf(engine), { sessionId: shown().id }).cancelled).toBe(true);
+    await done;
+    const first = session().session.id;
+
+    stopping = false;
+    resumeHeldItem(handle.db, engineOf(engine), { itemId: item.id, cancelActiveRun: false });
+    await engine.runOnce();
+    await vi.waitFor(() => expect(getItem(handle.db, item.id)?.stepId).toBe("accepted"));
+
+    // A new session, every participant run afresh: nothing of the cancelled one adopted.
+    const sessions = listTeamSessionsForItem(handle.db, item.id);
+    expect(sessions.map((one) => one.session.status)).toEqual(["cancelled", "finalized"]);
+    expect(sessions[1]!.session.id).not.toBe(first);
+    expect(sessions[1]!.attempts.map((attempt) => [attempt.assignmentKey, attempt.status]).sort()).toEqual([
+      ["security", "completed"],
+      ["tests", "completed"],
+    ]);
+  });
+
+  it("holds the item when a session parked on a failed contribution is cancelled, and says so in the parked words", async () => {
+    script = ({ agent }) => (agent.name === "Sasha" ? answer("clear", "Nothing to see.") : silent());
+    const engine = supervisor();
+    await engine.runOnce();
+    expect(teamRun()[0]?.status).toBe("awaiting_input");
+    // What the parked team says about cancelling: it holds, and resuming starts over.
+    expect(teamRun()[0]?.error ?? "").not.toContain("afresh");
+    expect(TEAM_RETRY_WORDS).toContain("Cancelling the session holds the ticket, and resuming it then starts the team again from the beginning.");
+    expect(TEAM_RETRY_WORDS).not.toContain("afresh");
+
+    expect(cancelTeamSessionCommand(handle.db, engineOf(engine), { sessionId: shown().id }).cancelled).toBe(true);
+
+    expect(teamRun()[0]?.status).toBe("cancelled");
+    expect(getItem(handle.db, item.id)).toMatchObject({ stepId: "check", heldAt: expect.any(Number) });
+    expect(heldByCancelOf(handle.db, item.id)).toBe(teamRun()[0]!.id);
     await engine.runOnce();
     expect(teamRun()).toHaveLength(1);
   });

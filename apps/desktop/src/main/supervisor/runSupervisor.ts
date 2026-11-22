@@ -217,6 +217,7 @@ import {
   getAgent,
   getComment,
   getItem,
+  setItemHeld,
   getItemType,
   getProject,
   getStep,
@@ -325,10 +326,9 @@ import { ASSIST_ACTION, ASSIST_STEP, conversationTurnOptions, CONVERSATION_SETTI
 import { changeReferenceProblem, createModuleChangeStaging, type ModuleChangeStaging } from "../roles/moduleChangeProposals.js";
 import { attachRunFiles } from "./runAttachments.js";
 import { blockedByActiveRunRefusal, createItemLock, type ItemHold, type ItemLock } from "./itemLock.js";
-import { archivedAgentRefusal, mentionDepthRefusal, outOfProjectDispatchRefusal, outOfProjectMentionRefusal, outOfProjectRecoveryNote, pullRequestHoldNote, rerunRefusal, stoppedByHandNote, unrunnableStepNote, type GateRefusal, type ItemBlocker, type OutOfProject, type RerunBlocker } from "./dispatchBlockers.js";
+import { archivedAgentRefusal, mentionDepthRefusal, outOfProjectDispatchRefusal, outOfProjectMentionRefusal, outOfProjectRecoveryNote, pullRequestHoldNote, rerunRefusal, cancelHoldNote, unrunnableStepNote, type GateRefusal, type ItemBlocker, type OutOfProject, type RerunBlocker } from "./dispatchBlockers.js";
 import { watchDependencyRegressions } from "./dependencyGates.js";
 import { declaresNoCriteria, isMissingCriteriaAsk, missingCriteriaRefusal } from "./reviewCriteria.js";
-import { recordStop, stopStands } from "./stoppedByHand.js";
 import { promptHash } from "../roles/prompts.js";
 import { readDebugMode } from "../debug/debugMode.js";
 import { capturingProvider, type SendContext } from "../providers/sentCapture.js";
@@ -1129,8 +1129,8 @@ export interface ReconcileSummary {
  *
  * It decides one thing, and it is not about the run: what the scheduler
  * does on the next tick. A cancellation that is the whole of what
- * somebody asked for ends the initiation — EO does not offer the same
- * step again by itself — while one that is part of a larger action does
+ * somebody asked for holds the item (EO-891) — EO does not offer the
+ * same step again by itself — while one that is part of a larger action does
  * not, because that action has already decided where the item goes.
  * The seam is not new: `restartAfterResume` drew exactly this
  * distinction for the pause that puts its runs back when the engine
@@ -1139,9 +1139,9 @@ export interface ReconcileSummary {
 export type Cancellation =
   /**
    * Somebody asked for this run to stop and for nothing else: the Cancel
-   * button, `run_cancel` over MCP. The item stays where it is, and it
-   * takes a person — a mention, a move, or resuming a hold — to start it
-   * again.
+   * button, `run_cancel` over MCP, cancelling a team session. The item is
+   * held where it is (EO-891), and resuming it runs the step again; a
+   * move ends that hold too.
    */
   | "asked-to-stop"
   /**
@@ -1156,7 +1156,7 @@ export type Cancellation =
    * repository index stops whatever holds the checkout because it is
    * about to delete the index out from under it, and wants that work
    * dispatched again the moment it lets go. Read as a person's stop,
-   * that maintenance would end the initiation it interrupted and the
+   * that maintenance would hold the item it interrupted and the
    * rebuild's own success would be the reason the item then sat still.
    */
   | "superseded"
@@ -8336,14 +8336,6 @@ export function createRunSupervisor(
   }
 
   async function executeDispatch(dispatch: Dispatch, lease: DispatchLease): Promise<void> {
-    // A run somebody stopped stays stopped (EO-175). `tick()` cannot ask
-    // this — it is not a fact about the board, it is a decision a person
-    // took about this initiation — so the scheduler's own door is where
-    // it is asked, and only here: a mention runs under an initiation of
-    // its own and a reply is the person themselves, so neither is
-    // turned back by it.
-    if (stopStands(db, dispatch.item.id, workflowInitiationId(dispatch.item, dispatch.action))) return;
-
     /**
      * The claim came with the offer (EO-322, EO-324).
      *
@@ -8357,6 +8349,14 @@ export function createRunSupervisor(
      * The item lock says *this process* is working on it; the lease
      * says *this machine* is, which is the half a second desktop would
      * otherwise have no way to hear.
+     *
+     * First, and with nothing between it and the `finally` below that
+     * can return (EO-891). A dispatch that declined before adopting
+     * its claim left it neither renewed nor released, and five minutes
+     * later the sweep released it with a note blaming this device for
+     * going quiet — eighteen of them on EO-877 for a cancel nobody
+     * could see. Every decline is now `device.run`'s, before its run
+     * row, and the `finally` gives the claim back at once.
      */
     device.adopt(lease);
 
@@ -12192,7 +12192,8 @@ export function createRunSupervisor(
       runId = team;
     }
     // A person's stop of a team's run ends its session: nothing it does
-    // after is the item's, and a reply starts the team afresh.
+    // after is the item's. The item is held (`endInitiation`), and
+    // resuming it starts the team again from the beginning.
     if (cancellation === "asked-to-stop" && teamRuns.has(runId)) {
       const session = run === undefined ? undefined : currentTeamSession(db, run.itemId);
       if (session !== undefined) endTeamSession(db, { sessionId: session.id, status: "cancelled", now: now() });
@@ -12223,8 +12224,8 @@ export function createRunSupervisor(
     if (elsewhere !== null) return { ok: false, problem: elsewhere };
     // Parked, or left by a restart: nothing is working anywhere.
     endTeamSession(db, { sessionId, status: "cancelled", now: now() });
-    // The team's parked run stops waiting for a reply, and the step is not
-    // offered again until a person moves the item or mentions an agent.
+    // The team's parked run stops waiting for a reply, and the item is
+    // held there (EO-891) until a person resumes or moves it.
     const parked = listRunsForItem(db, session.itemId as Uuid)
       .filter((run) => run.stepId === session.stepId && run.action !== TEAM_PARTICIPANT_ACTION)
       .at(-1);
@@ -12418,45 +12419,41 @@ export function createRunSupervisor(
   }
 
   /**
-   * A person's stop, made to last (EO-175).
+   * A person's stop, made visible (EO-175, EO-891).
    *
    * Cancelling wrote `cancelled` and stopped there, and the item was
-   * then in none of the states the scheduler stands off: it had not
-   * moved, was not held, was not awaiting an answer. So the next tick
-   * offered the same step again, in the same initiation, and kept
-   * offering it until the attempt limit stopped it three runs later —
-   * which is a person's decision being treated as a hiccup to recover
-   * from.
+   * then in none of the states the scheduler stands off, so the next tick
+   * offered the same step again. EO-175 answered with a hidden stop the
+   * scheduler alone could see: the item looked ready, had no Resume, and
+   * the only way out was to hold it and resume it. Now the cancel is the
+   * hold. The item stays on its step, held, and names the run whose
+   * cancellation held it — so a move ends the hold, as it ended the stop
+   * — and Resume runs the step again.
    *
-   * Nothing is parked here, deliberately. A hold is a different state
-   * with its own affordance and its own resume, and somebody who
-   * cancelled a run has not asked for the item to be held; what they
-   * asked for is for EO to stop, which is what recording the stop does
-   * and nothing more.
+   * An item a person already holds keeps their hold, and is told the
+   * same thing: it is held, and resuming runs the step.
    */
   function endInitiation(run: Run): void {
     const item = getItem(db, run.itemId);
-    if (!item) return; // deleted under the cancellation; nowhere to post and nothing to stop
+    if (!item) return; // deleted under the cancellation; nowhere to post and nothing to hold
 
     // A step nothing was ever going to be dispatched at — a `user` step,
-    // a terminal one, a discussion — stops nothing, and saying "nothing
-    // will pick this up again" about it would be EO claiming a decision
-    // it never had to take.
+    // a terminal one, a discussion — has nothing to resume, so nothing
+    // is held and nothing is said about it.
     const step = stepForItem(db, item);
     if (!step || step.isTerminal || step.type === "user") return;
 
-    // The initiation read exactly as `dispatchHeld` reads its own, so
-    // the stop and the dispatch it stops cannot name different things.
-    recordStop(db, item.id, workflowInitiationId(item, run.action));
+    if (item.heldAt === null) setItemHeld(db, item.id, now(), run.id);
 
-    const { nowAt, rerunWith } = whereItStandsNow(item);
+    const team = step.type === "agent" && step.team !== null && step.team !== undefined;
     postComment(db, {
       itemId: item.id,
       runId: run.id,
       author: { type: "engine" },
       kind: "note",
-      body: stoppedByHandNote(nowAt, rerunWith),
+      body: cancelHoldNote(step.name, team),
     });
+    onItemChanged(item.id);
   }
 
   function pause(opts: { cancelRunning?: boolean } = {}): void {

@@ -138,8 +138,9 @@ describe("a supervisor, while a project is archived", () => {
     expect(listRunsForItem(handle.db, cart.id).map((run) => run.status)).toEqual(["cancelled"]);
     expect(listCommentsForItem(handle.db, cart.id).some((comment) => comment.body.includes("was archived"))).toBe(true);
     // A cancellation that belongs to the archive is not a person's stop,
-    // so nothing says "EO has stopped with it" about it.
-    expect(listCommentsForItem(handle.db, cart.id).some((comment) => comment.body.includes("EO has stopped with it"))).toBe(false);
+    // so it holds nothing and says nothing about a hold (EO-891).
+    expect(listCommentsForItem(handle.db, cart.id).some((comment) => comment.body.includes("on hold at"))).toBe(false);
+    expect(getItem(handle.db, cart.id)?.heldAt).toBeNull();
 
     await engine.runOnce();
     await engine.runOnce();

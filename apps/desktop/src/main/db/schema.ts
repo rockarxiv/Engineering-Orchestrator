@@ -3065,6 +3065,28 @@ export const jobWatchChecks = sqliteTable(
 // ── The record and its devices ────────────────────────────────
 
 /**
+ * The holds a cancelled run set (EO-891): one row per item held because
+ * a person cancelled its run, naming that run.
+ *
+ * Cancelling a run holds its item where it is (`items.held_at`), so the
+ * board shows it held and Resume runs the step again. This row is what
+ * sets that hold apart from one a person asked for: a move ends it
+ * (`transitionItem`), as a move ended the stop EO-175 kept before it,
+ * while a person's own hold stays put. Written and cleared with the hold
+ * by `setItemHeld`; gone with its item. Local to this installation, as
+ * the hold is.
+ *
+ * No reference on `run_id`: the row says which run it was, and
+ * `deleteItem` removes runs before the item whose cascade removes this.
+ */
+export const cancelHolds = sqliteTable("cancel_holds", {
+  itemId: text("item_id")
+    .primaryKey()
+    .references((): AnySQLiteColumn => items.id, { onDelete: "cascade" }),
+  runId: text("run_id").notNull(),
+});
+
+/**
  * Who is allowed to be dispatching an item right now, and until when
  * (EO-322, `ARCHITECTURE.md`, "The record").
  *
