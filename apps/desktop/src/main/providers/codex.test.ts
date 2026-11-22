@@ -4060,7 +4060,7 @@ describe("the learning review's fork (EO-732)", () => {
 
 /**
  * A run its sign-in stopped (EO-797), read off what the pinned app-server
- * really sent (`__fixtures__/codex-0.167.1-auth-errors.json`) and played
+ * really sent (`__fixtures__/codex-0.171.0-auth-errors.json`) and played
  * through the real client and the provider.
  */
 describe("a sign-in failure mid-run", () => {

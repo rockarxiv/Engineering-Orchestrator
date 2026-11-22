@@ -586,8 +586,9 @@ export function codexErrorRefusal(info: unknown): QuotaEvent | null {
  * Whether a failed turn's classification says its sign-in is no good
  * (EO-797).
  *
- * Read off the pinned app-server (0.167.1,
- * `__fixtures__/codex-0.167.1-auth-errors.json`), which says it two ways:
+ * Read off the pinned app-server (0.171.0,
+ * `__fixtures__/codex-0.171.0-auth-errors.json`, every case as 0.167.1
+ * said it), which says it two ways:
  * a ChatGPT sign-in whose tokens cannot be refreshed — while
  * `codex login status` still says "Logged in using ChatGPT" — is
  * `codexErrorInfo: "unauthorized"`; a stored API key the API refuses, and
@@ -609,8 +610,8 @@ export function codexSignInFailure(info: unknown): boolean {
  * The app-server does not name its windows; it says how long each one
  * is. `primary` was 300 minutes and `secondary` 10080 on a Plus account
  * at 0.161.0, and still were at 0.163.0 (EO-453), 0.165.0 (EO-599) and
- * 0.166.0 (EO-644, `account/rateLimits/read`) and 0.167.1 (EO-774, the
- * same), so these read `5_hour`
+ * 0.166.0 (EO-644, `account/rateLimits/read`), 0.167.1 (EO-774, the
+ * same) and 0.171.0 (EO-889, the same), so these read `5_hour`
  * and `7_day` — Claude's `five_hour`
  * and `seven_day` in other words, and phrased the same way on the item
  * ("its 5-hour usage window"). A length nobody has seen still names
@@ -1488,11 +1489,17 @@ function codexSpawnEnvironment(
  * person's own setup, the person's own memories would reach it.
  *
  * Read from the pinned CLI (0.165.0, EO-599, again at 0.166.0 for
- * EO-644 and at 0.167.1 for EO-774), where `codex features list` reports
- * `memories` as stable and **off** by default, as 0.163.0 did. At 0.167.1
- * a real turn in an empty home, under the three switches below over a
- * `config.toml` that turns memories on, again wrote neither store, and
- * one with `-c features.memories=true` wrote the v2 store.
+ * EO-644, at 0.167.1 for EO-774 and at 0.171.0 for EO-889), where
+ * `codex features list` reports `memories` as stable and **off** by
+ * default, as 0.163.0 did. At 0.167.1 a real turn in an empty home,
+ * under the three switches below over a `config.toml` that turns
+ * memories on, again wrote neither store, and one with
+ * `-c features.memories=true` wrote the v2 store. At 0.171.0 the same,
+ * beside 0.167.1, with the turn answered by a local scripted model
+ * rather than a real one: neither store under the switches, the v2 store
+ * with the feature on — both pins alike. (Both also make an empty
+ * `memories_1.sqlite`, with no jobs and no outputs, either way: a
+ * database opened at start-up, not a store written.)
  * 0.165.0 "enabled memory v2 by default for fresh profiles": a home whose
  * memories are on now gets a second store (`memories_v2/`,
  * `memories_v2_1.sqlite`). Measured with one real turn in an empty home
@@ -1767,7 +1774,11 @@ function codexOptionsWith(
   //     exactly as 0.165.0 did, beside it, and has neither string. And
   //     at EO-774's: 0.167.1 accepted the stdio and HTTP keys EO writes
   //     and refused `always_load`, `alwaysLoad` and `defer_loading` as
-  //     unknown, and has neither string either.
+  //     unknown, and has neither string either. And at EO-889's: 0.171.0,
+  //     beside 0.167.1, started a thread under `--strict-config` with a
+  //     turn's whole configuration — a stdio and an HTTP server with
+  //     every key EO writes, the hook and its trust, the memory switches
+  //     — and with a side call's, and refused an invented feature name.
   //   - It does not defer them in the first place. Across 338 Codex runs
   //     in `run_events` there is not one `ToolSearch` call, and EO's own
   //     tools were called 130 times directly — `ticket_detail` 88,

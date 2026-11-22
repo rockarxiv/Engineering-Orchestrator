@@ -11,6 +11,7 @@ import {
   privacyPluginHeldOff,
   refusalFallbackHeldOff,
   toolSearchHeldOff,
+  unknownModelWindowHeld,
   type ClaudeSettingsReader,
 } from "./claudeCompatibility.js";
 
@@ -24,10 +25,14 @@ const GATEWAY = "https://llm-gateway.example.com/anthropic";
 /** The flag settings that switch 2.1.317's account-email check off (EO-644). */
 const PRIVACY_OFF = { enabledPlugins: { "cc-plugin-privacy@builtin": false } };
 
+/** 2.1.322's window for a model it does not recognise, held at 2.1.329 (EO-889). */
+const WINDOW_HELD = { CLAUDE_CODE_MAX_CONTEXT_TOKENS: "200000" };
+
 /**
  * The defaults claude@0.3.312 changed, each held to claude@0.3.302's answer
  * (EO-599), and the one claude@0.3.318 changed that EO's default setup
- * meets, held to 0.3.312's (EO-644). Every rule here was read off both binaries and measured with a
+ * meets, held to 0.3.312's (EO-644), and the window claude@0.3.329 assumes
+ * for a model it does not recognise, held to 0.3.322's (EO-889). Every rule here was read off both binaries and measured with a
  * capture server; the measurements are recorded in `claudeCompatibility.ts`.
  */
 describe("which settings files the CLI reads, and in what order", () => {
@@ -147,7 +152,7 @@ describe("what is not held", () => {
     // A scope decision (EO-599): 2.1.312's Monitor, sleep refusal, prompt
     // guidance and plugin monitors come as one, and EO keeps none of them back.
     for (const env of [{ CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" }, { DISABLE_TELEMETRY: "1" }, { DO_NOT_TRACK: "1" }]) {
-      expect(claudeCompatibilityHolds({ spawnEnv: { HOME: "/home/someone", ...env }, cwd: "/work/repo", sources: "project", platform: "linux", reader: filesReader({}) })).toEqual({ env: {}, settings: PRIVACY_OFF });
+      expect(claudeCompatibilityHolds({ spawnEnv: { HOME: "/home/someone", ...env }, cwd: "/work/repo", sources: "project", platform: "linux", reader: filesReader({}) })).toEqual({ env: WINDOW_HELD, settings: PRIVACY_OFF });
     }
     expect(Object.keys(claudeCompatibilityHolds({ spawnEnv: { HOME: "/home/someone", CLAUDE_CODE_USE_VERTEX: "1" }, cwd: "/work/repo", sources: "project", platform: "linux", reader: filesReader({}) }))).toEqual(["env", "settings"]);
   });
@@ -187,6 +192,34 @@ describe("a custom deployment on a cloud platform", () => {
     expect(modelCatalogHeldOff({ CLAUDE_CODE_USE_BEDROCK: "1" })).toBe(true);
     expect(modelCatalogHeldOff({})).toBe(false);
     expect(modelCatalogHeldOff({ CLAUDE_CODE_USE_VERTEX: "1", CLAUDE_CODE_MODEL_CATALOG: "on" })).toBe(false);
+  });
+});
+
+describe("the window assumed for a model the CLI does not recognise (EO-889)", () => {
+  const holds = (spawnEnv: Record<string, string>, files: Record<string, unknown> = {}) =>
+    claudeCompatibilityHolds({ spawnEnv: { HOME: "/home/someone", ...spawnEnv }, cwd: "/work/repo", sources: "project", platform: "linux", reader: filesReader(files) }).env;
+
+  it("is held at 2.1.322's 200K on every turn, whatever the provider or model, since the CLI reads it only for a name it does not know", () => {
+    expect(unknownModelWindowHeld({})).toBe(true);
+    for (const env of [{}, { ANTHROPIC_BASE_URL: GATEWAY }, { CLAUDE_CODE_USE_VERTEX: "1" }, { CLAUDE_CODE_USE_BEDROCK: "1" }]) {
+      expect(holds(env), JSON.stringify(env)).toMatchObject(WINDOW_HELD);
+    }
+    for (const model of ["my-custom-deployment", "claude-gateway-latest", "claude-sonnet-4-6[1m]", "opus"]) {
+      expect(claudeCompatibilityHolds({ spawnEnv: { HOME: "/home/someone" }, cwd: "/work/repo", sources: "project", model, platform: "linux", reader: filesReader({}) }).env, model).toMatchObject(WINDOW_HELD);
+    }
+  });
+
+  it("is the person's once they set the window themselves, in the environment or a settings file", () => {
+    expect(unknownModelWindowHeld({ CLAUDE_CODE_MAX_CONTEXT_TOKENS: "128000" })).toBe(false);
+    expect(holds({ CLAUDE_CODE_MAX_CONTEXT_TOKENS: "128000" })).not.toHaveProperty("CLAUDE_CODE_MAX_CONTEXT_TOKENS");
+    expect(holds({}, { "/work/repo/.claude/settings.json": { env: { CLAUDE_CODE_MAX_CONTEXT_TOKENS: "" } } })).not.toHaveProperty("CLAUDE_CODE_MAX_CONTEXT_TOKENS");
+  });
+
+  it("is not held where compaction is off, where the variable would cap a known model's window too", () => {
+    for (const value of ["1", "true", "YES", " on "]) expect(unknownModelWindowHeld({ DISABLE_COMPACT: value }), value).toBe(false);
+    expect(holds({}, { "/work/repo/.claude/settings.json": { env: { DISABLE_COMPACT: "1" } } })).not.toHaveProperty("CLAUDE_CODE_MAX_CONTEXT_TOKENS");
+    // The CLI reads `DISABLE_COMPACT` as on only for those words, so anything else leaves compaction on and the hold in place.
+    for (const value of ["0", "false", ""]) expect(unknownModelWindowHeld({ DISABLE_COMPACT: value }), value).toBe(true);
   });
 });
 
@@ -230,20 +263,20 @@ describe("everything a turn is handed", () => {
   it("decides on the settings files as well as the spawn environment", () => {
     const reader = filesReader({ "/work/repo/.claude/settings.json": { env: { ANTHROPIC_BASE_URL: GATEWAY, CLAUDE_CODE_USE_VERTEX: "" }, model: "my-custom-deployment" } });
     expect(claudeCompatibilityHolds({ spawnEnv: { HOME: "/home/someone" }, cwd: "/work/repo", sources: "project", platform: "linux", reader })).toEqual({
-      env: { ENABLE_TOOL_SEARCH: "false", CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK: "1" },
+      env: { ENABLE_TOOL_SEARCH: "false", CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK: "1", ...WINDOW_HELD },
       settings: PRIVACY_OFF,
     });
   });
 
-  it("holds only the account-email check for a turn on Anthropic's own API with nothing set", () => {
-    expect(claudeCompatibilityHolds({ spawnEnv: { HOME: "/home/someone" }, cwd: "/work/repo", sources: "all", platform: "linux", reader: filesReader({}) })).toEqual({ env: {}, settings: PRIVACY_OFF });
+  it("holds only the account-email check and the unknown model's window for a turn on Anthropic's own API with nothing set", () => {
+    expect(claudeCompatibilityHolds({ spawnEnv: { HOME: "/home/someone" }, cwd: "/work/repo", sources: "all", platform: "linux", reader: filesReader({}) })).toEqual({ env: WINDOW_HELD, settings: PRIVACY_OFF });
   });
 
   it("never sets a variable a settings file defines, even as empty, which the CLI would lay over it", () => {
     const reader = filesReader({ "/work/repo/.claude/settings.json": { env: { CLAUDE_CODE_USE_VERTEX: "1", CLAUDE_CODE_MODEL_CATALOG: "", DISABLE_TELEMETRY: "1" } } });
     const holds = claudeCompatibilityHolds({ spawnEnv: { HOME: "/home/someone" }, cwd: "/work/repo", sources: "project", model: "my-custom-deployment", platform: "linux", reader });
     expect(holds).toEqual({
-      env: { CLAUDE_CODE_SIMPLE_SYSTEM_PROMPT: "0", CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK: "1" },
+      env: { CLAUDE_CODE_SIMPLE_SYSTEM_PROMPT: "0", CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK: "1", ...WINDOW_HELD },
       settings: PRIVACY_OFF,
     });
   });

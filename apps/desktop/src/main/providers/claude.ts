@@ -68,7 +68,8 @@ export const EO_SERVER_NAME = "eo";
  *     binary EO downloads (claude@0.3.312 / Claude Code 2.1.312, re-read
  *     at EO-599, and unchanged at claude@0.3.318 / 2.1.318: with the
  *     variable unset, a capture server's request still carried
- *     `ToolSearch`, EO-644): the
+ *     `ToolSearch`, EO-644; 2.1.329 reads the variable through the same
+ *     branches, EO-889): the
  *     mode is `ENABLE_TOOL_SEARCH` when that variable is set and `tst`
  *     — on — when it is not, and the tool is then registered. Up to
  *     2.1.302 it was not registered when the session was pointed at a
@@ -512,7 +513,8 @@ interface ApiRetry {
 /**
  * The SDK's own word for a request its sign-in could not make (EO-797).
  *
- * Read off the pinned CLI (2.1.322, `__fixtures__/claude-0.3.322-auth-errors.json`),
+ * Read off the pinned CLI (2.1.329, `__fixtures__/claude-0.3.329-auth-errors.json`,
+ * which says each case as 2.1.322 did and adds only an `api_error_type`),
  * not off its English: a refused API key, an expired or revoked OAuth
  * sign-in that could not be refreshed, and no credential at all each end
  * the turn with an assistant message whose `error` is
@@ -1365,8 +1367,9 @@ interface ClaudeAdapter {
 
 /**
  * The defaults claude@0.3.312 and claude@0.3.318 changed, held to what the
- * pin before each did (EO-599, EO-644, `claudeCompatibility.ts`), and
- * still held at claude@0.3.322 (EO-774):
+ * pin before each did (EO-599, EO-644, `claudeCompatibility.ts`), still
+ * held at claude@0.3.322 (EO-774) and at claude@0.3.329, which adds the
+ * window it assumes for a model it does not recognise (EO-889):
  * variables added to the spawn environment, and the flag settings
  * (`--settings`) that switch off a built-in plugin. Runs on the finished
  * environment, so a run's own variables count, and never sets a name the
@@ -1445,7 +1448,7 @@ function buildOptions(opts: ClaudeTurn, adapter: ClaudeAdapter): Options {
     // EO-120: the companion the SDK's own declaration asks for — "Must
     // be set to `true` when using `permissionMode: 'bypassPermissions'`.
     // This is a safety measure to ensure intentional bypassing of
-    // permissions" (sdk.d.ts:2086 at 0.3.322).
+    // permissions" (sdk.d.ts:2174 at 0.3.329).
     //
     // **It is not enforced.** Established against
     // @anthropic-ai/claude-agent-sdk 0.3.227 driving Claude Code CLI
@@ -1515,6 +1518,11 @@ function buildOptions(opts: ClaudeTurn, adapter: ClaudeAdapter): Options {
     // `if(S)B.push(Ye("--permission-mode",S))` and
     // `if(E)B.push("--allow-dangerously-skip-permissions")`.
     //
+    // EO-889 re-read it at 0.3.329: the sentence is unchanged (now at
+    // sdk.d.ts:2174) and the branches are still independent —
+    // `if(h)ne.push(et("--permission-mode",h))` and
+    // `if(E)ne.push("--allow-dangerously-skip-permissions")`.
+    //
     // So setting it is a judgement, not a fix, and the judgement is to
     // set it: EO was relying on a stated requirement going unapplied,
     // and a version bump is free to start applying it — on every
@@ -1561,8 +1569,9 @@ function buildOptions(opts: ClaudeTurn, adapter: ClaudeAdapter): Options {
     // Held to this process's own spend, not the session's, on a resumed
     // turn too (EO-490). Checked against the CLI EO pins (0.3.302, and
     // re-read at 0.3.312 for EO-599, where the two are `p0`/`kTe`, and at
-    // 0.3.318 for EO-644, where `BIe` is the second, and at 0.3.322 for
-    // EO-774, where it is `ODe`): a
+    // 0.3.318 for EO-644, where `BIe` is the second, at 0.3.322 for
+    // EO-774, where it is `ODe`, and at 0.3.329 for EO-889, where it is
+    // `Ave`): a
     // resumed session restores its cost state from the transcript, and
     // `total_cost_usd` goes on from it — but the budget check compares
     // the cap with that total *less* the restored cost (`r0`/`iSe` in
@@ -1621,7 +1630,20 @@ function buildOptions(opts: ClaudeTurn, adapter: ClaudeAdapter): Options {
   // empty object: `mcpServers` serialises into argv, and an empty one is
   // an argument declaring no servers where there was previously no
   // argument at all.
-  if (Object.keys(mcpServers).length > 0) options.mcpServers = mcpServers;
+  if (Object.keys(mcpServers).length > 0) {
+    options.mcpServers = mcpServers;
+    // EO-889: on the command line, as every SDK before 0.3.329 sent them
+    // and as 0.3.329 still does by default. That release deprecates the
+    // default for an app that starts its own CLI, as EO does, and warns
+    // once per process until the option is set ("a future SDK release
+    // sends them over stdin instead"). Named here so that future default
+    // is not adopted by a bump without anybody deciding it: `initialize`
+    // makes the prompt wait on the CLI's answer and ends the session on
+    // an error one, which is a different failure for every turn. These
+    // servers hold no secret on argv (see `applyAttachments`), which is
+    // what the stdin route exists to protect.
+    options.mcpServersDelivery = "argv";
+  }
 
   applyAttachments(options, opts.toolDirectory, config, opts.repositoryMcp, eoMcp !== undefined && (opts.memoryScopes?.length ?? 0) > 0);
 
@@ -1680,7 +1702,20 @@ function buildOptions(opts: ClaudeTurn, adapter: ClaudeAdapter): Options {
     // (EO-644) the `Agent` tool is byte-identical to 0.3.312's both ways,
     // with the variable unset and at `0`, and at claude@0.3.322 (EO-774,
     // capture server) byte-identical to 0.3.318's unset, at `0` and at
-    // `1` — the fork type there unset and at `1`, gone at `0`.
+    // `1` — the fork type there unset and at `1`, gone at `0`. At
+    // claude@0.3.329 (EO-889, capture server) the same three ways but for
+    // two words of a worked example ("GrowthBook gate" now "feature
+    // flag"), the input schema identical and the fork type where it was.
+    //
+    // What the variable does besides moved at 2.1.328 ("Changed subagents
+    // in `claude -p`, the Agent SDK … to wait for their own subagents by
+    // default when `CLAUDE_CODE_FORK_SUBAGENT=0` is set"): 2.1.322 forced
+    // a headless subagent's own spawns to wait only while forks were on
+    // (`kn=yn&&…`, `yn` being forks enabled), and 2.1.329 forces them
+    // whatever the variable says (`yn=e.agentId!==void 0&&…&&Se()`). No
+    // switch gives back the old answer short of turning forks on, which
+    // is the change this pin exists to hold, so it is accepted: a
+    // subagent's subagent now finishes before the subagent does.
     //
     // Only when the variable is unset: the CLI read a person's own
     // `CLAUDE_CODE_FORK_SUBAGENT=1` before this pin too, and the old
@@ -1696,7 +1731,8 @@ function buildOptions(opts: ClaudeTurn, adapter: ClaudeAdapter): Options {
     // person's own machine it would be mixed with theirs.
     //
     // Read from the pinned CLI (2.1.302, again at 2.1.312 for EO-599, at
-    // 2.1.318 for EO-644 and at 2.1.322 for EO-774) rather than assumed:
+    // 2.1.318 for EO-644, at 2.1.322 for EO-774 and at 2.1.329 for
+    // EO-889) rather than assumed:
     // the switch
     // is checked before any setting is, a truthy value ("1") answers
     // "off" whatever `autoMemoryEnabled` a settings file holds, and the
@@ -1733,8 +1769,8 @@ function buildOptions(opts: ClaudeTurn, adapter: ClaudeAdapter): Options {
     ...injected,
   };
   // EO-599 and EO-644: the defaults claude@0.3.312 and claude@0.3.318
-  // changed, held to what the pin before each did, and still at
-  // claude@0.3.322 (EO-774)
+  // changed, held to what the pin before each did, still at
+  // claude@0.3.322 (EO-774), and the one claude@0.3.329 changed (EO-889)
   // (`claudeCompatibility.ts`). Decided on what the CLI will see — this
   // environment, a run's own variables (EO-487) included, with the env
   // blocks of the settings files the turn loads laid over it, which
