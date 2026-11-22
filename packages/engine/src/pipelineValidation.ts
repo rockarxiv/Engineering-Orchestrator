@@ -131,6 +131,13 @@ export interface ValidatePipelineInput {
    */
   reportOnlyRoleProblems?: Readonly<Record<string, string>>;
   /**
+   * The roles a team on this pipeline may be staffed with (EO-843): a
+   * team still staffs its members by role, by the rule the scheduler
+   * staffs with, which the caller reads from the agents. Absent, it is
+   * the kinds of the enabled, live agents this pipeline's steps may name.
+   */
+  staffedRoles?: readonly string[];
+  /**
    * Why a step's isolated team could not give each member a copy of its
    * own (EO-867), by step id: the sentence naming the workspace kinds the
    * step could work in that make no copy, an error where none of them
@@ -273,6 +280,7 @@ export function validatePipeline(input: ValidatePipelineInput): WorkflowProblem[
     itemTypes = registry.itemTypes,
     reportOnlyRoleProblems = {},
     isolatedCopyProblems = {},
+    staffedRoles,
   } = input;
 
   if (steps.length === 0) {
@@ -289,7 +297,7 @@ export function validatePipeline(input: ValidatePipelineInput): WorkflowProblem[
   }
   // The report-only team an agent step runs as (EO-843): its staffing,
   // the action it answers and its limits.
-  for (const { stepId, severity, message } of teamProblems(steps, { registry, staffedRoles, runTimeoutMs, reportOnlyRoleProblems, isolatedCopyProblems })) {
+  for (const { stepId, severity, message } of teamProblems(steps, { registry, agents, staffedRoles: staffedRoles ?? staffedKinds(agents, projectId), runTimeoutMs, reportOnlyRoleProblems, isolatedCopyProblems })) {
     problems.push({ severity, stateId: stepId, message });
   }
 
@@ -1439,4 +1447,14 @@ function reachableFrom(startId: string, steps: PipelineStep[], routes: StepRoute
 
 export function hasBlockingProblem(problems: WorkflowProblem[]): boolean {
   return problems.some((problem) => problem.severity === "error");
+}
+
+/**
+ * The kinds a team may be staffed with when the caller says nothing
+ * (EO-843): those of the enabled agents, neither archived nor deleted,
+ * that this pipeline's steps may name — every global agent, and the
+ * project's own.
+ */
+function staffedKinds(agents: readonly StepAgentFacts[], projectId: string | null): string[] {
+  return [...new Set(agents.filter((agent) => agent.enabled && agent.archivedAt === null && agent.deletedAt === null && (agent.projectId === null || agent.projectId === projectId)).map((agent) => agent.role))];
 }

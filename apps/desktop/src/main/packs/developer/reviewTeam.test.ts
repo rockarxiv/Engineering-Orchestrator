@@ -683,12 +683,13 @@ describe("the template's Review team, removed through the assistant's draft and 
       entryStepId: getPipeline(handle.db, "default")!.entryStepId,
       target: { pipelineId: "default" },
       removes: [],
+      // Each agent step names its agent by name, as a draft does (EO-876).
       steps: listStepsForPipeline(handle.db, "default").map((step) => ({
         id: step.id,
         position: step.position,
         name: step.name,
         type: step.type,
-        ownerRole: step.ownerRole,
+        agent: step.agentId === null ? null : (listAgents(handle.db).find((agent) => agent.id === step.agentId)?.name ?? null),
         entryAction: step.entryAction,
         instructionsSummary: step.instructionsSummary,
         isTerminal: step.isTerminal,
@@ -736,6 +737,7 @@ describe("the template's Review team, removed through the assistant's draft and 
     expect(getPipelineOrigin(handle.db, "default")?.version).toBe("1.5");
     const team = reviewTeam();
     const routesBefore = routesOf();
+    const agentBefore = review().agentId;
 
     const { on, cardId, body } = await draftCard();
     expect(body).toContain("Team: a leader-led team → one agent");
@@ -743,7 +745,8 @@ describe("the template's Review team, removed through the assistant's draft and 
     expect(review().team).toEqual(team);
     expect(await publish(on, cardId)).toMatchObject({ ok: true, data: { saved: true } });
     expect(review().team).toBeNull();
-    expect(review()).toMatchObject({ type: "agent", ownerRole: "reviewer", entryAction: "review" });
+    // Still the reviewer agent it named (EO-875), now on its own.
+    expect(review()).toMatchObject({ type: "agent", agentId: agentBefore, entryAction: "review" });
     expect(routesOf()).toEqual(routesBefore);
 
     const item = story();
@@ -828,3 +831,4 @@ describe.each([
     expect(said).toContain('its step works in a "folder" workspace, which cannot give each member a copy of its own, so EO started nobody');
   });
 });
+

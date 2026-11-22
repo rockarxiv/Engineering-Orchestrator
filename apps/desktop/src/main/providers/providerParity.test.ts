@@ -43,7 +43,7 @@ import { readToolDirectoryServers, TOOL_PLUGIN_NAME, writeToolDirectory } from "
 import { attachmentEnvironment } from "../agentAttachments/serverEnvironment.js";
 import { attachmentsForRun } from "../db/repos/agentAttachmentsRepo.js";
 import { insertAttachments, listAgents, saveMcpServer, setAgentAttachment } from "../db/repos/index.js";
-import { createTestItem, openMigratedTestDb, openMigratedTestDbAt } from "../db/testHelpers.js";
+import { createTestItem, openMigratedTestDb, openMigratedTestDbAt, agentOfKind } from "../db/testHelpers.js";
 import { createAgent, createRoute, createStep, getItem, listRunsForItem, saveActionDefinition } from "../db/repos/index.js";
 import { noneWorkspaceKind } from "../supervisor/noneKind.js";
 import { createRunSupervisor } from "../supervisor/runSupervisor.js";
@@ -1609,8 +1609,8 @@ async function isolatedMemberThroughSupervisor(
   const answer = { outcome: "clear", report: "Looked at it in my own copy." };
   try {
     createAgent(handle.db, { name: "Quinn", role: "qa", provider: backend, instructions: "You check work against what was asked." });
-    createStep(handle.db, { id: "check", pipelineId: "default" as never, position: -2, name: "Alignment", type: "agent", ownerRole: "qa", entryAction: "alignment" });
-    createStep(handle.db, { id: "accepted", pipelineId: "default" as never, position: -1, name: "Accepted", type: "user", ownerRole: null, entryAction: null });
+    createStep(handle.db, { id: "check", pipelineId: "default" as never, position: -2, name: "Alignment", type: "agent", agentId: agentOfKind(handle.db, "qa"), entryAction: "alignment" });
+    createStep(handle.db, { id: "accepted", pipelineId: "default" as never, position: -1, name: "Accepted", type: "user", agentId: null, entryAction: null });
     createRoute(handle.db, { pipelineId: "default" as never, fromStepId: "check", resultKey: "aligned", label: "Aligned", target: "accepted", position: 0 });
     const saved = saveActionDefinition(handle.db, { role: "qa", action: "alignment", description: "Check the work.", results: [{ key: "aligned", label: "Aligned", meaning: "It is all there." }] });
     if (!saved.ok) throw new Error("no action definition");

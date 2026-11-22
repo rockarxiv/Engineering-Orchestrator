@@ -37,7 +37,7 @@ import { listRunsForItem } from "../db/repos/runsRepo.js";
 import { saveSkill } from "../db/repos/skillsRepo.js";
 import { listTeamSessionsForItem } from "../db/repos/teamSessionsRepo.js";
 import { transitionItem } from "../db/repos/transitionsRepo.js";
-import { createTestItem, openMigratedTestDbAt } from "../db/testHelpers.js";
+import { createTestItem, openMigratedTestDbAt, agentOfKind } from "../db/testHelpers.js";
 // @ts-expect-error — the service is plain JavaScript, deliberately: it ships unbundled because Codex spawns it by path.
 import * as service from "../mcp/eoServer.mjs";
 import type { AgentWriteBridge } from "../mcp/writeBridge.js";
@@ -192,9 +192,9 @@ beforeEach(() => {
   providers.clear();
   factoryAsked.length = 0;
   quinn = createAgent(handle.db, { name: "Quinn", role: "qa", provider: "claude", instructions: "You check work against what was asked." });
-  createStep(handle.db, { id: "check", pipelineId: "default" as never, position: -3, name: "Alignment", type: "agent", ownerRole: "qa", entryAction: "alignment" });
-  createStep(handle.db, { id: "rework", pipelineId: "default" as never, position: -2, name: "Rework", type: "user", ownerRole: null, entryAction: null });
-  createStep(handle.db, { id: "accepted", pipelineId: "default" as never, position: -1, name: "Accepted", type: "user", ownerRole: null, entryAction: null });
+  createStep(handle.db, { id: "check", pipelineId: "default" as never, position: -3, name: "Alignment", type: "agent", agentId: agentOfKind(handle.db, "qa"), entryAction: "alignment" });
+  createStep(handle.db, { id: "rework", pipelineId: "default" as never, position: -2, name: "Rework", type: "user", agentId: null, entryAction: null });
+  createStep(handle.db, { id: "accepted", pipelineId: "default" as never, position: -1, name: "Accepted", type: "user", agentId: null, entryAction: null });
   createRoute(handle.db, { pipelineId: "default" as never, fromStepId: "check", resultKey: "aligned", label: "Aligned", target: "accepted", position: 0 });
   createRoute(handle.db, { pipelineId: "default" as never, fromStepId: "check", resultKey: "gaps_found", label: "Gaps found", target: "rework", position: 1 });
   const saved = saveActionDefinition(handle.db, {

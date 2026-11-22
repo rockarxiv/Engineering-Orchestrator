@@ -1,5 +1,5 @@
-import { actionFactsFor, deterministicAnswerProblem, teamConfigProblems, teamMemberMode, teamResultKeys, teamRoles } from "@eo/core";
-import type { PipelineStep, RegistryFacts } from "@eo/core";
+import { actionFactsFor, deterministicAnswerProblem, stepAgentOf, teamConfigProblems, teamMemberMode, teamResultKeys, teamRoles } from "@eo/core";
+import type { PipelineStep, RegistryFacts, StepAgentFacts } from "@eo/core";
 
 /** One problem with a step's team, on that step. */
 export interface TeamProblem {
@@ -55,9 +55,11 @@ export interface IsolatedCopyProblem {
 }
 
 export function teamProblems(
-  steps: readonly Pick<PipelineStep, "id" | "name" | "type" | "ownerRole" | "entryAction" | "team">[],
+  steps: readonly Pick<PipelineStep, "id" | "name" | "type" | "agentId" | "entryAction" | "team">[],
   context: {
     registry: RegistryFacts;
+    /** The agents a step may name (EO-875): a step's action is its agent's kind's, so the team answers that kind's action. */
+    agents: readonly StepAgentFacts[];
     staffedRoles: readonly string[];
     runTimeoutMs: number;
     reportOnlyRoleProblems?: Readonly<Record<string, string>>;
@@ -92,8 +94,11 @@ export function teamProblems(
     if (team.limits.timeoutMs !== undefined && team.limits.timeoutMs > context.runTimeoutMs) {
       error(`The team on "${step.name}" allows ${team.limits.timeoutMs} ms, longer than the ${context.runTimeoutMs} ms any run may take: a team's limit can only be tighter.`);
     }
-    if (step.ownerRole !== null && step.entryAction !== null && step.entryAction !== "") {
-      const facts = actionFactsFor(context.registry, step.ownerRole, step.entryAction);
+    // The kind of the agent the step names (EO-875): the action the team
+    // answers is that kind's.
+    const kind = stepAgentOf(context.agents, step)?.role ?? null;
+    if (kind !== null && step.entryAction !== null && step.entryAction !== "") {
+      const facts = actionFactsFor(context.registry, kind, step.entryAction);
       if (facts !== undefined) {
         // What an outcome rules out is a result of this action (EO-873):
         // a key it cannot return would rule out nothing, silently.

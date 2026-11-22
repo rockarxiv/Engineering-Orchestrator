@@ -1,4 +1,4 @@
-import type { ActionFacts, PipelineStep, RegistryFacts, StepRoute, StepTeam, Uuid } from "@eo/core";
+import type { ActionFacts, PipelineStep, RegistryFacts, StepAgentFacts, StepRoute, StepTeam, Uuid } from "@eo/core";
 import { developerRegistry, StepTeamSchema } from "@eo/core";
 import { describe, expect, it } from "vitest";
 import { validatePipeline, type ValidatePipelineInput } from "./pipelineValidation.js";
@@ -9,6 +9,10 @@ import { validatePipeline, type ValidatePipelineInput } from "./pipelineValidati
  * it answers and its limits.
  */
 
+/** The agents a step may name (EO-875): a reviewer, whose kind's action the team answers, and a tester. */
+const REVIEWER: StepAgentFacts = { id: "Rex" as Uuid, name: "Rex", role: "reviewer", enabled: true, archivedAt: null, deletedAt: null, config: {}, projectId: null };
+const TESTER: StepAgentFacts = { ...REVIEWER, id: "Tess" as Uuid, name: "Tess", role: "tester" };
+
 function step(id: string, position: number, overrides: Partial<PipelineStep> = {}): PipelineStep {
   return {
     id,
@@ -16,7 +20,7 @@ function step(id: string, position: number, overrides: Partial<PipelineStep> = {
     position,
     name: id,
     type: "agent",
-    ownerRole: "reviewer",
+    agentId: REVIEWER.id,
     entryAction: "check",
     instructionsSummary: null,
     isTerminal: false,
@@ -86,9 +90,11 @@ const leader = (overrides: Record<string, unknown> = {}): StepTeam =>
 
 function pipeline(team: StepTeam | null, overrides: Partial<PipelineStep> = {}, input: Partial<ValidatePipelineInput> = {}): ValidatePipelineInput {
   return {
-    steps: [step("review", 0, { team, ...overrides }), step("done", 1, { type: "user", ownerRole: null, entryAction: null, isTerminal: true })],
+    steps: [step("review", 0, { team, ...overrides }), step("done", 1, { type: "user", agentId: null, entryAction: null, isTerminal: true })],
     routes: [route("review", "approved", "done"), route("review", "changes_requested", "done", 1)],
     entryStepId: "review",
+    agents: [REVIEWER, TESTER],
+    projectId: null,
     staffedRoles: ["reviewer", "tester"],
     itemCountByStep: {},
     existingSteps: [],
@@ -119,9 +125,9 @@ describe("validatePipeline: a team on an agent step (EO-843)", () => {
 
   it("refuses a team on a step that is not an agent's", () => {
     const input = pipeline(null);
-    input.steps = [input.steps[0]!, step("done", 1, { type: "user", ownerRole: null, entryAction: null, isTerminal: true, team: independent() })];
+    input.steps = [input.steps[0]!, step("done", 1, { type: "user", agentId: null, entryAction: null, isTerminal: true, team: independent() })];
     expect(teamErrors(input)).toEqual([expect.stringContaining('"done" has a team, but only a step an agent does')]);
-    const builtin = pipeline(independent(), { type: "builtin", ownerRole: null, entryAction: "open_pr" });
+    const builtin = pipeline(independent(), { type: "builtin", agentId: null, entryAction: "open_pr" });
     expect(teamErrors(builtin)).toContainEqual(expect.stringContaining('"review" has a team, but only a step an agent does'));
   });
 
@@ -139,7 +145,7 @@ describe("validatePipeline: a team on an agent step (EO-843)", () => {
   it("refuses an independent team on an action whose answer it would have to invent fields for, and says why", () => {
     expect(teamErrors(pipeline(independent(), { entryAction: "audit" }))).toEqual([expect.stringMatching(/also requires "findings"\. Use a leader-led team/)]);
     // A pack's action is shaped by the pack: never answered with a shape it did not ask for.
-    const packAction = pipeline(independent(), { ownerRole: "reviewer", entryAction: "review" });
+    const packAction = pipeline(independent(), { agentId: REVIEWER.id, entryAction: "review" });
     expect(teamErrors(packAction)).toContainEqual(expect.stringContaining(`"review" is a pack's action, whose answer the pack shapes`));
     expect(teamErrors(pipeline(independent(), { entryAction: "unheard_of" }))).toContainEqual(expect.stringContaining("nothing defines that action"));
     expect(teamErrors(pipeline(leader(), { entryAction: "unheard_of" }))).toContainEqual(expect.stringContaining("which nothing defines"));

@@ -82,16 +82,19 @@ function agent(handle: DbHandle, name: string, role: string, extra: { projectId?
 
 /**
  * A step is read back through today's code once the migration has run;
- * before it, `pipeline_steps` has no `agent_id`, so the repository calls
+ * before it, `pipeline_steps` has no `agent_id` (nor 0182's `team`), so the repository calls
  * that read steps run with the column added for the moment and taken off
  * again (the way migrate.test.ts reaches older schemas).
  */
 function withTodaysStepColumn<T>(handle: DbHandle, act: () => T): T {
   handle.db.run(sql`ALTER TABLE pipeline_steps ADD agent_id text`);
+  // And the one 0182 adds (EO-843).
+  handle.db.run(sql`ALTER TABLE pipeline_steps ADD team text`);
   try {
     return act();
   } finally {
     handle.db.run(sql`ALTER TABLE pipeline_steps DROP COLUMN agent_id`);
+    handle.db.run(sql`ALTER TABLE pipeline_steps DROP COLUMN team`);
   }
 }
 

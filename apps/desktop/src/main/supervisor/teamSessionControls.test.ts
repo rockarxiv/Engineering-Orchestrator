@@ -28,7 +28,7 @@ import { createStep } from "../db/repos/pipelineStepsRepo.js";
 import { createRun, getRun, listRunsForItem, updateRun } from "../db/repos/runsRepo.js";
 import { listTeamSessionsForItem, mirrorTeamSession, openTeamSession } from "../db/repos/teamSessionsRepo.js";
 import { listTransitionsForItem } from "../db/repos/transitionsRepo.js";
-import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
+import { createTestItem, openMigratedTestDb, agentOfKind } from "../db/testHelpers.js";
 import { moveItem, postCommentCommand, type EngineHandle } from "../ipc/domainCommands.js";
 import { cancelTeamSessionCommand, retryTeamSessionCommand } from "../ipc/teamCommands.js";
 import { createRunSupervisor, type RunSupervisor } from "./runSupervisor.js";
@@ -108,7 +108,7 @@ function supervisor(extra: Partial<Parameters<typeof createRunSupervisor>[0]> = 
 }
 
 function stepWithTeam(value: IndependentTeam): void {
-  createStep(handle.db, { id: "check", pipelineId: "default" as never, position: -3, name: "Alignment", type: "agent", ownerRole: "qa", entryAction: "alignment", team: value });
+  createStep(handle.db, { id: "check", pipelineId: "default" as never, position: -3, name: "Alignment", type: "agent", agentId: agentOfKind(handle.db, "qa"), entryAction: "alignment", team: value });
 }
 
 beforeEach(() => {
@@ -120,8 +120,8 @@ beforeEach(() => {
   // On another backend: a team mixes them, and each turn is attributed to its own (EO-849).
   createAgent(handle.db, { name: "Tess", role: "tester", provider: "codex", model: "gpt-5", instructions: "You read tests." });
   stepWithTeam(team());
-  createStep(handle.db, { id: "rework", pipelineId: "default" as never, position: -2, name: "Rework", type: "user", ownerRole: null, entryAction: null });
-  createStep(handle.db, { id: "accepted", pipelineId: "default" as never, position: -1, name: "Accepted", type: "user", ownerRole: null, entryAction: null });
+  createStep(handle.db, { id: "rework", pipelineId: "default" as never, position: -2, name: "Rework", type: "user", agentId: null, entryAction: null });
+  createStep(handle.db, { id: "accepted", pipelineId: "default" as never, position: -1, name: "Accepted", type: "user", agentId: null, entryAction: null });
   createRoute(handle.db, { pipelineId: "default" as never, fromStepId: "check", resultKey: "aligned", label: "Aligned", target: "accepted", position: 0 });
   createRoute(handle.db, { pipelineId: "default" as never, fromStepId: "check", resultKey: "gaps_found", label: "Gaps found", target: "rework", position: 1 });
   const saved = saveActionDefinition(handle.db, {

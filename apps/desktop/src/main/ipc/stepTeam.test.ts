@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { StepTeamSchema, TEAM_REPORT_ONLY, type IpcChannel, type IpcPayload, type IpcResponse, type PipelineStep, type StepTeam, type Uuid } from "@eo/core";
 import type { DbHandle } from "../db/client.js";
-import { openMigratedTestDb } from "../db/testHelpers.js";
+import { openMigratedTestDb, agentOfKind } from "../db/testHelpers.js";
 import { saveActionDefinition } from "../db/repos/actionDefinitionsRepo.js";
 import { copyPipeline } from "../db/repos/pipelineCopyRepo.js";
 import { createPipeline, createProject, createRoute, createStep, currentVersion, listAgents, listStepsForPipeline, setEntryStep, updateAgent, versionSnapshot } from "../db/repos/index.js";
@@ -57,7 +57,7 @@ beforeEach(() => {
   if (!defined.ok) throw new Error(JSON.stringify(defined));
   projectId = createProject(handle.db, { name: "Workbench", keyPrefix: "WRK" }).id as Uuid;
   pipelineId = createPipeline(handle.db, { projectId, name: "Checks" }).id as Uuid;
-  check = createStep(handle.db, { pipelineId, position: 0, name: "Check", type: "agent", ownerRole: "reviewer", entryAction: "check" });
+  check = createStep(handle.db, { pipelineId, position: 0, name: "Check", type: "agent", agentId: agentOfKind(handle.db, "reviewer"), entryAction: "check" });
   done = createStep(handle.db, { pipelineId, position: 1, name: "Done", type: "user", isTerminal: true });
   createRoute(handle.db, { pipelineId, fromStepId: check.id, resultKey: "approved", label: "Approved", tone: "success", target: done.id, position: 0 });
   createRoute(handle.db, { pipelineId, fromStepId: check.id, resultKey: "changes_requested", label: "Changes", tone: "warning", target: done.id, position: 1 });

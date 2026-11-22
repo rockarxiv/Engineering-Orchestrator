@@ -12,7 +12,7 @@ import { getItem } from "../db/repos/itemsRepo.js";
 import { createStep } from "../db/repos/pipelineStepsRepo.js";
 import { listRunsForItem } from "../db/repos/runsRepo.js";
 import { listTeamSessionsForItem } from "../db/repos/teamSessionsRepo.js";
-import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
+import { createTestItem, openMigratedTestDb, agentOfKind } from "../db/testHelpers.js";
 import { DEFAULT_GUARD_CONFIG } from "../ipc/configCommands.js";
 import { createRunSupervisor, type RunSupervisor } from "./runSupervisor.js";
 import type { ReportOnlyProviderAnswer } from "./teamSupervisor.js";
@@ -148,9 +148,9 @@ beforeEach(() => {
   member = answers();
   reviewer = createAgent(handle.db, { name: "Rhea", role: "checker", provider: "claude", instructions: "You review." });
   // The team's step and a step of no team, each the same agent's: a single run of it is one run of Rhea.
-  createStep(handle.db, { id: "team_review", pipelineId: "default" as never, position: -4, name: "Review", type: "agent", ownerRole: "checker", entryAction: "alignment", team: teamOfOne() });
-  createStep(handle.db, { id: "solo_check", pipelineId: "default" as never, position: -3, name: "Solo check", type: "agent", ownerRole: "checker", entryAction: "alignment" });
-  createStep(handle.db, { id: "team_accepted", pipelineId: "default" as never, position: -1, name: "Accepted", type: "user", ownerRole: null, entryAction: null });
+  createStep(handle.db, { id: "team_review", pipelineId: "default" as never, position: -4, name: "Review", type: "agent", agentId: agentOfKind(handle.db, "checker"), entryAction: "alignment", team: teamOfOne() });
+  createStep(handle.db, { id: "solo_check", pipelineId: "default" as never, position: -3, name: "Solo check", type: "agent", agentId: agentOfKind(handle.db, "checker"), entryAction: "alignment" });
+  createStep(handle.db, { id: "team_accepted", pipelineId: "default" as never, position: -1, name: "Accepted", type: "user", agentId: null, entryAction: null });
   for (const from of ["team_review", "solo_check"]) createRoute(handle.db, { pipelineId: "default" as never, fromStepId: from, resultKey: "aligned", label: "Aligned", target: "team_accepted", position: 0 });
   const saved = saveActionDefinition(handle.db, {
     role: "checker",

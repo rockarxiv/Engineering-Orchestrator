@@ -246,6 +246,7 @@ describe("the agent each step of the diff runs", () => {
     watch: null,
     moduleVersion: null,
     brief: null,
+    team: null,
   });
   const names = new Map([
     ["reviewer-claude", "Reviewer"],

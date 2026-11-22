@@ -29,7 +29,7 @@ import { createStep } from "../db/repos/pipelineStepsRepo.js";
 import { createRun, getRun, listRunsForItem, updateRun } from "../db/repos/runsRepo.js";
 import { acceptTeamReport, endTeamSession, listTeamSessionsForItem, openTeamSession, startTeamAttempt, teamSessionTotals } from "../db/repos/teamSessionsRepo.js";
 import { listTransitionsForItem } from "../db/repos/transitionsRepo.js";
-import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
+import { createTestItem, openMigratedTestDb, agentOfKind } from "../db/testHelpers.js";
 import { createRunSupervisor, type RunSupervisor } from "./runSupervisor.js";
 import { taskContextOf } from "./teamEvidence.js";
 import type { ReportOnlyProviderAnswer } from "./teamSupervisor.js";
@@ -135,9 +135,9 @@ function setup(leaderProvider: "claude" | "codex" = "claude", participantProvide
   lee = createAgent(handle.db, { name: "Lee", role: "lead", provider: leaderProvider, instructions: "You lead reviews." });
   createAgent(handle.db, { name: "Sasha", role: "sec", provider: participantProviders.sec, instructions: "You find ways in." });
   createAgent(handle.db, { name: "Tess", role: "tester", provider: participantProviders.tester, instructions: "You read tests." });
-  createStep(handle.db, { id: "check", pipelineId: "default" as never, position: -3, name: "Alignment", type: "agent", ownerRole: "qa", entryAction: "alignment", team: leaderTeam() });
-  createStep(handle.db, { id: "rework", pipelineId: "default" as never, position: -2, name: "Rework", type: "user", ownerRole: null, entryAction: null });
-  createStep(handle.db, { id: "accepted", pipelineId: "default" as never, position: -1, name: "Accepted", type: "user", ownerRole: null, entryAction: null });
+  createStep(handle.db, { id: "check", pipelineId: "default" as never, position: -3, name: "Alignment", type: "agent", agentId: agentOfKind(handle.db, "qa"), entryAction: "alignment", team: leaderTeam() });
+  createStep(handle.db, { id: "rework", pipelineId: "default" as never, position: -2, name: "Rework", type: "user", agentId: null, entryAction: null });
+  createStep(handle.db, { id: "accepted", pipelineId: "default" as never, position: -1, name: "Accepted", type: "user", agentId: null, entryAction: null });
   createRoute(handle.db, { pipelineId: "default" as never, fromStepId: "check", resultKey: "aligned", label: "Aligned", target: "accepted", position: 0 });
   createRoute(handle.db, { pipelineId: "default" as never, fromStepId: "check", resultKey: "gaps_found", label: "Gaps found", target: "rework", position: 1 });
   const saved = saveActionDefinition(handle.db, {

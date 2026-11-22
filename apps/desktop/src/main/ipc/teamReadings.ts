@@ -3,6 +3,7 @@ import {
   deterministicAnswerProblem,
   NONE_KIND,
   staffingAgents,
+  stepAgentOf,
   stepWorkspaceChoice,
   teamFacts,
   teamMemberMode,
@@ -141,7 +142,10 @@ export function teamReadings(steps: readonly PipelineStep[], context: TeamReadin
     const team = step.team;
     if (team === null || team === undefined) return [];
     const action = step.entryAction === null || step.entryAction === "" ? null : step.entryAction;
-    const facts = step.ownerRole === null || action === null ? undefined : actionFactsFor(context.registry, step.ownerRole, action);
+    // The kind of the agent the step names (EO-875): the action the team
+    // answers is that kind's.
+    const kind = stepAgentOf(context.agents, step)?.role ?? null;
+    const facts = kind === null || action === null ? undefined : actionFactsFor(context.registry, kind, action);
     const finalProblem =
       action === null
         ? `"${step.name}" has no action for the team to answer.`
@@ -168,10 +172,10 @@ export function teamReadings(steps: readonly PipelineStep[], context: TeamReadin
         }),
         members: teamMemberMode(team),
         reportOnly: teamRightsWords(team),
-        finalAction: { role: step.ownerRole, action, answeredBy: team.coordination === "independent" ? "eo" : "leader", problem: finalProblem },
+        finalAction: { role: kind, action, answeredBy: team.coordination === "independent" ? "eo" : "leader", problem: finalProblem },
         results: team.coordination === "independent" ? teamResultKeys(team) : (facts?.results.map((result) => result.key) ?? []),
         facts: teamFacts(team),
-        problems: teamProblems([step], { registry: context.registry, staffedRoles: context.staffedRoles, runTimeoutMs: context.runTimeoutMs, reportOnlyRoleProblems: roleProblems, isolatedCopyProblems: copyProblems }).map(
+        problems: teamProblems([step], { registry: context.registry, agents: context.agents, staffedRoles: context.staffedRoles, runTimeoutMs: context.runTimeoutMs, reportOnlyRoleProblems: roleProblems, isolatedCopyProblems: copyProblems }).map(
           (problem) => problem.message,
         ),
       },

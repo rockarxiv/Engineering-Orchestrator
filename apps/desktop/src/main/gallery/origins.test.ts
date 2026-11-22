@@ -79,7 +79,8 @@ describe("matching step ids against the history", () => {
     const onFourteen = templateHistoryUpTo(GALLERY_DIRECTORY, SOFTWARE, "1.4");
     backfillPipelineOrigins(handle.db, onFourteen);
     applyTemplateUpdates(handle.db, onFourteen, { isTheRecord: false });
-    const steps = listStepsForPipeline(handle.db, "default");
+    const agents = listAgents(handle.db);
+    const steps = listStepsForPipeline(handle.db, "default").map((step) => withKind(agents, step));
     const ids = steps.map((step) => step.id);
     expect(steps.find((step) => step.id === "review")?.team).toBeNull();
     expect(matchTemplateVersion(ids, history, steps)?.version.version).toBe("1.4");
@@ -98,7 +99,8 @@ describe("matching step ids against the history", () => {
     const onFifteen = templateHistoryUpTo(GALLERY_DIRECTORY, SOFTWARE, "1.5");
     backfillPipelineOrigins(handle.db, onFifteen);
     applyTemplateUpdates(handle.db, onFifteen, { isTheRecord: false });
-    const steps = listStepsForPipeline(handle.db, "default");
+    const agents = listAgents(handle.db);
+    const steps = listStepsForPipeline(handle.db, "default").map((step) => withKind(agents, step));
     const ids = steps.map((step) => step.id);
     const teamOf = (version: string) => history.get(SOFTWARE)!.find((entry) => entry.version === version)!.document.steps.find((step) => step.id === "review")!.team!;
     const withTeam = (version: string) => steps.map((step) => (step.id === "review" ? { ...step, team: teamOf(version) } : step));

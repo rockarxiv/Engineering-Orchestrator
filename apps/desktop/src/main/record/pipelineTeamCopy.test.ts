@@ -3,7 +3,7 @@ import { ipcContract, RecordPipelineSchema, RecordProjectSchema, StepTeamSchema,
 import type { DbHandle } from "../db/client.js";
 import { createPerson, createPipeline, createProject, createStep, getProject, listStepsForPipeline, setEntryStep } from "../db/repos/index.js";
 import { listPipelinesUpdatedSince, readProjectItems, readProjectItemTypes, readProjectPipelines, upsertReplicaPipeline, writeAdoptedPage, writeAdoptedProject } from "../db/repos/projectMoveRepo.js";
-import { openMigratedTestDb } from "../db/testHelpers.js";
+import { openMigratedTestDb, agentOfKind } from "../db/testHelpers.js";
 
 /**
  * The organisation record's copy of a step's team (EO-843).
@@ -39,7 +39,7 @@ afterEach(() => {
 /** A pipeline whose one agent step runs as `TEAM`, on `db`. */
 function teamPipeline(db: DbHandle, projectId: Uuid | null = null): string {
   const pipeline = createPipeline(db.db, { projectId, name: "Reviews" });
-  createStep(db.db, { id: "team-review", pipelineId: pipeline.id, position: 0, name: "Review", type: "agent", ownerRole: "reviewer", entryAction: "review", team: TEAM });
+  createStep(db.db, { id: "team-review", pipelineId: pipeline.id, position: 0, name: "Review", type: "agent", agentId: agentOfKind(db.db, "reviewer"), entryAction: "review", team: TEAM });
   createStep(db.db, { id: "team-done", pipelineId: pipeline.id, position: 1, name: "Done", type: "user", isTerminal: true });
   setEntryStep(db.db, pipeline.id, "team-review");
   return pipeline.id;

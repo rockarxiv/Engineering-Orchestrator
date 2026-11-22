@@ -23,7 +23,7 @@ import {
   updateRun,
 } from "../db/repos/index.js";
 import { getTeamSession, openTeamSession } from "../db/repos/teamSessionsRepo.js";
-import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
+import { createTestItem, openMigratedTestDb, agentOfKind } from "../db/testHelpers.js";
 import { sectionLockFor } from "../managed/locks.js";
 import { assistAgent, postAssistReply } from "../roles/assist.js";
 import { ASSIST_ACTION } from "../roles/conversationSteps.js";
@@ -90,7 +90,7 @@ beforeEach(() => {
   if (!defined.ok) throw new Error(JSON.stringify(defined));
   projectId = createProject(handle.db, { name: "Workbench", keyPrefix: "WRK" }).id as Uuid;
   pipelineId = createPipeline(handle.db, { projectId, name: "Checks" }).id as Uuid;
-  checkId = createStep(handle.db, { pipelineId, position: 0, name: "Check", type: "agent", ownerRole: "reviewer", entryAction: "check" }).id;
+  checkId = createStep(handle.db, { pipelineId, position: 0, name: "Check", type: "agent", agentId: agentOfKind(handle.db, "reviewer"), entryAction: "check" }).id;
   doneId = createStep(handle.db, { pipelineId, position: 1, name: "Done", type: "user", isTerminal: true }).id;
   createRoute(handle.db, { pipelineId, fromStepId: checkId, resultKey: "approved", label: "Approved", tone: "success", target: doneId, position: 0 });
   createRoute(handle.db, { pipelineId, fromStepId: checkId, resultKey: "changes_requested", label: "Changes", tone: "warning", target: doneId, position: 1 });
@@ -122,6 +122,12 @@ async function conversation(): Promise<Item> {
   return getItem(handle.db, sent.conversation.id as Uuid)!;
 }
 
+/** The name of the reviewer agent Check names, as a draft names it. */
+function reviewerName(): string {
+  const id = agentOfKind(handle.db, "reviewer");
+  return listAgents(handle.db).find((agent) => agent.id === id)!.name;
+}
+
 /** The draft of this pipeline with Check given `team` and, optionally, other step fields. */
 function draft(team: unknown, check: Record<string, unknown> = {}, routes?: { resultKey: string; label: string }[]) {
   const step = (id: string, position: number, rest: Record<string, unknown>) => ({ id, position, instructionsSummary: null, isTerminal: false, planMode: false, ...rest });
@@ -131,8 +137,9 @@ function draft(team: unknown, check: Record<string, unknown> = {}, routes?: { re
     target: { pipelineId },
     removes: [],
     steps: [
-      step(checkId, 0, { name: "Check", type: "agent", ownerRole: "reviewer", entryAction: "check", ...(team === undefined ? {} : { team }), ...check }),
-      step(doneId, 1, { name: "Done", type: "user", ownerRole: null, entryAction: null, isTerminal: true }),
+      // A draft names the step's agent by name (EO-876).
+      step(checkId, 0, { name: "Check", type: "agent", agent: reviewerName(), entryAction: "check", ...(team === undefined ? {} : { team }), ...check }),
+      step(doneId, 1, { name: "Done", type: "user", agent: null, entryAction: null, isTerminal: true }),
     ],
     routes: (routes ?? [
       { resultKey: "approved", label: "Approved" },
@@ -319,7 +326,7 @@ describe("a team drafted by the assistant (EO-848)", () => {
     });
 
     it("a team on a step that is not an agent's", async () => {
-      const reason = await refused(INDEPENDENT, { type: "user", ownerRole: null, entryAction: null });
+      const reason = await refused(INDEPENDENT, { type: "user", agent: null, entryAction: null });
       expect(reason).toContain(`"Check" has a team, but only a step an agent does can run as one.`);
     });
 

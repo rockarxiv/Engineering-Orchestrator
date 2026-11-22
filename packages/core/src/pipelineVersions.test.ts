@@ -385,7 +385,7 @@ describe("the difference between two versions", () => {
   /** The team an agent step runs as (EO-843): configuring, changing or removing it is a change, and a version from before teams is one agent. */
   it("lists a team configured, changed and removed, and reads a version written before teams as one agent", () => {
     const team = StepTeamSchema.parse({ coordination: "leader", leader: { role: "reviewer", instructions: "Split it." }, roles: ["tester"] });
-    const steps = (each: VersionStep["team"]) => [step({ type: "agent", ownerRole: "reviewer", entryAction: "check", team: each })];
+    const steps = (each: VersionStep["team"]) => [step({ type: "agent", agentId: "rex", entryAction: "check", team: each })];
     const configured = diffVersions({ number: 1, steps: steps(null), routes: [] }, { number: 2, steps: steps(team), routes: [] });
     expect(configured.steps[0]?.fields).toEqual([{ field: "team", before: "one agent", after: teamWords(team) }]);
     const tighter = StepTeamSchema.parse({ ...team, limits: { maxParallel: 1 } });
@@ -407,7 +407,7 @@ describe("the difference between two versions", () => {
   it("lists a team whose only change is an outcome's label or its meaning", () => {
     const team = (outcome: object) =>
       StepTeamSchema.parse({ coordination: "leader", leader: { role: "reviewer", instructions: "Split it." }, roles: ["tester"], outcomes: [outcome] });
-    const steps = (each: VersionStep["team"]) => [step({ type: "agent", ownerRole: "reviewer", entryAction: "check", team: each })];
+    const steps = (each: VersionStep["team"]) => [step({ type: "agent", agentId: "rex", entryAction: "check", team: each })];
     const before = team({ key: "clear", label: "Clear", meaning: "Nothing needs changing." });
     for (const after of [team({ key: "clear", label: "All clear", meaning: "Nothing needs changing." }), team({ key: "clear", label: "Clear", meaning: "Nothing at all needs changing." })]) {
       expect(diffVersions({ number: 1, steps: steps(before), routes: [] }, { number: 2, steps: steps(after), routes: [] }).steps[0]?.fields).toEqual([
