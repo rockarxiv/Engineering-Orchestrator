@@ -46,6 +46,12 @@ const BACKENDS: Backend[] = ["claude", "codex"];
 const CODEX_EXECUTABLE = "/opt/eo/runtimes/codex/bin/codex";
 const ROOMY = { globalConcurrency: 1, perAgentConcurrency: 2, perRepositoryConcurrency: 1 };
 const HOUR = 3_600_000;
+/**
+ * A Codex team takes about a second here, each turn a client brought up
+ * and shut down over the stubbed app-server, so `waitFor`'s one-second
+ * default is too short on a slower CI runner (macOS, Windows).
+ */
+const SLOW_RUNNER = { timeout: 15_000 };
 /** Fixed, so a reset is arithmetic. */
 const START = Date.UTC(2026, 10, 21, 9, 0);
 /** When a window refused `hours` after the start comes back, as both backends say it: seconds. */
@@ -267,7 +273,7 @@ describe.each(BACKENDS)("a team on %s whose runtime refuses a turn (EO-886)", (b
 
     // Past the leader's limit: one stop, no failure, and the runtime held.
     ticking();
-    await vi.waitFor(() => expect(attempts().filter((attempt) => attempt.assignmentKey === LEADER_ASSIGNMENT_KEY && attempt.status === "cancelled")).toHaveLength(1));
+    await vi.waitFor(() => expect(attempts().filter((attempt) => attempt.assignmentKey === LEADER_ASSIGNMENT_KEY && attempt.status === "cancelled")).toHaveLength(1), SLOW_RUNNER);
     const limited = attempts()[0]!;
     expect(limited.error).toContain(`The "${backend}" backend refused this run`);
     expect(attempts().filter((attempt) => attempt.status === "failed")).toEqual([]);
@@ -275,20 +281,20 @@ describe.each(BACKENDS)("a team on %s whose runtime refuses a turn (EO-886)", (b
     expect(notes().filter((body) => body.startsWith(runtimeLimitHoldPrefix(backend)))).toHaveLength(1);
     expect(participantRuns()[0]).toMatchObject({ status: "cancelled", error: limited.error });
     // Nothing more starts on the held runtime, and the panel says why.
-    await vi.waitFor(() => expect(waitingSaid().some((text) => text.includes("Lee's backend cannot run here right now"))).toBe(true));
+    await vi.waitFor(() => expect(waitingSaid().some((text) => text.includes("Lee's backend cannot run here right now"))).toBe(true), SLOW_RUNNER);
     expect(started).toEqual([{ agent: "Lee", backend }]);
     expect(stepNow()).toBe("check");
 
     // The window comes back: the leader assigns, Sasha reports, and Tess is refused mid-answer.
     clock = START + HOUR + 1;
-    await vi.waitFor(() => expect(attempts().filter((attempt) => attempt.assignmentKey === "suite" && attempt.status === "cancelled")).toHaveLength(1));
-    await vi.waitFor(() => expect(attempts().filter((attempt) => attempt.assignmentKey === "auth" && attempt.status === "completed")).toHaveLength(1));
+    await vi.waitFor(() => expect(attempts().filter((attempt) => attempt.assignmentKey === "suite" && attempt.status === "cancelled")).toHaveLength(1), SLOW_RUNNER);
+    await vi.waitFor(() => expect(attempts().filter((attempt) => attempt.assignmentKey === "auth" && attempt.status === "completed")).toHaveLength(1), SLOW_RUNNER);
     expect(attempts().filter((attempt) => attempt.status === "failed")).toEqual([]);
     expect(messagesFrom(handle.db, RUNTIME_LIMIT_SOURCE).filter((message) => message.handledAt === null)).toHaveLength(1);
 
     // Back again: only Tess runs again, and the leader settles on both reports.
     clock = START + 2 * HOUR + 1;
-    await vi.waitFor(() => expect(stepNow()).toBe("accepted"));
+    await vi.waitFor(() => expect(stepNow()).toBe("accepted"), SLOW_RUNNER);
     expect(started.filter((one) => one.agent === "Sasha")).toHaveLength(1);
     expect(started.every((one) => one.backend === backend)).toBe(true);
     expect(attempts().filter((attempt) => attempt.status === "failed")).toEqual([]);
@@ -303,19 +309,19 @@ describe.each(BACKENDS)("a team on %s whose runtime refuses a turn (EO-886)", (b
       Tess: [{ kind: "answer", data: () => report("Tess read the CSV tests.") }],
     };
     ticking();
-    await vi.waitFor(() => expect(attempts().filter((attempt) => attempt.assignmentKey === "auth" && attempt.status === "cancelled")).toHaveLength(1));
+    await vi.waitFor(() => expect(attempts().filter((attempt) => attempt.assignmentKey === "auth" && attempt.status === "cancelled")).toHaveLength(1), SLOW_RUNNER);
     const stopped = attempts().find((attempt) => attempt.assignmentKey === "auth")!;
     expect(stopped.error).toContain("Stopped for a sign-in");
     const signIns = messagesFrom(handle.db, RUNTIME_SIGN_IN_SOURCE);
     expect(signIns).toHaveLength(1);
     expect(signIns[0]?.options).toContainEqual({ kind: "open", label: "Sign in", opens: { type: "runtimeSignIn", runtime: backend } });
     expect(notes().some((body) => body.includes("Its sign-in stopped working while the run was going"))).toBe(true);
-    await vi.waitFor(() => expect(attempts().some((attempt) => attempt.assignmentKey === "suite" && attempt.status === "completed")).toBe(true));
-    await vi.waitFor(() => expect(waitingSaid().some((text) => text.includes("Sasha's backend cannot run here right now"))).toBe(true));
+    await vi.waitFor(() => expect(attempts().some((attempt) => attempt.assignmentKey === "suite" && attempt.status === "completed")).toBe(true), SLOW_RUNNER);
+    await vi.waitFor(() => expect(waitingSaid().some((text) => text.includes("Sasha's backend cannot run here right now"))).toBe(true), SLOW_RUNNER);
     expect(attempts().filter((attempt) => attempt.status === "failed")).toEqual([]);
 
     runtimeSignedIn(backend);
-    await vi.waitFor(() => expect(stepNow()).toBe("accepted"));
+    await vi.waitFor(() => expect(stepNow()).toBe("accepted"), SLOW_RUNNER);
     expect(started.filter((one) => one.agent === "Sasha")).toHaveLength(2);
     expect(started.filter((one) => one.agent === "Tess")).toHaveLength(1);
     expect(messagesFrom(handle.db, RUNTIME_SIGN_IN_SOURCE).map((message) => message.handledHow)).toEqual(["resolved"]);
@@ -376,7 +382,7 @@ describe.each(BACKENDS)("a person's Retry on a leader-led team on %s (EO-886)", 
     plans.Lee = [{ kind: "answer", data: finalOnReports }];
     const roundsBefore = new Set(attempts().map((attempt) => attempt.round));
     expect(retryTeamSessionCommand(handle.db, engine as unknown as EngineHandle, { sessionId: view.id }).retried).toBe(true);
-    await vi.waitFor(() => expect(stepNow()).toBe("accepted"));
+    await vi.waitFor(() => expect(stepNow()).toBe("accepted"), SLOW_RUNNER);
 
     // The members ran again, both before the leader's answer, which rests on their reports.
     const turns = started.slice(-3).map((one) => one.agent);
@@ -413,15 +419,15 @@ describe.each(BACKENDS)("a team on %s and a runtime already on hold (EO-886)", (
       resume: (_threadId, _message, opts) => turnOn(backend, { kind: "limit", back: 1 }, { instructions: "", context: "", cwd: scratch, ...opts } as AgentProviderStartOptions),
     };
     ticking({ provider: (agent: Agent) => (agent.id === ivy.id ? limited : ownerProvider) });
-    await vi.waitFor(() => expect(listRunsForItem(handle.db, other.id).some((run) => run.interruption === "limit")).toBe(true));
-    await vi.waitFor(() => expect(waitingSaid().some((text) => text.includes("Lee's backend cannot run here right now"))).toBe(true));
+    await vi.waitFor(() => expect(listRunsForItem(handle.db, other.id).some((run) => run.interruption === "limit")).toBe(true), SLOW_RUNNER);
+    await vi.waitFor(() => expect(waitingSaid().some((text) => text.includes("Lee's backend cannot run here right now"))).toBe(true), SLOW_RUNNER);
     expect(started).toEqual([]);
     expect(notes().some((body) => body.startsWith(runtimeLimitHoldPrefix(backend)))).toBe(true);
     expect(messagesFrom(handle.db, RUNTIME_LIMIT_SOURCE)).toHaveLength(1);
     expect(stepNow()).toBe("check");
 
     clock = START + HOUR + 1;
-    await vi.waitFor(() => expect(stepNow()).toBe("accepted"));
+    await vi.waitFor(() => expect(stepNow()).toBe("accepted"), SLOW_RUNNER);
     expect(started.map((one) => one.agent)).toEqual(["Lee", "Sasha", "Tess", "Lee"]);
     expect(attempts().every((attempt) => attempt.status === "completed")).toBe(true);
   });
