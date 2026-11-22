@@ -109,9 +109,27 @@ function actOnAnswer(db: Db, message: Message): void {
   try {
     const fired = answerSkipMessage(db, message);
     if (fired instanceof Promise) fired.catch(failed);
+    answerHandlers.get(message.source)?.(db, message);
   } catch (error) {
     failed(error);
   }
+}
+
+/** What else an answer sets going, by the message's source (`onMessageAnswered`). */
+const answerHandlers = new Map<string, (db: Db, message: Message) => void>();
+
+/**
+ * Sets what answering a source's messages does, where that needs what
+ * only the process's start has (EO-877): choosing the agent a template
+ * update's new steps run applies the update, which needs the template
+ * history read off the app's resources. One handler per source; a later
+ * call replaces it. Answers what takes it away again.
+ */
+export function onMessageAnswered(source: string, handler: (db: Db, message: Message) => void): () => void {
+  answerHandlers.set(source, handler);
+  return () => {
+    if (answerHandlers.get(source) === handler) answerHandlers.delete(source);
+  };
 }
 
 /**

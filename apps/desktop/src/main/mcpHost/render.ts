@@ -1156,6 +1156,25 @@ export function renderModuleVersion(data: IpcResponse<"moduleVersions:get">): st
 const MAX_RENDERED_CASE_OUTPUT = 2000;
 
 /** One test run: a line per case, a failure's message and output beneath it, then the coverage. */
+/**
+ * Which agent a document's kind binds to on import (EO-877), as
+ * `pipeline_import_check` says it: the agent there is, the several to
+ * choose between in `pipeline_import`'s `agents`, one made from the
+ * document's prompt, or none.
+ */
+export function kindBindingLine(slot: { binding: "existing" | "choose" | "create" | "none"; agents: readonly { id: string; name: string; backend: string }[] }): string {
+  switch (slot.binding) {
+    case "existing":
+      return `its steps would name ${slot.agents[0]?.name ?? "the agent of this kind here"} (${slot.agents[0]?.id ?? "?"})`;
+    case "choose":
+      return `several agents here — choose one in agents: ${slot.agents.map((agent) => `${agent.name} (${agent.id}, ${agent.backend})`).join(", ")}`;
+    case "create":
+      return "no agent of this kind here, so one would be created from the document's prompt and its steps would name it";
+    case "none":
+      return "no agent of this kind here and no prompt to create one from, so its steps would name no agent";
+  }
+}
+
 export function renderModuleTestRun(run: ModuleTestRun): string {
   if (run.cases.length === 0) return "This module has no test cases, so nothing ran. Line and branch coverage are 0%.";
   const lines = run.cases.map((each) => {

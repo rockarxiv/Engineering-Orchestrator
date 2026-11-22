@@ -4,9 +4,9 @@ import {
   GIT_WORKTREE_KIND,
   isBoundAgent,
   isDispatchable,
-  isPreviewAgent,
   sectionLockedLine,
   withMemoryNoteGrant,
+  type Agent,
   type IpcPayload,
   type IpcResponse,
   type PipelineExport,
@@ -29,11 +29,14 @@ import {
   listPipelines,
   localPerson,
   projectWorkspaceList,
+  setStepAgent,
   updateAgent,
   updateWorkspace,
   workspaceProblem,
 } from "../db/repos/index.js";
-import { isAdopting } from "../db/repos/projectsRepo.js";
+import { isAdopting, projectMovedToTheRecord } from "../db/repos/projectsRepo.js";
+import { isReplica } from "../db/recordRole.js";
+import { installedStepsOfKind } from "../gallery/installedSteps.js";
 import { forgeCardNeed, galleryBlanks, galleryNeeds, galleryRoleSlots, gallerySteps, repositoryAnswer } from "../gallery/form.js";
 import { forgeNeeds, type DetectForge } from "../gallery/forgeNeeds.js";
 import { assistantRow, previewProjectId, previewTemplate, projectNeeds, templateTargetProjectId, useTemplate } from "../gallery/commands.js";
@@ -43,7 +46,8 @@ import { setAgentBinding } from "./configCommands.js";
 import type { EngineHandle } from "./domainCommands.js";
 import { listedByToken, listedTemplate, rememberListed } from "../gallery/session.js";
 import { bundledTemplates, listGalleryTemplates, type GalleryOptions, type GalleryTemplate } from "../gallery/templates.js";
-import { preflightImport } from "../modules/pipelineTransfer.js";
+import { kindChoices, preflightImport } from "../modules/pipelineTransfer.js";
+import { kindCandidates } from "../stepAgents.js";
 import { detectForge } from "./forgeCommands.js";
 import type { ModuleSecretsOptions } from "../modules/secrets.js";
 import { noteFirstRunProject } from "../firstRun/firstRun.js";
@@ -183,6 +187,9 @@ function cardOf(db: Db, template: GalleryTemplate, context: GalleryContext, solo
     needs: galleryNeeds(preflight, forgeCardNeed(template.document)),
     blanks: galleryBlanks(template.document),
     roleSlots: galleryRoleSlots(template.document),
+    // The kinds whose agent the person picks (EO-877), on the project
+    // Use this adds to — or, for a brand-new one, among the global agents.
+    agentChoices: kindChoices(db, template.document, templateTargetProjectId(db)),
     solo,
     previewable: template.document.previewItem !== null || template.document.itemTypes.length > 0,
   };
@@ -278,6 +285,7 @@ export async function useGalleryCommand(db: Db, context: GalleryContext, payload
         ...(payload.projectName === undefined ? {} : { projectName: payload.projectName }),
         ...(target === null ? {} : { projectId: target }),
         signedInBackends: context.signedInBackends,
+        agents: payload.agents ?? {},
       });
       if (!used.ok) throw new UseRefusal(used.reason);
       return used;
@@ -435,60 +443,98 @@ export async function staffRoleCommand(db: Db, context: GalleryContext, payload:
     };
   }
 
-  // The row the import made, where there is one. Its prompt, its tools
-  // and its output schemas are the pack's and are left alone: what is
-  // missing is a backend and a switch.
+  const model = recommended !== null && backend === recommended ? (carried?.model ?? null) : null;
+  // Pointing an agent that already exists at a backend and switching it on.
   //
-  // Which is why this channel is not in `SECTION_LOCKED_CHANNELS` and
-  // the lock is asked here instead (EO-329, review). The two branches
-  // below are two different acts: binding an agent that already exists
-  // to a backend is the design's local half and stays the person's under any
-  // lock, while *creating* one — with a pack's prompt and its
-  // `allowedTools` — is the agents section itself arriving by a side
-  // door. So the guard sits on the branch rather than on the channel,
-  // which is the only way to refuse the second without taking away the
-  // first.
-  const mine = listAgents(db).filter((agent) => agent.archivedAt === null && !isPreviewAgent(agent) && agent.role === payload.role);
-  const unbound = mine.find((agent) => !isBoundAgent(agent)) ?? mine.find((agent) => !isDispatchable(agent)) ?? null;
-  if (unbound !== null) {
-    updateAgent(db, unbound.id, {
+  // Binding an agent that already exists to a backend is the design's
+  // local half and stays the person's under any lock, while *creating*
+  // one — with a pack's prompt and its `allowedTools` — is the agents
+  // section itself arriving by a side door, and naming an agent on a step
+  // is the pipelines section (EO-877). Which is why this channel is not
+  // in `SECTION_LOCKED_CHANNELS` and each lock is asked on the act it
+  // covers instead (EO-329, review): the only way to refuse the second
+  // and third without taking away the first.
+  //
+  // The pack's recommended model only where the backend is the one it
+  // recommended; a model name is a backend's own vocabulary and carrying
+  // it across would name something that does not exist.
+  const bindAgent = (agent: Agent): void => {
+    updateAgent(db, agent.id, { provider: backend, model, enabled: true });
+  };
+
+  // The agents this project's work may run on (EO-877): of the kind, not
+  // archived, deleted or a preview's own, and reaching the project — its
+  // own and the global ones, never another project's.
+  const projectId = payload.projectId ?? null;
+  const candidates = (): Agent[] => kindCandidates(listAgents(db), payload.role, projectId);
+  const runs = (agent: Agent): boolean => isBoundAgent(agent) && isDispatchable(agent);
+
+  // The template's steps of the kind on the project, where the press says
+  // which project: the agents they name are the person's choice, so one
+  // that cannot run is pointed at a backend and switched on rather than
+  // replaced; a step naming nobody, or an agent this project cannot have,
+  // is given one below.
+  const steps = projectId === null ? [] : installedStepsOfKind(db, template.document, projectId, payload.role);
+  const reachable = new Map(candidates().map((agent) => [agent.id, agent] as const));
+  for (const agentId of new Set(steps.flatMap((step) => (step.agentId === null ? [] : [step.agentId])))) {
+    const named = reachable.get(agentId);
+    if (named !== undefined && !runs(named)) bindAgent(named);
+  }
+  const unnamed = steps.filter((step) => step.agentId === null || !reachable.has(step.agentId));
+  if (steps.length > 0 && unnamed.length === 0) return { ok: true, problem: null, locked: null };
+
+  // The agent the steps naming nobody run, or with no steps to go by, the
+  // role: one that runs already; else one that exists, pointed at a
+  // backend and switched on; else one made from the role the document
+  // carries.
+  const pool = candidates();
+  let agent = pool.find(runs) ?? pool.find((candidate) => !runs(candidate));
+  if (agent !== undefined && !runs(agent)) bindAgent(agent);
+
+  // Naming an agent on a step changes the graph, which is the pipelines
+  // section's and, on a project the organisation's record holds, the
+  // record's: refused here as a save of that pipeline would be, after the
+  // binding above, which stays the person's.
+  for (const pipelineId of new Set(unnamed.map((step) => step.pipelineId))) {
+    const lock = sectionLockFor(db, "pipeline:save", { pipelineId });
+    if (lock !== null) return { ok: false, problem: sectionLockedLine(lock), locked: lock };
+  }
+  if (unnamed.length > 0 && projectId !== null && isReplica(db) && projectMovedToTheRecord(db, projectId as Uuid)) {
+    return { ok: false, problem: "This project is held by your organisation's record, so which agent its steps run is chosen there.", locked: null };
+  }
+
+  if (agent === undefined) {
+    const lock = sectionLockFor(db, "agents:save");
+    if (lock !== null) {
+      // The lock, addressed to the person holding the mouse (EO-329,
+      // review). This channel is answered on a *screen* — the needs
+      // check's "Staff this role" button — and the sentence the command
+      // layer writes is composed for an assistant reading a transcript:
+      // it ends "tell the person it is managed and stop", which is an
+      // instruction to somebody else about the very person who would be
+      // reading it. So the refusal carries the design's own lock text, and the
+      // marker beside it lets the screen draw the lock the way every
+      // other locked surface does.
+      return { ok: false, problem: sectionLockedLine(lock), locked: lock };
+    }
+    agent = createAgent(db, {
+      name: payload.role,
+      role: payload.role,
       provider: backend,
-      // The pack's recommended model only where the backend is the one
-      // it recommended; a model name is a backend's own vocabulary and
-      // carrying it across would name something that does not exist.
-      model: recommended !== null && backend === recommended ? (carried?.model ?? null) : null,
+      model,
+      instructions: carried?.prompt ?? "",
+      // With the `memory_note` grant every new agent is given (EO-593): a
+      // pack's role list that lacks it is not a person taking it away from
+      // this agent, which does not exist yet.
+      config: withMemoryNoteGrant(carried?.allowedTools == null ? {} : { allowedTools: carried.allowedTools }),
       enabled: true,
     });
-    return { ok: true, problem: null, locked: null };
-  }
-  if (mine.length > 0) return { ok: true, problem: null, locked: null };
-
-  const lock = sectionLockFor(db, "agents:save");
-  if (lock !== null) {
-    // The lock, addressed to the person holding the mouse (EO-329,
-    // review). This channel is answered on a *screen* — the needs
-    // check's "Staff this role" button — and the sentence the command
-    // layer writes is composed for an assistant reading a transcript:
-    // it ends "tell the person it is managed and stop", which is an
-    // instruction to somebody else about the very person who would be
-    // reading it. So the refusal carries the design's own lock text, and the
-    // marker beside it lets the screen draw the lock the way every
-    // other locked surface does.
-    return { ok: false, problem: sectionLockedLine(lock), locked: lock };
   }
 
-  createAgent(db, {
-    name: payload.role,
-    role: payload.role,
-    provider: backend,
-    model: recommended !== null && backend === recommended ? (carried?.model ?? null) : null,
-    instructions: carried?.prompt ?? "",
-    // With the `memory_note` grant every new agent is given (EO-593): a
-    // pack's role list that lacks it is not a person taking it away from
-    // this agent, which does not exist yet.
-    config: withMemoryNoteGrant(carried?.allowedTools == null ? {} : { allowedTools: carried.allowedTools }),
-    enabled: true,
-  });
+  // And named on the template's steps that named nobody (EO-877): a step
+  // names its agent when it is written, so an agent made afterwards would
+  // not reach them, and the line would go green over steps that cannot run.
+  for (const step of unnamed) setStepAgent(db, step.id, agent.id);
   return { ok: true, problem: null, locked: null };
 }
 

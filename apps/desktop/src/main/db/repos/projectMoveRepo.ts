@@ -47,7 +47,7 @@ import { publishedSectionRow } from "./publishedSectionsRepo.js";
 import { isDiverged } from "./divergenceRepo.js";
 import { dropWebhookWaiversWithoutEntry } from "./webhookWaiverRepo.js";
 import { writeArrivedMemory } from "./memoriesRepo.js";
-import { PipelineExportSchema, UNBOUND_BACKEND } from "@eo/core";
+import { PipelineExportSchema, UNBOUND_BACKEND, VersionStepSchema } from "@eo/core";
 import { getAppliedTemplateUpdate, getPipelineOrigin, isTemplateDocument, recordAppliedTemplateUpdate, recordPipelineOrigin } from "./pipelineOriginsRepo.js";
 import {
   agents,
@@ -218,8 +218,12 @@ function trialColumnsOf(trial: RecordPipeline["trial"]): {
  */
 function toRecordPipeline(db: Db, row: typeof pipelines.$inferSelect): RecordPipeline {
   const steps = db.select().from(pipelineSteps).where(eq(pipelineSteps.pipelineId, row.id)).orderBy(asc(pipelineSteps.position)).all();
+  const versions = versionsAReplicaNeeds(db, row.id, row.currentVersionId);
   return {
-    stepAgents: stepAgentsOf(db, steps),
+    // The agents the versions it carries name too (EO-877): an item bound
+    // to an older version runs that version's steps, and a replica without
+    // one of their agents says which.
+    stepAgents: stepAgentsOf(db, [...steps, ...versions.flatMap((version) => versionStepsOf(version.steps))]),
     id: row.id,
     projectId: row.projectId,
     name: row.name,
@@ -283,9 +287,19 @@ function toRecordPipeline(db: Db, row: typeof pipelines.$inferSelect): RecordPip
         position: route.position,
       })),
     currentVersionId: row.currentVersionId,
-    versions: versionsAReplicaNeeds(db, row.id, row.currentVersionId),
+    versions,
     origin: originToSend(db, row.id),
   };
+}
+
+/** A version's steps as its snapshot holds them, read without trusting it: what an agent step names. */
+function versionStepsOf(steps: unknown): { type: string; agentId: string | null }[] {
+  return Array.isArray(steps)
+    ? steps.flatMap((step: unknown) => {
+        const read = VersionStepSchema.safeParse(step);
+        return read.success ? [{ type: read.data.type, agentId: read.data.agentId }] : [];
+      })
+    : [];
 }
 
 /**

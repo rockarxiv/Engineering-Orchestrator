@@ -259,6 +259,120 @@ describe("exporting a pipeline beside project-scoped agents (EO-476)", () => {
     expect(built.document.roles.find((role) => role.slug === "writer")?.prompt).toBe("Write for Support.");
   });
 
+  it("recommends the backend and model of the agent the step names (EO-877)", () => {
+    const { support } = arrange();
+    const codexWriter = createAgent(handle.db, { name: "Codex writer", role: "writer", provider: "codex", model: "gpt-5.5", instructions: "Write on Codex.", projectId: support.id });
+    const built = exportPipeline(handle.db, writerPipeline(support.id, codexWriter.id).id);
+    if (!built.ok) throw new Error(built.reason);
+
+    expect(built.document.roles.find((role) => role.slug === "writer")).toMatchObject({ prompt: "Write on Codex.", backend: "codex", model: "gpt-5.5" });
+    expect(built.document.steps.find((step) => step.name === "Write")?.ownerRole).toBe("writer");
+    expect(JSON.stringify(built.document)).not.toContain(codexWriter.id);
+    expect(JSON.stringify(built.document)).not.toContain("Codex writer");
+  });
+
+  /**
+   * A document names kinds, and an import binds each to one of the
+   * importing project's agents of that kind (EO-877): the one there is;
+   * the one the person picks where there are several, the import refused
+   * until they have; or one made from the document's prompt where there
+   * is none. The preflight says which beforehand.
+   */
+  describe("binding its kinds on import", () => {
+    function exported() {
+      const { support } = arrange();
+      const built = exportPipeline(handle.db, writerPipeline(support.id).id);
+      if (!built.ok) throw new Error(built.reason);
+      return built.document;
+    }
+    const writeStep = (db: Db, pipelineId: string) => listStepsForPipeline(db, pipelineId).find((step) => step.name === "Write");
+
+    it("names the one agent of the kind there is, and the preflight says it will", () => {
+      const document = exported();
+      const fresh = openMigratedTestDb();
+      try {
+        const project = createProject(fresh.db, { name: "Docs", keyPrefix: "DOC" });
+        const only = createAgent(fresh.db, { name: "Only writer", role: "writer", provider: "claude", instructions: "Mine." });
+
+        const slot = preflightImport(fresh.db, secrets, document, { projectId: project.id }).roleSlots.find((candidate) => candidate.slug === "writer");
+        expect(slot).toMatchObject({ binding: "existing", agents: [{ id: only.id, name: "Only writer", backend: "claude" }] });
+
+        const imported = importPipeline(fresh.db, { document, projectId: project.id });
+        if (!imported.ok) throw new Error(imported.reason);
+        expect(writeStep(fresh.db, imported.pipelineId)?.agentId).toBe(only.id);
+        expect(listAgents(fresh.db).filter((agent) => agent.role === "writer")).toHaveLength(1);
+      } finally {
+        fresh.close();
+      }
+    });
+
+    it("refuses several without the person's choice, and names the one they chose", () => {
+      const document = exported();
+      const fresh = openMigratedTestDb();
+      try {
+        const project = createProject(fresh.db, { name: "Docs", keyPrefix: "DOC" });
+        const onClaude = createAgent(fresh.db, { name: "Writer on Claude", role: "writer", provider: "claude", instructions: "Claude." });
+        const onCodex = createAgent(fresh.db, { name: "Writer on Codex", role: "writer", provider: "codex", instructions: "Codex.", projectId: project.id });
+        const elsewhere = createProject(fresh.db, { name: "Other", keyPrefix: "OTH" });
+        const othersOwn = createAgent(fresh.db, { name: "Other's writer", role: "writer", provider: "claude", instructions: "Not here.", projectId: elsewhere.id });
+
+        const slot = preflightImport(fresh.db, secrets, document, { projectId: project.id }).roleSlots.find((candidate) => candidate.slug === "writer");
+        expect(slot?.binding).toBe("choose");
+        // The project's own first, the global beside it, never another project's.
+        expect(slot?.agents.map((agent) => agent.id)).toEqual([onCodex.id, onClaude.id]);
+
+        const pipelinesBefore = listPipelines(fresh.db).length;
+        const unanswered = importPipeline(fresh.db, { document, projectId: project.id });
+        expect(unanswered.ok).toBe(false);
+        if (!unanswered.ok) expect(unanswered.reason).toContain("Writer on Claude");
+        const wrong = importPipeline(fresh.db, { document, projectId: project.id, agents: { writer: othersOwn.id } });
+        expect(wrong.ok).toBe(false);
+        expect(listPipelines(fresh.db)).toHaveLength(pipelinesBefore);
+
+        const imported = importPipeline(fresh.db, { document, projectId: project.id, agents: { writer: onClaude.id } });
+        if (!imported.ok) throw new Error(imported.reason);
+        expect(writeStep(fresh.db, imported.pipelineId)?.agentId).toBe(onClaude.id);
+      } finally {
+        fresh.close();
+      }
+    });
+
+    it("makes one from the document's prompt where there is none, and names it", () => {
+      const document = exported();
+      const fresh = openMigratedTestDb();
+      try {
+        const project = createProject(fresh.db, { name: "Docs", keyPrefix: "DOC" });
+        expect(preflightImport(fresh.db, secrets, document, { projectId: project.id }).roleSlots.find((slot) => slot.slug === "writer")).toMatchObject({ binding: "create", agents: [] });
+
+        const imported = importPipeline(fresh.db, { document, projectId: project.id, signedInBackends: ["fake"] });
+        if (!imported.ok) throw new Error(imported.reason);
+        const made = listAgents(fresh.db).filter((agent) => agent.role === "writer");
+        expect(made).toHaveLength(1);
+        expect(made[0]?.instructions).toBe("Write for everyone.");
+        expect(writeStep(fresh.db, imported.pipelineId)?.agentId).toBe(made[0]?.id);
+      } finally {
+        fresh.close();
+      }
+    });
+
+    it("leaves the steps naming nobody where there is no agent and no prompt to make one from", () => {
+      const document = { ...exported(), roles: [] };
+      const fresh = openMigratedTestDb();
+      try {
+        const project = createProject(fresh.db, { name: "Docs", keyPrefix: "DOC" });
+        expect(preflightImport(fresh.db, secrets, document, { projectId: project.id }).roleSlots.find((slot) => slot.slug === "writer")?.binding).toBe("none");
+
+        const imported = importPipeline(fresh.db, { document, projectId: project.id, signedInBackends: ["fake"] });
+        if (!imported.ok) throw new Error(imported.reason);
+        expect(writeStep(fresh.db, imported.pipelineId)?.agentId).toBeNull();
+        // Nothing made from a prompt nobody wrote.
+        expect(listAgents(fresh.db).filter((agent) => agent.role === "writer")).toEqual([]);
+      } finally {
+        fresh.close();
+      }
+    });
+  });
+
   it("never carries another project's agent's prompt", () => {
     const { shop } = arrange();
     for (const projectId of [shop.id, null]) {
@@ -1192,7 +1306,7 @@ describe("a pack's roles and their prompts", () => {
     // The exporting machine's agent is this machine's agent in this
     // test, so the slot is filled and the prompt travelled.
     expect(preflightImport(handle.db, secrets, document).roleSlots).toEqual([
-      { slug: "release_manager", filled: true, carriesPrompt: true, recommendedBackend: "fake", recommendedModel: null, backendSignedIn: null },
+      { slug: "release_manager", filled: true, carriesPrompt: true, recommendedBackend: "fake", recommendedModel: null, backendSignedIn: null, agents: expect.any(Array), binding: "existing" },
     ]);
 
     // Read on a machine with nobody in that role: the same document, the
@@ -1200,7 +1314,7 @@ describe("a pack's roles and their prompts", () => {
     const elsewhere = openMigratedTestDb();
     try {
       expect(preflightImport(elsewhere.db, secrets, document).roleSlots).toEqual([
-        { slug: "release_manager", filled: false, carriesPrompt: true, recommendedBackend: "fake", recommendedModel: null, backendSignedIn: null },
+        { slug: "release_manager", filled: false, carriesPrompt: true, recommendedBackend: "fake", recommendedModel: null, backendSignedIn: null, agents: expect.any(Array), binding: "create" },
       ]);
     } finally {
       elsewhere.close();
@@ -1217,7 +1331,7 @@ describe("a pack's roles and their prompts", () => {
 
     const older = { ...document, roles: [] };
     expect(preflightImport(handle.db, secrets, older).roleSlots).toEqual([
-      { slug: "release_manager", filled: true, carriesPrompt: false, recommendedBackend: null, recommendedModel: null, backendSignedIn: null },
+      { slug: "release_manager", filled: true, carriesPrompt: false, recommendedBackend: null, recommendedModel: null, backendSignedIn: null, agents: expect.any(Array), binding: "existing" },
     ]);
     expect(preflightImport(handle.db, secrets, older).oldNames).toEqual([]);
   });
@@ -1846,7 +1960,7 @@ describe("the pack", () => {
       // backend dispatches nothing.
       const preflight = preflightImport(fresh.db, secrets, built.document, { projectId: project.id, signedInBackends: ["codex"] });
       expect(preflight.roleSlots).toEqual([
-        { slug: "triager", filled: false, carriesPrompt: true, recommendedBackend: "claude", recommendedModel: "sonnet", backendSignedIn: false },
+        { slug: "triager", filled: false, carriesPrompt: true, recommendedBackend: "claude", recommendedModel: "sonnet", backendSignedIn: false, agents: expect.any(Array), binding: "existing" },
       ]);
     } finally {
       fresh.close();
@@ -1878,7 +1992,7 @@ describe("the pack", () => {
       expect(isDispatchable(agent)).toBe(false);
 
       expect(preflightImport(fresh.db, secrets, built.document, { projectId: project.id, signedInBackends: ["claude"] }).roleSlots).toEqual([
-        { slug: "triager", filled: false, carriesPrompt: true, recommendedBackend: "claude", recommendedModel: "sonnet", backendSignedIn: true },
+        { slug: "triager", filled: false, carriesPrompt: true, recommendedBackend: "claude", recommendedModel: "sonnet", backendSignedIn: true, agents: expect.any(Array), binding: "existing" },
       ]);
 
       // And once it is switched back on, the slot is filled: the
@@ -1928,7 +2042,7 @@ describe("the pack", () => {
       // And the pack passed on from here still says what it wants, so
       // the next person reads the same red line rather than none.
       expect(preflightImport(fresh.db, secrets, again.document, { projectId: project.id, signedInBackends: [] }).roleSlots).toEqual([
-        { slug: "triager", filled: false, carriesPrompt: true, recommendedBackend: "claude", recommendedModel: "sonnet", backendSignedIn: false },
+        { slug: "triager", filled: false, carriesPrompt: true, recommendedBackend: "claude", recommendedModel: "sonnet", backendSignedIn: false, agents: expect.any(Array), binding: "existing" },
       ]);
     } finally {
       fresh.close();
@@ -2866,7 +2980,8 @@ describe("the pack", () => {
       const day = createAgent(fresh.db, { name: "Day triager", role: "triager", provider: "claude", instructions: "Day shift." });
       const night = createAgent(fresh.db, { name: "Night triager", role: "triager", provider: "claude", instructions: "Night shift." });
 
-      const imported = importPipeline(fresh.db, { document: built.document, projectId: project.id, signedInBackends: ["claude"] });
+      // Two of the kind, so the person chooses which its steps run (EO-877).
+      const imported = importPipeline(fresh.db, { document: built.document, projectId: project.id, signedInBackends: ["claude"], agents: { triager: night.id } });
       if (!imported.ok) throw new Error(imported.reason);
 
       const slack = getMcpServerByName(fresh.db, "slack")!;
@@ -3330,7 +3445,7 @@ describe("the module version an export carries", () => {
     const built = exportPipeline(handle.db, pipelineId);
     if (!built.ok) throw new Error(built.reason);
 
-    expect(built.document.eoPipelineExport).toBe(15);
+    expect(built.document.eoPipelineExport).toBe(16);
     const [carried] = built.document.modules;
     expect(carried).toMatchObject({ slug: "deploy", version: 2, code: says("v2") });
     expect(carried?.manifest.description).toBe("The second.");

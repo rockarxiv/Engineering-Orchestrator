@@ -11,6 +11,7 @@ import {
   TERMINAL_TARGET,
   USER_ATTENTION_TARGET,
   uuidv7,
+  type Agent,
   type CommentOption,
   type PipelineExport,
   type PipelineStep,
@@ -54,7 +55,8 @@ import { TEMPLATE_CONFLICT_SOURCE } from "../db/repos/pipelineUpdateConflictsRep
 import { projectMovedToTheRecord } from "../db/repos/projectsRepo.js";
 import { storedGraphProblems } from "../ipc/configCommands.js";
 import { sendMessageHere } from "../messages/messages.js";
-import { agentForKind, withKind } from "../stepAgents.js";
+import { agentForKind, agentNamedForKind, withKind } from "../stepAgents.js";
+import { askForKinds, bindAddedKinds, settleKinds } from "./updateAgents.js";
 import { compareTemplateVersions, type TemplateHistory, type TemplateVersion } from "./history.js";
 
 /**
@@ -103,7 +105,14 @@ export type TemplateUpdateResult =
   | { pipelineId: string; outcome: "applied"; slug: string; from: string; to: string; version: number; changes: KeyChange[] }
   /** Nothing the template changed was left to apply — the person had made every change already — so only the base moved. */
   | { pipelineId: string; outcome: "caught-up"; slug: string; from: string; to: string }
-  | { pipelineId: string; outcome: "conflict"; slug: string; from: string; to: string; conflictId: string };
+  | { pipelineId: string; outcome: "conflict"; slug: string; from: string; to: string; conflictId: string }
+  /**
+   * Not applied yet, and not held as a conflict: the update adds steps of
+   * a kind EO cannot bind on its own (EO-877) — several agents of it to
+   * choose between, or none and nothing to make one from — and the
+   * person has been asked (`askForKinds`). Compared again once they answer.
+   */
+  | { pipelineId: string; outcome: "waiting"; slug: string; from: string; to: string; kinds: string[] };
 
 /**
  * Compares and updates every pipeline this installation holds whose
@@ -120,7 +129,7 @@ export function applyTemplateUpdates(db: Db, history: TemplateHistory, options: 
   // the same template is compared, so an update that routes into one
   // finds its steps — and whether or not that update is then held, so a
   // person resolving it has them to route into.
-  const created = createAddedBoards(db, history, options.isTheRecord, now);
+  const { created, waiting } = createAddedBoards(db, history, options.isTheRecord, now);
   // A route on a board just made that waits for a step the update to
   // another of its boards adds is pointed at it when that update applies
   // (`pointRoutesWaitingOn`), on this launch or whenever it is resolved.
@@ -137,7 +146,16 @@ export function applyTemplateUpdates(db: Db, history: TemplateHistory, options: 
     installations.set(key, [...(installations.get(key) ?? []), pipeline.id]);
   }
   const results: TemplateUpdateResult[] = [];
-  for (const pipelineIds of installations.values()) {
+  for (const [key, pipelineIds] of installations) {
+    // A board this version adds waits on the person's choice of agent
+    // (EO-877), and the other boards' update may route into it: the whole
+    // installation waits with it rather than being held as a conflict
+    // nothing would re-compare once they answer.
+    const kinds = waiting.get(key);
+    if (kinds !== undefined) {
+      results.push(...waitingResults(db, pipelineIds, history, kinds));
+      continue;
+    }
     try {
       results.push(...updateInstallation(db, pipelineIds, history, now, options.isTheRecord, created));
     } catch (error) {
@@ -181,7 +199,7 @@ export interface CreatedBoard {
  * has them to route into. Each project's boards in their own
  * transaction, and one that fails is logged and left for the next launch.
  */
-function createAddedBoards(db: Db, history: TemplateHistory, isTheRecord: boolean, now: number): CreatedBoard[] {
+function createAddedBoards(db: Db, history: TemplateHistory, isTheRecord: boolean, now: number): { created: CreatedBoard[]; waiting: Map<string, string[]> } {
   const installations = new Map<string, { slug: string; projectId: string | null; origins: PipelineOrigin[] }>();
   for (const pipeline of listPipelines(db)) {
     if (!isTheRecord && heldByTheRecord(db, pipeline.id)) continue;
@@ -194,7 +212,8 @@ function createAddedBoards(db: Db, history: TemplateHistory, isTheRecord: boolea
   }
 
   const created: CreatedBoard[] = [];
-  for (const { slug, projectId, origins } of installations.values()) {
+  const waiting = new Map<string, string[]>();
+  for (const [key, { slug, projectId, origins }] of installations) {
     const newest = history.get(slug)?.at(-1);
     if (newest === undefined || !origins.some((origin) => compareTemplateVersions(newest.version, origin.version) > 0)) continue;
     // Every base of the installation, an archived board's included, so a board somebody archived is not made again.
@@ -209,22 +228,42 @@ function createAddedBoards(db: Db, history: TemplateHistory, isTheRecord: boolea
       .map(({ index }) => index);
     if (added.length === 0) continue;
     try {
+      // The kinds its agent steps need, bound as an import binds them
+      // (EO-877) — or, where EO cannot without the person, not made yet.
+      const kinds = added.flatMap((index) => (documentBoards(newest.document)[index]?.steps ?? []).flatMap((step) => (step.type === "agent" && step.ownerRole !== null ? [step.ownerRole] : [])));
+      const binding = bindAddedKinds(db, { slug, projectId }, newest.document, kinds);
+      if (binding.waiting.length > 0) {
+        askForKinds(db, { slug, projectId }, binding.waiting, { title: newest.document.template.title, version: newest.version, isTheRecord, now });
+        waiting.set(key, binding.waiting.map((wait) => wait.kind));
+        continue;
+      }
       created.push(
         ...db.transaction(() => {
           const boards = createTemplateBoards(db, newest.document, added, projectId, {
             createdBy: templateUpdateAuthor(slug, newest.version),
             releaseNotes: `Created by the ${newest.document.template.title} template's ${newest.version} update, which adds this board.`,
             now,
+            bound: binding.bound,
           });
           shareWhileUnsplit(db, projectId, origins, boards);
           return boards;
         }),
       );
+      settleKinds(db, { slug, projectId }, binding.bound.keys(), now);
     } catch (error) {
       console.warn(`[eo] the boards the ${slug} ${newest.version} template adds could not be made and are left for the next launch: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
-  return created;
+  return { created, waiting };
+}
+
+/** Each pipeline of an installation whose update waits on the person's choice of agent (EO-877), as a result. */
+function waitingResults(db: Db, pipelineIds: readonly string[], history: TemplateHistory, kinds: string[]): TemplateUpdateResult[] {
+  return pipelineIds.flatMap((pipelineId) => {
+    const origin = getPipelineOrigin(db, pipelineId);
+    const template = origin === null ? null : newerTemplateVersion(origin, history);
+    return origin === null || template === null ? [] : [{ pipelineId, outcome: "waiting" as const, slug: origin.slug, from: origin.version, to: template.version, kinds }];
+  });
 }
 
 /**
@@ -274,7 +313,13 @@ export function createTemplateBoards(
   document: TemplateDocument,
   indexes: readonly number[],
   projectId: string | null,
-  version: { createdBy: string | null; releaseNotes: string | null; now?: number },
+  version: {
+    createdBy: string | null;
+    releaseNotes: string | null;
+    now?: number;
+    /** The agent each kind's steps name, where the caller bound it (EO-877): the person's choice on an install, `bindAddedKinds` on an update. */
+    bound?: ReadonlyMap<string, Uuid>;
+  },
 ): CreatedBoard[] {
   const boards = documentBoards(document);
   const making = indexes.flatMap((index) => {
@@ -296,9 +341,12 @@ export function createTemplateBoards(
   }
   const target = (id: string): string | null => (id === USER_ATTENTION_TARGET || id === TERMINAL_TARGET ? id : (fresh.get(id) ?? elsewhere.get(id) ?? null));
   const moduleId = (slug: string): string => getModuleBySlug(db, slug)?.id ?? slug;
-  // The board names kinds; each agent step is bound to this project's
-  // agent of its kind (EO-875), as an import binds one.
+  // The board names kinds; each agent step is bound as an import binds one
+  // (EO-875, EO-877): to the agent the template's other boards here already
+  // run for the kind — the import's binding, or the person's choice — and
+  // otherwise to this project's agent of its kind.
   const agents = listAgents(db);
+  const runningHere = templateBoardHolders(db, document.template.slug, projectId).flatMap((holder) => listStepsForPipeline(db, holder.pipelineId));
 
   return db.transaction(() =>
     making.map(({ index, board }) => {
@@ -321,7 +369,7 @@ export function createTemplateBoards(
           return {
             ...step,
             id,
-            agentId: step.type === "agent" ? ((agentForKind(agents, ownerRole, projectId)?.id ?? null) as Uuid | null) : null,
+            agentId: step.type === "agent" ? ((ownerRole === null ? undefined : version.bound?.get(ownerRole)) ?? (((agentNamedForKind(agents, runningHere, ownerRole) ?? agentForKind(agents, ownerRole, projectId))?.id ?? null) as Uuid | null)) : null,
             pipelineId: pipeline.id,
             entryAction: step.type === "module" && step.entryAction !== null ? moduleId(step.entryAction) : step.entryAction,
             // The document's pin is a number on the machine that wrote it
@@ -449,6 +497,25 @@ export function heldByTheRecord(db: Db, pipelineId: string): boolean {
   const projectId = getPipeline(db, pipelineId)?.projectId ?? null;
   if (projectId !== null && projectMovedToTheRecord(db, projectId)) return true;
   return publishedSectionRow(db, "pipelines") !== undefined;
+}
+
+/** The installation a candidate pipeline is one board of: its template and its project (EO-877). */
+function installationOf(db: Db, candidate: { pipelineId: string; origin: PipelineOrigin }): { slug: string; projectId: string | null } {
+  return { slug: candidate.origin.slug, projectId: getPipeline(db, candidate.pipelineId)?.projectId ?? null };
+}
+
+/**
+ * The kinds of a merged graph's agent steps that need an agent bound
+ * (EO-877): a step that names none, or one whose agent is not of the kind
+ * the merge leaves it needing. A step that keeps its agent is not here —
+ * whose agent it runs is the person's, and no update changes it.
+ */
+function kindsToBind(agents: readonly Pick<Agent, "id" | "role">[], steps: readonly KindedStep[]): string[] {
+  return steps.flatMap((step) => {
+    if (step.type !== "agent" || step.ownerRole === null) return [];
+    const kept = step.agentId !== null && stepAgentKind(agents, step) === step.ownerRole;
+    return kept ? [] : [step.ownerRole];
+  });
 }
 
 /** The newest shipped version of a template, where it is newer than this origin's. */
@@ -627,6 +694,8 @@ function updateInstallation(db: Db, pipelineIds: readonly string[], history: Tem
   // The ids given to steps whose template id another pipeline holds, kept
   // across rounds, so a board and the routes into it agree on one.
   const minted = new Map<string, string>();
+  // The kinds bound for the boards this pass prepared, whose questions close once the update is written (EO-877).
+  const boundKinds: { installation: { slug: string; projectId: string | null }; kinds: string[] }[] = [];
   const summaryOf = (candidate: Candidate) => ({ pipelineId: candidate.pipelineId, slug: candidate.origin.slug, from: candidate.origin.version, to: candidate.template.version });
   const notesOf = (candidate: Candidate): { notes: string; madeHere: CreatedBoard[] } => {
     // The boards of this template made on this launch for this project
@@ -649,6 +718,7 @@ function updateInstallation(db: Db, pipelineIds: readonly string[], history: Tem
     // since the others read its steps as its update would leave them.
     const prepared: Prepared[] = [];
     const leaving = new Set<string>();
+    boundKinds.length = 0;
     for (const candidate of batch) {
       const siblings = nextSiblingStepIds(db, candidate, planned);
       const compared = compareWithTemplate(db, candidate.pipelineId, candidate.template, siblings);
@@ -661,7 +731,18 @@ function updateInstallation(db: Db, pipelineIds: readonly string[], history: Tem
         leaving.add(candidate.pipelineId);
         continue;
       }
-      const placed = placeMerge(db, compared, compared.merge.merged, (id) => mintedId(minted, candidate.pipelineId, id));
+      // The kinds of the steps the merge leaves needing an agent — a step
+      // the update adds, or one whose kind it changed — bound as an import
+      // binds them (EO-877). Where EO cannot without the person, nothing
+      // of the installation is written: it waits for their answer.
+      const binding = bindAddedKinds(db, installationOf(db, candidate), candidate.template.document, kindsToBind(listAgents(db), compared.merge.merged.steps));
+      if (binding.waiting.length > 0) {
+        askForKinds(db, installationOf(db, candidate), binding.waiting, { title: candidate.template.document.template.title, version: candidate.template.version, isTheRecord, now });
+        const kinds = binding.waiting.map((wait) => wait.kind);
+        return [...results, ...batch.map((each) => ({ ...summaryOf(each), outcome: "waiting" as const, kinds }))];
+      }
+      boundKinds.push({ installation: installationOf(db, candidate), kinds: [...binding.bound.keys()] });
+      const placed = placeMerge(db, compared, compared.merge.merged, (id) => mintedId(minted, candidate.pipelineId, id), binding.bound);
       const entryStepId = mergedEntryStep(compared, getPipeline(db, candidate.pipelineId)?.entryStepId ?? null, placed.stepIds);
       prepared.push({ candidate, compared, taken: compared.merge.comparison.changes.filter((change) => change.outcome === "template"), ...placed, entryStepId, siblings });
     }
@@ -692,6 +773,7 @@ function updateInstallation(db: Db, pipelineIds: readonly string[], history: Tem
       batch = batch.filter((candidate) => candidate.pipelineId !== written.refused.candidate.pipelineId);
       continue;
     }
+    for (const { installation, kinds } of boundKinds) settleKinds(db, installation, kinds, now);
     results.push(
       ...written.applied.map(({ prepared: each, version }): TemplateUpdateResult =>
         version === null ? { ...summaryOf(each.candidate), outcome: "caught-up" } : { ...summaryOf(each.candidate), outcome: "applied", version, changes: each.taken },
@@ -1081,6 +1163,8 @@ function placeMerge(
   compared: PipelineComparison,
   merged: { steps: KindedStep[]; routes: StepRoute[] },
   mint: (templateStepId: string) => string = () => uuidv7(),
+  /** The agent each added kind is bound to (`bindAddedKinds`, EO-877). */
+  bound: ReadonlyMap<string, Uuid> = new Map(),
 ): { steps: PipelineStep[]; routes: StepRoute[]; stepIds: Record<string, string> } {
   const pipelineId = compared.origin.pipelineId;
   const before = new Set(compared.current.steps.map((step) => step.id));
@@ -1096,14 +1180,19 @@ function placeMerge(
   // Each agent step's agent (EO-875): the one it names where that agent is
   // still of the kind the merge left the step needing — a person's choice
   // of agent is theirs, and no update overwrites it — and otherwise the
-  // kind bound on this pipeline's project, as an import binds it: a step
-  // the template adds, or one whose kind the template changed.
+  // kind bound as an import binds it (EO-877): a step the template adds,
+  // or one whose kind the template changed, names the agent the pipeline
+  // already runs for that kind — the one the import bound, or the person
+  // chose, for every step of it — and only where it runs none, the kind's
+  // agent on this pipeline's project.
   const agents = listAgents(db);
   const projectId = getPipeline(db, pipelineId)?.projectId ?? null;
   const agentOf = (step: KindedStep): Uuid | null => {
     if (step.type !== "agent") return null;
     if (step.agentId !== null && stepAgentKind(agents, step) === step.ownerRole) return step.agentId;
-    return (agentForKind(agents, step.ownerRole, projectId)?.id ?? null) as Uuid | null;
+    const chosen = step.ownerRole === null ? undefined : bound.get(step.ownerRole);
+    if (chosen !== undefined) return chosen;
+    return ((agentNamedForKind(agents, compared.current.steps, step.ownerRole) ?? agentForKind(agents, step.ownerRole, projectId))?.id ?? null) as Uuid | null;
   };
   const steps = merged.steps.map(({ ownerRole: _kind, ...step }, index) => ({
     ...step,

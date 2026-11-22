@@ -47,6 +47,7 @@ const WEEKLY: GalleryTemplateView = {
   needs: [],
   blanks: [],
   roleSlots: [],
+  agentChoices: [],
   solo: true,
   previewable: true,
 };
@@ -306,6 +307,8 @@ describe("a red line", () => {
       slug: "weekly-report",
       token: "weekly-v1",
       role: "reporter",
+      // On the project the needs check is about, so its steps of the kind name the agent (EO-877).
+      projectId: "p1",
     });
 
     await waitFor(() => expect(screen.queryByRole("button", { name: "Use Claude Code for these steps" })).not.toBeInTheDocument());

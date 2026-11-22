@@ -118,6 +118,7 @@ import {
   renderItem,
   renderItems,
   renderWorktrees,
+  kindBindingLine,
   type MemoryConsolidationRestored,
   type RuntimeEntry,
   type SpendReport,
@@ -4236,8 +4237,9 @@ const UNGATED_WRITE_TOOLS: readonly ToolSpec[] = [
     description:
       "What importing a pipeline document would cost on this machine: binaries it needs and does not find, secrets " +
       "it wants that are not set, modules that would reach the network, and module slugs that collide with ones " +
-      "already here. A pack also brings item types, roles and connectors, so it reports which role slots are " +
-      "unfilled, which backend each role was built on, which connectors would land disconnected, and what the " +
+      "already here. A pack also brings item types, roles and connectors, so it reports, for each kind of agent its steps " +
+      "need, which agent here its steps would name, which several you must choose between in pipeline_import's `agents`, " +
+      "or that one would be created from the document's prompt; which backend each role was built on, which connectors would land disconnected, and what the " +
       "pack's tool surface amounts to. It also lists values in the document that look like they only hold on the " +
       "machine it was written on — a home-directory path, a drive letter, a loopback address — as advice that " +
       "refuses nothing. Writes nothing. Read this before pipeline_import — an imported module " +
@@ -4270,7 +4272,7 @@ const UNGATED_WRITE_TOOLS: readonly ToolSpec[] = [
           "Roles:",
           ...p.roleSlots.map((slot) => {
             const recommendation = slot.recommendedBackend === null ? "no backend recommended" : `built on ${slot.recommendedBackend}${slot.recommendedModel === null ? "" : ` (${slot.recommendedModel})`}${slot.backendSignedIn === false ? ", not signed in here" : ""}`;
-            return `- ${slot.slug}: ${slot.filled ? "filled here" : "no agent here"}, ${recommendation}`;
+            return `- ${slot.slug}: ${kindBindingLine(slot)}, ${recommendation}`;
           }),
           "",
         );
@@ -4297,8 +4299,10 @@ const UNGATED_WRITE_TOOLS: readonly ToolSpec[] = [
     channel: "pipelines:import",
     description:
       "Import a pipeline document. `choices` decides each colliding module slug: `reuse` keeps the one already here, " +
-      "`import` brings theirs in beside it. Any module that arrives is unapproved and inert until someone reads it — " +
-      "the pipeline will not publish until they have.",
+      "`import` brings theirs in beside it. `agents` maps each kind the document's steps need to the id of the agent of " +
+      "that kind whose steps it names, and is required for a kind pipeline_import_check says has several here; a kind " +
+      "with one names it, and a kind with none is made one. Any module that arrives is unapproved and inert until " +
+      "someone reads it — the pipeline will not publish until they have.",
     kind: "write",
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     render: (data) => {

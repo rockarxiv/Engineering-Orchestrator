@@ -316,6 +316,11 @@ function UseForm({
   const initial = useMemo(() => Object.fromEntries(template.blanks.map((blank) => [blank.key, blank.default])), [template]);
   const [answers, setAnswers] = useState<Record<string, string>>(initial);
   const [roleSlots, setRoleSlots] = useState<Record<string, string>>({});
+  // The agent each kind's steps name, where there are several (EO-877):
+  // the first offered until the person picks another, and always sent.
+  const [agents, setAgents] = useState<Record<string, string>>(() =>
+    Object.fromEntries(template.agentChoices.flatMap((choice) => (choice.agents[0] === undefined ? [] : [[choice.kind, choice.agents[0].id]]))),
+  );
   const [name, setName] = useState(template.title);
 
   const set = (key: string, value: string) => setAnswers((current) => ({ ...current, [key]: value }));
@@ -335,6 +340,7 @@ function UseForm({
         token: template.token,
         answers,
         roleSlots,
+        ...(template.agentChoices.length > 0 ? { agents } : {}),
         ...(project === null ? { projectName: name } : { projectId: project.id }),
       }),
     onSuccess: (result) => {
@@ -426,6 +432,25 @@ function UseForm({
                 </Select>
               </Field>
             ))}
+
+        {/* A kind with several agents here (EO-877): the person picks
+            which one its steps run. One is named without asking, and
+            none is made on the needs check. */}
+        {template.agentChoices.map((choice) => (
+          <Field key={`agent-${choice.kind}`} label={`Agent for the ${choice.kind} steps`} hint="You have more than one of this kind">
+            <Select
+              aria-label={`Agent for the ${choice.kind} steps`}
+              value={agents[choice.kind] ?? ""}
+              onChange={(event) => setAgents((current) => ({ ...current, [choice.kind]: event.target.value }))}
+            >
+              {choice.agents.map((agent) => (
+                <option key={agent.id} value={agent.id}>
+                  {agent.name} · {agent.backend}
+                </option>
+              ))}
+            </Select>
+          </Field>
+        ))}
 
         {create.data?.problem ? <ErrorLine>{create.data.problem}</ErrorLine> : null}
         {create.error ? <ErrorLine>{create.error.message}</ErrorLine> : null}

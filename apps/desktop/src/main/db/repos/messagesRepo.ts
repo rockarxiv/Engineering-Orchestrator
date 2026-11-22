@@ -158,6 +158,21 @@ export function openMessageAbout(db: Db, source: string, subject: string): Messa
   return row ? toDomain(row) : undefined;
 }
 
+/** What one message is about within its source (`MessageSend.subject`), or null: what an answer's handler reads (EO-877). */
+export function messageSubjectOf(db: Db, id: string): string | null {
+  return db.select({ subject: messages.subject }).from(messages).where(eq(messages.id, id)).get()?.subject ?? null;
+}
+
+/** The subjects of every open message of a source (EO-877): what a sender that settles its own messages walks. */
+export function openSubjectsOf(db: Db, source: string): string[] {
+  return db
+    .selectDistinct({ subject: messages.subject })
+    .from(messages)
+    .where(and(eq(messages.source, source), isNull(messages.handledAt), isNotNull(messages.subject)))
+    .all()
+    .flatMap((row) => (row.subject === null ? [] : [row.subject]));
+}
+
 /**
  * Resolves every open message of a source about one subject (EO-727):
  * what they asked about was settled some other way. Answers those it

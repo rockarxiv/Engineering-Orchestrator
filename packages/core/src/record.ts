@@ -90,6 +90,14 @@ export const RecordOfferSchema = z.object({
   stepId: z.string(),
   action: z.string(),
   agentId: z.string().nullable(),
+  /**
+   * The agent's name and kind as the record holds it (EO-877), so a
+   * replica that does not have the agent can tell the person which one
+   * its step is waiting for. The ids are what dispatch reads; these are
+   * words. Absent from a record older than them.
+   */
+  agentName: z.string().optional(),
+  agentKind: z.string().optional(),
   lease: RecordLeaseSchema,
 });
 export type RecordOffer = z.infer<typeof RecordOfferSchema>;

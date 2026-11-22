@@ -157,6 +157,29 @@ describe("a card for importing an attached pipeline file", () => {
     expect(sent(calls, "pipelines:import")).toEqual([]);
   });
 
+  it("asks which agent a kind's steps run where there are several, and imports with the one picked (EO-877)", async () => {
+    const agents = [
+      { id: "r-1", name: "Reviewer on Claude", backend: "claude", model: null, projectId: null },
+      { id: "r-2", name: "Reviewer on Codex", backend: "codex", model: null, projectId: null },
+    ];
+    const slot = { slug: "reviewer", filled: true, carriesPrompt: true, recommendedBackend: null, recommendedModel: null, backendSignedIn: null, agents, binding: "choose" as const };
+    const { calls, onDone } = draw(
+      message({ kind: "pipelineImport", outcome: null }),
+      { ...IMPORT, preflight: preflight({ collisions: [], roleSlots: [slot] }) },
+      { "assist:applyCard": { applied: true, problem: null, said: "Imported Shipping.", conversation: {} } },
+    );
+
+    expect(await screen.findByText(/You have several reviewer agents — Reviewer on Claude, Reviewer on Codex/)).toBeInTheDocument();
+    const picker = screen.getByRole("combobox", { name: "Agent for the reviewer steps" });
+    // The first offered until the person picks another.
+    expect(picker).toHaveValue("r-1");
+    fireEvent.change(picker, { target: { value: "r-2" } });
+    fireEvent.click(screen.getByRole("button", { name: "Import" }));
+
+    await waitFor(() => expect(onDone).toHaveBeenCalled());
+    expect(sent(calls, "assist:applyCard")).toEqual([{ conversationId: "conv-1", messageId: "card-1", index: 0, choices: {}, agents: { reviewer: "r-2" } }]);
+  });
+
   it("holds Import for a file EO refuses outright", async () => {
     draw(message({ kind: "pipelineImport", outcome: null }), { ...IMPORT, preflight: preflight({ refusal: "This pack asks for EO's admin tools, which no pack may have." }) });
 

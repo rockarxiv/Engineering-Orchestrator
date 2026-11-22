@@ -34,6 +34,7 @@ const TEMPLATE: GalleryTemplateView = {
   needs: [],
   blanks: [],
   roleSlots: [],
+  agentChoices: [],
   solo: true,
   previewable: true,
 };

@@ -109,18 +109,11 @@ export function ImportNeeds({
           </Line>
         ),
       )}
-      {preflight.roleSlots.length > 0 ? (
-        <Line>
-          Needs {preflight.roleSlots.length === 1 ? "an agent in the role" : "agents in the roles"} {preflight.roleSlots.map((slot) => slot.slug).join(", ")}
-          {preflight.roleSlots.some((slot) => slot.carriesPrompt)
-            ? `, and carries the prompt for ${preflight.roleSlots
-                .filter((slot) => slot.carriesPrompt)
-                .map((slot) => slot.slug)
-                .join(", ")}`
-            : ""}
-          . A role this machine has nobody in arrives as an agent carrying that prompt; one you already have is left alone.
-        </Line>
-      ) : null}
+      {/* Which agent each kind's steps will name (EO-877): a document
+          names kinds, and this project's agents are what they bind to. */}
+      {preflight.roleSlots.map((slot) => (
+        <Line key={`kind-${slot.slug}`}>{kindLine(slot)}</Line>
+      ))}
       {preflight.roleSlots
         .filter((slot) => !slot.filled && slot.recommendedBackend !== null)
         .map((slot) => (
@@ -166,6 +159,21 @@ export function ImportNeeds({
       ))}
     </div>
   );
+}
+
+/** What the import does with one kind, in a sentence (EO-877). */
+function kindLine(slot: ImportPreflightView["roleSlots"][number]): string {
+  const names = slot.agents.map((agent) => agent.name);
+  switch (slot.binding) {
+    case "existing":
+      return `The ${slot.slug} steps run ${names[0] ?? "your agent of that kind"}.`;
+    case "choose":
+      return `You have several ${slot.slug} agents — ${names.join(", ")}. The ${slot.slug} steps run the one you choose.`;
+    case "create":
+      return `You have no ${slot.slug} agent, so one is made from the prompt the file carries, and the ${slot.slug} steps run it.`;
+    case "none":
+      return `You have no ${slot.slug} agent and the file carries no prompt to make one from, so the ${slot.slug} steps name no agent until you choose one on them.`;
+  }
 }
 
 export function Line({ children, tone = "plain" }: { children: ReactNode; tone?: "plain" | "paused" | "danger" }) {

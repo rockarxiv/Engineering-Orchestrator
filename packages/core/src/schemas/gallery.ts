@@ -147,6 +147,12 @@ export const GalleryRoleSlotViewSchema = z.object({
   name: z.string(),
 });
 
+/** A kind the template needs and the agents of it the person picks between (EO-877). */
+export const GalleryAgentChoiceViewSchema = z.object({
+  kind: z.string(),
+  agents: z.array(z.object({ id: z.string(), name: z.string(), backend: z.string() })),
+});
+
 /**
  * The one button a red line carries (EO-317, ARCHITECTURE.md, "The needs check").
  *
@@ -264,6 +270,14 @@ export const GalleryTemplateViewSchema = z.object({
   blanks: z.array(GalleryBlankViewSchema),
   roleSlots: z.array(GalleryRoleSlotViewSchema),
   /**
+   * Each kind the template's agent steps need that has several agents
+   * on the project it would go on (EO-877), for the person to pick the
+   * one its steps name. The first is the one picked where nobody
+   * changes it. A kind with one agent names that one and a kind with
+   * none is made one, so neither is here.
+   */
+  agentChoices: z.array(GalleryAgentChoiceViewSchema).default([]),
+  /**
    * Whether this installation has one person (EO-305).
    *
    * On the card rather than on a channel of its own, because the one
@@ -278,6 +292,7 @@ export const GalleryTemplateViewSchema = z.object({
 export type GalleryBlankView = z.infer<typeof GalleryBlankViewSchema>;
 export type GalleryStepView = z.infer<typeof GalleryStepViewSchema>;
 export type GalleryRoleSlotView = z.infer<typeof GalleryRoleSlotViewSchema>;
+export type GalleryAgentChoiceView = z.infer<typeof GalleryAgentChoiceViewSchema>;
 export type GalleryNeedFix = z.infer<typeof GalleryNeedFixSchema>;
 export type GalleryNeedFixKind = GalleryNeedFix["kind"];
 export type GalleryNeedPart = z.infer<typeof GalleryNeedPartSchema>;

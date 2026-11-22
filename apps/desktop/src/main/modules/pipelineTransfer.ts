@@ -96,7 +96,7 @@ import {
 } from "../db/repos/index.js";
 import { briefProblems, entryRuleProblems } from "@eo/engine";
 import { registry } from "../registry.js";
-import { kindBinder } from "../stepAgents.js";
+import { kindBinder, kindCandidates } from "../stepAgents.js";
 import { adoptCarriedSchemas, adoptExportedActions, carriedSchemaRefusal, exportedActionRefusal, malformedActionRefusal } from "../actionDefinitionAdoption.js";
 import { loadRolePrompt } from "../roles/prompts.js";
 import { binariesNotFound } from "./readiness.js";
@@ -872,6 +872,44 @@ export interface RoleSlot {
    * recommends none, or when nothing asked — see `PreflightOptions`.
    */
   backendSignedIn: boolean | null;
+  /** The agents of this kind the import may bind its steps to, the default first (`kindCandidates`, EO-877). */
+  agents: { id: string; name: string; backend: string; model: string | null; projectId: string | null }[];
+  /** What the import does with the kind — see `KindBinding`. */
+  binding: KindBinding;
+}
+
+/**
+ * What an import does with a kind its steps need (EO-877, ARCHITECTURE.md
+ * §18.2): names the one agent of it the project has, waits for the
+ * person to choose between several, makes one from the prompt the
+ * document carries where there is none, or — with no prompt to make one
+ * from — leaves its steps naming nobody.
+ */
+export type KindBinding = "existing" | "choose" | "create" | "none";
+
+/** The binding `kindCandidates` and the document's role come to — see `KindBinding`. */
+function kindBinding(candidates: number, role: ExportedRole | undefined): KindBinding {
+  if (candidates === 1) return "existing";
+  if (candidates > 1) return "choose";
+  return role !== undefined && role.prompt !== null ? "create" : "none";
+}
+
+/**
+ * Each kind the document's steps need that has several agents on the
+ * project (EO-877), with those agents, the default first: what the
+ * gallery's form asks the person to pick between before it installs.
+ */
+export function kindChoices(db: Db, document: PipelineExport, projectId: Uuid | null): { kind: string; agents: { id: string; name: string; backend: string }[] }[] {
+  const agents = listAgents(db);
+  return documentKinds(document).flatMap((kind) => {
+    const candidates = kindCandidates(agents, kind, projectId);
+    return candidates.length > 1 ? [{ kind, agents: candidates.map((agent) => ({ id: agent.id, name: agent.name, backend: agent.provider })) }] : [];
+  });
+}
+
+/** The kinds a document's agent steps need, in the order its steps first name them. */
+export function documentKinds(document: PipelineExport): string[] {
+  return [...new Set(documentSteps(document).flatMap((step) => (step.type === "agent" && step.ownerRole !== null ? [step.ownerRole] : [])))];
 }
 
 /**
@@ -1307,14 +1345,17 @@ function roleSlotsIn(db: Db, document: PipelineExport, signedInBackends: readonl
   // (EO-474): the pipeline lands on `projectId`, and the scheduler never
   // sends that project's work to it. Both are `staffingAgents`, asked of
   // a real item on the project the import would land in.
-  const agents = listAgents(db).filter(isBoundAgent);
+  const all = listAgents(db);
+  const agents = all.filter(isBoundAgent);
   const filledFor = (slug: string): boolean => staffingAgents(agents, slug, { previewAt: null, projectId }).length > 0;
   const carried = new Map(document.roles.map((role) => [role.slug, role]));
-  const wanted = [...new Set(documentSteps(document).filter((step) => step.type === "agent" && step.ownerRole !== null).map((step) => step.ownerRole as string))];
 
-  return wanted.map((slug) => {
+  return documentKinds(document).map((slug) => {
     const role = carried.get(slug);
     const recommendedBackend = role?.backend ?? null;
+    // Which agent its steps would name (EO-877): the one there is, one of
+    // several for the person to pick, or one the import makes.
+    const candidates = kindCandidates(all, slug, projectId);
     return {
       slug,
       filled: filledFor(slug),
@@ -1322,6 +1363,8 @@ function roleSlotsIn(db: Db, document: PipelineExport, signedInBackends: readonl
       recommendedBackend,
       recommendedModel: role?.model ?? null,
       backendSignedIn: recommendedBackend === null || signedInBackends === undefined ? null : signedInBackends.includes(recommendedBackend),
+      agents: candidates.map((agent) => ({ id: agent.id, name: agent.name, backend: agent.provider, model: agent.model, projectId: agent.projectId })),
+      binding: kindBinding(candidates.length, role),
     };
   });
 }
@@ -1357,6 +1400,14 @@ export interface ImportPipelineInput {
    * run. The gallery's preview, and nothing else.
    */
   preview?: boolean;
+  /**
+   * Per kind, the agent of that kind on the project its steps name
+   * (EO-877). Required for a kind with several (`KindBinding` "choose"),
+   * and refused where it names anything but one of the kind's
+   * candidates: the person picks, and nothing guesses for them. A
+   * rehearsal asks for none.
+   */
+  agents?: Readonly<Record<string, string>>;
 }
 
 export type ImportResult =
@@ -1512,6 +1563,10 @@ export function importPipeline(db: Db, input: ImportPipelineInput): ImportResult
   const problem = referenceProblem(document) ?? entryRuleModuleProblem(db, document) ?? entryRulesProblem(db, document, input.projectId ?? null);
   if (problem !== null) return { ok: false, reason: problem };
 
+  // The agent each kind's steps name (EO-877), or why the person has to choose.
+  const chosen = input.preview === true ? { ok: true as const, agents: new Map<string, string>() } : chosenAgents(db, document, input.projectId ?? null, input.agents ?? {});
+  if (!chosen.ok) return { ok: false, reason: chosen.reason };
+
   // Slugs claimed here already, plus the ones this document is about to
   // claim, so a rename cannot collide with a later module in the same
   // document.
@@ -1552,7 +1607,7 @@ export function importPipeline(db: Db, input: ImportPipelineInput): ImportResult
   let keptDefinitions: { role: string; action: string }[] = [];
   try {
     db.transaction(() => {
-      ({ pipelineId, boardPipelineIds, stepIds, keptDefinitions } = writeImport(db, document, toCreate, idBySlug, input.projectId ?? null, input.signedInBackends ?? [], input.preview === true));
+      ({ pipelineId, boardPipelineIds, stepIds, keptDefinitions } = writeImport(db, document, toCreate, idBySlug, input.projectId ?? null, input.signedInBackends ?? [], input.preview === true, chosen.agents));
     });
   } catch (error) {
     // Rolled back by the transaction, so there is nothing half-written to
@@ -1581,6 +1636,44 @@ export function importPipeline(db: Db, input: ImportPipelineInput): ImportResult
   };
 }
 
+/**
+ * The agent the person chose for each kind of the document's steps
+ * (EO-877, ARCHITECTURE.md §18.2), checked before anything is written.
+ *
+ * A kind with several agents on the project is the person's to choose,
+ * and an import without that choice is refused naming them, as a slug
+ * collision is: binding the first would be guessing which of two
+ * Reviewers they meant. A choice must be one of the kind's candidates —
+ * of the kind, not archived, and reaching the project. A kind with one
+ * agent names it, and a kind with none is made one from the document's
+ * prompt (`writeRoles`), so neither needs an answer.
+ */
+export function chosenAgents(
+  db: Db,
+  document: PipelineExport,
+  projectId: Uuid | null,
+  answers: Readonly<Record<string, string>>,
+): { ok: true; agents: Map<string, string> } | { ok: false; reason: string } {
+  const agents = listAgents(db);
+  const chosen = new Map<string, string>();
+  for (const kind of documentKinds(document)) {
+    const candidates = kindCandidates(agents, kind, projectId);
+    const answer = answers[kind];
+    if (answer !== undefined) {
+      if (!candidates.some((agent) => agent.id === answer)) {
+        const named = agents.find((agent) => agent.id === answer);
+        return { ok: false, reason: `${named === undefined ? "The agent chosen" : named.name} is not a "${kind}" agent this project can name on its steps. Choose one of: ${candidates.map((agent) => agent.name).join(", ") || "none here"}.` };
+      }
+      chosen.set(kind, answer);
+      continue;
+    }
+    if (candidates.length > 1) {
+      return { ok: false, reason: `This project has several "${kind}" agents — ${candidates.map((agent) => agent.name).join(", ")}. Choose which one its "${kind}" steps name.` };
+    }
+  }
+  return { ok: true, agents: chosen };
+}
+
 /** The write half, run inside one transaction by `importPipeline`. */
 function writeImport(
   db: Db,
@@ -1591,6 +1684,8 @@ function writeImport(
   signedInBackends: readonly string[],
   /** Binding for a rehearsal (`ImportPipelineInput.preview`). */
   preview: boolean,
+  /** The agent the person chose for a kind (`chosenAgents`). */
+  chosen: ReadonlyMap<string, string>,
 ): { pipelineId: string; boardPipelineIds: string[]; stepIds: Record<string, string>; keptDefinitions: { role: string; action: string }[] } {
   writeItemTypes(db, document, projectId);
   const keptDefinitions = writeRoles(db, document, signedInBackends, projectId);
@@ -1653,9 +1748,17 @@ function writeImport(
   const mapped = (id: string): string => stepIdMap.get(id) ?? id;
 
   // Each agent step's kind, bound to one of the project's agents of that
-  // kind (EO-875) — read after the roles above are written, so a kind this
-  // import gave an agent names that agent.
-  const agentFor = kindBinder(listAgents(db), projectId, [], { preview });
+  // kind (EO-875): the one the person chose where there were several
+  // (EO-877), and otherwise the one there is — read after the roles above
+  // are written, so a kind this import gave an agent names that agent.
+  // The first candidate is what the preflight said it would name.
+  const agentsNow = listAgents(db);
+  const rehearsal = kindBinder(agentsNow, projectId, [], { preview: true });
+  const agentFor = (step: { type: string; ownerRole: string | null }): Uuid | null => {
+    if (step.type !== "agent" || step.ownerRole === null) return null;
+    if (preview) return rehearsal(step);
+    return (chosen.get(step.ownerRole) ?? kindCandidates(agentsNow, step.ownerRole, projectId)[0]?.id ?? null) as Uuid | null;
+  };
 
   // Every board, each a pipeline of its own, in this one transaction
   // (EO-762): a template whose second board failed to write is not
@@ -1868,39 +1971,52 @@ function writeRoles(db: Db, document: PipelineExport, signedInBackends: readonly
 
     if (live.some((agent) => agent.role === role.slug)) continue;
 
-    const bound = role.backend !== null && signedInBackends.includes(role.backend);
-    const config: Record<string, unknown> = {};
-    if (role.allowedTools !== null) config["allowedTools"] = role.allowedTools;
-    // The pack's recommendation, kept only where it is not also the
-    // row's own answer: an unbound agent has no provider to read it off,
-    // and losing it would delete the one line the needs check is made of
-    // — "built on claude, which you are not signed in to" — from every
-    // copy of this pack passed on from here.
-    if (!bound && role.backend !== null) config[RECOMMENDATION_KEY] = { backend: role.backend, model: role.model };
-
-    createAgent(db, {
-      name: agentNameFor(role.slug),
-      role: role.slug,
-      provider: bound ? (role.backend as string) : UNBOUND_BACKEND,
-      model: bound ? role.model : null,
-      instructions: role.prompt,
-      // With the `memory_note` grant every new agent is given (EO-593),
-      // as `agents:save` gives it.
-      config: withMemoryNoteGrant(config),
-      // An unbound agent is not something to dispatch: it names no
-      // backend, and `isDispatchable` is what every staffing question
-      // asks. Enabled the moment it has one, which is the person's
-      // decision and the Agents screen's job.
-      enabled: bound,
-    });
-    // With the agent, and only with it: a role somebody already staffs
-    // keeps their agent and everything about it, which is the rule this
-    // loop's first line states. `packRefusal` has already established
-    // that the save takes every one of these.
-    adoptCarriedSchemas(db, role.slug, role.schemasByAction);
+    agentFromRole(db, { ...role, prompt: role.prompt }, signedInBackends);
   }
 
   return kept;
+}
+
+/**
+ * One agent made from a role a document carries, prompt and all
+ * (`writeRoles`): bound to the recommended backend where this machine is
+ * signed in to it, and otherwise unbound and switched off with the
+ * recommendation kept beside it. Also what a template update makes for a
+ * kind it adds that the installation has no agent of (EO-877), so the
+ * step the update adds names an agent, as an imported one would.
+ */
+export function agentFromRole(db: Db, role: ExportedRole & { prompt: string }, signedInBackends: readonly string[]): Agent {
+  const bound = role.backend !== null && signedInBackends.includes(role.backend);
+  const config: Record<string, unknown> = {};
+  if (role.allowedTools !== null) config["allowedTools"] = role.allowedTools;
+  // The pack's recommendation, kept only where it is not also the
+  // row's own answer: an unbound agent has no provider to read it off,
+  // and losing it would delete the one line the needs check is made of
+  // — "built on claude, which you are not signed in to" — from every
+  // copy of this pack passed on from here.
+  if (!bound && role.backend !== null) config[RECOMMENDATION_KEY] = { backend: role.backend, model: role.model };
+
+  const agent = createAgent(db, {
+    name: agentNameFor(role.slug),
+    role: role.slug,
+    provider: bound ? (role.backend as string) : UNBOUND_BACKEND,
+    model: bound ? role.model : null,
+    instructions: role.prompt,
+    // With the `memory_note` grant every new agent is given (EO-593),
+    // as `agents:save` gives it.
+    config: withMemoryNoteGrant(config),
+    // An unbound agent is not something to dispatch: it names no
+    // backend, and `isDispatchable` is what every staffing question
+    // asks. Enabled the moment it has one, which is the person's
+    // decision and the Agents screen's job.
+    enabled: bound,
+  });
+  // With the agent, and only with it: a role somebody already staffs
+  // keeps their agent and everything about it, which is the rule
+  // `writeRoles` states. `packRefusal` has already established that the
+  // save takes every one of these.
+  adoptCarriedSchemas(db, role.slug, role.schemasByAction);
+  return agent;
 }
 
 /**

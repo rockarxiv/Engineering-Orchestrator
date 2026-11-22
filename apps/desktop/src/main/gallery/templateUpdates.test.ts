@@ -7,6 +7,10 @@ import { describeUpdateKey } from "@eo/engine";
 import type { DbHandle } from "../db/client.js";
 import {
   adoptPipeline,
+  archiveAgent,
+  createAgent,
+  getMessage,
+  listAgents,
   createPipeline,
   createStep,
   currentVersion,
@@ -23,8 +27,12 @@ import {
   recordPipelineOrigin,
   replacePipelineGraph,
   setSetting,
+  setStepAgent,
+  updateAgent,
   versionAuthorName,
 } from "../db/repos/index.js";
+import { getActionDefinition, saveActionDefinition } from "../db/repos/actionDefinitionsRepo.js";
+import { markReplica } from "../db/recordRole.js";
 import { createProject } from "../db/repos/projectsRepo.js";
 import { agentOfKind, createTestItem, messagesFrom, openMigratedTestDb } from "../db/testHelpers.js";
 import { storedGraphProblems } from "../ipc/configCommands.js";
@@ -34,6 +42,8 @@ import { loadTemplateHistory, type TemplateHistory, type TemplateVersion } from 
 import { templateHistoryUpTo } from "./historyTestHelpers.js";
 import { backfillPipelineOrigins } from "./origins.js";
 import { applyTemplateUpdates, compareWithTemplate } from "./templateUpdates.js";
+import { chooseTemplateAgent, TEMPLATE_AGENT_CHOICE_SOURCE } from "./updateAgents.js";
+import { handleMessageHere, onMessageAnswered } from "../messages/messages.js";
 
 /**
  * Template updates reach the pipelines made from them (EO-532): three
@@ -256,6 +266,395 @@ describe("an update with no conflict", () => {
     expect(listed.find((version) => version.number === before.number + 1)?.releaseNotes).toBe(notes);
     // A version a person saved has none.
     expect(listed.find((version) => version.number === before.number)?.releaseNotes).toBeNull();
+  });
+});
+
+/**
+ * A template update compares steps by kind and action, never by which
+ * agent runs them (EO-877): a person's choice of agent on a step is never
+ * overwritten, and a step the update adds is bound like a new import —
+ * to the agent the pipeline already runs for its kind.
+ */
+describe("the agents a template update leaves a pipeline's steps running", () => {
+  function deliveryRunningOwnChoices() {
+    const { projectId } = untouchedDeliveryOn10();
+    const implementer = createAgent(handle.db, { name: "Codex implementer", role: "implementer", provider: "codex", instructions: "Implement." });
+    const reviewer = createAgent(handle.db, { name: "Codex reviewer", role: "reviewer", provider: "codex", instructions: "Review." });
+    setStepAgent(handle.db, "todo", implementer.id);
+    setStepAgent(handle.db, "review", reviewer.id);
+    return { projectId, implementer, reviewer };
+  }
+
+  function untouchedDeliveryOn10(): { projectId: Uuid } {
+    deliveryBeforeEo461("ready_to_merge");
+    backfillPipelineOrigins(handle.db, history);
+    const project = createProject(handle.db, { name: "Shop", keyPrefix: "SHOP" });
+    adoptPipeline(handle.db, "default", project.id as Uuid);
+    return { projectId: project.id as Uuid };
+  }
+
+  it("keeps the person's agent on each step, and binds the steps of the board it adds to the same ones", () => {
+    const { projectId, implementer, reviewer } = deliveryRunningOwnChoices();
+    // Not the agents the binding rule would pick on its own.
+    expect(agentOfKind(handle.db, "implementer")).not.toBe(implementer.id);
+
+    const results = applyTemplateUpdates(handle.db, history, { isTheRecord: false });
+    expect(results).toEqual([expect.objectContaining({ pipelineId: "default", outcome: "applied", to: "1.4" })]);
+
+    expect(getStep(handle.db, "todo")?.agentId).toBe(implementer.id);
+    expect(getStep(handle.db, "review")?.agentId).toBe(reviewer.id);
+    const added = listPipelines(handle.db, projectId)
+      .filter((pipeline) => pipeline.id !== "default")
+      .flatMap((pipeline) => listStepsForPipeline(handle.db, pipeline.id))
+      .filter((step) => step.type === "agent");
+    expect(added.map((step) => [step.entryAction, step.agentId])).toEqual([
+      ["plan_comment_response", implementer.id],
+      ["review_plan", reviewer.id],
+    ]);
+  });
+
+  it("binds an agent step it adds to Delivery to the agent Delivery runs for that kind", () => {
+    const { reviewer } = deliveryRunningOwnChoices();
+    applyTemplateUpdates(handle.db, history, { isTheRecord: false });
+    expect(getPipelineOrigin(handle.db, "default")?.version).toBe("1.4");
+
+    // A 1.5 that adds a second review after the first.
+    const v14 = shipped("1.4");
+    const review = v14.document.steps.find((step) => step.id === "review")!;
+    const document = structuredClone(v14.document);
+    document.steps = [...document.steps.map((step) => (step.position > review.position ? { ...step, position: step.position + 1 } : step)), { ...review, id: "second_review", name: "Second review", position: review.position + 1 }];
+    document.routes = [
+      ...document.routes.map((route) => (route.fromStepId === "review" && route.resultKey === "approved" ? { ...route, target: "second_review" } : route)),
+      ...v14.document.routes.filter((route) => route.fromStepId === "review").map((route) => ({ ...route, fromStepId: "second_review" })),
+    ];
+    const later = new Map([...history].map(([slug, versions]) => [slug, slug === SOFTWARE ? [...versions, { ...v14, version: "1.5", notes: "A second review.", document }] : versions]));
+
+    const results = applyTemplateUpdates(handle.db, later, { isTheRecord: false });
+    expect(results).toContainEqual(expect.objectContaining({ pipelineId: "default", outcome: "applied", to: "1.5" }));
+    expect(getStep(handle.db, "second_review")?.agentId).toBe(reviewer.id);
+    expect(getStep(handle.db, "review")?.agentId).toBe(reviewer.id);
+  });
+});
+
+/**
+ * A kind an update adds that no board of the installation runs yet
+ * (EO-877) is bound as an import binds it: the one agent there is; the
+ * person's pick where there are several, the update waiting for it and
+ * applied the moment they answer; or one made from the new version's
+ * prompt where there is none. With no prompt either, it waits for them.
+ */
+describe("a template update that adds steps of a kind the installation does not run yet", () => {
+  function deliveryOn14(): { projectId: Uuid } {
+    deliveryBeforeEo461("ready_to_merge");
+    backfillPipelineOrigins(handle.db, history);
+    const project = createProject(handle.db, { name: "Shop", keyPrefix: "SHOP" });
+    adoptPipeline(handle.db, "default", project.id as Uuid);
+    applyTemplateUpdates(handle.db, history, { isTheRecord: false });
+    expect(getPipelineOrigin(handle.db, "default")?.version).toBe("1.4");
+    return { projectId: project.id as Uuid };
+  }
+
+  /** 1.4 with a system-kind Intake check after review, and the role's prompt where `prompt` is given. */
+  function withIntakeStep(prompt: string | null): TemplateHistory {
+    const v14 = shipped("1.4");
+    const review = v14.document.steps.find((step) => step.id === "review")!;
+    const approved = v14.document.routes.find((route) => route.fromStepId === "review" && route.resultKey === "approved")!;
+    const document = structuredClone(v14.document);
+    document.template = { ...document.template, version: "1.5" };
+    document.steps = [
+      ...document.steps.map((step) => (step.position > review.position ? { ...step, position: step.position + 1 } : step)),
+      { ...review, id: "intake_check", name: "Intake check", ownerRole: "system", entryAction: "intake", position: review.position + 1 },
+    ];
+    document.routes = [
+      ...document.routes.map((route) => (route === approved || (route.fromStepId === "review" && route.resultKey === "approved") ? { ...route, target: "intake_check" } : route)),
+      { ...approved, fromStepId: "intake_check", resultKey: "done", label: "Done" },
+      { ...approved, fromStepId: "intake_check", resultKey: "classified_non_feature", label: "Classified non-feature" },
+    ];
+    document.roles = [...document.roles.filter((role) => role.slug !== "system"), ...(prompt === null ? [] : [{ slug: "system", prompt, schemasByAction: {}, actions: [], allowedTools: null, backend: "claude", model: null }])];
+    return new Map([...history].map(([slug, versions]) => [slug, slug === SOFTWARE ? [...versions, { ...v14, version: "1.5", notes: "An intake check.", document }] : versions]));
+  }
+  const choiceMessages = () => messagesFrom(handle.db, TEMPLATE_AGENT_CHOICE_SOURCE);
+
+  it("waits for the person to pick between several, and applies with the one picked as soon as they answer", () => {
+    deliveryOn14();
+    const seeded = agentOfKind(handle.db, "system");
+    const second = createAgent(handle.db, { name: "Second system", role: "system", provider: "codex", instructions: "Intake too." });
+    const later = withIntakeStep("Intake.");
+    const before = currentVersion(handle.db, "default")!.number;
+
+    expect(applyTemplateUpdates(handle.db, later, { isTheRecord: false })).toContainEqual(expect.objectContaining({ pipelineId: "default", outcome: "waiting", to: "1.5", kinds: ["system"] }));
+    expect(getStep(handle.db, "intake_check")).toBeUndefined();
+    expect(currentVersion(handle.db, "default")!.number).toBe(before);
+    const [asked] = choiceMessages();
+    expect(asked?.body).toContain('adds "system" steps, and you have several "system" agents');
+    expect(asked?.options).toEqual([`${listAgents(handle.db).find((agent) => agent.id === seeded)!.name} (${listAgents(handle.db).find((agent) => agent.id === seeded)!.provider})`, "Second system (codex)"]);
+    // Asked once, however many launches.
+    applyTemplateUpdates(handle.db, later, { isTheRecord: false });
+    expect(choiceMessages()).toHaveLength(1);
+    expect(listUpdateConflicts(handle.db, "default")).toEqual([]);
+
+    // Answered as startMain wires it: the choice kept, the update run again.
+    const stop = onMessageAnswered(TEMPLATE_AGENT_CHOICE_SOURCE, (db, message) => {
+      if (chooseTemplateAgent(db, message)) applyTemplateUpdates(db, later, { isTheRecord: false });
+    });
+    try {
+      expect(handleMessageHere(handle.db, { messageId: asked!.id, how: "answered", answer: "Second system (codex)" }).ok).toBe(true);
+    } finally {
+      stop();
+    }
+
+    expect(getStep(handle.db, "intake_check")?.agentId).toBe(second.id);
+    expect(getPipelineOrigin(handle.db, "default")?.version).toBe("1.5");
+    // The steps whose agent was already chosen keep it.
+    expect(getStep(handle.db, "review")?.agentId).toBe(agentOfKind(handle.db, "reviewer"));
+  });
+
+  it("makes one from the new version's prompt where there is none, unbound and off, and names it", () => {
+    deliveryOn14();
+    for (const agent of listAgents(handle.db).filter((one) => one.role === "system")) archiveAgent(handle.db, agent.id);
+
+    expect(applyTemplateUpdates(handle.db, withIntakeStep("Intake."), { isTheRecord: false })).toContainEqual(expect.objectContaining({ pipelineId: "default", outcome: "applied", to: "1.5" }));
+
+    const made = listAgents(handle.db).filter((agent) => agent.role === "system" && agent.archivedAt === null);
+    expect(made).toHaveLength(1);
+    expect(made[0]).toMatchObject({ instructions: "Intake.", enabled: false });
+    expect(getStep(handle.db, "intake_check")?.agentId).toBe(made[0]?.id);
+  });
+
+  it("waits, and says what to make, where there is none and no prompt to make one from", () => {
+    deliveryOn14();
+    for (const agent of listAgents(handle.db).filter((one) => one.role === "system")) archiveAgent(handle.db, agent.id);
+
+    expect(applyTemplateUpdates(handle.db, withIntakeStep(null), { isTheRecord: false })).toContainEqual(expect.objectContaining({ pipelineId: "default", outcome: "waiting", kinds: ["system"] }));
+    expect(getStep(handle.db, "intake_check")).toBeUndefined();
+    const [asked] = choiceMessages();
+    expect(asked?.body).toContain('Make a "system" agent on the Agents screen');
+    expect(asked?.options ?? []).toEqual([]);
+
+    // Once there is one, the next launch applies, and the question closes.
+    createAgent(handle.db, { name: "New system", role: "system", provider: "claude", instructions: "Intake." });
+    expect(applyTemplateUpdates(handle.db, withIntakeStep(null), { isTheRecord: false })).toContainEqual(expect.objectContaining({ pipelineId: "default", outcome: "applied" }));
+    expect(choiceMessages()[0]?.handledHow).toBe("resolved");
+  });
+
+  /** 1.4 with a new Intake board whose one agent step is system-kind, and the role's prompt where `prompt` is given. */
+  function withIntakeBoard(prompt: string | null): TemplateHistory {
+    const v14 = shipped("1.4");
+    const board = structuredClone(v14.document.boards[0]!);
+    const [first] = board.steps;
+    const document = structuredClone(v14.document);
+    document.template = { ...document.template, version: "1.5" };
+    document.boards = [
+      ...document.boards,
+      {
+        key: "intake",
+        pipeline: { ...board.pipeline, name: "Intake", entryStepId: "intake_only" },
+        steps: [
+          { ...first!, id: "intake_only", name: "Intake", ownerRole: "system", entryAction: "intake", position: 0, isTerminal: false },
+          { ...first!, id: "intake_done", name: "Done", type: "user", ownerRole: null, entryAction: null, position: 1, isTerminal: true, results: [] },
+        ],
+        routes: [
+          { fromStepId: "intake_only", resultKey: "done", label: "Done", tone: "success", target: "intake_done", position: 0 },
+          { fromStepId: "intake_only", resultKey: "classified_non_feature", label: "Other", tone: "success", target: "intake_done", position: 1 },
+        ],
+      },
+    ];
+    document.roles = [...document.roles.filter((role) => role.slug !== "system"), ...(prompt === null ? [] : [{ slug: "system", prompt, schemasByAction: {}, actions: [], allowedTools: null, backend: "claude", model: null }])];
+    return new Map([...history].map(([slug, versions]) => [slug, slug === SOFTWARE ? [...versions, { ...v14, version: "1.5", notes: "An intake board.", document }] : versions]));
+  }
+  const intakeBoards = () => listPipelines(handle.db).filter((pipeline) => pipeline.name === "Intake");
+
+  it("does not make a board whose new kind has several agents until the person picks, and makes it naming the one picked", () => {
+    deliveryOn14();
+    const second = createAgent(handle.db, { name: "Second system", role: "system", provider: "codex", instructions: "Intake too." });
+    const later = withIntakeBoard("Intake.");
+    const boards = intakeBoards;
+
+    expect(applyTemplateUpdates(handle.db, later, { isTheRecord: false })).toContainEqual(expect.objectContaining({ pipelineId: "default", outcome: "waiting", kinds: ["system"] }));
+    expect(boards()).toEqual([]);
+    const [asked] = choiceMessages();
+
+    expect(handleMessageHere(handle.db, { messageId: asked!.id, how: "answered", answer: "Second system (codex)" }).ok).toBe(true);
+    expect(chooseTemplateAgent(handle.db, getMessage(handle.db, asked!.id)!)).toBe(true);
+    applyTemplateUpdates(handle.db, later, { isTheRecord: false });
+
+    expect(boards()).toHaveLength(1);
+    expect(listStepsForPipeline(handle.db, boards()[0]!.id).find((step) => step.name === "Intake")?.agentId).toBe(second.id);
+  });
+
+  /** Answers the open question about agents as startMain wires it: the choice kept, the update run again. */
+  function answer(later: TemplateHistory, messageId: string, label: string): void {
+    const stop = onMessageAnswered(TEMPLATE_AGENT_CHOICE_SOURCE, (db, message) => {
+      if (chooseTemplateAgent(db, message)) applyTemplateUpdates(db, later, { isTheRecord: false });
+    });
+    try {
+      expect(handleMessageHere(handle.db, { messageId, how: "answered", answer: label }).ok).toBe(true);
+    } finally {
+      stop();
+    }
+  }
+  const archiveEverySystemAgent = () => {
+    for (const agent of listAgents(handle.db).filter((one) => one.role === "system")) archiveAgent(handle.db, agent.id);
+  };
+  const liveOfKind = (kind: string) => listAgents(handle.db).filter((agent) => agent.role === kind && agent.archivedAt === null);
+
+  it("tells apart two agents of one name and backend, and binds the one whose button was answered", () => {
+    deliveryOn14();
+    archiveEverySystemAgent();
+    createAgent(handle.db, { name: "Intake", role: "system", provider: "codex", instructions: "One." });
+    const second = createAgent(handle.db, { name: "Intake", role: "system", provider: "codex", instructions: "Two." });
+    const later = withIntakeStep("Intake.");
+
+    expect(applyTemplateUpdates(handle.db, later, { isTheRecord: false })).toContainEqual(expect.objectContaining({ outcome: "waiting", kinds: ["system"] }));
+    const [asked] = choiceMessages();
+    expect(asked?.options).toEqual(["Intake (codex) #1", "Intake (codex) #2"]);
+
+    answer(later, asked!.id, "Intake (codex) #2");
+    expect(getStep(handle.db, "intake_check")?.agentId).toBe(second.id);
+  });
+
+  it("binds the agent a button was offered for, however the agents were renamed before the answer", () => {
+    deliveryOn14();
+    archiveEverySystemAgent();
+    const alpha = createAgent(handle.db, { name: "Alpha", role: "system", provider: "codex", instructions: "One." });
+    const beta = createAgent(handle.db, { name: "Beta", role: "system", provider: "codex", instructions: "Two." });
+    const later = withIntakeStep("Intake.");
+    applyTemplateUpdates(handle.db, later, { isTheRecord: false });
+    const [asked] = choiceMessages();
+    expect(asked?.options).toEqual(["Alpha (codex)", "Beta (codex)"]);
+
+    // Swapped names: the button that read "Beta" still means Beta's row.
+    updateAgent(handle.db, alpha.id, { name: "Beta" });
+    updateAgent(handle.db, beta.id, { name: "Alpha" });
+    answer(later, asked!.id, "Beta (codex)");
+    expect(getStep(handle.db, "intake_check")?.agentId).toBe(beta.id);
+  });
+
+  it("binds nothing where the agent answered is no longer one the installation can run", () => {
+    deliveryOn14();
+    archiveEverySystemAgent();
+    const alpha = createAgent(handle.db, { name: "Alpha", role: "system", provider: "codex", instructions: "One." });
+    createAgent(handle.db, { name: "Beta", role: "system", provider: "codex", instructions: "Two." });
+    const later = withIntakeStep("Intake.");
+    applyTemplateUpdates(handle.db, later, { isTheRecord: false });
+    const [asked] = choiceMessages();
+    archiveAgent(handle.db, alpha.id);
+
+    expect(handleMessageHere(handle.db, { messageId: asked!.id, how: "answered", answer: "Alpha (codex)" }).ok).toBe(true);
+    expect(chooseTemplateAgent(handle.db, getMessage(handle.db, asked!.id)!)).toBe(false);
+  });
+
+  /**
+   * A replica whose organisation published the agents section makes no
+   * agent here (EO-877): the update waits, saying who provides it,
+   * whether the kind arrives on a new step or a new board.
+   */
+  describe("on a replica whose organisation published the agents section", () => {
+    function lockedAgents<T>(run: () => T): T {
+      publishSection(handle.db, { section: "agents", publishedAt: Date.now(), publishedBy: null, publishedByName: "Dana" });
+      const stop = markReplica(handle.db, () => true);
+      try {
+        return run();
+      } finally {
+        stop();
+      }
+    }
+
+    it("makes no agent for a step the update adds, and waits saying the organisation provides it", () => {
+      deliveryOn14();
+      archiveEverySystemAgent();
+      const results = lockedAgents(() => applyTemplateUpdates(handle.db, withIntakeStep("Intake."), { isTheRecord: false }));
+
+      expect(results).toContainEqual(expect.objectContaining({ pipelineId: "default", outcome: "waiting", kinds: ["system"] }));
+      expect(liveOfKind("system")).toEqual([]);
+      expect(getStep(handle.db, "intake_check")).toBeUndefined();
+      expect(choiceMessages()[0]?.body).toContain('you have no "system" agent. Your organisation has published its agents section (Dana)');
+      expect(choiceMessages()[0]?.options ?? []).toEqual([]);
+    });
+
+    it("makes no agent for a board the update adds, and makes no board", () => {
+      deliveryOn14();
+      archiveEverySystemAgent();
+      const results = lockedAgents(() => applyTemplateUpdates(handle.db, withIntakeBoard("Intake."), { isTheRecord: false }));
+
+      expect(results).toContainEqual(expect.objectContaining({ pipelineId: "default", outcome: "waiting", kinds: ["system"] }));
+      expect(liveOfKind("system")).toEqual([]);
+      expect(intakeBoards()).toEqual([]);
+      expect(choiceMessages()[0]?.body).toContain("published its agents section (Dana)");
+    });
+
+    it("defines none of the actions a new kind brings, and waits saying so, though the kind has an agent", () => {
+      deliveryOn14();
+      createAgent(handle.db, { name: "QA", role: "qa", provider: "claude", instructions: "Verify." });
+      const results = lockedAgents(() => applyTemplateUpdates(handle.db, withVerifyStep(), { isTheRecord: false }));
+
+      expect(results).toContainEqual(expect.objectContaining({ pipelineId: "default", outcome: "waiting", kinds: ["qa"] }));
+      expect(getActionDefinition(handle.db, "qa", "verify")).toBeUndefined();
+      expect(getStep(handle.db, "verify_check")).toBeUndefined();
+      expect(choiceMessages()[0]?.body).toContain('the "qa" actions it brings are not defined here');
+    });
+  });
+
+  /** 1.4 with a step after review of a kind and action no pack ships — "qa" / "verify" — the definition carried with the role. */
+  function withVerifyStep(): TemplateHistory {
+    const v14 = shipped("1.4");
+    const review = v14.document.steps.find((step) => step.id === "review")!;
+    const approved = v14.document.routes.find((route) => route.fromStepId === "review" && route.resultKey === "approved")!;
+    const document = structuredClone(v14.document);
+    document.template = { ...document.template, version: "1.5" };
+    document.steps = [
+      ...document.steps.map((step) => (step.position > review.position ? { ...step, position: step.position + 1 } : step)),
+      { ...review, id: "verify_check", name: "Verify", ownerRole: "qa", entryAction: "verify", position: review.position + 1 },
+    ];
+    document.routes = [
+      ...document.routes.map((route) => (route.fromStepId === "review" && route.resultKey === "approved" ? { ...route, target: "verify_check" } : route)),
+      { ...approved, fromStepId: "verify_check", resultKey: "passed", label: "Passed" },
+      { ...approved, fromStepId: "verify_check", resultKey: "failed", label: "Failed" },
+    ];
+    document.roles = [
+      ...document.roles,
+      {
+        slug: "qa",
+        prompt: "Verify.",
+        schemasByAction: {},
+        actions: [
+          {
+            action: "verify",
+            description: "Check the change does what the story asks.",
+            results: [
+              { key: "passed", label: "Passed", meaning: "It does." },
+              { key: "failed", label: "Failed", meaning: "It does not." },
+            ],
+            fields: {},
+          },
+        ],
+        allowedTools: null,
+        backend: "claude",
+        model: null,
+      },
+    ];
+    return new Map([...history].map(([slug, versions]) => [slug, slug === SOFTWARE ? [...versions, { ...v14, version: "1.5", notes: "A verify step.", document }] : versions]));
+  }
+
+  it("defines the actions a kind it adds brings, as an import does, so the new step validates and runs the agent it makes", () => {
+    deliveryOn14();
+    expect(liveOfKind("qa")).toEqual([]);
+
+    expect(applyTemplateUpdates(handle.db, withVerifyStep(), { isTheRecord: false })).toContainEqual(expect.objectContaining({ pipelineId: "default", outcome: "applied", to: "1.5" }));
+
+    expect(getActionDefinition(handle.db, "qa", "verify")?.results.map((result) => result.key)).toEqual(["passed", "failed"]);
+    const [made] = liveOfKind("qa");
+    expect(made).toMatchObject({ instructions: "Verify." });
+    expect(getStep(handle.db, "verify_check")?.agentId).toBe(made?.id);
+  });
+
+  it("keeps a definition of the action the installation already has", () => {
+    deliveryOn14();
+    createAgent(handle.db, { name: "QA", role: "qa", provider: "claude", instructions: "Verify." });
+    expect(saveActionDefinition(handle.db, { role: "qa", action: "verify", description: "Ours.", results: [{ key: "passed", label: "Passed", meaning: "" }, { key: "failed", label: "Failed", meaning: "" }], fields: {} }).ok).toBe(true);
+
+    expect(applyTemplateUpdates(handle.db, withVerifyStep(), { isTheRecord: false })).toContainEqual(expect.objectContaining({ outcome: "applied" }));
+    expect(getActionDefinition(handle.db, "qa", "verify")?.description).toBe("Ours.");
   });
 });
 

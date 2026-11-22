@@ -252,6 +252,7 @@ export async function serveWork(
       stepId: offer.dispatch.stepId,
       action: offer.dispatch.action,
       agentId: offer.dispatch.agent?.id ?? null,
+      ...(offer.dispatch.agent ? { agentName: offer.dispatch.agent.name, agentKind: offer.dispatch.agent.role } : {}),
       lease: asWire(offer.lease),
     })),
   };

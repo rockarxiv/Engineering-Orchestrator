@@ -137,7 +137,7 @@ describe("a watch that never gives up, in a document", () => {
   });
 
   it("parses under the watch a version-9 build reads, so that build reaches its format check and refuses it there", () => {
-    expect(neverGivesUp.eoPipelineExport).toBe(15);
+    expect(neverGivesUp.eoPipelineExport).toBe(16);
     // `StepWatchSchema` as format 9 had it.
     const version9Watch = z.object({ everyMinutes: z.number().finite(), giveUpAfterHours: z.number().finite().default(168) });
     const watch = (JSON.parse(JSON.stringify(neverGivesUp)) as { steps: { watch: unknown }[] }).steps[0]!.watch;
@@ -181,7 +181,7 @@ describe("a pinned module version, in a document", () => {
   });
 
   it("parses under the step and module schemas a version-13 build reads, so that build reaches its format check and refuses it there", () => {
-    expect(pinned.eoPipelineExport).toBe(15);
+    expect(pinned.eoPipelineExport).toBe(16);
     const version13Step = ExportedStepSchema.omit({ moduleVersion: true });
     const version13Module = ExportedModuleSchema.omit({ version: true });
     expect(version13Step.safeParse(step).success).toBe(true);
@@ -221,7 +221,7 @@ describe("a person step's brief, in a document", () => {
   const approve = { id: "approve", position: 1, name: "Approve", type: "user", ownerRole: null, entryAction: null, instructionsSummary: null, isTerminal: true, planMode: false, brief };
 
   it("parses under the step schema a version-14 build reads, so that build reaches its format check", () => {
-    expect(PIPELINE_EXPORT_VERSION).toBe(15);
+    expect(PIPELINE_EXPORT_VERSION).toBe(16);
     expect(ExportedStepSchema.omit({ brief: true }).safeParse(approve).success).toBe(true);
   });
 
@@ -233,5 +233,31 @@ describe("a person step's brief, in a document", () => {
 
   it("refuses a part it cannot read", () => {
     expect(PipelineExportSchema.safeParse(document({ steps: [{ ...approve, brief: [{ show: "mood" }] }] })).success).toBe(false);
+  });
+});
+
+/**
+ * Format 16 (EO-877): a step names the kind of the agent it ran, and an
+ * import binds that kind to one of the importing project's agents. The
+ * shape is format 15's, so a version-15 build parses the document and
+ * refuses it at its format check; a document of any earlier format still
+ * reads, its `ownerRole` as the kind.
+ */
+describe("a step's kind, in a document", () => {
+  it("parses under the step schema a version-15 build reads, so that build reaches its format check", () => {
+    expect(PIPELINE_EXPORT_VERSION).toBe(16);
+    // No key was added: the step a version-15 build reads is this one.
+    expect(ExportedStepSchema.safeParse(document().steps[0]).success).toBe(true);
+    expect(PipelineExportSchema.parse(document()).eoPipelineExport).toBe(16);
+  });
+
+  it("carries a kind and never an agent's id", () => {
+    const parsed = PipelineExportSchema.parse(document({ steps: [{ ...document().steps[0], agentId: "01900000-0000-7000-8000-000000000001" }] }));
+    expect(parsed.steps[0]?.ownerRole).toBe("triager");
+    expect(parsed.steps[0]).not.toHaveProperty("agentId");
+  });
+
+  it.each([1, 13, 15])("reads a format-%i document's ownerRole as the kind", (format) => {
+    expect(PipelineExportSchema.parse(document({ eoPipelineExport: format })).steps[0]?.ownerRole).toBe("triager");
   });
 });

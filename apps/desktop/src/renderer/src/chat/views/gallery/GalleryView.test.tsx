@@ -39,6 +39,7 @@ const WEEKLY: GalleryTemplateView = {
     { key: "keyPrefix", kind: "keyPrefix", label: "Report prefix", help: "", required: true, default: "REP", valueType: "string", connector: null },
   ],
   roleSlots: [{ stepId: "approve", name: "Approve" }],
+  agentChoices: [],
   solo: true,
   previewable: true,
 };
@@ -267,6 +268,23 @@ describe("the form", () => {
       roleSlots: {},
       projectName: "Weekly report",
     });
+  });
+
+  it("asks which agent a kind's steps run where there are several, and sends the one picked (EO-877)", async () => {
+    const choice = { kind: "reporter", agents: [{ id: "r-1", name: "Early reporter", backend: "claude" }, { id: "r-2", name: "Late reporter", backend: "codex" }] };
+    const invoke = mockIpc({ templates: [{ ...WEEKLY, agentChoices: [choice] }] });
+    renderGallery();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Use this" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Choose" }));
+    await waitFor(() => expect(screen.getByLabelText("Where the material lives")).toHaveValue("/home/anna/reports"));
+    const picker = screen.getByRole("combobox", { name: "Agent for the reporter steps" });
+    expect(picker).toHaveValue("r-1");
+    fireEvent.change(picker, { target: { value: "r-2" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create" }));
+
+    await waitFor(() => expect(sent(invoke, "gallery:use")).toBeDefined());
+    expect(sent(invoke, "gallery:use")).toMatchObject({ slug: "weekly-report", agents: { reporter: "r-2" } });
   });
 
   it("asks the template's own blanks, hides the role picker in solo mode, and goes back", async () => {

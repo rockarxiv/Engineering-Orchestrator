@@ -2312,6 +2312,7 @@ export async function applyAssistCardCommand(
   try {
     outcome = await carryOut(db, doors, conversation, card, {
       choices: input.choices,
+      agents: input.agents ?? {},
       value: input.value,
       archiveItems: input.archiveItems ?? false,
       unticked: input.unticked,
@@ -2366,10 +2367,11 @@ async function carryOut(
   card: AssistCard,
   {
     choices,
+    agents,
     value,
     archiveItems,
     unticked,
-  }: { choices: Record<string, "reuse" | "import">; value: string | undefined; archiveItems: boolean; unticked: CliToolsUnticked | undefined },
+  }: { choices: Record<string, "reuse" | "import">; agents: Record<string, string>; value: string | undefined; archiveItems: boolean; unticked: CliToolsUnticked | undefined },
 ): Promise<{ done: boolean; said: string } | { retry: string } | null> {
   // Pressed through `assist:publishTrial`, never here (EO-588).
   if (card.kind === TRIAL_PUBLISH_CARD_KIND) return null;
@@ -2385,7 +2387,7 @@ async function carryOut(
     // read against — as a draft that creates a pipeline is (EO-381). Named
     // in `into`, so it is the chat's project rather than the active one;
     // for a chat with no project, the oldest, where it is listed (EO-766).
-    const imported = await dispatched(doors, "pipelines:import", { document: file.text, choices, projectId: null, into: { projectId: chatPipelineProjectId(db, conversation.projectId) } });
+    const imported = await dispatched(doors, "pipelines:import", { document: file.text, choices, agents, projectId: null, into: { projectId: chatPipelineProjectId(db, conversation.projectId) } });
     if (!imported.ok) return { done: false, said: `Nothing was imported: ${imported.reason}` };
     if (!imported.data.imported || imported.data.pipelineId === null) return { done: false, said: `Nothing was imported: ${imported.data.problem ?? "EO refused it."}` };
     return { done: true, said: importedNote(db, imported.data) };

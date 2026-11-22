@@ -30,6 +30,7 @@ import { getComment, setCommentPinned, settleMention } from "../db/repos/comment
 import { getItem } from "../db/repos/itemsRepo.js";
 import { getSetting, setSetting } from "../db/repos/settingsRepo.js";
 import { forgetMessagesGoneFromTheRecord, upsertReplicaMessage } from "../db/repos/messagesRepo.js";
+import { noticeMissingStepAgents, settleMissingStepAgents } from "./stepAgentsHere.js";
 import { emitPush } from "../ipc/push.js";
 import { z } from "zod";
 import { hasTransition } from "../db/repos/transitionsRepo.js";
@@ -1228,6 +1229,15 @@ async function applyChanges(options: DrainOptions, changes: RecordChanges): Prom
   for (const agent of changes.agents) {
     applied += place(options, "agent", agent.id, agent, now) ? 1 : 0;
   }
+
+  // The agents the graphs above name that this machine does not have
+  // (EO-877), after the agents this page brings: each such step is said
+  // to the person once, and its work is never handed to another agent of
+  // the kind. A message about a step whose agent has since arrived, by
+  // this page or a publication, is closed.
+  let toldOfAgents = settleMissingStepAgents(options.db, now);
+  for (const pipeline of changes.pipelines) if (noticeMissingStepAgents(options.db, pipeline, now)) toldOfAgents = true;
+  if (toldOfAgents) emitPush("messages:changed", {});
 
   // Items first, then everything that hangs off one. Each list is paged
   // on a cursor of its own, so "first" is only true *within a page*: a
