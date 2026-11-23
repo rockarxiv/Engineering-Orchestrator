@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { aliasNotice, aliasRetirementReached, type JobRunsOn } from "@eo/core";
 import { announceSweep, startArchiveSweep } from "./archive/schedule.js";
 import { onMessageAnswered, startMessageSweep } from "./messages/messages.js";
+import { settleProjectlessTeamsAtStart } from "./projectlessTeams.js";
 import { chooseTemplateAgent, TEMPLATE_AGENT_CHOICE_SOURCE } from "./gallery/updateAgents.js";
 import { removeRetiredAttachmentFiles } from "./attachments/retiredFiles.js";
 import { onPush } from "./ipc/push.js";
@@ -589,6 +590,14 @@ export function startMain(platform: Platform): RunningMain {
     }
   };
   updateTemplates();
+  // EO-899: a team made for a pipeline while it was on no project — the
+  // seeded Delivery's Review team, made by the update above before any
+  // project existed — moves into the project its pipeline now belongs to,
+  // since a step may run only as a team of its own pipeline's project. One
+  // steps of more than one project run as stays, and the person is told.
+  // After the split and the updates, which decide which project each
+  // pipeline is on and make the teams.
+  for (const moved of settleProjectlessTeamsAtStart(db, !platform.hasMachine).moved) console.log(`[eo] team ${moved.teamId} moved into project ${moved.projectId}, whose pipeline runs as it`);
   // An update that waited on the person's choice of agent for the steps
   // it adds (EO-877) is compared again the moment they answer.
   onMessageAnswered(TEMPLATE_AGENT_CHOICE_SOURCE, (answeredIn, message) => {

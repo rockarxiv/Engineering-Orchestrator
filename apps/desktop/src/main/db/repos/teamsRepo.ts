@@ -24,7 +24,7 @@ import { foldCase } from "../textFold.js";
 import { createAgent, deleteAgent, getAgent, listAgents, updateAgent } from "./agentsRepo.js";
 import { agentReasoningEffort, reasoningEffortKey } from "../../providers/smallModels.js";
 import { kindCandidates } from "../../stepAgents.js";
-import { agentCliTools, agentMcpServers, agentSkills, agents, cliTools, mcpServers, pipelineSteps, pipelines, skills, teamVersions, teams } from "../schema.js";
+import { agentCliTools, agentMcpServers, agentSkills, agents, cliTools, mcpServers, pipelineSteps, pipelines, projects, skills, teamVersions, teams } from "../schema.js";
 
 /**
  * Declared teams (EO-881, ARCHITECTURE.md §4.2a): a team is a row of its
@@ -177,7 +177,7 @@ export function listTeamVersions(db: Db, teamId: string): TeamVersion[] {
     .flatMap((row): TeamVersion[] => {
       const definition = storedTeamDefinition(row.definition);
       if (definition === null) return [];
-      return [{ id: row.id, teamId: row.teamId, number: row.number, definition, author: authorOf(row), restoredFrom: row.restoredFrom, memberSettings: storedMemberSettings(row.memberSettings), createdAt: row.createdAt }];
+      return [{ id: row.id, teamId: row.teamId, number: row.number, definition, author: authorOf(row), restoredFrom: row.restoredFrom, memberSettings: storedMemberSettings(row.memberSettings), note: row.note, createdAt: row.createdAt }];
     });
 }
 
@@ -302,10 +302,11 @@ function writeVersion(
   restoredFrom: number | null,
   now: number,
   memberSettings?: Record<string, TeamMemberSettings>,
+  note: string | null = null,
 ): void {
   const settings = memberSettings ?? memberSettingsOf(db, teamAgentIds(definition));
   db.insert(teamVersions)
-    .values({ id: uuidv7(), teamId, number, definition, ...authorColumns(author), restoredFrom, memberSettings: settings, createdAt: now })
+    .values({ id: uuidv7(), teamId, number, definition, ...authorColumns(author), restoredFrom, memberSettings: settings, note, createdAt: now })
     .run();
 }
 
@@ -775,6 +776,110 @@ export function stepsNamingTeam(db: Db, teamId: string): { stepId: string; stepN
     .where(and(eq(pipelineSteps.teamId, teamId), isNull(pipelineSteps.retiredVersion)))
     .orderBy(asc(pipelines.name), asc(pipelineSteps.position))
     .all();
+}
+
+/**
+ * The live pipelines whose current steps name a team, each with its
+ * project (null for one on no project). An archived pipeline runs nothing,
+ * so it is left out.
+ */
+function pipelinesNamingTeam(db: Db, teamId: string): { pipelineId: string; pipelineName: string; projectId: string | null }[] {
+  return db
+    .selectDistinct({ pipelineId: pipelines.id, pipelineName: pipelines.name, projectId: pipelines.projectId })
+    .from(pipelineSteps)
+    .innerJoin(pipelines, eq(pipelines.id, pipelineSteps.pipelineId))
+    .where(and(eq(pipelineSteps.teamId, teamId), isNull(pipelineSteps.retiredVersion), isNull(pipelines.archivedAt)))
+    .orderBy(asc(pipelines.name), asc(pipelines.id))
+    .all();
+}
+
+/** A team on no project that steps of more than one project — or of a project and of a pipeline on none — run as: left where it is. */
+export interface SharedProjectlessTeam {
+  teamId: string;
+  teamName: string;
+  pipelines: { pipelineId: string; pipelineName: string; projectId: string | null }[];
+}
+
+/**
+ * Puts each team that belongs to no project into the project whose
+ * pipelines run as it (EO-899). A step may run only as a team of its own
+ * pipeline's project, and a team made for a pipeline while it was on no
+ * project — the seeded Delivery, brought up to its template before any
+ * project existed — stayed on none when the pipeline was adopted.
+ *
+ * Each such team that only one project's pipelines name moves there with
+ * its own agents, as a new version by EO saying so; one whose name that
+ * project already has is numbered apart, and the version says that too.
+ * One that more than one project names, or a project and a pipeline on
+ * none, is left as it is and answered as `shared`, for the caller to tell
+ * the person. One nothing names, or only pipelines on no project, stays.
+ * `pipelineId` narrows it to the teams that pipeline's steps name.
+ * Archived teams and a trial's copies are left alone.
+ */
+export function settleProjectlessTeams(db: Db, options: { pipelineId?: string; now?: number } = {}): { moved: { teamId: string; projectId: string }[]; shared: SharedProjectlessTeam[] } {
+  const now = options.now ?? Date.now();
+  const scope =
+    options.pipelineId === undefined
+      ? undefined
+      : new Set(
+          db
+            .selectDistinct({ teamId: pipelineSteps.teamId })
+            .from(pipelineSteps)
+            .where(and(eq(pipelineSteps.pipelineId, options.pipelineId), isNull(pipelineSteps.retiredVersion)))
+            .all()
+            .flatMap((row) => (row.teamId === null ? [] : [row.teamId])),
+        );
+  if (scope !== undefined && scope.size === 0) return { moved: [], shared: [] };
+  const candidates = db
+    .select({ id: teams.id })
+    .from(teams)
+    .where(and(isNull(teams.projectId), isNull(teams.archivedAt), isNull(teams.trialPipelineId)))
+    .orderBy(asc(teams.name), asc(teams.id))
+    .all()
+    .filter((row) => scope === undefined || scope.has(row.id));
+  const moved: { teamId: string; projectId: string }[] = [];
+  const shared: SharedProjectlessTeam[] = [];
+  for (const { id } of candidates) {
+    const team = getTeam(db, id);
+    const definition = team?.definition ?? null;
+    if (team === undefined || definition === null) continue;
+    const naming = pipelinesNamingTeam(db, id);
+    const projects = new Set(naming.map((pipeline) => pipeline.projectId));
+    if (projects.size > 1) {
+      shared.push({ teamId: id, teamName: team.name, pipelines: naming });
+      continue;
+    }
+    const [projectId] = [...projects];
+    if (projectId === undefined || projectId === null) continue;
+    moveTeamIntoProject(db, { ...team, definition }, projectId, naming.map((pipeline) => pipeline.pipelineName), now);
+    moved.push({ teamId: id, projectId });
+  }
+  return { moved, shared };
+}
+
+/**
+ * Moves a team on no project, and its own agents, into `projectId`: a new
+ * version by EO with the same definition — its name numbered apart where
+ * the project has it — whose note says why. A lock does not hold it back:
+ * nothing of what the team is changes, only where it belongs, and where it
+ * was no step of its pipeline could run as it.
+ */
+function moveTeamIntoProject(db: Db, team: StoredTeam & { definition: TeamDefinition }, projectId: string, pipelineNames: readonly string[], now: number): void {
+  const project = db.select({ name: projects.name }).from(projects).where(eq(projects.id, projectId)).get();
+  const name = teamByName(db, projectId, team.name) === undefined ? team.name : freeTeamName(db, projectId, team.name);
+  const definition: TeamDefinition = { ...team.definition, name };
+  const named = pipelineNames.map((one) => `"${one}"`).join(", ");
+  const note =
+    `EO moved this team into the project "${project?.name ?? projectId}", which ${pipelineNames.length === 1 ? `the pipeline ${named} that runs as it belongs` : `the pipelines ${named} that run as it belong`} to: it belonged to no project, and a step may run only as a team of its own pipeline's project.` +
+    (name === team.name ? "" : ` That project already had a team called "${team.name}", so this one is "${name}" now.`);
+  db.transaction((tx) => {
+    const inTx = tx as unknown as Db;
+    const number = team.version + 1;
+    writeVersion(inTx, team.id, number, definition, { kind: "eo" }, null, now, undefined, note);
+    tx.update(teams).set({ projectId, name, definition, version: number, updatedAt: now }).where(eq(teams.id, team.id)).run();
+    for (const own of teamOwnedAgents(inTx, team.id)) updateAgent(inTx, own.id, { projectId: projectId as Uuid });
+    touchPipelinesNaming(inTx, team.id, now);
+  });
 }
 
 /**
