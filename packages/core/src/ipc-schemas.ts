@@ -8,6 +8,7 @@ import { StepInputsSchema } from "./schemas/modules.js";
 import { StepResultSchema } from "./schemas/pipelines.js";
 import { StepBriefSchema } from "./stepBrief.js";
 import { StepTeamSchema } from "./team.js";
+import { TeamDefinitionSchema } from "./declaredTeam.js";
 import { ProposalSummarySchema } from "./schemas/proposalSummary.js";
 import { WaitingOnSchema } from "./people.js";
 import { SpecShapeSchema } from "./schemas/specShape.js";
@@ -1105,6 +1106,13 @@ export const PipelineStepViewSchema = z.object({
    * absent as "keep" (`PipelineStepSaveSchema`).
    */
   team: StepTeamSchema.nullable().default(null),
+  /**
+   * The declared team an `agent` step runs as (EO-881, ARCHITECTURE.md
+   * §4.2a), by id, or null for one agent. `team` above is that team read
+   * as the role-staffed shape a session runs (`stepTeamOf`), filled in by
+   * EO from the team itself: what a step runs as is said here.
+   */
+  teamId: z.string().nullable().default(null),
 });
 
 /**
@@ -1123,7 +1131,7 @@ export const PipelineStepViewSchema = z.object({
  * cannot turn it off by not mentioning it. A step the save creates has
  * nothing to keep, and runs once unless the save says otherwise.
  */
-export const PipelineStepSaveSchema = PipelineStepViewSchema.extend({
+export const PipelineStepSaveSchema = PipelineStepViewSchema.omit({ team: true }).extend({
   watch: StepWatchSchema.nullable()
     .optional()
     .describe(
@@ -1143,12 +1151,23 @@ export const PipelineStepSaveSchema = PipelineStepViewSchema.extend({
         "null shows the default (instructions summary, current output, the previous step's verdict). Leave the field out to keep the step's current brief.",
     ),
   /**
-   * The team, on `watch`'s terms (EO-843): absent keeps the step's own,
-   * `null` makes it one agent again. No description, because no agent is
-   * offered it yet: `pipeline_save` takes it off the steps it is sent.
+   * The declared team, on `watch`'s terms (EO-843, EO-881): absent keeps
+   * the step's own, `null` makes it one agent again. A save names a team
+   * by id — one the project has, or one the same save declares in its
+   * `teams`. No description, because no agent is offered it:
+   * `pipeline_save` takes it off the steps it is sent, and only a draft a
+   * person publishes points a step at a team.
    */
-  team: StepTeamSchema.nullable().optional(),
+  teamId: z.string().nullable().optional(),
 });
+
+/**
+ * A declared team a save writes beside the graph (EO-881): created where
+ * the project has no team of that id, and otherwise a new version of it.
+ * Only the assistant's draft, published by a person, sends one.
+ */
+export const TeamSaveSchema = z.object({ id: z.string().min(1), definition: TeamDefinitionSchema });
+export type TeamSave = z.infer<typeof TeamSaveSchema>;
 
 /** Where one declared result of a step sends the item. */
 export const StepRouteViewSchema = z.object({

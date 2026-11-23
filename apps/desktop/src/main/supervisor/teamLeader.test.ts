@@ -29,7 +29,7 @@ import { createStep } from "../db/repos/pipelineStepsRepo.js";
 import { createRun, getRun, listRunsForItem, updateRun } from "../db/repos/runsRepo.js";
 import { acceptTeamReport, endTeamSession, listTeamSessionsForItem, openTeamSession, startTeamAttempt, teamSessionTotals } from "../db/repos/teamSessionsRepo.js";
 import { listTransitionsForItem } from "../db/repos/transitionsRepo.js";
-import { createTestItem, openMigratedTestDb, agentOfKind } from "../db/testHelpers.js";
+import { createTestItem, openMigratedTestDb, agentOfKind, setStepTeam } from "../db/testHelpers.js";
 import { createRunSupervisor, type RunSupervisor } from "./runSupervisor.js";
 import { taskContextOf } from "./teamEvidence.js";
 import type { ReportOnlyProviderAnswer } from "./teamSupervisor.js";
@@ -120,9 +120,7 @@ function supervisor(extra: Partial<Parameters<typeof createRunSupervisor>[0]> = 
 }
 
 function setTeam(value: StepTeam): void {
-  (handle.db as unknown as { $client: { prepare(source: string): { run(...args: unknown[]): unknown } } }).$client
-    .prepare("update pipeline_steps set team = ? where id = 'check'")
-    .run(JSON.stringify(value));
+  setStepTeam(handle.db, "check", value);
 }
 
 function setup(leaderProvider: "claude" | "codex" = "claude", participantProviders: { sec: "claude" | "codex"; tester: "claude" | "codex" } = { sec: "claude", tester: "claude" }): void {

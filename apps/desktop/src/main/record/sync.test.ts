@@ -1667,8 +1667,9 @@ describe("a section the organisation publishes", () => {
 
     // Anna edits her own copy, which nothing has published and which
     // she is therefore entitled to edit.
+    const annas = (({ teams: _teams, ...rest }: ReturnType<typeof listPipelineStepViews>) => rest)(listPipelineStepViews(anna.handle.db, { pipelineId: "default" }));
     savePipeline(anna.handle.db, undefined, {
-      ...listPipelineStepViews(anna.handle.db, { pipelineId: "default" }),
+      ...annas,
       pipelineId: "default",
       steps: listPipelineStepViews(anna.handle.db, { pipelineId: "default" }).steps.map((one) =>
         one.id === step!.id ? { ...one, name: "Anna's name for it" } : one,

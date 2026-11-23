@@ -29,6 +29,7 @@ function step(id: string, name: string, position: number, overrides: Partial<Pip
     moduleVersion: null,
     brief: null,
     team: null,
+    teamId: null,
     ...overrides,
   };
 }

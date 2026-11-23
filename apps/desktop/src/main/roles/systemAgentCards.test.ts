@@ -368,15 +368,15 @@ describe("what the system agent's prompt says about several cards in one reply (
   });
 });
 
-describe("what the system agent's prompt says about report-only teams (EO-848)", () => {
-  const teams = () => section("### A report-only team on an agent step");
+describe("what the system agent's prompt says about teams on a step (EO-848)", () => {
+  const teams = () => section("### A declared team on an agent step");
 
-  it("offers `team` on a draft's agent step, and `\"none\"` for one agent again", () => {
-    expect(flat).toContain("- **An `agent` step may set `team`** — the report-only team it runs as,");
-    expect(teams()).toContain("A team is configured only through a draft and published from its card; `pipeline_save` takes the key off.");
+  it("offers `team` on a draft's agent step, by name, and `\"none\"` for one agent again", () => {
+    expect(flat).toContain("- **An `agent` step may set `team`** — the name of the declared team it runs as,");
+    expect(teams()).toContain("A team is created, changed and named only through a draft published from its card; `pipeline_save` takes the keys off.");
   });
 
-  it("says every member is report-only, and what it cannot do", () => {
+  it("says every member is report-only by default, and what it cannot do", () => {
     expect(teams()).toContain("posts an attributed report on the thread, and cannot edit the work, run commands, change anything outside EO or widen what it may use.");
   });
 
@@ -398,29 +398,51 @@ describe("what the system agent's prompt says about report-only teams (EO-848)",
     expect(teams()).toContain("**Publishing a team files a new version.**");
     expect(teams()).toContain("do not report the team as tested from a mocked result.");
   });
-
-  it("is a newer version than the one before teams were drafted", () => {
-    expect(Number(/prompt-version:\s*(\d+)/.exec(prompt)![1])).toBeGreaterThanOrEqual(64);
-  });
 });
 
 describe("what the system agent's prompt says about a team's member mode (EO-867)", () => {
-  const teams = () => section("### A report-only team on an agent step");
+  const teams = () => section("### A declared team on an agent step");
 
-  it("says what each mode is for: report-only for content EO should not let an agent act on, isolated where members should work as the role's agent does", () => {
+  it("says what each mode is for: report-only for content EO should not let an agent act on, isolated where members should work as their agents do", () => {
     expect(teams()).toContain("**Members: report-only or isolated.**");
     expect(teams()).toContain('`"report_only"`, the default, is for content EO should not let an agent act on');
-    expect(teams()).toContain('`"isolated"` is for a team whose members should work as the role\'s agent does');
+    expect(teams()).toContain('`"isolated"` is for a team whose members should work as their agents do');
     expect(teams()).toContain("in a copy of the item's workspace made for it alone and removed when its turn ends.");
-    expect(teams()).toContain('Set it beside `coordination`: `"members": "isolated"`.');
   });
 
   it("says an isolated team escapes the report-only refusals and is refused where its workspace cannot be copied", () => {
     expect(teams()).toContain("none of the report-only refusals below applies to it");
     expect(teams()).toContain("a step that works in a workspace EO cannot copy for each member — a folder, a scratch directory — is refused instead, and the refusal names the kind.");
   });
+});
 
-  it("is a newer version than the one before member modes", () => {
-    expect(Number(/prompt-version:\s*(\d+)/.exec(prompt)![1])).toBeGreaterThanOrEqual(65);
+describe("what the system agent's prompt says about declared teams (EO-881)", () => {
+  const teams = () => section("### A declared team on an agent step");
+
+  it("says a team is its own entity, beside agents, which a step names and several pipelines may share", () => {
+    expect(teams()).toContain("A team is a configured thing of its own, beside agents: it has a name, a leader agent (leader-led only) and member agents, and a step names it the way it names an agent.");
+    expect(teams()).toContain("Several pipelines can name one team.");
+  });
+
+  it("says how a draft creates, changes and names a team, by name, with its agents by name", () => {
+    expect(teams()).toContain("A draft creates or changes a team in its `teams` list, each entry whole, and points a step at one by name in the step's `team`.");
+    expect(teams()).toContain("An entry whose `name` the project's team has changes that team — a new version — and any other creates one.");
+    expect(teams()).toContain('"agent": "Security reviewer"');
+    expect(teams()).toContain("whole entry as a draft's `teams` takes it");
+  });
+
+  it("names the tool pool, model range and member cap, and that eo_admin and the system agent are never on a team", () => {
+    expect(teams()).toContain("a `toolPool` — the CLI tools (by command), MCP servers (by name) and skills (by slug) its members may be given");
+    expect(teams()).toContain("a `modelRange` — the `runtimes`, `models` and `reasoning` levels a member its leader adds may run on");
+    expect(teams()).toContain("`eo_admin` can never be in a pool, and EO's system agent can never be a leader or a member.");
+  });
+
+  it("says a locked team refuses every change, and that every change is a version a person can restore", () => {
+    expect(teams()).toContain("**A locked team refuses every change but a person unlocking it**");
+    expect(teams()).toContain("Every change to a team is a version, recorded with who made it, and a person can restore any earlier one.");
+  });
+
+  it("is a newer version than the one before declared teams", () => {
+    expect(Number(/prompt-version:\s*(\d+)/.exec(prompt)![1])).toBeGreaterThanOrEqual(66);
   });
 });

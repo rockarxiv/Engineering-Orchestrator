@@ -75,6 +75,7 @@ import {
   StepHoldSchema,
   PipelineStepViewSchema,
   PipelineStepSaveSchema,
+  TeamSaveSchema,
   PipelineViewSchema,
   StepRouteViewSchema,
   CreateRepositoryInputSchema,
@@ -1014,6 +1015,17 @@ export const PipelineSaveInputSchema = z.object({
    * `role_action_save`, and a third way would be one nobody reads first.
    */
   actions: z.array(ActionDefinitionDraftSchema).optional(),
+  /**
+   * The declared teams this graph is published with (EO-881): each
+   * created, or written as a new version of the project's team of that
+   * id, in the transaction that writes the graph — so a refused pipeline
+   * leaves no team behind and a refused team no pipeline. The graph is
+   * judged against the project's teams with these laid over them. A
+   * locked team refuses the save. Not offered to MCP clients
+   * (`pipeline_save` omits it): only the assistant's draft, which a
+   * person publishes, changes a team this way.
+   */
+  teams: z.array(TeamSaveSchema).optional(),
 });
 
 /** One assistant chat, as `assist:list` answers with it. */
@@ -2770,6 +2782,8 @@ export const recordContract = {
       waitingProblem: z.string().nullable().default(null),
       /** The action definitions the draft is published with (EO-426), sent on to `pipeline:save` beside the graph. */
       actions: z.array(ActionDefinitionDraftSchema).default([]),
+      /** The declared teams the draft creates or changes (EO-881), sent on to `pipeline:save` beside the graph. */
+      teams: z.array(TeamSaveSchema).default([]),
       /** The name the draft renames the pipeline to (EO-520), applied with `pipelines:update` once the graph has saved. Null when it keeps the name. */
       rename: z.string().nullable().default(null),
       /** The icon the draft gives the pipeline (EO-520), applied with the name. Null when it leaves the icon alone. */
@@ -3900,6 +3914,8 @@ export const recordContract = {
       entryRules: EntryRulesSchema.optional(),
       /** The definitions it would be published with (EO-426), so this says what `pipeline:save` would. */
       actions: z.array(ActionDefinitionDraftSchema).optional(),
+      /** The declared teams it would be published with (EO-881), so this says what `pipeline:save` would. */
+      teams: z.array(TeamSaveSchema).optional(),
     }),
     z.object({
       problems: z.array(WorkflowProblemSchema),

@@ -46,6 +46,7 @@ export function StepDetails({
   verification,
   workspaces,
   workspaceKind,
+  teamName = null,
 }: {
   step: PipelineStepView;
   steps: PipelineStepView[];
@@ -55,6 +56,8 @@ export function StepDetails({
   workspaces: WorkspaceView[];
   /** The kind a step that picks no workspace inherits — the project's. */
   workspaceKind: string | null;
+  /** The name of the declared team it runs as (EO-881), where it runs as one. */
+  teamName?: string | null;
 }) {
   const { registry } = useRegistry();
   const modules = useModules().data?.modules ?? [];
@@ -133,7 +136,7 @@ export function StepDetails({
       description="This step as published. To change it, ask the assistant."
     >
       <Facts label="Step details" items={facts} />
-      {step.type === "agent" && step.team != null ? <TeamDetails team={step.team} /> : null}
+      {step.type === "agent" && step.team != null ? <TeamDetails team={step.team} name={teamName} /> : null}
       <section aria-label="Results" className="flex flex-col gap-1.5">
         <h3 className="text-[12.5px] font-medium text-ink">Results and where each goes</h3>
         {results.length === 0 ? (
@@ -173,7 +176,7 @@ export function StepDetails({
  * none of them can change the work, said where a person would look for
  * what the team is allowed to do.
  */
-export function TeamDetails({ team }: { team: StepTeam }) {
+export function TeamDetails({ team, name = null }: { team: StepTeam; name?: string | null }) {
   const facts = teamFacts(team);
   const list = (label: string, lines: readonly string[]) => (
     <ul aria-label={label} className="flex flex-col gap-0.5">
@@ -191,7 +194,7 @@ export function TeamDetails({ team }: { team: StepTeam }) {
   items.push({ term: "Limits", value: list("Limits", facts.limits) });
   return (
     <section aria-label="Team" className="flex flex-col gap-1.5">
-      <h3 className="text-[12.5px] font-medium text-ink">Runs as a team</h3>
+      <h3 className="text-[12.5px] font-medium text-ink">{name === null ? "Runs as a team" : `Runs as the team “${name}”`}</h3>
       <p className="text-[12.5px] text-ink-muted">
         <Chip>{memberModeWords(facts.mode)}</Chip> {facts.reportOnly}
       </p>

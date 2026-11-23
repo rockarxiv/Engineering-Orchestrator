@@ -16,6 +16,7 @@ import {
   type Uuid,
   uuidv7,
 } from "@eo/core";
+import { trialTeams } from "../db/repos/teamsRepo.js";
 import type { AttachmentStorage } from "../attachments/storage.js";
 import type { Db } from "../db/client.js";
 import { withEventsHeld } from "../db/heldEvents.js";
@@ -546,16 +547,20 @@ function applyToTrial(db: Db, deps: DesignDeps, live: LiveTrial, conversation: I
   if (!graph.ok) return graph.reason;
   const { stepIds, moduleIds } = live.design;
   const mapped = (id: string): string => stepIds[id] ?? id;
+  // The revised draft's teams as the trial's own (EO-881), the same ones each round.
+  const teams = trialTeams(db, { id: live.trial.id, name: getPipeline(db, live.trial.id)?.name ?? "trial" }, graph.teams);
   const saved = savePipeline(
     db,
     deps.engine as EngineHandle | undefined,
     {
       pipelineId: live.trial.id,
+      ...(teams.teams.length === 0 ? {} : { teams: teams.teams }),
       steps: graph.steps.map((step) => ({
         // A brief naming a draft step names that step's trial id (EO-831).
         ...remapStepReferences(step, mapped),
         id: mapped(step.id),
         pipelineId: live.trial.id,
+        teamId: teams.teamIdOf(step.teamId),
         entryAction: step.type === "module" && step.entryAction !== null ? (moduleIds[step.entryAction] ?? step.entryAction) : step.entryAction,
         // The newest version of what it runs here (EO-770): a round tests the
         // module as the draft has just saved it.
@@ -567,7 +572,7 @@ function applyToTrial(db: Db, deps: DesignDeps, live: LiveTrial, conversation: I
       ...(graph.actions.length === 0 ? {} : { actions: graph.actions }),
     },
     undefined,
-    { judgeActionsOnly: true },
+    { judgeActionsOnly: true, trialTeams: teams.sources },
   );
   if (saved.saved) {
     // What the trial's items are held to from now on (EO-832).

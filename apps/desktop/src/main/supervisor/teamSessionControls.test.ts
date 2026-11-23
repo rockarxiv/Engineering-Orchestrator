@@ -28,7 +28,7 @@ import { createStep } from "../db/repos/pipelineStepsRepo.js";
 import { createRun, getRun, listRunsForItem, updateRun } from "../db/repos/runsRepo.js";
 import { listTeamSessionsForItem, mirrorTeamSession, openTeamSession } from "../db/repos/teamSessionsRepo.js";
 import { listTransitionsForItem } from "../db/repos/transitionsRepo.js";
-import { createTestItem, openMigratedTestDb, agentOfKind } from "../db/testHelpers.js";
+import { createTestItem, openMigratedTestDb, agentOfKind, setStepTeam } from "../db/testHelpers.js";
 import { moveItem, postCommentCommand, resumeHeldItem, type EngineHandle } from "../ipc/domainCommands.js";
 import { cancelTeamSessionCommand, retryTeamSessionCommand } from "../ipc/teamCommands.js";
 import { createRunSupervisor, type RunSupervisor } from "./runSupervisor.js";
@@ -483,9 +483,7 @@ describe("a person's controls on a leader-led team (EO-849)", () => {
 
   beforeEach(() => {
     createAgent(handle.db, { name: "Lee", role: "lead", provider: "codex", model: "gpt-5", instructions: "You lead." });
-    (handle.db as unknown as { $client: { prepare(source: string): { run(...args: unknown[]): unknown } } }).$client
-      .prepare("update pipeline_steps set team = ? where id = 'check'")
-      .run(JSON.stringify(leaderTeam()));
+    setStepTeam(handle.db, "check", leaderTeam());
     leaderTurns = [];
     sashaTurns = 0;
     script = ({ agent }) => {

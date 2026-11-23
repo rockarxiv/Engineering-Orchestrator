@@ -33,7 +33,11 @@ import {
   NO_TEAM,
   type StepTeam,
   teamFactLines,
-  teamWords,
+  type AssistDraftTeam,
+  type TeamDefinition,
+  type TeamSave,
+  declaredTeamLine,
+  uuidv7,
 } from "@eo/core";
 import { hasBlockingProblem, validatePipeline, type WorkflowProblem } from "@eo/engine";
 import type { Db } from "../db/client.js";
@@ -53,8 +57,9 @@ import {
   workspaceLabel,
 } from "../db/repos/index.js";
 import { sideEffectingServersByStep } from "../connectors/sideEffects.js";
-import { agentNamed } from "../stepAgents.js";
-import { isolatedCopyProblemsForPipeline, itemTypesJudged, readGuards, reportOnlyRoleProblemsForPipeline, staffedRolesForPipeline, stepAgentsForPipeline } from "../ipc/configCommands.js";
+import { agentNamed, UNKNOWN_AGENT_ID } from "../stepAgents.js";
+import { listTeams, teamByName, teamNameKey, teamReader, teamsForValidation } from "../db/repos/teamsRepo.js";
+import { declaredTeamReachProblems, isolatedCopyProblemsForPipeline, itemTypesJudged, readGuards, reportOnlyRoleProblemsForPipeline, staffedRolesForPipeline, stepAgentsForPipeline } from "../ipc/configCommands.js";
 import { actionUsedBy, describeActionUse } from "../ipc/roleActionCommands.js";
 import { activeProjectId } from "../ipc/repositoryCommands.js";
 
@@ -109,12 +114,20 @@ export function validateDraft(
   // The pipeline's steps as they stand, which is what the draft's own
   // steps carry their keep checking from (EO-505).
   const existingSteps = new Map(listStepsForPipeline(db, pipelineId).map((step) => [step.id, step]));
-  const domainSteps = toDomainSteps(pipelineId, draft, existingSteps, draftAgentBinder(db, pipelineId));
+  // The teams it writes and names (EO-881), judged as Publish judges them.
+  const teams = draftTeamsFor(db, pipelineId, draft);
+  const declared = teamsForValidation(db, stepAgentsForPipeline(db, pipelineId).projectId, teams.saves);
+  const domainSteps = toDomainSteps(pipelineId, draft, existingSteps, draftAgentBinder(db, pipelineId), teams);
   const refusedActions: WorkflowProblem[] = proposed.ok
     ? []
     : proposed.problems.map((message) => ({ severity: "error" as const, stateId: null, message: `The proposed action definition cannot be saved — ${message}` }));
 
-  return [...refusedActions, ...validatePipeline({
+  return [
+    ...refusedActions,
+    // Every team the draft writes, used by its graph or not, and the steps
+    // of other pipelines naming one it changes, as Publish judges them (EO-881).
+    ...declaredTeamReachProblems(db, pipelineId, domainSteps, teams.saves, proposed.ok ? proposed.registry : installed),
+    ...validatePipeline({
     // With the actions roles define for themselves (EO-423), which are
     // rows rather than anything a pack contributes: a draft is held to
     // its actions' declared results exactly as a publish is. The
@@ -174,6 +187,10 @@ export function validateDraft(
     // And whether each isolated team's members could have copies of their
     // own (EO-867), as the publish path asks it.
     isolatedCopyProblems: isolatedCopyProblemsForPipeline(db, pipelineId, domainSteps),
+    // The declared teams a step may name (EO-881), the draft's laid over
+    // the project's, as the publish path asks it.
+    teams: declared.teams,
+    teamAgentSurfaces: declared.surfaces,
     itemCountByStep,
     // Off-dashboard steps are absent from a draft exactly as they are
     // absent from the editor's submission, and "absent" is how a removal
@@ -257,8 +274,8 @@ export interface DraftStepSettings {
   watch?: StepWatch | typeof RUNS_ONCE | undefined;
   workspaceId?: string | undefined;
   workspaceMode?: WorkspaceMode | undefined;
-  /** An agent step's report-only team, or `NO_TEAM` for one agent again (EO-848). */
-  team?: StepTeam | typeof NO_TEAM | undefined;
+  /** The declared team an agent step runs as, by name, or `NO_TEAM` for one agent again (EO-848, EO-881). */
+  team?: string | undefined;
 }
 
 /**
@@ -276,6 +293,8 @@ export type DraftWithLimits = Omit<PipelineDraft, "steps" | "routes"> & {
   routes: (PipelineDraft["routes"][number] & { requiresComment?: boolean | undefined })[];
   icon?: string | undefined;
   restoredFrom?: number | undefined;
+  /** The declared teams the draft creates or changes (EO-881). */
+  teams?: AssistDraftTeam[] | undefined;
 };
 
 /** The keys of `DraftStepSettings`, which `withoutDraftSettings` takes off a step. */
@@ -300,7 +319,62 @@ export interface SettledStepSettings {
   watch: StepWatch | null;
   workspaceId: string | null;
   workspaceMode: WorkspaceMode;
+  /** The declared team it names (EO-881). */
+  teamId: string | null;
+  /** That team as it runs (`stepTeamOf`), for the validator's role-staffed checks. */
   team: StepTeam | null;
+}
+
+/**
+ * The declared teams a draft creates or changes, and how its steps' team
+ * names resolve (EO-881): what the validator, the card and Publish read,
+ * so the three agree about which team a step runs as.
+ */
+export interface DraftTeams {
+  /** Each team the draft writes, as `pipeline:save` takes it: the project's team of that name's id, or a new one. */
+  saves: TeamSave[];
+  /** The id a step's team name names: a team the draft writes, or the project's — or the name itself, which no team has, so the validator refuses it as missing. */
+  idOf: (name: string) => string;
+  /** A team, by id, as it runs, the draft's as Publish would write it. */
+  teamOf: (teamId: string | null) => StepTeam | null;
+  /** A team's name by id, the draft's included. */
+  nameOf: (teamId: string | null) => string | null;
+}
+
+/** For a caller with no teams to resolve: every name names nothing. */
+export const NO_DRAFT_TEAMS: DraftTeams = { saves: [], idOf: (name) => name, teamOf: () => null, nameOf: () => null };
+
+/**
+ * A draft's teams against the project's (EO-881). A draft team whose name
+ * the project has changes that team (same id); any other is created under
+ * a new id. Its agents are named by name and bound as a step's are
+ * (`agentNamed`); a name nobody has is kept as written, so `validateTeam`
+ * refuses it as an agent EO does not have.
+ */
+export function draftTeamsFor(db: Db, pipelineId: string, draft: Pick<DraftWithLimits, "teams">): DraftTeams {
+  const { agents, projectId } = stepAgentsForPipeline(db, pipelineId);
+  // A name nobody here has is kept as written, so the refusal names it.
+  const agentId = (name: string): string => {
+    const bound = agentNamed(agents, name, projectId);
+    return bound === null || bound === UNKNOWN_AGENT_ID ? name : bound;
+  };
+  const saves: TeamSave[] = (draft.teams ?? []).map((team) => {
+    const id = teamByName(db, projectId, team.name)?.id ?? uuidv7();
+    const definition: TeamDefinition =
+      team.coordination === "leader"
+        ? { ...team, leader: { agentId: agentId(team.leader.agent), instructions: team.leader.instructions }, members: team.members.map((member) => ({ agentId: agentId(member.agent) })) }
+        : { ...team, members: team.members.map(({ agent, ...member }) => ({ ...member, agentId: agentId(agent) })) };
+    return { id, definition };
+  });
+  const stored = listTeams(db, projectId);
+  const read = teamReader(db, saves);
+  const fold = teamNameKey;
+  return {
+    saves,
+    idOf: (name) => saves.find((team) => fold(team.definition.name) === fold(name))?.id ?? stored.find((team) => fold(team.name) === fold(name))?.id ?? name,
+    teamOf: read,
+    nameOf: (teamId) => (teamId === null ? null : (saves.find((team) => team.id === teamId)?.definition.name ?? stored.find((team) => team.id === teamId)?.name ?? null)),
+  };
 }
 
 /**
@@ -322,8 +396,9 @@ export interface SettledStepSettings {
  * and one the draft gives a step that is not an agent's is judged — and
  * refused — as given.
  */
-export function settledStepSettings(step: { type: string } & DraftStepSettings, existing: PipelineStep | undefined): SettledStepSettings {
+export function settledStepSettings(step: { type: string } & DraftStepSettings, existing: PipelineStep | undefined, teams: DraftTeams = NO_DRAFT_TEAMS): SettledStepSettings {
   const runsSomething = step.type === "builtin" || step.type === "module";
+  const teamId = step.team === NO_TEAM ? null : step.team !== undefined ? teams.idOf(step.team) : step.type === "agent" ? (existing?.teamId ?? null) : null;
   return {
     timeoutMs:
       step.timeoutMs === DEFAULT_TIME_LIMIT ? null : step.timeoutMs !== undefined ? step.timeoutMs : step.type === "module" ? (existing?.timeoutMs ?? null) : null,
@@ -331,7 +406,9 @@ export function settledStepSettings(step: { type: string } & DraftStepSettings, 
     watch: step.watch === RUNS_ONCE ? null : step.watch !== undefined ? settledWatch(step.watch) : runsSomething ? (existing?.watch ?? null) : null,
     workspaceId: step.workspaceId === ITEM_WORKSPACE ? null : (step.workspaceId ?? existing?.workspaceId ?? null),
     workspaceMode: step.workspaceMode ?? existing?.workspaceMode ?? DEFAULT_WORKSPACE_MODE,
-    team: step.team === NO_TEAM ? null : step.team !== undefined ? step.team : step.type === "agent" ? (existing?.team ?? null) : null,
+    teamId,
+    // The team as it would run: the draft's own where it writes the team, else as stored.
+    team: teamId === null ? null : (teams.teamOf(teamId) ?? (teamId === existing?.teamId ? existing.team : null)),
   };
 }
 
@@ -410,6 +487,7 @@ export function toDomainSteps(
   draft: DraftWithLimits,
   existingSteps: ReadonlyMap<string, PipelineStep> = new Map(),
   agentFor: (step: { type: string; agent: string | null }) => Uuid | null = () => null,
+  teams: DraftTeams = NO_DRAFT_TEAMS,
 ): PipelineStep[] {
   return draft.steps.map((draftStep) => {
     const { agent, ...step } = withoutDraftSettings(draftStep);
@@ -433,7 +511,7 @@ export function toDomainSteps(
       // judging the shipped pull request watch as though its keep
       // checking had been switched off would refuse every draft of a
       // pipeline that has one.
-      ...settledStepSettings(draftStep, existing),
+      ...settledStepSettings(draftStep, existing, teams),
       // Nor about who a human step waits on (EO-302), and for the
       // strongest form of that reason: a person is not something a draft
       // can propose. Null is "nobody in particular" — what every step
@@ -611,12 +689,14 @@ export function renderDraft(
   // beside what it has now, field by field.
   const workspaceName = (id: string | null) => workspaceWords(db, id);
   const catalog = listModules(db, true);
+  // The teams the draft writes and names (EO-881), read as Publish reads them.
+  const teams = draftTeamsFor(db, pipelineId, draft);
   const settingsOf = (step: DraftWithLimits["steps"][number], was: PipelineStep) => {
-    const settled = settledStepSettings(step, was);
+    const settled = settledStepSettings(step, was, teams);
     // The inputs Publish would save, not the ones before the module's
     // declaration is applied: an input it drops is shown going.
     const inputs = publishedStepInputs(step, settled.inputs, catalog, output.modules);
-    return settingChanges(was, { ...settled, inputs, results: draftStepResults(step, draft.routes, was.results), brief: draftStepBrief(step, was) }, draft.routes, workspaceName, stepNames);
+    return settingChanges(was, { ...settled, inputs, results: draftStepResults(step, draft.routes, was.results), brief: draftStepBrief(step, was) }, draft.routes, workspaceName, stepNames, teams.nameOf);
   };
   const changed = draft.steps.filter((step) => {
     const was = beforeById.get(step.id);
@@ -645,8 +725,6 @@ export function renderDraft(
     lines.push("**Added**", "");
     for (const step of added) {
       lines.push(`- ${step.name} — ${describeStep(named(step))}${limitsOf(step, draft.routes, workspaceName, stepNames)}`);
-      // The whole team a new step runs as (EO-848), under it.
-      if (step.team !== undefined && step.team !== NO_TEAM) lines.push(...teamLines(step.team, "  "));
     }
     lines.push("");
   }
@@ -664,6 +742,23 @@ export function renderDraft(
     lines.push("");
   }
   if (removed.length > 0) lines.push("**Removed**", "", ...removed.map((step) => `- ${step.name}${runBy(step)}${holding(counts, step.id)}`), "");
+
+  // Each declared team the draft creates or changes (EO-881), whole: what
+  // Publish writes as a new team, or as the team's next version.
+  const teamChanges = teams.saves.flatMap((save) => {
+    const stored = listTeams(db, stepAgentsForPipeline(db, pipelineId).projectId).find((team) => team.id === save.id);
+    if (stored !== undefined && stored.definition !== null && JSON.stringify(stored.definition) === JSON.stringify(save.definition)) return [];
+    const runs = teams.teamOf(save.id);
+    return [
+      `- ${stored === undefined ? "New" : "Changed"}: ${declaredTeamLine(save.definition)}${stored?.locked === true ? " — locked, so Publish will be refused until a person unlocks it" : ""}`,
+      ...declaredTeamMemberLines(save.definition, agents).map((line) => `  - ${line}`),
+      ...(runs === null ? [] : teamLines(runs, "  ").filter((line) => !line.includes("Member: "))),
+      `  - Tool pool: ${poolWords(save.definition)}`,
+      `  - Model range: ${rangeWords(save.definition)}`,
+      `  - Member cap: ${save.definition.memberCap}`,
+    ];
+  });
+  if (teamChanges.length > 0) lines.push("**Teams**", "", ...teamChanges, "");
 
   const routeLines = renderRouteDiff(draft, beforeRoutes, [...draft.steps, ...before]);
   if (routeLines.length > 0) lines.push("**Routing**", "", ...routeLines, "");
@@ -741,7 +836,9 @@ export function renderDraft(
     routeLines.length === 0 &&
     entryWas === draft.entryStepId &&
     !changesAnAction &&
-    !pipelineChanged
+    !pipelineChanged &&
+    // A draft that only changes a team is a change too (EO-881).
+    teamChanges.length === 0
   ) {
     return { ok: false, reason: "That draft is identical to the pipeline as it stands, so there is nothing to apply." };
   }
@@ -927,8 +1024,8 @@ function limitsOf(
   }
   // What its decision's details show, where the draft declares it (EO-827).
   if (step.brief !== undefined && step.brief.length > 0) parts.push(`details show ${briefWords(step.brief, stepNames)}`);
-  // Its team (EO-848) in a word here; `teamLines` lists the whole of it under the step.
-  if (step.team !== undefined && step.team !== NO_TEAM) parts.push(step.team.coordination === "leader" ? "runs as a leader-led team" : "runs as an independent team");
+  // The declared team it runs as (EO-848, EO-881), by name; the card's Teams section lists a team the draft writes.
+  if (step.team !== undefined && step.team !== NO_TEAM) parts.push(`runs as the team "${step.team}"`);
   return parts.length === 0 ? "" : ` · ${parts.join(" · ")}`;
 }
 
@@ -942,10 +1039,29 @@ function teamLines(team: StepTeam, indent: string): string[] {
   return teamFactLines(team).map((line) => `${indent}- ${line}`);
 }
 
-/** "one agent", "an independent team" or "a leader-led team". */
-function teamKind(team: StepTeam | null): string {
-  if (team === null) return "one agent";
-  return team.coordination === "leader" ? "a leader-led team" : "an independent team";
+/** A team's leader and members by agent name, with what each is asked to do (EO-881). */
+function declaredTeamMemberLines(team: TeamDefinition, agents: readonly Agent[]): string[] {
+  const name = (agentId: string) => agents.find((agent) => agent.id === agentId)?.name ?? agentId;
+  if (team.coordination === "leader") {
+    return [`Leader: ${name(team.leader.agentId)} — ${team.leader.instructions}`, `Members: ${team.members.map((member) => name(member.agentId)).join(", ")}`];
+  }
+  return team.members.map((member) => `Member ${member.key}: ${name(member.agentId)}, ${member.required ? "required" : "optional"} — ${member.instructions}`);
+}
+
+/** A team's tool pool in a line: "nothing" where it offers none. */
+function poolWords(team: TeamDefinition): string {
+  const parts = [
+    ...team.toolPool.cliTools.map((command) => `CLI ${command}`),
+    ...team.toolPool.mcpServers.map((server) => `MCP ${server}`),
+    ...team.toolPool.skills.map((skill) => `skill ${skill}`),
+  ];
+  return parts.length === 0 ? "nothing" : parts.join(", ");
+}
+
+/** A team's model range in a line. */
+function rangeWords(team: TeamDefinition): string {
+  const list = (values: readonly string[]) => (values.length === 0 ? "none" : values.join(", "));
+  return `runtimes ${list(team.modelRange.runtimes)}; models ${list(team.modelRange.models)}; reasoning ${list(team.modelRange.reasoning)}`;
 }
 
 /**
@@ -963,6 +1079,7 @@ function settingChanges(
   routes: DraftWithLimits["routes"],
   workspaceName: (id: string | null) => string,
   stepNames: ReadonlyMap<string, string>,
+  teamName: (teamId: string | null) => string | null = () => null,
 ): string[] {
   const changes: string[] = [];
   const limit = (ms: number | null) => (ms === null ? "EO's default" : describeDuration(ms));
@@ -981,12 +1098,11 @@ function settingChanges(
   if (was.workspaceMode !== now.workspaceMode) changes.push(`Repository: ${modeWords(was.workspaceMode)} → ${modeWords(now.workspaceMode)}`);
   // What the decision's details show (EO-827).
   if (JSON.stringify(was.brief) !== JSON.stringify(now.brief)) changes.push(`Details show: ${briefWords(was.brief, stepNames)} → ${briefWords(now.brief, stepNames)}`);
-  // Its team (EO-848): what it was in a word, then the whole of what it becomes.
-  // Compared as `teamWords` says them, which is the version diff's own
-  // reading: two teams that read the same there are the same team.
-  if (teamWords(was.team) !== teamWords(now.team)) {
-    const head = teamKind(was.team) === teamKind(now.team) ? `Team: ${teamKind(now.team)}, changed` : `Team: ${teamKind(was.team)} → ${teamKind(now.team)}`;
-    changes.push(now.team === null ? head : [head, ...teamLines(now.team, "    ")].join("\n"));
+  // The declared team it runs as (EO-848, EO-881), by name. A change to
+  // the team itself is the card's Teams section's to say.
+  if (was.teamId !== now.teamId) {
+    const said = (teamId: string | null) => (teamId === null ? "one agent" : `"${teamName(teamId) ?? teamId}"`);
+    changes.push(`Team: ${said(was.teamId)} → ${said(now.teamId)}`);
   }
 
   // "Needs a reason" on a result the step already offered, or on a new

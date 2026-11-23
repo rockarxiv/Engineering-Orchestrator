@@ -267,6 +267,13 @@ export const VersionStepSchema = z.object({
    * written before teams parses as one agent.
    */
   team: StepTeamSchema.nullable().default(null),
+  /**
+   * The declared team an agent step names (EO-881), by id. `team` above
+   * is what that team ran as when the version was filed, frozen with the
+   * version; this is which team it was. Defaulted so a version written
+   * before declared teams parses as naming none.
+   */
+  teamId: z.string().nullable().default(null),
 });
 export type VersionStep = z.infer<typeof VersionStepSchema>;
 
@@ -372,7 +379,7 @@ export type VersionDiff = z.infer<typeof VersionDiffSchema>;
  * deliberately, and `results` because the buttons a human step offers
  * are what a person on an older version is actually given.
  */
-const DIFFED_FIELDS = ["name", "type", "agentId", "entryAction", "instructionsSummary", "isTerminal", "planMode", "offBoard", "position", "results", "watch", "brief", "team"] as const;
+const DIFFED_FIELDS = ["name", "type", "agentId", "entryAction", "instructionsSummary", "isTerminal", "planMode", "offBoard", "position", "results", "watch", "brief", "team", "teamId"] as const;
 
 /**
  * And of a route, in the order it lists them.
@@ -455,11 +462,20 @@ function moduleVersionChange(was: VersionStep, step: VersionStep, moduleNames: R
 
 /** What a diff calls a field, where that is not its key: a step's agent is "agent", and said by name (EO-876). */
 function fieldLabel(field: (typeof DIFFED_FIELDS)[number]): string {
+  if (field === "teamId") return "declared team";
   return field === "agentId" ? "agent" : field;
 }
 
 /** One field of a step, as the diff prints it. */
-function shownStepField(field: (typeof DIFFED_FIELDS)[number], step: VersionStep, names: ReadonlyMap<string, string>, agentNames: ReadonlyMap<string, string>): string | null {
+function shownStepField(
+  field: (typeof DIFFED_FIELDS)[number],
+  step: VersionStep,
+  names: ReadonlyMap<string, string>,
+  agentNames: ReadonlyMap<string, string>,
+  teamNames: ReadonlyMap<string, string> = new Map(),
+): string | null {
+  // The declared team by name (EO-881), for the agent's reason: by its id where this side cannot name it.
+  if (field === "teamId") return step.teamId === null || step.teamId === undefined ? null : (teamNames.get(step.teamId) ?? step.teamId);
   if (field === "results") return shownResults(step.results);
   // The agent by name (EO-876): an id says nothing to the person reading
   // which agent a step now runs. An agent this side cannot name is said
@@ -504,6 +520,8 @@ export function diffVersions(
   moduleNames?: ReadonlyMap<string, string>,
   /** Agent names by id, so a change of a step's agent names both agents (EO-876). Absent, by id. */
   agentNames: ReadonlyMap<string, string> = new Map(),
+  /** Declared team names by id, so a change of a step's team names both teams (EO-881). Absent, by id. */
+  teamNames: ReadonlyMap<string, string> = new Map(),
 ): VersionDiff {
   const before = new Map(from.steps.map((step) => [step.id, step] as const));
   const after = new Map(to.steps.map((step) => [step.id, step] as const));
@@ -518,9 +536,13 @@ export function diffVersions(
     }
     // An agent compared by id, and shown by name: two agents of one name are still a change.
     const same = (field: (typeof DIFFED_FIELDS)[number]) =>
-      field === "agentId" ? was.agentId === step.agentId : shownStepField(field, was, names, agentNames) === shownStepField(field, step, names, agentNames);
+      field === "agentId"
+        ? was.agentId === step.agentId
+        : field === "teamId"
+          ? (was.teamId ?? null) === (step.teamId ?? null)
+          : shownStepField(field, was, names, agentNames, teamNames) === shownStepField(field, step, names, agentNames, teamNames);
     const fields: VersionDiff["steps"][number]["fields"] = DIFFED_FIELDS.flatMap((field) =>
-      same(field) ? [] : [{ field: fieldLabel(field), before: shownStepField(field, was, names, agentNames), after: shownStepField(field, step, names, agentNames) }],
+      same(field) ? [] : [{ field: fieldLabel(field), before: shownStepField(field, was, names, agentNames, teamNames), after: shownStepField(field, step, names, agentNames, teamNames) }],
     );
     const pin = moduleVersionChange(was, step, moduleNames);
     if (pin !== null) fields.push(pin);

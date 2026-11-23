@@ -618,14 +618,14 @@ function spelledTool<K extends IpcChannel>(spec: ChannelToolSpec<K>, spelling: T
  * delegated to whoever would be reading the payload.
  */
 /**
- * A step as an agent may send it to `pipeline_save`: without its team
- * (EO-843). A team is configured through the assistant's draft and the
- * card a person publishes (EO-848), never written by a tool — so the key
- * is taken off, and a step keeps the team it has (`teamFor` in
- * configCommands.ts). `pipeline_validate` takes it, to judge a team
- * before it is drafted.
+ * A step as an agent may send it to `pipeline_save`: without the declared
+ * team it names (EO-843, EO-881). A step is pointed at a team only through
+ * the assistant's draft and the card a person publishes (EO-848), never
+ * by a tool — so the key is taken off, and a step keeps the team it has
+ * (`teamIdFor` in configCommands.ts). `pipeline_validate` takes it, to
+ * judge a team before it is drafted.
  */
-const STEP_WITHOUT_TEAM = PipelineStepSaveSchema.omit({ team: true });
+const STEP_WITHOUT_TEAM = PipelineStepSaveSchema.omit({ teamId: true });
 
 const PIPELINE_SAVE_TOOL: ToolSpec = withoutWebhookUnattended(
   withMachineSpecificSteps(
@@ -652,10 +652,10 @@ const PIPELINE_SAVE_TOOL: ToolSpec = withoutWebhookUnattended(
       // assistant writes itself goes through `role_action_save`, which
       // answers with the save's own reasons.
       //
-      // And each step without `team` (EO-843, EO-848): a team reaches a
-      // pipeline only through a draft's card, so the key is stripped and a
-      // step keeps its own.
-      input: PipelineSaveInputSchema.omit({ restoredFrom: true, actions: true }).safeExtend({ steps: z.array(STEP_WITHOUT_TEAM) }),
+      // And each step without `teamId`, and no `teams` (EO-843, EO-848,
+      // EO-881): a team reaches a pipeline, and changes, only through a
+      // draft's card, so the keys are stripped and a step keeps its own.
+      input: PipelineSaveInputSchema.omit({ restoredFrom: true, actions: true, teams: true }).safeExtend({ steps: z.array(STEP_WITHOUT_TEAM) }),
       kind: "write",
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       render: renderPipelineSaved,

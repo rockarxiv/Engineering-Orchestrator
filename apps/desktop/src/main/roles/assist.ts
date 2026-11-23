@@ -21,6 +21,7 @@ import {
   type Uuid,
   uuidv7,
   type EntryRule,
+  type TeamSave,
 } from "@eo/core";
 import { hasBlockingProblem } from "@eo/engine";
 import type { Db } from "../db/client.js";
@@ -74,6 +75,7 @@ import {
   validateDraft,
   withoutDraftSettings,
   draftAgentBinder,
+  draftTeamsFor,
 } from "./architect.js";
 import { postAssistCards } from "./assistCards.js";
 import { outputOf, runOf, threadOf, type ConversationThread } from "./conversationThread.js";
@@ -2605,6 +2607,8 @@ export type AssistPublishableGraph =
       restoredFrom: number | null;
       /** The entry rules it sets (EO-610). Undefined leaves the pipeline's alone. */
       entryRules: EntryRule[] | undefined;
+      /** The declared teams it creates or changes (EO-881), sent to `pipeline:save` beside the graph. */
+      teams: TeamSave[];
     }
   | { ok: false; reason: string };
 
@@ -2684,6 +2688,8 @@ function publishableGraphOf(db: Db, read: ReadAssistDraftResult): AssistPublisha
   const proposedSlugs = new Set(read.modules.map((module) => module.slug));
   // The agent each agent step names, by name, bound as the card judged it (EO-876).
   const agentFor = draftAgentBinder(db, pipelineId);
+  // And the teams it writes and names (EO-881), as the card judged them.
+  const teams = draftTeamsFor(db, pipelineId, read.draft);
 
   return {
     ok: true,
@@ -2706,7 +2712,7 @@ function publishableGraphOf(db: Db, read: ReadAssistDraftResult): AssistPublisha
       // cut branches (EO-296, EO-301). A step the draft invented has
       // nothing to keep: it gets what the draft set, and EO's defaults —
       // the item's own workspace, a branch of its own, run once.
-      const settled = settledStepSettings(draftStep, existing);
+      const settled = settledStepSettings(draftStep, existing, teams);
       return {
         ...step,
         agentId: agentFor({ type: step.type, agent }),
@@ -2748,6 +2754,8 @@ function publishableGraphOf(db: Db, read: ReadAssistDraftResult): AssistPublisha
     templateStepIds: read.draft.templateStepIds ?? {},
     restoredFrom: read.draft.restoredFrom ?? null,
     entryRules: read.draft.entryRules,
+    // The declared teams Publish writes beside the graph (EO-881).
+    teams: teams.saves,
   };
 }
 

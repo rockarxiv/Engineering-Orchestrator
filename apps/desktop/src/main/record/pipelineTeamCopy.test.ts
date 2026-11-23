@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { getTeam } from "../db/repos/teamsRepo.js";
 import { ipcContract, RecordPipelineSchema, RecordProjectSchema, StepTeamSchema, type Uuid } from "@eo/core";
 import type { DbHandle } from "../db/client.js";
 import { createPerson, createPipeline, createProject, createStep, getProject, listStepsForPipeline, setEntryStep } from "../db/repos/index.js";
@@ -18,7 +19,7 @@ import { openMigratedTestDb, agentOfKind } from "../db/testHelpers.js";
 const TEAM = StepTeamSchema.parse({
   coordination: "leader",
   leader: { role: "reviewer", instructions: "Split the review by concern." },
-  roles: ["implementer", "tester"],
+  roles: ["implementer", "reviewer"],
   outcomes: [{ key: "concerns", label: "Concerns" }],
   limits: { maxParticipants: 3, maxRounds: 1, timeoutMs: 600_000, budgetCents: 200 },
 });
@@ -45,6 +46,7 @@ function teamPipeline(db: DbHandle, projectId: Uuid | null = null): string {
   return pipeline.id;
 }
 
+const teamIdOn = (db: DbHandle, pipelineId: string, stepId = "team-review") => listStepsForPipeline(db.db, pipelineId as Uuid).find((step) => step.id === stepId)?.teamId ?? null;
 const teamOn = (db: DbHandle, pipelineId: string, stepId = "team-review") => listStepsForPipeline(db.db, pipelineId as Uuid).find((step) => step.id === stepId)?.team;
 
 describe("a step's team on the organisation's record", () => {
@@ -59,6 +61,11 @@ describe("a step's team on the organisation's record", () => {
 
     expect(teamOn(desktopDb, pipelineId)).toEqual(TEAM);
     expect(teamOn(desktopDb, pipelineId, "team-done")).toBeNull();
+    // The declared team it names (EO-881), declared on the desktop under the record's id.
+    const teamId = teamIdOn(recordDb, pipelineId);
+    expect(teamId).not.toBeNull();
+    expect(teamIdOn(desktopDb, pipelineId)).toBe(teamId);
+    expect(getTeam(desktopDb.db, teamId!)?.definition?.coordination).toBe("leader");
   });
 
   it("goes up to the record with a project moved there", () => {
@@ -84,5 +91,8 @@ describe("a step's team on the organisation's record", () => {
     writeAdoptedPage(recordDb.db, wire, page, "d");
 
     expect(teamOn(recordDb, pipelineId)).toEqual(TEAM);
+    // Declared on the record under the desktop's id, on the moved project (EO-881).
+    expect(teamIdOn(recordDb, pipelineId)).toBe(teamIdOn(desktopDb, pipelineId));
+    expect(getTeam(recordDb.db, teamIdOn(recordDb, pipelineId)!)?.projectId).toBe(project.id);
   });
 });

@@ -37,7 +37,7 @@ import { listRunsForItem } from "../db/repos/runsRepo.js";
 import { saveSkill } from "../db/repos/skillsRepo.js";
 import { listTeamSessionsForItem } from "../db/repos/teamSessionsRepo.js";
 import { transitionItem } from "../db/repos/transitionsRepo.js";
-import { createTestItem, openMigratedTestDbAt, agentOfKind } from "../db/testHelpers.js";
+import { createTestItem, openMigratedTestDbAt, agentOfKind, setStepTeam } from "../db/testHelpers.js";
 // @ts-expect-error — the service is plain JavaScript, deliberately: it ships unbundled because Codex spawns it by path.
 import * as service from "../mcp/eoServer.mjs";
 import type { AgentWriteBridge } from "../mcp/writeBridge.js";
@@ -174,7 +174,7 @@ function client(): { prepare(source: string): { run(...args: unknown[]): unknown
 }
 
 function setTeam(value: StepTeam | null): void {
-  client().prepare("update pipeline_steps set team = ? where id = 'check'").run(value === null ? null : JSON.stringify(value));
+  setStepTeam(handle.db, "check", value);
 }
 
 async function* answer(data: unknown): AsyncGenerator<AgentEvent> {
