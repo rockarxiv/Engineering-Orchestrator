@@ -95,18 +95,18 @@ function AddedBy({ member }: { member: TeamMemberView }) {
 }
 
 /**
- * A member's runtime, model and reasoning effort, chosen (EO-884): the only
- * part of a member the Teams tab edits. Saved as a new version of the team.
- * A backend this machine is not signed in to says so in the picker and
- * under it (invariant 12); one the organisation does not allow is offered
- * only where the member is already on it.
+ * A runtime, model and reasoning effort being chosen, and the pickers that
+ * choose them: the one member's editor and the bulk change share them, so
+ * both offer exactly the same. A backend this machine is not signed in to
+ * says so in the picker and under it (invariant 12); one the organisation
+ * does not allow is offered only where `keepsProvider` says the members
+ * are already on it.
  */
-function MemberSettingsEditor({ teamId, member, label, onDone }: { teamId: string; member: TeamMemberView; label: string; onDone: () => void }) {
-  const queryClient = useQueryClient();
+function useSettingsChoice(initial: { provider: string | null; model: string | null; reasoning: string | null }, keepsProvider: (provider: string) => boolean) {
   const { policy } = usePolicy();
-  const [provider, setProvider] = useState(member.provider ?? "claude");
-  const [model, setModel] = useState<string | null>(member.model);
-  const [reasoning, setReasoning] = useState<string | null>(member.reasoning);
+  const [provider, setProvider] = useState(initial.provider ?? "claude");
+  const [model, setModel] = useState<string | null>(initial.model);
+  const [reasoning, setReasoning] = useState<string | null>(initial.reasoning);
   const signedOut: Record<string, boolean> = { claude: useSignedOut("claude"), codex: useSignedOut("codex") };
   const capabilities = useQuery({
     queryKey: ["providers", provider],
@@ -116,20 +116,8 @@ function MemberSettingsEditor({ teamId, member, label, onDone }: { teamId: strin
   const models = capabilities.data?.models ?? [];
   const levels = reasoningLevelsFor(provider, capabilities.data?.capabilities, models, model);
   const shownLevels = reasoning !== null && !levels.includes(reasoning) ? [...levels, reasoning] : levels;
-  const save = useMutation({
-    mutationFn: () => ipcQuery("teams:setMemberSettings", { teamId, agentId: member.agentId, provider, model, reasoning: levels.length === 0 ? null : reasoning }),
-    onSuccess: (result) => {
-      if (result.problem !== null) return;
-      void queryClient.invalidateQueries({ queryKey: teamsKey });
-      void queryClient.invalidateQueries({ queryKey: agentDetailsKey });
-      void queryClient.invalidateQueries({ queryKey: agentsKey });
-      onDone();
-    },
-  });
-  const problem = save.error?.message ?? save.data?.problem ?? null;
-
-  return (
-    <div role="group" aria-label={`${label}'s runtime, model and reasoning`} className="flex min-w-0 flex-col gap-2 rounded-[10px] bg-canvas px-3 py-2.5">
+  const fields = (
+    <>
       <div className="grid gap-3 @xl:grid-cols-3">
         <Field label="Runtime" {...(policy.allowedBackends === null ? {} : { hint: `your organisation allows ${policy.allowedBackends.join(", ") || "no backend"}` })}>
           <Select
@@ -144,7 +132,7 @@ function MemberSettingsEditor({ teamId, member, label, onDone }: { teamId: strin
               const ok = backendAllowed(policy, choice.id);
               const words = !ok ? ` — ${NOT_ALLOWED_BY_YOUR_ORGANISATION}` : signedOut[choice.id] === true ? " — not signed in on this machine" : "";
               return (
-                <option key={choice.id} value={choice.id} disabled={!ok && choice.id !== member.provider}>
+                <option key={choice.id} value={choice.id} disabled={!ok && !keepsProvider(choice.id)}>
                   {choice.label}
                   {words}
                 </option>
@@ -177,6 +165,42 @@ function MemberSettingsEditor({ teamId, member, label, onDone }: { teamId: strin
         ) : null}
       </div>
       <SignedOutLine provider={provider} />
+    </>
+  );
+  // A model with no reasoning levels takes none.
+  return { chosen: { provider, model, reasoning: levels.length === 0 ? null : reasoning }, fields };
+}
+
+/** What a write of members' settings refreshes: the teams, and the agents the Agents tab draws. */
+function useRefreshAfterMemberSettings(): () => void {
+  const queryClient = useQueryClient();
+  return () => {
+    void queryClient.invalidateQueries({ queryKey: teamsKey });
+    void queryClient.invalidateQueries({ queryKey: agentDetailsKey });
+    void queryClient.invalidateQueries({ queryKey: agentsKey });
+  };
+}
+
+/**
+ * A member's runtime, model and reasoning effort, chosen (EO-884): the only
+ * part of a member the Teams tab edits. Saved as a new version of the team.
+ */
+function MemberSettingsEditor({ teamId, member, label, onDone }: { teamId: string; member: TeamMemberView; label: string; onDone: () => void }) {
+  const refresh = useRefreshAfterMemberSettings();
+  const { chosen, fields } = useSettingsChoice(member, (provider) => provider === member.provider);
+  const save = useMutation({
+    mutationFn: () => ipcQuery("teams:setMemberSettings", { teamId, agentId: member.agentId, ...chosen }),
+    onSuccess: (result) => {
+      if (result.problem !== null) return;
+      refresh();
+      onDone();
+    },
+  });
+  const problem = save.error?.message ?? save.data?.problem ?? null;
+
+  return (
+    <div role="group" aria-label={`${label}'s runtime, model and reasoning`} className="flex min-w-0 flex-col gap-2 rounded-[10px] bg-canvas px-3 py-2.5">
+      {fields}
       {problem !== null ? <ErrorLine>{problem}</ErrorLine> : null}
       <div className="flex flex-wrap items-center gap-1.5">
         <Button variant="primary" size="sm" disabled={save.isPending} onClick={() => save.mutate()}>
@@ -187,6 +211,95 @@ function MemberSettingsEditor({ teamId, member, label, onDone }: { teamId: strin
         </Button>
       </div>
     </div>
+  );
+}
+
+/** A member the bulk change may be applied to, with what to call it there. */
+interface BulkCandidate {
+  member: TeamMemberView;
+  label: string;
+}
+
+/**
+ * One runtime, model and reasoning effort put on several members at once
+ * (EO-901), the leader among them if chosen: picked, then the members it
+ * goes on, then applied as one new version of the team, which one restore
+ * undoes. A refusal changes nothing and is said as the sentence it came
+ * back as.
+ */
+function BulkSettingsEditor({ teamId, candidates, onDone }: { teamId: string; candidates: readonly BulkCandidate[]; onDone: () => void }) {
+  const refresh = useRefreshAfterMemberSettings();
+  const [picked, setPicked] = useState<ReadonlySet<string>>(new Set());
+  const pickedMembers = candidates.filter((one) => picked.has(one.member.agentId));
+  const { chosen, fields } = useSettingsChoice({ provider: candidates[0]?.member.provider ?? null, model: null, reasoning: null }, (provider) =>
+    pickedMembers.length > 0 && pickedMembers.every((one) => one.member.provider === provider),
+  );
+  const apply = useMutation({
+    mutationFn: () => ipcQuery("teams:setMembersSettings", { teamId, agentIds: pickedMembers.map((one) => one.member.agentId), ...chosen }),
+    onSuccess: (result) => {
+      if (result.problem !== null) return;
+      refresh();
+      onDone();
+    },
+  });
+  const problem = apply.error?.message ?? apply.data?.problem ?? null;
+  const all = candidates.length > 0 && picked.size === candidates.length;
+  const toggle = (agentId: string) =>
+    setPicked((now) => {
+      const next = new Set(now);
+      if (!next.delete(agentId)) next.add(agentId);
+      return next;
+    });
+
+  return (
+    <div role="group" aria-label="Several members' runtime, model and reasoning" className="flex min-w-0 flex-col gap-2 rounded-[10px] bg-canvas px-3 py-2.5">
+      {fields}
+      <fieldset aria-label="Members to apply it to" className="flex min-w-0 flex-col gap-1">
+        <legend className="mb-1 text-[11.5px] text-ink-subtle">Apply it to</legend>
+        <label className="flex items-center gap-2 text-[12.5px] font-medium text-ink">
+          <input type="checkbox" checked={all} onChange={() => setPicked(all ? new Set() : new Set(candidates.map((one) => one.member.agentId)))} />
+          Select all
+        </label>
+        {candidates.map((one) => (
+          <label key={one.member.agentId} className="flex items-center gap-2 pl-5 text-[12.5px] text-ink">
+            <input type="checkbox" checked={picked.has(one.member.agentId)} onChange={() => toggle(one.member.agentId)} />
+            {one.label}
+          </label>
+        ))}
+      </fieldset>
+      {problem !== null ? <ErrorLine>{problem}</ErrorLine> : null}
+      <div className="flex flex-wrap items-center gap-1.5">
+        <Button variant="primary" size="sm" disabled={apply.isPending || pickedMembers.length === 0} onClick={() => apply.mutate()}>
+          {pickedMembers.length === 0 ? "Apply" : `Apply to ${String(pickedMembers.length)} ${pickedMembers.length === 1 ? "member" : "members"}`}
+        </Button>
+        <Button size="sm" disabled={apply.isPending} onClick={onDone}>
+          Cancel
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+/** The bulk change's section (EO-901): offered while the team is unlocked and has a member to change. */
+function BulkChange({ team }: { team: TeamView }) {
+  const [open, setOpen] = useState(false);
+  const candidates: BulkCandidate[] = [
+    ...(team.leader === null ? [] : [{ member: team.leader, label: `${team.leader.name ?? "An agent that no longer exists"} (leader)` }]),
+    ...team.members.map((member) => ({ member, label: member.name ?? "An agent that no longer exists" })),
+  ].filter((one) => !one.member.archived);
+  if (team.locked || candidates.length === 0) return null;
+  return (
+    <CardSection title="Several at once" description="Put one runtime, model and reasoning on the members you choose, as one new version of the team. Nothing else about them changes.">
+      {open ? (
+        <BulkSettingsEditor teamId={team.id} candidates={candidates} onDone={() => setOpen(false)} />
+      ) : (
+        <span>
+          <Button size="sm" icon={<SlidersHorizontal size={12} />} onClick={() => setOpen(true)}>
+            Change several members at once
+          </Button>
+        </span>
+      )}
+    </CardSection>
   );
 }
 
@@ -450,6 +563,8 @@ function TeamDetail({ team }: { team: TeamView }) {
           ))}
         </ul>
       </CardSection>
+
+      <BulkChange team={team} />
 
       <CardSection title="What it may use" description="What a member may be given, and what a member its leader adds may run on.">
         <Facts

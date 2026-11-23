@@ -13,7 +13,7 @@ import { markReplica } from "../db/recordRole.js";
 import { teams } from "../db/schema.js";
 import { eq } from "drizzle-orm";
 import { sectionLockFor } from "../managed/locks.js";
-import { listTeamsCommand, restoreTeamCommand, setTeamLockedCommand, setTeamMemberSettingsCommand } from "./declaredTeamCommands.js";
+import { listTeamsCommand, restoreTeamCommand, setTeamLockedCommand, setTeamMemberSettingsCommand, setTeamMembersSettingsCommand } from "./declaredTeamCommands.js";
 
 /**
  * The Teams tab's main half (EO-884): every declared team read whole —
@@ -279,6 +279,137 @@ describe("teams:setMemberSettings refusals that leave the agent as it was (EO-88
     const refused = setTeamMemberSettingsCommand(handle.db, { teamId, agentId: implementer, provider: "codex", model: "gpt-5.1-codex", reasoning: "low" });
     expect(refused).toEqual({ saved: false, problem: 'This project already has a team called "Review leads".' });
     expect(getAgent(handle.db, implementer)).toEqual(before);
+    expect(listTeamVersions(handle.db, teamId)).toHaveLength(1);
+  });
+});
+
+describe("teams:setMembersSettings (EO-901)", () => {
+  // The Teams tab's bulk change: EO-900's channel, its members named by agent. This machine's runtimes are not asked here.
+  const bulk = (input: { teamId: string; agentIds: string[]; members?: string[]; provider: string; model: string | null; reasoning: string | null }) =>
+    setTeamMembersSettingsCommand(handle.db, { members: [], ...input }, async () => null);
+  const settingsOf = (agentId: Uuid) => {
+    const agent = getAgent(handle.db, agentId);
+    return { provider: agent?.provider, model: agent?.model, config: agent?.config };
+  };
+
+  it("puts one runtime, model and reasoning on every chosen member, the leader's included, as one version a restore undoes", async () => {
+    const teamId = made();
+    updateAgent(handle.db, implementer, { provider: "claude", model: "claude-opus-5", config: { effort: "low", maxTurns: 5 } });
+    const before = { reviewer: settingsOf(reviewer), implementer: settingsOf(implementer) };
+    const rest = (agentId: Uuid) => {
+      const agent = getAgent(handle.db, agentId);
+      return { name: agent?.name, role: agent?.role, instructions: agent?.instructions, teamId: agent?.teamId };
+    };
+    const restBefore = [rest(reviewer), rest(implementer)];
+
+    expect(await bulk({ teamId, agentIds: [reviewer, implementer], provider: "codex", model: "gpt-5.1-codex", reasoning: "xhigh" })).toMatchObject({ saved: true, problem: null });
+    // Only the three settings: the rest of each agent is kept.
+    expect(settingsOf(reviewer)).toEqual({ provider: "codex", model: "gpt-5.1-codex", config: { reasoningEffort: "xhigh" } });
+    expect(settingsOf(implementer)).toEqual({ provider: "codex", model: "gpt-5.1-codex", config: { reasoningEffort: "xhigh", maxTurns: 5 } });
+    expect([rest(reviewer), rest(implementer)]).toEqual(restBefore);
+    const versions = listTeamVersions(handle.db, teamId);
+    expect(versions).toHaveLength(2);
+    expect(versions[1]).toMatchObject({
+      number: 2,
+      author: { kind: "person" },
+      memberSettings: { [reviewer]: { provider: "codex", model: "gpt-5.1-codex", reasoning: "xhigh" }, [implementer]: { provider: "codex", model: "gpt-5.1-codex", reasoning: "xhigh" } },
+    });
+    expect(getTeam(handle.db, teamId)).toMatchObject({ version: 2, definition });
+
+    // One restore undoes all of it — the implementer's settings as version 1 recorded them.
+    const recorded = listTeamVersions(handle.db, teamId)[0]?.memberSettings?.[implementer];
+    expect(restoreTeamCommand(handle.db, { teamId, version: 1 })).toEqual({ restored: true, problem: null });
+    expect(settingsOf(reviewer)).toEqual(before.reviewer);
+    expect(settingsOf(implementer)).toMatchObject({ provider: recorded?.provider, model: recorded?.model });
+  });
+
+  it("changes only the chosen members, and writes nothing where every one already has the settings", async () => {
+    const teamId = made();
+    const leaderBefore = settingsOf(reviewer);
+    expect(await bulk({ teamId, agentIds: [implementer], provider: "claude", model: null, reasoning: "high" })).toMatchObject({ saved: true, problem: null });
+    expect(settingsOf(reviewer)).toEqual(leaderBefore);
+    expect(settingsOf(implementer)).toMatchObject({ provider: "claude", model: null, config: { effort: "high" } });
+    expect(await bulk({ teamId, agentIds: [implementer], provider: "claude", model: null, reasoning: "high" })).toMatchObject({ saved: true, changed: [], problem: null });
+    expect(getTeam(handle.db, teamId)?.version).toBe(2);
+  });
+
+  it("refuses the whole change, applying nothing, for a locked team, an agent not on it, an archived member and a backend the organisation does not allow", async () => {
+    const teamId = made();
+    const before = { reviewer: settingsOf(reviewer), implementer: settingsOf(implementer) };
+    const unchanged = () => {
+      expect({ reviewer: settingsOf(reviewer), implementer: settingsOf(implementer) }).toEqual(before);
+      expect(getTeam(handle.db, teamId)?.version).toBe(1);
+    };
+
+    setTeamLockedCommand(handle.db, { teamId, locked: true });
+    expect(await bulk({ teamId, agentIds: [reviewer, implementer], provider: "claude", model: null, reasoning: null })).toMatchObject({
+      saved: false,
+      problem: 'The team "Review leads" is locked: a person must unlock it before it can change.',
+    });
+    unchanged();
+    setTeamLockedCommand(handle.db, { teamId, locked: false });
+
+    const stranger = createAgent(handle.db, { name: "Stranger", role: "reviewer", provider: "claude", model: null, instructions: "" });
+    expect(await bulk({ teamId, agentIds: [reviewer, stranger.id], provider: "claude", model: null, reasoning: null })).toMatchObject({
+      saved: false,
+      problem: 'That agent is not on the team "Review leads".',
+    });
+    unchanged();
+
+    // The reviewer is first, and would be changed by itself; the archived implementer refuses both.
+    archiveAgent(handle.db, implementer);
+    const archived = await bulk({ teamId, agentIds: [reviewer, implementer], provider: "claude", model: null, reasoning: null });
+    expect(archived.saved).toBe(false);
+    expect(archived.problem).toContain("is archived");
+    expect(settingsOf(reviewer)).toEqual(before.reviewer);
+    expect(getTeam(handle.db, teamId)?.version).toBe(1);
+  });
+
+  it("refuses a backend the organisation does not allow, naming it, for a member it would move", async () => {
+    const teamId = made();
+    const before = { reviewer: settingsOf(reviewer), implementer: settingsOf(implementer) };
+    // The reviewer is on codex; the implementer on whatever the seed gave it.
+    const other = before.implementer.provider === "codex" ? "claude" : "codex";
+    writePolicy(handle.db, { ...NO_POLICY, allowedBackends: [before.implementer.provider as string], publishedAt: 1 });
+    const refused = await bulk({ teamId, agentIds: [reviewer, implementer], provider: other, model: null, reasoning: null });
+    expect(refused.saved).toBe(false);
+    expect(refused.problem).toContain(`The "${other}" backend is`);
+    expect({ reviewer: settingsOf(reviewer), implementer: settingsOf(implementer) }).toEqual(before);
+    expect(getTeam(handle.db, teamId)?.version).toBe(1);
+  });
+
+  it("refuses a change naming no member, or naming them both by name and by agent, applying nothing", async () => {
+    const teamId = made();
+    const before = { reviewer: settingsOf(reviewer), implementer: settingsOf(implementer) };
+    expect(await bulk({ teamId, agentIds: [], provider: "claude", model: null, reasoning: null })).toMatchObject({ saved: false, problem: "Choose at least one member to apply the settings to. Nothing has changed." });
+    const leaderName = getAgent(handle.db, reviewer)?.name ?? "";
+    expect(await bulk({ teamId, agentIds: [implementer], members: [leaderName], provider: "claude", model: null, reasoning: null })).toMatchObject({
+      saved: false,
+      problem: "Name the members by name or by agent, not both. Nothing has changed.",
+    });
+    expect({ reviewer: settingsOf(reviewer), implementer: settingsOf(implementer) }).toEqual(before);
+    expect(getTeam(handle.db, teamId)?.version).toBe(1);
+  });
+
+  it("is a member's runtime choice, which the organisation's published pipelines do not hold", async () => {
+    publishSection(handle.db, { section: "pipelines", publishedAt: Date.now(), publishedBy: null, publishedByName: "Dana" });
+    const stop = markReplica(handle.db, () => true);
+    try {
+      expect(sectionLockFor(handle.db, "teams:setMembersSettings", { teamId: "t", agentIds: ["a"], provider: "claude" })).toBeNull();
+    } finally {
+      stop();
+    }
+  });
+
+  it("rolls every member's new settings back when its version is refused", async () => {
+    const other = createTeam(handle.db, { projectId, definition: { ...definition, name: "Other" }, author: { kind: "eo" } });
+    if (!other.ok) throw new Error(other.reason);
+    const teamId = made();
+    handle.db.update(teams).set({ name: definition.name }).where(eq(teams.id, other.team.id)).run();
+    const before = [getAgent(handle.db, reviewer), getAgent(handle.db, implementer)];
+    const refused = await bulk({ teamId, agentIds: [reviewer, implementer], provider: "claude", model: "claude-opus-5", reasoning: "low" });
+    expect(refused).toMatchObject({ saved: false, problem: 'This project already has a team called "Review leads".' });
+    expect([getAgent(handle.db, reviewer), getAgent(handle.db, implementer)]).toEqual(before);
     expect(listTeamVersions(handle.db, teamId)).toHaveLength(1);
   });
 });

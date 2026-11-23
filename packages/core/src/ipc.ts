@@ -2320,10 +2320,12 @@ export const recordContract = {
    * One or more members of a declared team set to a runtime, model and
    * reasoning effort through EO's tools (EO-900): by EO's system agent on
    * `eo_admin`, or by an outside client over EO's MCP server. The members
-   * are named by their names within the team, the leader's included. What
-   * the Teams tab's change does, under its rules, as one version of the
-   * team made by whoever asked — the system agent (`actingAgentId`, which
-   * only EO's administrative host stamps), an outside client
+   * are named by their names within the team, the leader's included. The
+   * Teams tab's bulk change (EO-901) is this channel too, naming them by
+   * `agentIds`. What the Teams tab's change does, under its rules, as one
+   * version of the team made by whoever asked — the system agent
+   * (`actingAgentId`, which only EO's administrative host stamps), an
+   * outside client
    * (`throughClient`, which only the MCP tool sets) or the person. Refused
    * whole, as `problem`, for a locked team, a name that is no member of it,
    * a runtime EO has none of, or a backend the organisation does not
@@ -2336,8 +2338,14 @@ export const recordContract = {
   "teams:setMembersSettings": channel(
     z.object({
       teamId: z.string(),
-      /** The members' names within the team. */
-      members: z.array(z.string().trim().min(1)).min(1).max(64),
+      /** The members' names within the team, as EO's tools name them. */
+      members: z.array(z.string().trim().min(1)).max(64).default([]),
+      /**
+       * The members by agent id, as the Teams tab's bulk change picks them
+       * (EO-901): exact where two members share a name. Either this or
+       * `members`, not both; neither is refused, nothing written.
+       */
+      agentIds: z.array(z.string().min(1)).max(64).default([]),
       provider: z.string().min(1),
       /** Null is the runtime's default model. */
       model: z.string().nullable().default(null),
