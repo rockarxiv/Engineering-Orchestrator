@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { StepTeamSchema, TEAM_REPORT_ONLY, TeamDefinitionSchema, uuidv7, type IpcChannel, type IpcPayload, type IpcResponse, type PipelineStep, type StepTeam, type TeamDefinition, type TeamSave, type Uuid } from "@eo/core";
+import { documentStepTeam, isExportedTeam, StepTeamSchema, TEAM_REPORT_ONLY, TeamDefinitionSchema, uuidv7, type IpcChannel, type IpcPayload, type IpcResponse, type PipelineStep, type StepTeam, type TeamDefinition, type TeamSave, type Uuid } from "@eo/core";
 import type { DbHandle } from "../db/client.js";
 import { openMigratedTestDb, agentOfKind } from "../db/testHelpers.js";
 import { saveActionDefinition } from "../db/repos/actionDefinitionsRepo.js";
@@ -297,9 +297,19 @@ describe("a step's team, as part of the graph (EO-843)", () => {
     expect(save("team").saved).toBe(true);
     const exported = exportPipeline(handle.db, pipelineId);
     if (!exported.ok) throw new Error(exported.reason);
-    expect(exported.document.steps.find((step) => step.id === check.id)?.team).toEqual(TEAM);
+    // The declared team (EO-885): its members as kinds with their instructions, read by kind as the step reads it.
+    const carried = exported.document.steps.find((step) => step.id === check.id)?.team;
+    expect(carried !== undefined && isExportedTeam(carried)).toBe(true);
+    expect(carried).toMatchObject({
+      name: "Security pass",
+      members: [
+        { key: "security", kind: "reviewer", teamInstructions: "Look for auth gaps.", instructions: getAgent(handle.db, agentOfKind(handle.db, "reviewer") as Uuid)!.instructions },
+        { key: "tests", kind: "implementer", teamInstructions: "Check the tests cover the criteria.", required: false },
+      ],
+    });
+    expect(documentStepTeam(carried)).toEqual(TEAM);
     expect(exported.document.steps.find((step) => step.id === done.id)).not.toHaveProperty("team");
-    // Roles and its own keys only: nothing in it names this installation.
+    // Kinds, instructions and its own keys only: nothing in it names this installation.
     expect(JSON.stringify(exported.document.steps.find((step) => step.id === check.id)?.team)).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}-/);
 
     const imported = importPipeline(handle.db, { document: JSON.parse(JSON.stringify(exported.document)) as typeof exported.document, projectId });

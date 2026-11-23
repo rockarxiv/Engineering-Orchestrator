@@ -998,8 +998,6 @@ function definitionOfExportedTeam(
  *   are kept, with whatever runtime, model and reasoning a person gave
  *   them. Not a locked or archived team: that one stays as it is, and the
  *   step is given a team of its own.
- * - Otherwise the project's team of the document's name where it declares
- *   the same, so several steps of one document share their team.
  * - Otherwise a new team, under the document's name (numbered where the
  *   project has it), by EO.
  *
@@ -1020,8 +1018,6 @@ export function teamIdForExportedTeam(
     const changed = changeTeam(db, existing.id, { definition, author: { kind: "eo" }, now });
     if (changed.ok) return existing.id;
   }
-  const named = teamByName(db, pipeline.projectId, input.team.name);
-  if (named !== undefined && named.archivedAt === null && sameExportedTeam(exportedTeamOf(db, named.id), input.team)) return named.id;
   const id = uuidv7();
   const name = freeTeamName(db, pipeline.projectId, input.team.name);
   const definition = definitionOfExportedTeam(db, input.team, { id, projectId: pipeline.projectId, name }, input.baseAgent, now);
