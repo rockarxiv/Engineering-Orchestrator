@@ -562,7 +562,8 @@ function comparedCurrentTeam(db: Db, step: PipelineStep, base: CarriedTeam | und
   if (form !== null && !isExportedTeam(form)) return step.team;
   const exported = exportedTeamOf(db, step.teamId);
   if (exported === null) return step.team;
-  return base !== undefined && base !== null && isExportedTeam(base) ? { ...exported, name: base.name } : exported;
+  // Neither its name nor its tool pool is a person's change to the template's team: both are the installation's.
+  return base !== undefined && base !== null && isExportedTeam(base) ? { ...exported, name: base.name, toolPool: base.toolPool } : exported;
 }
 
 /** The three graphs, in this pipeline's own step ids, and how they compare. */

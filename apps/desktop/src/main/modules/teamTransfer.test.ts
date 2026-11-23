@@ -191,6 +191,20 @@ describe("importing a step's declared team (EO-885)", () => {
     expect(outcome.text).toContain(`- Prober (reviewer): created with the document's instructions, on the runtime, model and tools of ${reviewerName}`);
   });
 
+  it("names, for a created agent, the agent the import will make it like: the one the person chose for its kind", () => {
+    const document = exported();
+    const preflight = preflightImport(handle.db, secrets, document, { projectId: elsewhere, agents: { reviewer: checker } });
+    expect(preflight.teams[0]!.agents.find((agent) => agent.name === "Prober")).toEqual({ name: "Prober", kind: "reviewer", binding: "create", agent: "Checker" });
+
+    const imported = importPipeline(handle.db, { document, projectId: elsewhere, agents: { reviewer: checker } });
+    if (!imported.ok) throw new Error(imported.reason);
+    const step = listStepsForPipeline(handle.db, imported.pipelineId as Uuid).find((each) => each.name === "Review")!;
+    const definition = getTeam(handle.db, step.teamId!)!.definition!;
+    const prober = definition.members.map((member) => getAgent(handle.db, member.agentId as Uuid)!).find((agent) => agent.name === "Prober")!;
+    // Made like Checker, which runs on Claude, not like the reviewer, which runs on Codex here.
+    expect(prober).toMatchObject({ provider: "claude", instructions: "Probe the edges." });
+  });
+
   it("imports a document written before declared teams travelled (format 17), its role-staffed team declared from the agents its roles bind to", () => {
     const document = exported();
     const legacy = JSON.parse(JSON.stringify({ ...document, eoPipelineExport: 17, steps: document.steps.map((step) => (step.team === undefined ? step : { ...step, team: documentStepTeam(step.team) })) })) as unknown;

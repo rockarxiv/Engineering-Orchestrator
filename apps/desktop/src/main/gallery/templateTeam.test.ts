@@ -3,13 +3,15 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { documentStepTeam, ExportedTeamSchema, FOLDER_KIND, GIT_WORKTREE_KIND, StepTeamSchema, type ExportedTeam, type LeaderTeam, type StepTeam, type Uuid } from "@eo/core";
+import { documentStepTeam, ExportedTeamSchema, SkillDraftSchema, FOLDER_KIND, GIT_WORKTREE_KIND, StepTeamSchema, type ExportedTeam, type LeaderTeam, type StepTeam, type Uuid } from "@eo/core";
 import type { DbHandle } from "../db/client.js";
 import { adoptPipeline, getPipeline, getPipelineOrigin, getStep, listStepsForPipeline, openUpdateConflict, replacePipelineGraph, listRoutesForPipeline } from "../db/repos/index.js";
 import { addWorkspaceToProject, createProject } from "../db/repos/projectsRepo.js";
 import { createWorkspace } from "../db/repos/workspacesRepo.js";
-import { openMigratedTestDb } from "../db/testHelpers.js";
-import { changeTeam, exportedTeamOf, getTeam, sameExportedTeam, setTeamLocked, setTeamMemberSettings } from "../db/repos/teamsRepo.js";
+import { agentOfKind, openMigratedTestDb } from "../db/testHelpers.js";
+import { agentToolSurfaces, changeTeam, exportedTeamOf, getTeam, sameExportedTeam, setTeamLocked, setTeamMemberSettings } from "../db/repos/teamsRepo.js";
+import { saveCliTool, setAgentCliTool } from "../db/repos/cliToolsRepo.js";
+import { saveSkill, setAgentAttachment } from "../db/repos/index.js";
 import { getAgent } from "../db/repos/agentsRepo.js";
 import { savePipeline, storedGraphProblems } from "../ipc/configCommands.js";
 import { importPipeline, parseExport } from "../modules/pipelineTransfer.js";
@@ -672,5 +674,100 @@ describe("an installation on 1.8, when a later version changes a member", () => 
 
     expect(applyTemplateUpdates(handle.db, next(), { isTheRecord: false })).toContainEqual(expect.objectContaining({ pipelineId: "default", outcome: "applied", from: "1.8", to: "1.9" }));
     expect(getTeam(handle.db, teamId)!.name).toBe("Our reviewers");
+  });
+});
+
+/**
+ * A team's tool pool is the installation's (EO-885, the person's decision
+ * B): 1.7 → 1.8 keeps the pool Review's team had, so every pass reviewer
+ * starts with the tools the person's reviewer had, and a later update
+ * neither replaces the pool nor holds on it.
+ */
+describe("an installation whose reviewer has a CLI tool and a skill, from 1.7 through 1.8 and on", () => {
+  let handle: DbHandle;
+  let tool: string;
+  let skill: string;
+
+  beforeEach(() => {
+    handle = openMigratedTestDb();
+    const reviewer = agentOfKind(handle.db, "reviewer");
+    const saved = saveCliTool(handle.db, { name: "GitHub CLI", command: "gh", description: "Pull requests and issues." });
+    if (!saved.ok) throw new Error("the CLI tool was refused");
+    expect(setAgentCliTool(handle.db, { agentId: reviewer, cliToolId: saved.cliTool.id, attached: true }).ok).toBe(true);
+    const playbook = saveSkill(handle.db, SkillDraftSchema.parse({ name: "Review playbook", description: "How this house reviews.", body: "Read the diff." }));
+    if (!playbook.ok) throw new Error(playbook.problems.join("\n"));
+    expect(setAgentAttachment(handle.db, { agentId: reviewer, kind: "skill", id: playbook.skill.id, attached: true }).ok).toBe(true);
+    tool = saved.cliTool.command;
+    skill = playbook.skill.slug;
+
+    const onSeventeen = templateHistoryUpTo(GALLERY_DIRECTORY, SOFTWARE, "1.7");
+    backfillPipelineOrigins(handle.db, onSeventeen);
+    adoptPipeline(handle.db, "default", createProject(handle.db, { name: "Shop", keyPrefix: "SHOP" }).id as Uuid);
+    applyTemplateUpdates(handle.db, onSeventeen, { isTheRecord: false });
+    expect(getPipelineOrigin(handle.db, "default")?.version).toBe("1.7");
+  });
+
+  afterEach(() => handle.close());
+
+  const review = () => listStepsForPipeline(handle.db, "default").find((step) => step.id === "review")!;
+  const surfacesOf = (teamId: string) => {
+    const definition = getTeam(handle.db, teamId)!.definition!;
+    if (definition.coordination !== "leader") throw new Error("not leader-led");
+    const ids = [definition.leader.agentId, ...definition.members.map((member) => member.agentId)];
+    return ids.map((id) => [getAgent(handle.db, id as Uuid)!.name, agentToolSurfaces(handle.db, [id])[id]!] as const);
+  };
+
+  it("keeps the team's pool on 1.8, every pass reviewer with the reviewer's tool and skill, and a later update leaves the pool alone without a conflict", () => {
+    const teamId = review().teamId!;
+    const pool = getTeam(handle.db, teamId)!.definition!.toolPool;
+    expect(pool.cliTools).toContain(tool);
+    expect(pool.skills).toContain(skill);
+
+    expect(applyTemplateUpdates(handle.db, shipped, { isTheRecord: false })).toContainEqual(expect.objectContaining({ pipelineId: "default", outcome: "applied", from: "1.7", to: "1.8" }));
+    expect(openUpdateConflict(handle.db, "default")).toBeUndefined();
+    expect(review().teamId).toBe(teamId);
+    expect(getTeam(handle.db, teamId)!.definition!.toolPool).toEqual(pool);
+    const surfaces = surfacesOf(teamId);
+    expect(surfaces.map(([name]) => name)).toEqual(["Lead reviewer", ...TEAM.members.map((member) => member.name)]);
+    for (const [name, surface] of surfaces) {
+      expect(surface.cliTools, name).toContain(tool);
+      expect(surface.skills, name).toContain(skill);
+    }
+
+    // A later version changing one member: the pool is not the template's to replace, nor a conflict.
+    const document = structuredClone(versionOf("1.8").document);
+    document.template!.version = "1.9";
+    const step = document.steps.find((each) => each.id === "review")!;
+    const team = step.team as typeof TEAM;
+    step.team = { ...team, members: team.members.map((member) => (member.name === "Tests reviewer" ? { ...member, instructions: `${member.instructions}\n\nAlso check the test names.` } : member)) };
+    const history = new Map(shipped);
+    history.set(SOFTWARE, [...shipped.get(SOFTWARE)!, { ...versionOf("1.8"), version: "1.9", notes: "Tests reviewer checks names.", document }]);
+
+    expect(applyTemplateUpdates(handle.db, history, { isTheRecord: false })).toContainEqual(expect.objectContaining({ pipelineId: "default", outcome: "applied", from: "1.8", to: "1.9" }));
+    expect(openUpdateConflict(handle.db, "default")).toBeUndefined();
+    expect(review().teamId).toBe(teamId);
+    expect(getTeam(handle.db, teamId)!.definition!.toolPool).toEqual(pool);
+    const tests = surfacesOf(teamId).find(([name]) => name === "Tests reviewer")!;
+    expect(getAgent(handle.db, getTeam(handle.db, teamId)!.definition!.members.find((member) => getAgent(handle.db, member.agentId as Uuid)!.name === "Tests reviewer")!.agentId as Uuid)!.instructions).toContain("Also check the test names.");
+    expect(tests[1].cliTools).toContain(tool);
+    expect(tests[1].skills).toContain(skill);
+  });
+
+  it("does not hold a locked team's update where only its pool differs from the template's", () => {
+    expect(applyTemplateUpdates(handle.db, shipped, { isTheRecord: false })).toContainEqual(expect.objectContaining({ outcome: "applied", to: "1.8" }));
+    const teamId = review().teamId!;
+    setTeamLocked(handle.db, teamId, true);
+    // The installed pool is the reviewer's, the template's is empty: the same team all the same.
+    expect(getTeam(handle.db, teamId)!.definition!.toolPool).not.toEqual(TEAM.toolPool);
+    expect(sameExportedTeam(exportedTeamOf(handle.db, teamId), TEAM)).toBe(true);
+
+    const document = structuredClone(versionOf("1.8").document);
+    document.template!.version = "1.9";
+    const history = new Map(shipped);
+    history.set(SOFTWARE, [...shipped.get(SOFTWARE)!, { ...versionOf("1.8"), version: "1.9", notes: "Nothing of the team.", document }]);
+    // Nothing to write, but not held: the origin moves on.
+    expect(applyTemplateUpdates(handle.db, history, { isTheRecord: false })).toContainEqual(expect.objectContaining({ pipelineId: "default", outcome: "caught-up", from: "1.8", to: "1.9" }));
+    expect(getPipelineOrigin(handle.db, "default")?.version).toBe("1.9");
+    expect(openUpdateConflict(handle.db, "default")).toBeUndefined();
   });
 });

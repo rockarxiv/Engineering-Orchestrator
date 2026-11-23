@@ -918,10 +918,13 @@ export interface ImportTeamLine {
  * read through the same `exportedTeamBindings`. A role-staffed team from
  * an older document binds by kind, as `roleSlots` says, and is not listed.
  */
-function teamLinesIn(db: Db, document: PipelineExport, projectId: Uuid | null): ImportTeamLine[] {
+function teamLinesIn(db: Db, document: PipelineExport, projectId: Uuid | null, chosen: Readonly<Record<string, string>>): ImportTeamLine[] {
+  const roster = listAgents(db);
+  // A created agent is made like the agent the import names on the steps of its kind, as `teamIdForCarriedTeam` makes it.
+  const baseAgent = (kind: string) => roster.find((agent) => agent.id === stepAgentOfKind(roster, kind, projectId, chosen));
   return documentSteps(document).flatMap((step) => {
     if (step.type !== "agent" || step.team === undefined || !isExportedTeam(step.team)) return [];
-    const agents = exportedTeamBindings(db, step.team, { projectId }).map((binding) => ({
+    const agents = exportedTeamBindings(db, step.team, { projectId, baseAgent }).map((binding) => ({
       name: binding.name,
       kind: binding.kind,
       binding: binding.binding === "create" ? ("create" as const) : ("existing" as const),
@@ -929,6 +932,17 @@ function teamLinesIn(db: Db, document: PipelineExport, projectId: Uuid | null): 
     }));
     return [{ stepName: step.name, teamName: step.team.name, agents }];
   });
+}
+
+/**
+ * The agent an import names on its steps of `kind`: the one the person
+ * chose where there were several (EO-877), otherwise the kind's first
+ * candidate on the project. The import check reads it too, so it says
+ * which agent a team's created agents are made like (EO-885).
+ */
+function stepAgentOfKind(agents: readonly Agent[], kind: string, projectId: Uuid | null, chosen: Readonly<Record<string, string>> | ReadonlyMap<string, string>): string | null {
+  const answer = chosen instanceof Map ? chosen.get(kind) : (chosen as Readonly<Record<string, string>>)[kind];
+  return answer ?? kindCandidates(agents, kind, projectId)[0]?.id ?? null;
 }
 
 /** The binding `kindCandidates` and the document's role come to — see `KindBinding`. */
@@ -986,6 +1000,8 @@ export interface PreflightOptions {
    * where an import naming no project writes them (EO-735).
    */
   projectId?: Uuid | null;
+  /** The agent the person chose for each kind with several, as `importPipeline` is given it; absent, each kind's first. */
+  agents?: Readonly<Record<string, string>>;
 }
 
 export function parseExport(text: string): { ok: true; document: PipelineExport } | { ok: false; reason: string } {
@@ -1085,7 +1101,7 @@ export function preflightImport(db: Db, secrets: ModuleSecretsOptions, document:
     oldNames: oldNamesIn(document),
     machineSpecific: machineSpecificIn(document),
     roleSlots: roleSlotsIn(db, document, options.signedInBackends, options.projectId ?? null),
-    teams: teamLinesIn(db, document, options.projectId ?? null),
+    teams: teamLinesIn(db, document, options.projectId ?? null, options.agents ?? {}),
     connectors: connectorNeeds(db, document, projectId),
     capabilities: capabilitiesOf(db, document),
     // Stated, not thrown. `parseExport` already refuses a document that
@@ -1802,7 +1818,7 @@ function writeImport(
   const agentFor = (step: { type: string; ownerRole: string | null }): Uuid | null => {
     if (step.type !== "agent" || step.ownerRole === null) return null;
     if (preview) return rehearsal(step);
-    return (chosen.get(step.ownerRole) ?? kindCandidates(agentsNow, step.ownerRole, projectId)[0]?.id ?? null) as Uuid | null;
+    return stepAgentOfKind(agentsNow, step.ownerRole, projectId, chosen) as Uuid | null;
   };
 
   // Every board, each a pipeline of its own, in this one transaction

@@ -875,10 +875,16 @@ export function exportedTeamOf(db: Db, teamId: string | null): ExportedTeam | nu
   return ExportedTeamSchema.safeParse(shaped).data ?? null;
 }
 
-/** Whether two exported teams declare the same, their names aside: a team's name is what a person calls it here. */
+/**
+ * Whether two exported teams declare the same, their names and tool
+ * pools aside: a team's name is what a person calls it here, and its pool
+ * belongs to the installation, as its members' runtimes and models do,
+ * so a template never replaces or compares it.
+ */
 export function sameExportedTeam(a: ExportedTeam | null, b: ExportedTeam | null): boolean {
   if (a === null || b === null) return a === b;
-  return sameValue({ ...a, name: "" }, { ...b, name: "" });
+  const pool = { cliTools: [], mcpServers: [], skills: [] };
+  return sameValue({ ...a, name: "", toolPool: pool }, { ...b, name: "", toolPool: pool });
 }
 
 /**
@@ -993,7 +999,7 @@ function definitionOfExportedTeam(
  *
  * - The team the step names, where it declares the same (its name aside).
  * - Otherwise that team changed to the document's, as a new version by
- *   EO, keeping its name — a template update the person had not changed
+ *   EO, keeping its name and its tool pool — a template update the person had not changed
  *   the team against. Its own agents with the same kind and instructions
  *   are kept, with whatever runtime, model and reasoning a person gave
  *   them. Not a locked or archived team: that one stays as it is, and the
@@ -1013,17 +1019,51 @@ export function teamIdForExportedTeam(
   if (input.current !== null && sameExportedTeam(exportedTeamOf(db, input.current), input.team)) return input.current;
   const existing = input.current === null ? undefined : getTeam(db, input.current);
   if (existing !== undefined && !existing.locked && existing.archivedAt === null && existing.projectId === pipeline.projectId) {
-    const definition = definitionOfExportedTeam(db, input.team, existing, input.baseAgent, now);
-    if (definition === null) return null;
-    const changed = changeTeam(db, existing.id, { definition, author: { kind: "eo" }, now });
-    if (changed.ok) return existing.id;
+    // The pool is the installation's: the team keeps its own (where it has one EO can read), and new members are kept to it.
+    const changed = withoutRefusedCopies(db, (inTx) => {
+      const definition = definitionOfExportedTeam(inTx, { ...input.team, toolPool: existing.definition?.toolPool ?? input.team.toolPool }, existing, input.baseAgent, now);
+      if (definition === null) return "cannot";
+      const written = changeTeam(inTx, existing.id, { definition, author: { kind: "eo" }, now });
+      return written.ok ? existing.id : null;
+    });
+    if (changed === "cannot") return null;
+    if (changed !== null) return changed;
   }
   const id = uuidv7();
   const name = freeTeamName(db, pipeline.projectId, input.team.name);
-  const definition = definitionOfExportedTeam(db, input.team, { id, projectId: pipeline.projectId, name }, input.baseAgent, now);
-  if (definition === null) return null;
-  const created = createTeam(db, { id, projectId: pipeline.projectId, definition, author: { kind: "eo" }, now });
-  return created.ok ? created.team.id : null;
+  const created = withoutRefusedCopies(db, (inTx) => {
+    const definition = definitionOfExportedTeam(inTx, input.team, { id, projectId: pipeline.projectId, name }, input.baseAgent, now);
+    if (definition === null) return "cannot";
+    const written = createTeam(inTx, { id, projectId: pipeline.projectId, definition, author: { kind: "eo" }, now });
+    return written.ok ? written.team.id : null;
+  });
+  return created === "cannot" ? null : created;
+}
+
+/** A team build that came to nothing, which undoes the agents copied for it. */
+class TeamBuildRefused extends Error {
+  constructor(readonly answer: "cannot" | null) {
+    super("a team build was refused");
+  }
+}
+
+/**
+ * Runs one team build in a transaction of its own (a savepoint inside the
+ * caller's), so that where it comes to nothing — no agent for a kind
+ * (`"cannot"`), or the team refused (`null`) — the agents copied for it
+ * are not left behind unused.
+ */
+function withoutRefusedCopies(db: Db, build: (inTx: Db) => string | "cannot" | null): string | "cannot" | null {
+  try {
+    return db.transaction((tx) => {
+      const answer = build(tx as unknown as Db);
+      if (answer === null || answer === "cannot") throw new TeamBuildRefused(answer);
+      return answer;
+    });
+  } catch (error) {
+    if (error instanceof TeamBuildRefused) return error.answer;
+    throw error;
+  }
 }
 
 /**

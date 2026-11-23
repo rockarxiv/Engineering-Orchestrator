@@ -1,6 +1,6 @@
 {
   "eoTemplateHistory": 1,
-  "notes": "Review's team is now a team of its own: a lead reviewer and one reviewer per pass (acceptance criteria, impact, tests, rules, security and user-facing), each with instructions written for its pass alone, so each is sent only what its pass needs. The lead assigns every pass to its own reviewer. You can see the team, and change what each of its reviewers runs on, in the Teams tab. Where you already changed Review's team, the update keeps yours and asks you which to use.",
+  "notes": "Review's team is now a team of its own: a lead reviewer and one reviewer per pass (acceptance criteria, impact, tests, rules, security and user-facing), each with instructions written for its pass alone, so each is sent only what its pass needs. The lead assigns every pass to its own reviewer. Each pass reviewer starts with the tools, MCP servers and skills your reviewer had, and the update never replaces the team's tools. You can see the team, and change what each of its reviewers runs on, in the Teams tab. Where you already changed Review's team, the update keeps yours and asks you which to use.",
   "pack": {
     "eoPipelineExport": 18,
     "template": {
