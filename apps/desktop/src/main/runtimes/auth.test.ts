@@ -4,6 +4,7 @@ import {
   createAuthProbeRunner,
   checkRuntimeAuth,
   invalidateRuntimeAuth,
+  onRuntimeAuthInvalidated,
   probeRuntimeAuth,
   runtimeAuth,
   type AuthProbeResult,
@@ -297,6 +298,31 @@ describe("the cache", () => {
     await runtimeAuth({ provider: "claude", executablePath: "/opt/eo/claude", run });
 
     expect(calls).toHaveLength(2);
+  });
+
+  it("tells its listeners which runtime it forgot, after forgetting it (EO-903)", async () => {
+    const { run, calls } = answering({ stdout: JSON.stringify({ loggedIn: true }) });
+    await runtimeAuth({ provider: "claude", executablePath: "/opt/eo/claude", run });
+    const heard: string[] = [];
+    // A listener that asks hears the new state, not the cached one.
+    const stop = onRuntimeAuthInvalidated((provider) => {
+      heard.push(provider);
+      void runtimeAuth({ provider, executablePath: "/opt/eo/claude", run });
+    });
+    const thrower = onRuntimeAuthInvalidated(() => {
+      throw new Error("a listener's own problem");
+    });
+    const quiet = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    invalidateRuntimeAuth("claude");
+    await vi.waitFor(() => expect(calls).toHaveLength(2));
+    invalidateRuntimeAuth();
+    stop();
+    thrower();
+    invalidateRuntimeAuth("codex");
+    quiet.mockRestore();
+
+    expect(heard).toEqual(["claude", "claude", "codex"]);
   });
 
   it("leaves the other provider's answer alone", async () => {

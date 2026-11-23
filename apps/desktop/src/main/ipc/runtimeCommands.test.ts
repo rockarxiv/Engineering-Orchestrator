@@ -753,6 +753,26 @@ describe("managed updates", () => {
     expect(existsSync(partial)).toBe(false);
   });
 
+  it("names the runtime whose status moved, at the start and at the end of an update nobody asked for (EO-903)", async () => {
+    placeCurrentClaude();
+    const changed = vi.fn();
+
+    const result = await reconcileManagedProvider({ ...context, onChanged: changed }, "claude", machine);
+
+    expect(result.ok).toBe(true);
+    // Updating, then ready: each is what a window must ask about again.
+    expect(changed.mock.calls).toEqual([["claude"], ["claude"]]);
+  });
+
+  it("names the runtime it enabled or disabled (EO-903)", () => {
+    placeCurrentClaude();
+    const changed = vi.fn();
+
+    expect(setRuntimeEnabled({ ...context, onChanged: changed }, { provider: "claude", enabled: false }, machine).ok).toBe(true);
+
+    expect(changed.mock.calls).toEqual([["claude"]]);
+  });
+
   it("keeps the previous cache when an automatic replacement fails", async () => {
     const old = join(context.root, "claude@0.1.0");
     mkdirSync(old, { recursive: true });

@@ -426,14 +426,44 @@ export function invalidateRuntimeAuth(provider?: AuthProvider): void {
   if (provider === undefined) {
     answers.clear();
     asking.clear();
-    return;
+  } else {
+    const prefix = `${provider}\u0000`;
+    for (const key of [...answers.keys()]) {
+      if (key.startsWith(prefix)) answers.delete(key);
+    }
+    for (const key of [...asking.keys()]) {
+      if (key.startsWith(prefix)) asking.delete(key);
+    }
   }
-  const prefix = `${provider}\u0000`;
-  for (const key of [...answers.keys()]) {
-    if (key.startsWith(prefix)) answers.delete(key);
-  }
-  for (const key of [...asking.keys()]) {
-    if (key.startsWith(prefix)) asking.delete(key);
+  for (const id of providers) tellInvalidated(id);
+}
+
+/**
+ * Hears every runtime whose sign-in answer was just forgotten (EO-903).
+ *
+ * Every change to a runtime's sign-in that EO causes or learns of passes
+ * through `invalidateRuntimeAuth` — a sign-in started, finished or
+ * abandoned, a key stored or removed, an install, a run refused for
+ * being signed out — so this is where a window is told to ask again.
+ * Told after the cache is dropped, so a listener that asks hears the
+ * new state. Returns the way to stop.
+ */
+export function onRuntimeAuthInvalidated(listener: (provider: AuthProvider) => void): () => void {
+  invalidationListeners.add(listener);
+  return () => {
+    invalidationListeners.delete(listener);
+  };
+}
+
+const invalidationListeners = new Set<(provider: AuthProvider) => void>();
+
+function tellInvalidated(provider: AuthProvider): void {
+  for (const listener of [...invalidationListeners]) {
+    try {
+      listener(provider);
+    } catch (error) {
+      console.error(`[eo] a listener for ${provider}'s sign-in being forgotten failed`, error);
+    }
   }
 }
 

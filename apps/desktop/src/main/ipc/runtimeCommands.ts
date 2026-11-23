@@ -28,7 +28,12 @@ export interface RuntimeContext {
   /** The seam, as everywhere else — no test here touches the network. */
   fetchImpl: FetchLike;
   db?: Db;
-  onChanged?: () => void;
+  /**
+   * The runtime's status just moved — an install or update began, ended
+   * or failed, or it was enabled, disabled or removed. Told which one, so
+   * a window can ask again about that runtime (EO-903).
+   */
+  onChanged?: (provider: RuntimeId) => void;
   /** Seam for tests — asking a runtime whether it is signed in spawns it (EO-82). */
   authProbe?: AuthProbeRunner;
   /** Seam for tests — a sign-in spawns the CLI's own `login` and drives it (EO-83). */
@@ -637,7 +642,7 @@ export async function reconcileManagedProvider(
 
   const task = (async (): Promise<IpcResponse<"runtime:install">> => {
     updates.set(key, { state: "updating", problem: null });
-    context.onChanged?.();
+    context.onChanged?.(provider);
     const platform = machine.platform ?? process.platform;
     const arch = machine.arch ?? process.arch;
 
@@ -670,12 +675,12 @@ export async function reconcileManagedProvider(
       cleanupSuperseded(context, provider, machine);
       updates.delete(key);
       const status = runtimeStatus(context, { provider }, machine);
-      context.onChanged?.();
+      context.onChanged?.(provider);
       return { ok: true, runtime: status.runtime, problem: null };
     } catch (error) {
       const problem = error instanceof Error ? error.message : String(error);
       updates.set(key, { state: "error", problem });
-      context.onChanged?.();
+      context.onChanged?.(provider);
       return { ok: false, runtime: runtimeStatus(context, { provider }, machine).runtime, problem };
     } finally {
       inFlight.delete(key);
@@ -740,7 +745,7 @@ export function setRuntimeEnabled(
   }
 
   setSetting(context.db, enabledKey(input.provider), input.enabled);
-  context.onChanged?.();
+  context.onChanged?.(input.provider);
   return { ok: true, runtime: runtimeStatus(context, { provider: input.provider }, machine).runtime, problem: null };
 }
 
@@ -854,7 +859,7 @@ export function removeManagedRuntime(
   // ordering below is untouched; listing a directory is not deleting one.
   const managed = managedDirectories(context.root, provider);
   if (!managed.ok) {
-    context.onChanged?.();
+    context.onChanged?.(provider);
     return fail(
       `EO could not read its managed runtime folder (${context.root}): ${managed.problem}. Nothing was removed, and ${label} still reports whatever is on disk.`,
     );
@@ -875,7 +880,7 @@ export function removeManagedRuntime(
     // Deliberately not clearing the disabled state: files are still
     // there, so a runtime the user had disabled must not come back
     // enabled as a side effect of a removal that did not happen.
-    context.onChanged?.();
+    context.onChanged?.(provider);
     return fail(
       `EO could not delete every ${label} file: ${failures.join("; ")}. Automatic updates are off, and the runtime now reports whatever is still on disk.`,
     );
@@ -886,7 +891,7 @@ export function removeManagedRuntime(
   // user said so" — and lets a later explicit install start enabled.
   clearSetting(context.db, enabledKey(provider));
   updates.delete(key);
-  context.onChanged?.();
+  context.onChanged?.(provider);
 
   return { ok: true, runtime: runtimeStatus(context, { provider }, machine).runtime, problem: null };
 }
