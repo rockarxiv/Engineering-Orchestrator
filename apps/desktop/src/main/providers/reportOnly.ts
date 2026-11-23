@@ -92,10 +92,10 @@ export function reportOnlyAgentProblem(agent: Pick<Agent, "name" | "provider" | 
  * this is moved with it; and a participant is refused, not run, on any
  * runtime but EO's own copy of the version named here.
  */
-export const REPORT_ONLY_QUALIFIED_RUNTIMES: Readonly<Record<"claude" | "codex", string>> = { claude: "0.3.322", codex: "0.167.1" };
+export const REPORT_ONLY_QUALIFIED_RUNTIMES: Readonly<Record<"claude" | "codex", string>> = { claude: "0.3.329", codex: "0.171.0" };
 
 /** The Claude Agent SDK version the Claude probe passed with: it carries EO's hook to the CLI. */
-export const REPORT_ONLY_QUALIFIED_CLAUDE_SDK = "0.3.322";
+export const REPORT_ONLY_QUALIFIED_CLAUDE_SDK = "0.3.329";
 
 /**
  * Why EO cannot vouch for this runtime holding a participant to

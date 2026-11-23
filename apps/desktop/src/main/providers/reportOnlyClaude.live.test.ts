@@ -27,7 +27,7 @@ import { createClaudeProvider } from "./claude.js";
  *     EO_LIVE_CLAUDE_WIRE=1 pnpm exec vitest run --root apps/desktop \
  *       src/main/providers/reportOnlyClaude.live.test.ts
  *
- * Passed against the pinned CLI (EO-845): each forbidden call is answered
+ * Passed against the pinned CLI (EO-845), last at 0.3.329 with SDK 0.3.329: each forbidden call is answered
  * "No such tool available … disabled for this session, in subagents as
  * well as here", so not even a subagent's own call has a tool to run.
  */

@@ -31,7 +31,7 @@ import { personCodexHome } from "./codexHome.js";
  *     EO_LIVE_CODEX=1 EO_CODEX_BIN=<the pinned codex> pnpm exec vitest run --root apps/desktop \
  *       src/main/providers/reportOnlyCodex.live.test.ts
  *
- * Passed against 0.167.1 (EO-845): every forbidden call — code mode's
+ * Passed against 0.167.1 (EO-845) and again against 0.171.0: every forbidden call — code mode's
  * outer `exec` included — is answered
  * "unsupported call" — the tools are not offered at all — the sandbox is
  * read-only, and the `eo` server's tools are deferred behind Codex's
