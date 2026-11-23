@@ -20,12 +20,13 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DbHandle } from "../db/client.js";
 import { saveActionDefinition } from "../db/repos/actionDefinitionsRepo.js";
-import { createAgent } from "../db/repos/agentsRepo.js";
+import { createAgent, listAgents, updateAgent } from "../db/repos/agentsRepo.js";
 import { insertAttachments } from "../db/repos/attachmentsRepo.js";
 import { listCommentsForItem } from "../db/repos/commentsRepo.js";
 import { createRoute } from "../db/repos/index.js";
 import { getItem } from "../db/repos/itemsRepo.js";
 import { createStep } from "../db/repos/pipelineStepsRepo.js";
+import { bindItemToVersion, createPipelineVersion } from "../db/repos/pipelineVersionsRepo.js";
 import { createRun, getRun, listRunsForItem, sumCostCentsForItem } from "../db/repos/runsRepo.js";
 import {
   acceptTeamReport,
@@ -38,7 +39,7 @@ import {
 import { listTransitionsForItem } from "../db/repos/transitionsRepo.js";
 import { trialSpendCentsSince } from "../db/repos/trialLoopsRepo.js";
 import { writeTrialPlan } from "../db/repos/trialsRepo.js";
-import { createTestItem, openMigratedTestDb, agentOfKind, setStepTeam } from "../db/testHelpers.js";
+import { createTestItem, openMigratedTestDb, agentOfKind, setStepTeam, stepSessionTeam } from "../db/testHelpers.js";
 import { createRunSupervisor, type RunSupervisor } from "./runSupervisor.js";
 import { taskContextOf } from "./teamEvidence.js";
 import type { ReportOnlyProviderAnswer } from "./teamSupervisor.js";
@@ -341,6 +342,21 @@ describe("an independent team on an agent step (EO-846)", () => {
     expect(listTransitionsForItem(handle.db, item.id)).toEqual([]);
   });
 
+  it("runs no member disabled since the team was published: its attempt fails saying why, and the other member still runs (EO-882)", async () => {
+    const tess = listAgents(handle.db).find((agent) => agent.name === "Tess")!;
+    updateAgent(handle.db, tess.id, { enabled: false });
+    script = ({ agent }) => answer("clear", `${agent.name} found nothing.`);
+    await supervisor().runOnce();
+    expect(started.map((one) => one.agent)).toEqual(["Sasha"]);
+    const tests = listTeamSessionsForItem(handle.db, item.id)[0]!.attempts.filter((attempt) => attempt.assignmentKey === "tests");
+    expect(tests.length).toBeGreaterThan(0);
+    expect(tests.every((attempt) => attempt.status === "failed" && attempt.error === "Tess is disabled, so it cannot take part.")).toBe(true);
+    expect(reportsOn(item.id).map((comment) => comment.body.split("\n")[0])).toEqual(["**security** — Nothing found"]);
+    // A required member that cannot run is not read as a result.
+    expect(getItem(handle.db, item.id)?.stepId).toBe("check");
+    expect(listTransitionsForItem(handle.db, item.id)).toEqual([]);
+  });
+
   it("shares the budget between turns running at once and keeps every cent spent when it is stopped", async () => {
     const engine = supervisor({ guards: { perItemBudgetCents: 100 } });
     // Each reports 10¢ more as it winds down after the stop, and an answer EO must not take.
@@ -416,6 +432,43 @@ describe("an independent team on an agent step (EO-846)", () => {
   });
 });
 
+describe("an independent team on an older pipeline version (EO-882)", () => {
+  /** Pins the item to a version whose "check" step froze its team inline and no team id, as 0185 left one whose live step had lost its team. */
+  function pinToVersionNamingNoTeam(): void {
+    const older = createPipelineVersion(handle.db, "default");
+    createPipelineVersion(handle.db, "default");
+    bindItemToVersion(handle.db, item.id, older.id);
+    const row = client().prepare("SELECT steps FROM pipeline_versions WHERE id = ?").get(older.id) as { steps: string };
+    const steps = (JSON.parse(row.steps) as { id: string; team: unknown; teamId?: string | null }[]).map((step) => (step.id === "check" ? { ...step, teamId: null } : step));
+    expect(steps.find((step) => step.id === "check")?.team).not.toBeNull();
+    client().prepare("UPDATE pipeline_versions SET steps = ? WHERE id = ?").run(JSON.stringify(steps), older.id);
+  }
+
+  it("refuses a step whose team it cannot read, saying so on the item, and does not run the step's agent alone", async () => {
+    pinToVersionNamingNoTeam();
+    script = ({ agent }) => answer("clear", `${agent.name} found nothing.`);
+    await supervisor().runOnce();
+    expect(started).toEqual([]);
+    expect(listTeamSessionsForItem(handle.db, item.id)).toEqual([]);
+    expect(getItem(handle.db, item.id)?.stepId).toBe("check");
+    expect(listTransitionsForItem(handle.db, item.id)).toEqual([]);
+    expect(teamRun().map((run) => run.status)).toEqual(["awaiting_input"]);
+    expect(listCommentsForItem(handle.db, item.id).some((comment) => comment.body.includes('"Alignment" runs as a team, but EO cannot read which team'))).toBe(true);
+    // The owner's provider throws if it is ever started; nothing it would have said is here.
+    expect(summary()).toBeUndefined();
+  });
+
+  it("runs the team its version's step names as that team is now, each member as its own agent", async () => {
+    const older = createPipelineVersion(handle.db, "default");
+    createPipelineVersion(handle.db, "default");
+    bindItemToVersion(handle.db, item.id, older.id);
+    script = ({ agent }) => answer("clear", `${agent.name} found nothing.`);
+    await supervisor().runOnce();
+    expect(started.map((one) => one.agent).sort()).toEqual(["Sasha", "Tess"]);
+    expect(getItem(handle.db, item.id)?.stepId).toBe("accepted");
+  });
+});
+
 describe("an independent team across a restart (EO-846)", () => {
   /** The team's own run, as a crash left it: running, no live process. */
   function crashedTeamRun(): Uuid {
@@ -432,7 +485,7 @@ describe("an independent team across a restart (EO-846)", () => {
 
   it("at assignment creation: begins the assignment afresh, once, and routes once", async () => {
     const parent = crashedTeamRun();
-    const session = openTeamSession(handle.db, { itemId: item.id, stepId: "check", team: team(), runId: parent });
+    const session = openTeamSession(handle.db, { itemId: item.id, stepId: "check", team: stepSessionTeam(handle.db, "check"), runId: parent });
     const queued = startTeamAttempt(handle.db, { sessionId: session.id, assignmentKey: "security", role: "sec", agentId: agentId("Sasha"), instructions: "Look for ways in." });
     if (!queued.ok) throw new Error(queued.problem);
 
@@ -450,7 +503,7 @@ describe("an independent team across a restart (EO-846)", () => {
 
   it("at process startup: ends the turn nobody runs as EO stopping it, keeps the session and its entry, and replaces it", async () => {
     const parent = crashedTeamRun();
-    const session = openTeamSession(handle.db, { itemId: item.id, stepId: "check", team: team(), runId: parent });
+    const session = openTeamSession(handle.db, { itemId: item.id, stepId: "check", team: stepSessionTeam(handle.db, "check"), runId: parent });
     const run = participantRun("Sasha");
     const attempt = startTeamAttempt(handle.db, { sessionId: session.id, assignmentKey: "security", role: "sec", agentId: agentId("Sasha"), instructions: "Look for ways in.", runId: run });
     if (!attempt.ok) throw new Error(attempt.problem);
@@ -469,7 +522,7 @@ describe("an independent team across a restart (EO-846)", () => {
 
   it("at report persistence: keeps the accepted report, posts it once, and runs only the assignment still missing", async () => {
     const parent = crashedTeamRun();
-    const session = openTeamSession(handle.db, { itemId: item.id, stepId: "check", team: team(), runId: parent });
+    const session = openTeamSession(handle.db, { itemId: item.id, stepId: "check", team: stepSessionTeam(handle.db, "check"), runId: parent });
     // Captured from what this item holds — no disk, no attachments — as the supervisor would capture it again.
     const baseline = nothingCaptured();
     const reported = startTeamAttempt(handle.db, { sessionId: session.id, assignmentKey: "security", role: "sec", agentId: agentId("Sasha"), instructions: "Look for ways in.", runId: participantRun("Sasha"), evidenceBaseline: baseline });
@@ -489,10 +542,29 @@ describe("an independent team across a restart (EO-846)", () => {
     expect(listTransitionsForItem(handle.db, item.id)).toHaveLength(1);
   });
 
+  it("does not carry on a session opened before sessions named their agents: it is superseded, and a session that names them runs everyone as the agents the team names (EO-882)", async () => {
+    const parent = crashedTeamRun();
+    // What a session held before EO-882: the team by roles alone.
+    const before = openTeamSession(handle.db, { itemId: item.id, stepId: "check", team: team(), runId: parent });
+    const queued = startTeamAttempt(handle.db, { sessionId: before.id, assignmentKey: "security", role: "sec", agentId: agentId("Sasha"), instructions: "Look for ways in." });
+    if (!queued.ok) throw new Error(queued.problem);
+
+    const engine = supervisor();
+    await engine.reconcile();
+    await engine.runOnce();
+
+    const sessions = listTeamSessionsForItem(handle.db, item.id).map((record) => record.session);
+    expect(sessions.map((session) => session.status)).toEqual(["superseded", "finalized"]);
+    expect(sessions[1]!.team.coordination === "independent" && sessions[1]!.team.participants.map((participant) => participant.agentId)).toEqual([agentId("Sasha"), agentId("Tess")]);
+    expect(started.map((one) => one.agent).sort()).toEqual(["Sasha", "Tess"]);
+    expect(getItem(handle.db, item.id)?.stepId).toBe("accepted");
+    expect(listTransitionsForItem(handle.db, item.id)).toHaveLength(1);
+  });
+
   /** A team that settled on "gaps_found", on the evidence as it stood, and EO stopped before the move. */
   function settledBeforeTheMove(): string {
     const parent = crashedTeamRun();
-    const session = openTeamSession(handle.db, { itemId: item.id, stepId: "check", team: team(), runId: parent });
+    const session = openTeamSession(handle.db, { itemId: item.id, stepId: "check", team: stepSessionTeam(handle.db, "check"), runId: parent });
     for (const [key, role, name, outcome] of [
       ["security", "sec", "Sasha", "blocking"],
       ["tests", "tester", "Tess", "clear"],
@@ -602,7 +674,7 @@ describe("stopping an independent team (EO-846)", () => {
     const done = engine.runOnce();
     await vi.waitFor(() => expect(started).toHaveLength(2));
     const old = currentTeamSession(handle.db, item.id)!;
-    openTeamSession(handle.db, { itemId: item.id, stepId: "check", team: team() });
+    openTeamSession(handle.db, { itemId: item.id, stepId: "check", team: stepSessionTeam(handle.db, "check") });
     release.open();
     await done;
     expect(listTeamSessionsForItem(handle.db, item.id).find((record) => record.session.id === old.id)?.session.status).toBe("superseded");

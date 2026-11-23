@@ -56,7 +56,7 @@ import {
 } from "../db/repos/index.js";
 import { sideEffectingServersByStep } from "../connectors/sideEffects.js";
 import { changeTeam, changesTeam, claimTrialTeam, createTeam, getTeam, listAllTeams, listTeams, stepsNamingTeam, teamNameKey, teamReader, teamsForValidation } from "../db/repos/teamsRepo.js";
-import { isolatedCopyProblems, reportOnlyRoleProblems, teamReadings } from "./teamReadings.js";
+import { isolatedCopyProblems, reportOnlyAgentProblems, reportOnlyRoleProblems, teamReadings } from "./teamReadings.js";
 import { readPolicy } from "../policy/policy.js";
 import { activeProjectId } from "./repositoryCommands.js";
 import { signedInPersonId } from "../identity/viewer.js";
@@ -1180,11 +1180,17 @@ export function stepAgentsForPipeline(db: Db, pipelineId: string): { agents: Age
 }
 
 /**
- * Why each role could be staffed, on this pipeline's work, with an agent
- * EO cannot hold to report-only as a team member (EO-848), by role.
+ * Why each role could be bound, on this pipeline's work, to an agent EO
+ * cannot hold to report-only as a team member (EO-848), by role — for a
+ * team that names no agents yet.
  */
 export function reportOnlyRoleProblemsForPipeline(db: Db, pipelineId: string): Record<string, string> {
   return reportOnlyRoleProblems(listAgents(db), projectsServedByPipeline(db, pipelineId));
+}
+
+/** Why EO cannot hold each agent to report-only as a team member, by agent id (EO-882): what a declared team's agents are judged by. */
+export function reportOnlyAgentProblemsForAgents(db: Db): Record<string, string> {
+  return reportOnlyAgentProblems(listAgents(db));
 }
 
 /**
@@ -1205,6 +1211,7 @@ export function isolatedCopyProblemsForPipeline(db: Db, pipelineId: string, step
  */
 export function teamReadingsForPipeline(db: Db, pipelineId: string, steps: readonly PipelineStep[], registryInForce: RegistryFacts, declaredTeams: readonly TeamSave[] = []): TeamReading[] {
   if (!steps.some((step) => step.team !== null && step.team !== undefined)) return [];
+  const projectId = getPipeline(db, pipelineId)?.projectId ?? null;
   return teamReadings(steps, {
     db,
     agents: listAgents(db),
@@ -1220,6 +1227,8 @@ export function teamReadingsForPipeline(db: Db, pipelineId: string, steps: reado
         return [team.id, { ...(stored ?? { id: team.id, projectId: null, locked: false, version: 0, createdAt: 0, updatedAt: 0 }), name: team.definition.name, definition: team.definition }] as const;
       }),
     ]),
+    // Judged as the validator judges them, member by member (EO-882).
+    declared: { projectId, ...teamsForValidation(db, projectId, declaredTeams) },
   });
 }
 
@@ -1320,6 +1329,8 @@ function validationInput(
     // staffs a team with.
     staffedRoles: staffedRolesForPipeline(db, pipelineId),
     reportOnlyRoleProblems: reportOnlyRoleProblemsForPipeline(db, pipelineId),
+    // A declared team's agents run as themselves (EO-882), each judged so.
+    reportOnlyAgentProblems: reportOnlyAgentProblemsForAgents(db),
     // And where an isolated team's members could not each have a copy of
     // their own (EO-867), by the workspace dispatch would give the step.
     isolatedCopyProblems: isolatedCopyProblemsForPipeline(db, pipelineId, steps),

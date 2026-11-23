@@ -20,7 +20,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DbHandle } from "../db/client.js";
 import { saveActionDefinition } from "../db/repos/actionDefinitionsRepo.js";
-import { createAgent, getAgent } from "../db/repos/agentsRepo.js";
+import { createAgent, getAgent, updateAgent } from "../db/repos/agentsRepo.js";
 import { insertAttachments } from "../db/repos/attachmentsRepo.js";
 import { listCommentsForItem, postComment } from "../db/repos/commentsRepo.js";
 import { createRoute } from "../db/repos/index.js";
@@ -29,7 +29,7 @@ import { createStep } from "../db/repos/pipelineStepsRepo.js";
 import { createRun, getRun, listRunsForItem, updateRun } from "../db/repos/runsRepo.js";
 import { acceptTeamReport, endTeamSession, listTeamSessionsForItem, openTeamSession, startTeamAttempt, teamSessionTotals } from "../db/repos/teamSessionsRepo.js";
 import { listTransitionsForItem } from "../db/repos/transitionsRepo.js";
-import { createTestItem, openMigratedTestDb, agentOfKind, setStepTeam } from "../db/testHelpers.js";
+import { createTestItem, openMigratedTestDb, agentOfKind, setStepTeam, stepSessionTeam } from "../db/testHelpers.js";
 import { createRunSupervisor, type RunSupervisor } from "./runSupervisor.js";
 import { taskContextOf } from "./teamEvidence.js";
 import type { ReportOnlyProviderAnswer } from "./teamSupervisor.js";
@@ -184,7 +184,7 @@ function sayingThen(make: (call: { opts: AgentProviderStartOptions; attemptId: s
     })();
 }
 
-const assign = (assignments: { key: string; role: string; instructions: string; required?: boolean }[], note = "Split it up.") => ({
+const assign = (assignments: { key: string; member: string; instructions: string; required?: boolean }[], note = "Split it up.") => ({
   outcome: { decision: "assign", assignments: assignments.map((one) => ({ required: true, ...one })), note },
 });
 const final = (answer: unknown, contributions: string[]) => ({
@@ -192,6 +192,18 @@ const final = (answer: unknown, contributions: string[]) => ({
 });
 const report = (text: string) => ({ outcome: { report: text } });
 const asks = (question: string) => ({ outcome: { status: "clarification_required", questions: [{ id: "q1", question, why: "It decides what to look at." }] } });
+
+/** Where a leader's turn schema says who an assignment names: the first `member` property, wherever the schema nests it. */
+function memberSchemaIn(schema: unknown): { enum: string[]; description: string } | undefined {
+  if (typeof schema !== "object" || schema === null) return undefined;
+  const member = (schema as { properties?: { member?: { enum: string[]; description: string } } }).properties?.member;
+  if (member !== undefined) return member;
+  for (const value of Object.values(schema)) {
+    const found = memberSchemaIn(value);
+    if (found !== undefined) return found;
+  }
+  return undefined;
+}
 
 const attempts = (): TeamAttemptRow[] => listTeamSessionsForItem(handle.db, item.id).at(-1)?.attempts ?? [];
 /** The current accepted report at an assignment, by comment id. */
@@ -238,8 +250,8 @@ describe("a leader-led team (EO-847)", () => {
     const release = gate();
     leaderTurns = [
       says(assign([
-        { key: "auth", role: "sec", instructions: "Look only at how the export authenticates." },
-        { key: "suite", role: "tester", instructions: "Check the export's tests cover the CSV path.", required: false },
+        { key: "auth", member: "Sasha", instructions: "Look only at how the export authenticates." },
+        { key: "suite", member: "Tess", instructions: "Check the export's tests cover the CSV path.", required: false },
       ]), 3),
       sayingThen(({ opts }) => {
         // The reports are in this turn's context, each by its comment id.
@@ -288,12 +300,54 @@ describe("a leader-led team (EO-847)", () => {
     // Assignments and the final account are on the thread, attributed to the leader.
     const leaderComments = listCommentsForItem(handle.db, item.id).filter((comment) => comment.authorId === lee.id);
     expect(leaderComments[0]?.body).toContain("Assigns round 1:");
-    expect(leaderComments[0]?.body).toContain("**suite** (tester, optional)");
+    expect(leaderComments[0]?.body).toContain("**suite** (Tess, tester, optional)");
     expect(leaderComments[1]?.body).toContain("**Disagreements:** None: they agree.");
     expect(record.session.finalCommentId).toBe(leaderComments[1]?.id);
     // The answer routed is the leader's, posted as the owner's summary by the ordinary path.
     expect(listCommentsForItem(handle.db, item.id).find((comment) => comment.authorId === quinn.id)?.body).toBe("The export does what was asked.");
     expect(listTransitionsForItem(handle.db, item.id)).toHaveLength(1);
+  });
+
+  it("tells the leader its members by name — kind, runtime, model, reasoning and a line from their instructions — in its turn's schema and context, and runs each assignment as the member it names (EO-882)", async () => {
+    updateAgent(handle.db, agentNamed("Sasha"), { model: "claude-opus-4-5", config: { effort: "high" }, instructions: "# Security\n\nYou find ways in." });
+    // A second agent of Sasha's kind, on no team: never chosen for an assignment to Sasha.
+    createAgent(handle.db, { name: "Sol", role: "sec", provider: "codex", instructions: "Another security agent." });
+    leaderTurns = [
+      says(assign([{ key: "auth", member: "Sasha", instructions: "Look at the login." }])),
+      sayingThen(() => final({ result: "aligned", summary: "Fine." }, [reportId("auth")])),
+    ];
+    participants = { Sasha: says(report("Login fine.")) };
+    await supervisor().runOnce();
+
+    expect(getItem(handle.db, item.id)?.stepId).toBe("accepted");
+    const first = turnsOf("Lee")[0]!.opts;
+    const member = memberSchemaIn(first.outputSchema)!;
+    expect(member.enum).toEqual(["Sasha", "Tess"]);
+    expect(member.description).toContain("- Sasha — a sec agent on claude, model claude-opus-4-5, reasoning high: Security");
+    expect(member.description).toContain("- Tess — a tester agent on claude: You read tests.");
+    expect(first.context).toContain("Your team's members, whom you assign work to by name:");
+    expect(first.context).toContain("- Sasha — a sec agent on claude, model claude-opus-4-5, reasoning high: Security");
+    expect(started.filter((one) => one.agent !== "Lee").map((one) => one.agent)).toEqual(["Sasha"]);
+    expect(attempts().find((attempt) => attempt.assignmentKey === "auth")).toMatchObject({ agentId: agentNamed("Sasha"), agentName: "Sasha", role: "sec" });
+  });
+
+  it("does not offer the leader a member disabled since the team was published, nor any assignment once no member is left (EO-882)", async () => {
+    updateAgent(handle.db, agentNamed("Tess"), { enabled: false });
+    leaderTurns = [says(final({ result: "aligned", summary: "Nothing to assign." }, []))];
+    await supervisor().runOnce();
+    const member = memberSchemaIn(turnsOf("Lee")[0]!.opts.outputSchema)!;
+    expect(member.enum).toEqual(["Sasha"]);
+    expect(member.description).not.toContain("Tess");
+
+    updateAgent(handle.db, agentNamed("Sasha"), { enabled: false });
+    started = [];
+    leaderTurns = [says(final({ result: "aligned", summary: "Nobody to assign." }, []))];
+    const next = createTestItem(handle.db, { type: "story", title: "Check the import", stepId: "check" });
+    await supervisor().runOnce();
+    const schema = started.find((one) => one.agent === "Lee")!.opts.outputSchema;
+    expect(memberSchemaIn(schema)).toBeUndefined();
+    expect(JSON.stringify(schema)).not.toContain('"enum":[]');
+    expect(getItem(handle.db, next.id)?.stepId).toBe("accepted");
   });
 
   it("holds the leader to report-only: its turn has the four evidence tools alone, under its own attempt", async () => {
@@ -311,10 +365,10 @@ describe("a leader-led team (EO-847)", () => {
   it("follows up on an assignment, superseding its earlier report, and refuses a final answer that relies on the superseded one", async () => {
     let first = "";
     leaderTurns = [
-      says(assign([{ key: "auth", role: "sec", instructions: "Look at the login." }])),
+      says(assign([{ key: "auth", member: "Sasha", instructions: "Look at the login." }])),
       sayingThen(() => {
         first = reportId("auth");
-        return assign([{ key: "auth", role: "sec", instructions: "You missed the token refresh: look at it." }], "Feedback: the refresh path matters most.");
+        return assign([{ key: "auth", member: "Sasha", instructions: "You missed the token refresh: look at it." }], "Feedback: the refresh path matters most.");
       }),
       sayingThen(() => final({ result: "aligned", summary: "Fine." }, [first])),
       sayingThen(({ opts }) => {
@@ -346,18 +400,18 @@ describe("a leader-led team (EO-847)", () => {
     expect(notes().some((body) => body.includes("Feedback: the refresh path matters most."))).toBe(true);
   });
 
-  it("refuses undeclared roles, the leader's own key and assignments past its participant and round limits, saying why", async () => {
+  it("refuses a name that is not a member's, the leader's own key and assignments past its participant and round limits, saying why", async () => {
     setTeam(leaderTeam({ limits: { maxParticipants: 2, maxRounds: 1, maxRetries: 1 } }));
     leaderTurns = [
       says(assign([
-        { key: "auth", role: "sec", instructions: "Look at the login." },
-        { key: "infra", role: "admin", instructions: "Reconfigure the server." },
-        { key: LEADER_ASSIGNMENT_KEY, role: "sec", instructions: "Lead instead." },
-        { key: "suite", role: "tester", instructions: "Read the tests." },
-        { key: "more", role: "tester", instructions: "And more tests." },
+        { key: "auth", member: "Sasha", instructions: "Look at the login." },
+        { key: "infra", member: "Ada", instructions: "Reconfigure the server." },
+        { key: LEADER_ASSIGNMENT_KEY, member: "Sasha", instructions: "Lead instead." },
+        { key: "suite", member: "Tess", instructions: "Read the tests." },
+        { key: "more", member: "Tess", instructions: "And more tests." },
       ])),
       // A second round, past the one allowed.
-      says(assign([{ key: "auth", role: "sec", instructions: "Again." }])),
+      says(assign([{ key: "auth", member: "Sasha", instructions: "Again." }])),
       sayingThen(() => final({ result: "aligned", summary: "Fine." }, [reportId("auth"), reportId("suite")])),
     ];
     participants = { Sasha: says(report("Login fine.")), Tess: says(report("Tests fine.")) };
@@ -366,7 +420,7 @@ describe("a leader-led team (EO-847)", () => {
     expect(getItem(handle.db, item.id)?.stepId).toBe("accepted");
     expect(new Set(attempts().map((attempt) => attempt.assignmentKey))).toEqual(new Set([LEADER_ASSIGNMENT_KEY, "auth", "suite"]));
     const refusals = notes().filter((body) => body.startsWith("EO refused"));
-    expect(refusals[0]).toContain('**infra**: The role "admin" is not one this team permits');
+    expect(refusals[0]).toContain('**infra**: "Ada" is not a member of this team ("Sasha", "Tess"), and a leader cannot widen who it may assign.');
     expect(refusals[0]).toContain(`**${LEADER_ASSIGNMENT_KEY}**: "${LEADER_ASSIGNMENT_KEY}" is the key the leader's own turns are kept under`);
     expect(refusals[0]).toContain("**more**: The team allows 2 participants in all");
     expect(refusals[1]).toContain("1 round of assignments and all of them are used");
@@ -377,7 +431,7 @@ describe("a leader-led team (EO-847)", () => {
 
   it("does not let a contributor delegate: its answer is refused with the reason recorded, and retried within its limit", async () => {
     leaderTurns = [
-      says(assign([{ key: "auth", role: "sec", instructions: "Look at the login." }])),
+      says(assign([{ key: "auth", member: "Sasha", instructions: "Look at the login." }])),
       sayingThen(() => final({ result: "aligned", summary: "Fine." }, [reportId("auth")])),
     ];
     let sashaTurns = 0;
@@ -400,7 +454,7 @@ describe("a leader-led team (EO-847)", () => {
   it("rejects a final answer with a missing required report, an invalid answer or an undeclared result, however the leader words it, and fails past its retries", async () => {
     setTeam(leaderTeam({ limits: { maxRetries: 2 } }));
     leaderTurns = [
-      says(assign([{ key: "auth", role: "sec", instructions: "Look at the login." }])),
+      says(assign([{ key: "auth", member: "Sasha", instructions: "Look at the login." }])),
       // The required report is missing, and the leader says it is all done anyway.
       says(final({ result: "aligned", summary: "Everything was checked and is done." }, [])),
       says(final({ result: "shipped", summary: "Shipped." }, [])),
@@ -431,8 +485,8 @@ describe("a leader-led team (EO-847)", () => {
   it("carries on after a restart from what was persisted: neither the leader's turn nor the report is done again, and the leader's next turn gets the report", async () => {
     const nothing = nothingCaptured();
     const parent = createRun(handle.db, { itemId: item.id, agentId: quinn.id, action: "alignment", stepId: "check", status: "running", initiationId: `entered:${item.id}` }).id;
-    const session = openTeamSession(handle.db, { itemId: item.id, stepId: "check", team: leaderTeam(), runId: parent });
-    const verdict = { decision: "assign", accepted: [{ key: "auth", role: "sec", instructions: "Look at the login.", required: true }], refused: [] };
+    const session = openTeamSession(handle.db, { itemId: item.id, stepId: "check", team: stepSessionTeam(handle.db, "check"), runId: parent });
+    const verdict = { decision: "assign", accepted: [{ key: "auth", member: "Sasha", instructions: "Look at the login.", required: true, agentId: agentNamed("Sasha"), role: "sec" }], refused: [] };
     const leaderRun = createRun(handle.db, { itemId: item.id, agentId: lee.id, action: TEAM_PARTICIPANT_ACTION, stepId: "check", status: "succeeded" }).id;
     updateRun(handle.db, leaderRun, { result: { leader: true, answer: {}, verdict }, costCents: 5 });
     const leaderAttempt = startTeamAttempt(handle.db, { sessionId: session.id, assignmentKey: LEADER_ASSIGNMENT_KEY, role: "lead", agentId: lee.id, instructions: "Lead.", runId: leaderRun, evidenceBaseline: nothing });
@@ -487,7 +541,7 @@ describe("a leader-led team (EO-847)", () => {
     /** As a restart leaves it: the team's run interrupted, the session finalised on the leader's answer from its own reading. */
     function settledByLeader(): void {
       const parent = createRun(handle.db, { itemId: item.id, agentId: quinn.id, action: "alignment", stepId: "check", status: "running", initiationId: `entered:${item.id}` }).id;
-      const session = openTeamSession(handle.db, { itemId: item.id, stepId: "check", team: leaderTeam(), runId: parent });
+      const session = openTeamSession(handle.db, { itemId: item.id, stepId: "check", team: stepSessionTeam(handle.db, "check"), runId: parent });
       const leaderRun = createRun(handle.db, { itemId: item.id, agentId: lee.id, action: TEAM_PARTICIPANT_ACTION, stepId: "check", status: "succeeded" }).id;
       const value = { result: "aligned", summary: "Read it myself; fine." };
       updateRun(handle.db, leaderRun, { result: { leader: true, answer: {}, verdict: { decision: "final", accepted: true, problems: [], contributions: [] }, value } });
@@ -526,8 +580,8 @@ describe("a leader-led team (EO-847)", () => {
     setup("codex", { sec: "claude", tester: "codex" });
     leaderTurns = [
       says(assign([
-        { key: "auth", role: "sec", instructions: "Look at the login." },
-        { key: "suite", role: "tester", instructions: "Read the tests." },
+        { key: "auth", member: "Sasha", instructions: "Look at the login." },
+        { key: "suite", member: "Tess", instructions: "Read the tests." },
       ])),
       sayingThen(() => final({ result: "aligned", summary: "Both agree." }, [reportId("auth"), reportId("suite")])),
     ];
@@ -572,7 +626,7 @@ describe("a leader-led team whose outcomes rule out a result (EO-873)", () => {
     );
   });
 
-  const auth = [{ key: "auth", role: "sec", instructions: "Look at the login." }];
+  const auth = [{ key: "auth", member: "Sasha", instructions: "Look at the login." }];
   const finalSaying = (result: string, disagreements: string) =>
     sayingThen(() => ({ outcome: { decision: "final", answer: { result, summary: `It is ${result}.` }, contributions: [reportId("auth")], disagreements, limitations: "Only read." } }));
   const refusals = () => notes().filter((body) => body.startsWith("EO did not accept the leader's final answer"));
@@ -818,7 +872,7 @@ describe("a team member asking the person (EO-847)", () => {
         says(asks("Which release should the team check?")),
         sayingThen(({ opts }) => {
           expect(opts.context).toContain("**Answer:** Release 2.");
-          return assign([{ key: "auth", role: "sec", instructions: "Look at the login in release 2." }]);
+          return assign([{ key: "auth", member: "Sasha", instructions: "Look at the login in release 2." }]);
         }),
         sayingThen(({ opts }) => {
           // Its own earlier question and answer are still in front of it on a later turn.
@@ -854,8 +908,8 @@ describe("a team member asking the person (EO-847)", () => {
     it("resumes the assignment that asked, keeps its sibling's report, and hands the leader both", async () => {
       leaderTurns = [
         says(assign([
-          { key: "auth", role: "sec", instructions: "Look at the login." },
-          { key: "suite", role: "tester", instructions: "Read the tests." },
+          { key: "auth", member: "Sasha", instructions: "Look at the login." },
+          { key: "suite", member: "Tess", instructions: "Read the tests." },
         ])),
         sayingThen(({ opts }) => {
           expect(opts.context).toContain("Staging token leaks.");

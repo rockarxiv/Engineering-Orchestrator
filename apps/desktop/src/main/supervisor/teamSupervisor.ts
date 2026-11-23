@@ -5,8 +5,12 @@ import {
   participantTurnSchema,
   readEvidenceBaseline,
   readLeaderAnswer,
+  instructionsSummary,
+  isDispatchable,
   readParticipantAnswer,
-  staffingAgents,
+  sessionTeamNamesAgents,
+  staffsItem,
+  teamMemberLine,
   TEAM_ENFORCEMENT_UNAVAILABLE,
   TEAM_PARTICIPANT_ACTION,
   teamMemberMode,
@@ -17,16 +21,17 @@ import {
   type AgentProviderStartOptions,
   type ClarificationRequired,
   type Comment,
-  type IndependentTeam,
   type Item,
   type JsonSchema,
   type JsonSchemaDocument,
-  type LeaderTeam,
   type PipelineStep,
   type Run,
-  type StepTeam,
+  type SessionIndependentTeam,
+  type SessionLeaderTeam,
+  type SessionTeam,
   type TeamAttemptRow,
   type TeamEvidenceBaseline,
+  type TeamMemberFacts,
   type TeamOutcome,
   type TeamSessionRow,
   type Uuid,
@@ -43,13 +48,14 @@ import {
   type BudgetCeiling,
   type LeaderAttemptState,
   type LeaderLedger,
+  type LeaderTeamMember,
   type LeaderVerdict,
   type TeamAttemptState,
   type TeamStart,
   type TeamWaitReason,
 } from "@eo/engine";
 import type { Db } from "../db/client.js";
-import { getAgent, listAgents } from "../db/repos/agentsRepo.js";
+import { getAgent } from "../db/repos/agentsRepo.js";
 import { getComment, listCommentsForItem, postComment } from "../db/repos/commentsRepo.js";
 import { getItem } from "../db/repos/itemsRepo.js";
 import { createRunEventBuffer } from "../db/repos/runEventBuffer.js";
@@ -74,6 +80,7 @@ import {
   teamSessionTotals,
 } from "../db/repos/teamSessionsRepo.js";
 import type { AgentWriteBridge } from "../mcp/writeBridge.js";
+import { agentReasoningEffort } from "../providers/smallModels.js";
 import { postClarificationQuestions, unansweredQuestions } from "../roles/clarificationQuestions.js";
 import { captureTeamEvidence, type MemberCopy, type TeamEvidence } from "./teamEvidence.js";
 import { reportOnlyCredential, type TeamParticipantScopes, type ThreadBoundary } from "./teamParticipants.js";
@@ -94,6 +101,13 @@ import type { PreparedWorkspace, WorkspaceKind } from "./workspaceKind.js";
  * `transitionItem` (invariant 1). No participant can route anything;
  * nothing here writes a step.
  *
+ * **Each part of a team runs as the agent the team names** (EO-882): the
+ * leader as the team's leader agent, each member as itself — its own
+ * backend, model, reasoning, instructions and tools, report-only or in a
+ * copy of its own. Nothing chooses an agent by its kind: a member that
+ * cannot run is refused, saying why, and never stood in for by another
+ * agent of its kind. A leader assigns work to its members by name.
+ *
  * **Participants are authorised work inside that run**, not dispatches of
  * their own. Each attempt has a `runs` row of its own, recorded under
  * `TEAM_PARTICIPANT_ACTION` so nothing that reads an item's runs as its
@@ -111,7 +125,7 @@ import type { PreparedWorkspace, WorkspaceKind } from "./workspaceKind.js";
  * its run and its comment — and EO runs the assignments it accepted as
  * participants; once that round has settled, the leader's next turn is
  * started with the reports. Nothing waits in a process for anybody. What
- * the leader asks for is held to the team's roles and limits and refused,
+ * the leader asks for is held to the team's members and limits and refused,
  * with the reason recorded, past them; its final answer is held to every
  * required assignment having reported, to relying only on current reports,
  * and to the step's action's own schema and results, whatever it says.
@@ -291,7 +305,8 @@ function reportedResult(answer: unknown): string | null {
 export interface TeamTurnInput {
   item: Item;
   step: PipelineStep;
-  team: StepTeam;
+  /** The step's declared team, with the agent behind each part of it (EO-882). */
+  team: SessionTeam;
   /** The team's own run: its step's run. */
   parentRunId: Uuid;
   /** Where the step works, for the evidence; null for an item with no disk. */
@@ -459,11 +474,11 @@ const ISOLATED =
   "You work as you would on this step alone, with everything you are given for it, in a working directory that is a copy of the item's workspace EO made for you alone. Change, build and test whatever you need there. Nothing you do in it reaches the item's work, its branch or another member's copy, and EO removes it when your turn ends, saying on your report what you changed; do not push from it. Where you have the repository index, it describes the same files as they stand in the item's own workspace: read and change them in your copy. You post nothing on the item yourself — EO posts your answer as your report, attributed to you — and you are not shown the other members' reports.";
 
 /** Whether a team's members are isolated (EO-867). */
-function isolatedTeam(team: StepTeam): boolean {
+function isolatedTeam(team: SessionTeam): boolean {
   return teamMemberMode(team) === "isolated";
 }
 
-function participantInstructions(agent: Agent, step: PipelineStep, team: StepTeam): string {
+function participantInstructions(agent: Agent, step: PipelineStep, team: SessionTeam): string {
   const how =
     team.coordination === "independent"
       ? `${team.participants.length} participants each look at the work from their own angle, independently, and EO decides the step's result from what each concludes.`
@@ -568,17 +583,40 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
   }
 
   /**
-   * The agent an assignment runs as, asked as its turn starts: of its
-   * role's staff, the one running fewest turns now, the first in staffing
-   * order among equals — so a role staffed by several agents shares the
-   * work between them. No agent's concurrency cap decides it (EO-871): the
-   * session holds its one slot, and the turns inside it count against no cap.
+   * A leader's team's members as its leader is told of them and names them
+   * (EO-882), in the team's order: each agent's name — numbered where two
+   * share one, so a name is never ambiguous — its kind, the runtime, model
+   * and reasoning it runs on, and a line from its instructions. An agent
+   * that is gone altogether is left out; one that cannot run now is still
+   * named, and refused, saying why, when it is assigned.
    */
-  function staffFor(item: Item, role: string): Agent | null {
-    const turnsOf = (agentId: string): number => [...live.values()].filter((one) => one.agentId === agentId).length;
-    let chosen: Agent | null = null;
-    for (const agent of staffingAgents(listAgents(db), role, item)) if (chosen === null || turnsOf(agent.id) < turnsOf(chosen.id)) chosen = agent;
-    return chosen;
+  function membersOf(team: SessionLeaderTeam, item: Item): { facts: TeamMemberFacts[]; members: LeaderTeamMember[] } {
+    // Only those who could take an assignment on this item: a member
+    // disabled, archived or deleted since the team was published, or a
+    // preview's agent on a real item, is not offered to the leader.
+    const agents = (team.memberAgentIds ?? []).flatMap((agentId) => {
+      const agent = getAgent(db, agentId as Uuid);
+      return agent === undefined || agent.deletedAt !== null || !isDispatchable(agent) || !staffsItem(agent, item) ? [] : [agent];
+    });
+    const counts = new Map<string, number>();
+    for (const agent of agents) counts.set(agent.name, (counts.get(agent.name) ?? 0) + 1);
+    const seen = new Map<string, number>();
+    const facts: TeamMemberFacts[] = [];
+    const members: LeaderTeamMember[] = [];
+    for (const agent of agents) {
+      const n = (seen.get(agent.name) ?? 0) + 1;
+      seen.set(agent.name, n);
+      const name = (counts.get(agent.name) ?? 1) > 1 ? `${agent.name} (${n})` : agent.name;
+      facts.push({ name, kind: agent.role, runtime: agent.provider, model: agent.model, reasoning: agentReasoningEffort(agent), summary: instructionsSummary(agent.instructions) });
+      members.push({ agentId: agent.id, name, role: agent.role });
+    }
+    return { facts, members };
+  }
+
+  /** An agent the team names, as a note says it: "Name, a kind agent", or its kind alone where it is gone. */
+  function agentWords(agentId: string | undefined, kind: string): string {
+    const agent = agentId === undefined ? undefined : getAgent(db, agentId as Uuid);
+    return agent === undefined ? `a ${kind} agent` : `${agent.name}, a ${agent.role} agent`;
   }
 
   /** Ends what a participant's run left running, as EO stopping it — not a failure and not a finding. */
@@ -1004,7 +1042,10 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
 
       // ── The session: this entry's, adopted; or a new one ─────────
       let session = currentTeamSession(db, item.id);
-      if (session !== undefined && (session.stepId !== step.id || session.team.coordination !== team.coordination || !teamSessionOnEntry(db, session))) session = undefined;
+      // One opened before a session named its agents (EO-882) is not
+      // carried on: nothing in it says who each part runs as, and EO never
+      // picks an agent by its kind. A new session, which does, replaces it.
+      if (session !== undefined && (session.stepId !== step.id || session.team.coordination !== team.coordination || !sessionTeamNamesAgents(session.team) || !teamSessionOnEntry(db, session))) session = undefined;
       const adopted = session !== undefined;
       if (session === undefined) {
         // Settled on this entry already, and the move it asked for never
@@ -1031,8 +1072,8 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
           item,
           parentRunId,
           team.coordination === "independent"
-            ? `EO is running "${step.name}" as a team of ${team.participants.length}: ${team.participants.map((participant) => `**${participant.key}** (${participant.role})`).join(", ")}, ${team.limits.maxParallel} at a time. Each reports here; EO decides the step's result from what they conclude.`
-            : `EO is running "${step.name}" as a team led by a ${team.leader.role} agent, who may assign work to ${team.roles.join(", ")} — at most ${team.limits.maxParticipants} participants over ${team.limits.maxRounds} round${team.limits.maxRounds === 1 ? "" : "s"}, ${team.limits.maxParallel} at a time. Each assignment and report is posted here; the leader answers the step, and EO checks that answer before it is used.`,
+            ? `EO is running "${step.name}" as a team of ${team.participants.length}: ${team.participants.map((participant) => `**${participant.key}** (${agentWords(participant.agentId, participant.role)})`).join(", ")}, ${team.limits.maxParallel} at a time. Each reports here; EO decides the step's result from what they conclude.`
+            : `EO is running "${step.name}" as a team led by ${agentWords(team.leader.agentId, team.leader.role)}, who may assign work to ${membersOf(team, item).facts.map((member) => `${member.name} (${member.kind})`).join(", ") || "nobody"} — at most ${team.limits.maxParticipants} participants over ${team.limits.maxRounds} round${team.limits.maxRounds === 1 ? "" : "s"}, ${team.limits.maxParallel} at a time. Each assignment and report is posted here; the leader answers the step, and EO checks that answer before it is used.`,
         );
       }
       const sessionId = session.id;
@@ -1158,6 +1199,9 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
        */
       const startTurn = (launch: {
         key: string;
+        /** The agent the team names for it (EO-882); absent only on a session from before agents were named, which is never adopted. */
+        agentId: string | undefined;
+        /** Its kind as the team was read, for the record where the agent is gone. */
         role: string;
         instructions: string;
         round: number;
@@ -1166,12 +1210,15 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
         boundary: (attempt: TeamAttemptRow) => ThreadBoundary;
         turn: (attempt: TeamAttemptRow, agent: Agent) => TurnSpec;
       }): "started" | "skipped" | "broke" => {
-        const { key, role } = launch;
-        const agent = staffFor(item, role);
-        const base = { sessionId, assignmentKey: key, role, instructions: launch.instructions, round: launch.round, evidenceBaseline: current.baseline, ...(launch.supersedes === null ? {} : { supersedes: launch.supersedes }) };
-        if (agent === null) {
-          const made = startTeamAttempt(db, { ...base, agentId: null, now: deps.now() });
-          if (made.ok) endTeamAttempt(db, made.attempt.id, { status: "failed", error: `No enabled "${role}" agent serves this item's project.` }, deps.now());
+        const { key } = launch;
+        // The agent the team names, and no other (EO-882): one that is
+        // gone is a failed attempt, not a reason to find another of its kind.
+        const agent = launch.agentId === undefined ? undefined : getAgent(db, launch.agentId as Uuid);
+        const base = { sessionId, assignmentKey: key, role: agent?.role ?? launch.role, instructions: launch.instructions, round: launch.round, evidenceBaseline: current.baseline, ...(launch.supersedes === null ? {} : { supersedes: launch.supersedes }) };
+        if (agent === undefined || agent.deletedAt !== null) {
+          const made = startTeamAttempt(db, { ...base, agentId: agent === undefined ? null : (agent.id as Uuid), now: deps.now() });
+          const gone = agent === undefined ? "The agent the team names for it no longer exists" : `${agent.name}, the agent the team names for it, has been deleted`;
+          if (made.ok) endTeamAttempt(db, made.attempt.id, { status: "failed", error: `${gone}, and EO does not run another agent in its place.` }, deps.now());
           return "skipped";
         }
         const restricted = deps.restriction(agent, getItem(db, item.id) ?? item);
@@ -1341,7 +1388,7 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
       }
 
       // ── An independent team (EO-846) ───────────────────────────
-      function independentPass(teamNow: IndependentTeam, attempts: readonly TeamAttemptRow[], stateOf: (attempt: TeamAttemptRow) => TeamAttemptState): Pass {
+      function independentPass(teamNow: SessionIndependentTeam, attempts: readonly TeamAttemptRow[], stateOf: (attempt: TeamAttemptRow) => TeamAttemptState): Pass {
         const plan = planIndependentTeam({ team: teamNow, attempts: attempts.map(stateOf), baseline: currentKey });
         // Reconciled before anything replaces them.
         if (fenceAll(plan.fence, attempts)) return { kind: "again" };
@@ -1368,6 +1415,7 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
           const exchange = exchangeOf(item.id, attempts, supersededAttempt(attempts, start.supersedes));
           const outcome = startTurn({
             key: start.key,
+            agentId: participant.agentId,
             role: participant.role,
             instructions: participant.instructions,
             round: 1,
@@ -1390,7 +1438,7 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
       }
 
       // ── A leader's team (EO-847) ───────────────────────────────
-      function leaderPass(teamNow: LeaderTeam, attempts: readonly TeamAttemptRow[], stateOf: (attempt: TeamAttemptRow) => TeamAttemptState): Pass {
+      function leaderPass(teamNow: SessionLeaderTeam, attempts: readonly TeamAttemptRow[], stateOf: (attempt: TeamAttemptRow) => TeamAttemptState): Pass {
         const states: LeaderAttemptState[] = attempts.map((attempt) => ({
           ...stateOf(attempt),
           round: attempt.round,
@@ -1432,7 +1480,7 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
       }
 
       function startAssignment(
-        teamNow: LeaderTeam,
+        teamNow: SessionLeaderTeam,
         start: TeamStart,
         previous: TeamAttemptRow | undefined,
         attempts: readonly TeamAttemptRow[],
@@ -1449,6 +1497,7 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
         ];
         return startTurn({
           key: start.key,
+          agentId: assignment.agentId,
           role: assignment.role,
           instructions: assignment.instructions,
           round: start.round ?? assignment.round,
@@ -1472,7 +1521,7 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
       }
 
       function startLeader(
-        teamNow: LeaderTeam,
+        teamNow: SessionLeaderTeam,
         start: TeamStart,
         previous: TeamAttemptRow | undefined,
         attempts: readonly TeamAttemptRow[],
@@ -1483,8 +1532,10 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
         const exchange = exchangeOf(item.id, attempts, previous);
         const reportIds = ledger.contributions.flatMap((one) => (one.reportId === null ? [] : [one.reportId]));
         const leaderIds = attempts.flatMap((attempt) => (attempt.assignmentKey === LEADER_ASSIGNMENT_KEY && attempt.reportCommentId !== null ? [attempt.reportCommentId] : []));
+        const roster = membersOf(teamNow, getItem(db, item.id) ?? item);
         return startTurn({
           key: LEADER_ASSIGNMENT_KEY,
+          agentId: teamNow.leader.agentId,
           role: teamNow.leader.role,
           instructions: teamNow.leader.instructions,
           round: start.round ?? 1,
@@ -1495,10 +1546,10 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
           boundary: () => ({ visibleThrough, exposedCommentIds: [...reportIds, ...leaderIds, ...exchange.ids] }),
           turn: (attempt, agent) => ({
             instructions: leaderInstructions(agent, step, teamNow),
-            context: leaderContext(teamNow, start, previous, attempts, states, ledger, exchange.lines),
-            outputSchema: leaderTurnSchema(teamNow, input.answer!.document!),
+            context: leaderContext(teamNow, roster.facts, start, previous, attempts, states, ledger, exchange.lines),
+            outputSchema: leaderTurnSchema(roster.facts, input.answer!.document!),
             accepts: (raw) => readLeaderAnswer(raw).kind !== "invalid",
-            take: takeLeader(teamNow, attempt),
+            take: takeLeader(teamNow, attempt, roster.members),
           }),
         });
       }
@@ -1507,11 +1558,11 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
        * What EO makes of a leader's answer (EO-847), kept on its run before
        * its comment is posted, so a restart between the two redoes the turn
        * rather than reading half of it. A request for work is held to the
-       * team's roles and limits; a final answer to the reports and to the
+       * team's members and limits; a final answer to the reports and to the
        * step's action. Either way the leader's words go on the thread, and
        * what EO refused goes with them.
        */
-      function takeLeader(teamNow: LeaderTeam, attempt: TeamAttemptRow): TurnSpec["take"] {
+      function takeLeader(teamNow: SessionLeaderTeam, attempt: TeamAttemptRow, members: readonly LeaderTeamMember[]): TurnSpec["take"] {
         return (answer, runId, at, appendix) => {
           const read = readLeaderAnswer(answer);
           if (read.kind === "invalid") return { kind: "failed", error: read.error };
@@ -1535,12 +1586,12 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
           let words: string;
           let refusal: string | null = null;
           if (read.kind === "assign") {
-            const verdict = checkLeaderAssignments(teamNow, ledger, read.request.assignments);
+            const verdict = checkLeaderAssignments(teamNow, ledger, read.request.assignments, members);
             record = { leader: true, answer, verdict };
             const known = new Set(ledger.keys);
             words = [
               verdict.accepted.length === 0 ? `Asked for round ${attempt.round} of work; EO accepted none of it.` : `Assigns round ${attempt.round}:`,
-              ...verdict.accepted.map((one) => `- **${one.key}** (${one.role}${one.required ? "" : ", optional"}${known.has(one.key) ? ", follow-up" : ""}): ${one.instructions}`),
+              ...verdict.accepted.map((one) => `- **${one.key}** (${one.member}, ${one.role}${one.required ? "" : ", optional"}${known.has(one.key) ? ", follow-up" : ""}): ${one.instructions}`),
               ...(read.request.note.trim() === "" ? [] : ["", read.request.note.trim()]),
             ].join("\n");
             if (verdict.refused.length > 0) {
@@ -1619,18 +1670,18 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
       return null;
     }
 
-    function leaderInstructions(agent: Agent, stepNow: PipelineStep, teamNow: LeaderTeam): string {
+    function leaderInstructions(agent: Agent, stepNow: PipelineStep, teamNow: SessionLeaderTeam): string {
       const isolated = isolatedTeam(teamNow);
       return [
         // An isolated leader's own instructions come first, as on any
         // dispatch of its agent; this is the framing after them (EO-867).
         ...(isolated ? ["## Your part in a team", ""] : []),
-        `You are ${agent.name}, the leader of a team EO runs on the step "${stepNow.name}". You plan the work, assign focused pieces of it to agents of the roles the team permits, read their reports, and answer the step yourself.`,
+        `You are ${agent.name}, the leader of a team EO runs on the step "${stepNow.name}". You plan the work, assign focused pieces of it to the members of your team by name, read their reports, and answer the step yourself.`,
         "",
         isolated ? ISOLATED.replace(" and you are not shown the other members' reports.", " and you read the members' reports below, as EO gives them to you.") : REPORT_ONLY,
         "",
         "You act only through your answer, and every answer ends your turn:",
-        "- **assign** a round of work: each assignment a key, a permitted role, focused instructions and whether you cannot answer without it. EO runs what it accepts and starts your next turn with the reports. Name an earlier key again to ask that assignment to follow up; its earlier report is then superseded. Participants cannot assign work on.",
+        "- **assign** a round of work: each assignment a key, a member of your team by name, focused instructions and whether you cannot answer without it. EO runs what it accepts and starts your next turn with the reports. Name an earlier key again to ask that assignment to follow up; its earlier report is then superseded. Participants cannot assign work on.",
         "- **final**: answer the step's action. Name in `contributions` the ids of the reports you relied on — only current ones, never a superseded report — say where they disagreed and how you settled it, and what you could not establish. EO checks that every required assignment has reported and that your answer is a valid answer to the step; saying the work is done does not make it so.",
         `- or ${ASKING.charAt(0).toLowerCase()}${ASKING.slice(1)}`,
         "",
@@ -1640,7 +1691,8 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
     }
 
     function leaderContext(
-      teamNow: LeaderTeam,
+      teamNow: SessionLeaderTeam,
+      members: readonly TeamMemberFacts[],
       start: TeamStart,
       previous: TeamAttemptRow | undefined,
       attempts: readonly TeamAttemptRow[],
@@ -1669,7 +1721,11 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
         "",
         teamNow.leader.instructions,
         "",
-        `Roles you may assign: ${teamNow.roles.join(", ")}. Rounds used: ${ledger.roundsUsed} of ${teamNow.limits.maxRounds}. Participants: ${ledger.keys.length} of ${teamNow.limits.maxParticipants}.`,
+        "Your team's members, whom you assign work to by name:",
+        "",
+        ...(members.length === 0 ? ["- none EO can run"] : members.map((member) => `- ${teamMemberLine(member)}`)),
+        "",
+        `Rounds used: ${ledger.roundsUsed} of ${teamNow.limits.maxRounds}. Participants: ${ledger.keys.length} of ${teamNow.limits.maxParticipants}.`,
         ...(teamNow.outcomes.length === 0 ? [] : ["", "Each participant reports one of these outcomes:", "", ...outcomeLines(teamNow.outcomes), ...rulesOutLines(teamNow.outcomes)]),
         "",
         "## This turn",
@@ -1687,7 +1743,7 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
       for (const assignment of ledger.assignments) {
         const latest = states.find((state) => state.key === assignment.key && state.round === assignment.round && state.supersededBy === null);
         const contribution = ledger.contributions.find((one) => one.key === assignment.key);
-        const head = `### ${assignment.key} — ${assignment.role}, ${assignment.required ? "required" : "optional"}, round ${assignment.round}`;
+        const head = `### ${assignment.key} — ${assignment.member} (${assignment.role}), ${assignment.required ? "required" : "optional"}, round ${assignment.round}`;
         lines.push(head, "", `Asked: ${assignment.instructions}`, "");
         if (contribution !== undefined) {
           const label = teamNow.outcomes.find((outcome) => outcome.key === contribution.outcome)?.label;
@@ -1791,6 +1847,6 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
 }
 
 /** Why an assignment waits for room: the team's own limit, the only one its turns answer to (EO-871). */
-function waitWords(_reason: TeamWaitReason, team: StepTeam): string {
+function waitWords(_reason: TeamWaitReason, team: SessionTeam): string {
   return `the team runs ${team.limits.maxParallel} participant${team.limits.maxParallel === 1 ? "" : "s"} at a time, and that many are working. It starts as one finishes.`;
 }

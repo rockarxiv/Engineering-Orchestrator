@@ -7,6 +7,7 @@ import {
   stepWorkspaceChoice,
   teamFacts,
   teamMemberMode,
+  teamAgentIds,
   teamResultKeys,
   teamRightsWords,
   type Agent,
@@ -16,7 +17,7 @@ import {
   type TeamReading,
   type Uuid,
 } from "@eo/core";
-import { teamProblems, type IsolatedCopyProblem } from "@eo/engine";
+import { declaredTeamProblems, teamProblems, type AgentToolSurface, type IsolatedCopyProblem, type PipelineTeamFacts } from "@eo/engine";
 import type { Db } from "../db/client.js";
 import { projectWorkspaceList } from "../db/repos/projectsRepo.js";
 import { getWorkspace } from "../db/repos/workspacesRepo.js";
@@ -27,37 +28,46 @@ import { kindMakesMemberCopies } from "../workspaceKinds.js";
 /**
  * A pipeline's teams as its read and validation answers describe them
  * (EO-848): what `pipeline_get` and `pipeline_validate` say about each step
- * that runs as a report-only team, and what the validator is told about
- * agents EO could not hold to report-only.
+ * that runs as a team, and what the validator is told about agents EO
+ * could not hold to report-only.
  *
- * Read as dispatch acts. A role is staffed by `staffingAgents` — the rule
- * the scheduler and the team supervisor's `staffFor` use — on each project
- * whose work the pipeline serves, so the agents named here are the ones a
- * participant could run as. The problems are `teamProblems`' own, the
- * sentences `validatePipeline` refuses a publish with, so the read and the
- * Publish button cannot disagree about a team.
+ * Read as dispatch acts. A step's declared team runs each of its agents as
+ * itself (EO-882), so the agents named here are the team's own, each with
+ * why it could not run, if it could not. The problems are the validator's
+ * own (`teamProblems`, `declaredTeamProblems`), the sentences
+ * `validatePipeline` refuses a publish with, so the read and the Publish
+ * button cannot disagree about a team.
  */
 
-/** Every agent dispatch could staff `role` with, on any of these projects, in the order it would try them. */
-export function teamStaff(agents: readonly Agent[], projects: readonly (Uuid | null)[], role: string): Agent[] {
-  const staff = new Map<string, Agent>();
-  for (const projectId of projects) {
-    for (const agent of staffingAgents(agents, role, { previewAt: null, projectId })) staff.set(agent.id, agent);
+/**
+ * Why EO cannot hold each agent to report-only as a team member
+ * (`reportOnlyAgentProblem`), by agent id (EO-882): what `validatePipeline`
+ * is handed as `reportOnlyAgentProblems`, and read for a report-only
+ * declared team's own agents only.
+ */
+export function reportOnlyAgentProblems(agents: readonly Agent[]): Record<string, string> {
+  const problems: Record<string, string> = {};
+  for (const agent of agents) {
+    const why = reportOnlyAgentProblem(agent);
+    if (why !== null && why !== undefined) problems[agent.id] = why;
   }
-  return [...staff.values()];
+  return problems;
 }
 
 /**
- * Why each role's staff cannot all be held to report-only, by role: every
- * agent dispatch could choose for it that EO would refuse to start as a
- * team member (`reportOnlyAgentProblem`). What `validatePipeline` is
- * handed as `reportOnlyRoleProblems`; it is read only for a role a team
- * dispatches.
+ * Why a role's agents cannot all be held to report-only, by role (EO-848),
+ * for a team that names no agents yet — one carried inline, as an imported
+ * document carries it, whose roles are bound to agents by `staffingAgents`
+ * when it is declared. What `validatePipeline` is handed as
+ * `reportOnlyRoleProblems`; a declared team's agents are judged as
+ * themselves instead (`reportOnlyAgentProblems`).
  */
 export function reportOnlyRoleProblems(agents: readonly Agent[], projects: readonly (Uuid | null)[]): Record<string, string> {
   const problems: Record<string, string> = {};
   for (const role of new Set(agents.map((agent) => agent.role))) {
-    const reasons = teamStaff(agents, projects, role).flatMap((agent) => reportOnlyAgentProblem(agent) ?? []);
+    const bound = new Map<string, Agent>();
+    for (const projectId of projects) for (const agent of staffingAgents(agents, role, { previewAt: null, projectId })) bound.set(agent.id, agent);
+    const reasons = [...bound.values()].flatMap((agent) => reportOnlyAgentProblem(agent) ?? []);
     if (reasons.length > 0) problems[role] = reasons.join(" ");
   }
   return problems;
@@ -114,7 +124,7 @@ export function isolatedCopyProblems(db: Db, projects: readonly (Uuid | null)[],
   return problems;
 }
 
-/** What one role is for on a team: the leader, the leader's assignments, or the participants it staffs. */
+/** What one role is for on a team that names no agents yet: the leader, the leader's assignments, or the participants it staffs. */
 function serves(step: PipelineStep, role: string): string {
   const team = step.team!;
   if (team.coordination === "leader") {
@@ -124,6 +134,25 @@ function serves(step: PipelineStep, role: string): string {
     .filter((participant) => participant.role === role)
     .map((participant) => participant.key)
     .join(", ");
+}
+
+/** What one agent is for on a declared team (EO-882): the leader, the leader's assignments, or the assignment keys it reports on. */
+function agentServes(team: TeamDefinition, agentId: string): string {
+  if (team.coordination === "leader") {
+    return [...(team.leader.agentId === agentId ? ["leader"] : []), ...(team.members.some((member) => member.agentId === agentId) ? ["assignments"] : [])].join(", ");
+  }
+  return team.members
+    .filter((member) => member.agentId === agentId)
+    .map((member) => member.key)
+    .join(", ");
+}
+
+/** Why an agent a declared team names could not run as itself now, or null (EO-882). */
+function agentProblem(agent: Agent | undefined, team: TeamDefinition, reportOnly: Readonly<Record<string, string>>): string | null {
+  if (agent === undefined) return "EO does not have this agent.";
+  if (agent.deletedAt !== null || agent.archivedAt !== null) return `${agent.name} has been retired, so it cannot run.`;
+  if (!agent.enabled) return `${agent.name} is disabled, so it cannot run.`;
+  return team.memberMode === "isolated" ? null : (reportOnly[agent.id] ?? null);
 }
 
 export interface TeamReadingContext {
@@ -136,6 +165,12 @@ export interface TeamReadingContext {
   runTimeoutMs: number;
   /** The declared teams a step may name, by id (EO-881), for the reading to say which team it runs as. */
   teams?: ReadonlyMap<string, StoredTeam>;
+  /**
+   * The declared teams as `validatePipeline` judges them (`teamsForValidation`)
+   * and the pipeline's project, so a reading's problems are the
+   * validator's for the team the step names, member by member (EO-882).
+   */
+  declared?: { projectId: string | null; teams: readonly PipelineTeamFacts[]; surfaces: Readonly<Record<string, AgentToolSurface>> };
 }
 
 /**
@@ -153,6 +188,7 @@ export function draftFormOfTeam(team: TeamDefinition, agents: readonly Agent[]):
 /** Each step of `steps` that has a team, as the read and validation answers describe it. */
 export function teamReadings(steps: readonly PipelineStep[], context: TeamReadingContext): TeamReading[] {
   const roleProblems = reportOnlyRoleProblems(context.agents, context.projects);
+  const agentProblems = reportOnlyAgentProblems(context.agents);
   const copyProblems = context.db === undefined ? {} : isolatedCopyProblems(context.db, context.projects, steps);
   return steps.flatMap((step): TeamReading[] => {
     const team = step.team;
@@ -171,30 +207,43 @@ export function teamReadings(steps: readonly PipelineStep[], context: TeamReadin
             ? `"${action}" is defined nowhere, so the leader's answer would be held to nothing.`
             : null;
     const roles = team.coordination === "leader" ? [...new Set([team.leader.role, ...team.roles])] : [...new Set(team.participants.map((participant) => participant.role))];
+    // A declared team's own agents, each as itself (EO-882); a team that
+    // names none yet, by the roles it would be bound by.
+    const definition = step.teamId === null || step.teamId === undefined ? null : (context.teams?.get(step.teamId)?.definition ?? null);
+    const staffing =
+      definition !== null
+        ? [...new Set(teamAgentIds(definition))].map((agentId) => {
+            const agent = context.agents.find((one) => one.id === agentId);
+            return { role: agent?.role ?? "", serves: agentServes(definition, agentId), agents: agent === undefined ? [] : [agent.name], problem: agentProblem(agent, definition, agentProblems) };
+          })
+        : roles.map((role) => {
+            const staff = new Map<string, Agent>();
+            for (const projectId of context.projects) for (const agent of staffingAgents(context.agents, role, { previewAt: null, projectId })) staff.set(agent.id, agent);
+            const problem = staff.size === 0 ? `No enabled "${role}" agent serves this pipeline's work.` : teamMemberMode(team) === "isolated" ? null : (roleProblems[role] ?? null);
+            return { role, serves: serves(step, role), agents: [...staff.values()].map((agent) => agent.name), problem };
+          });
     return [
       {
         stepId: step.id,
         stepName: step.name,
         coordination: team.coordination,
-        staffing: roles.map((role) => {
-          const staff = teamStaff(context.agents, context.projects, role);
-          const problem =
-            staff.length === 0
-              ? `No enabled "${role}" agent serves this pipeline's work.`
-              : teamMemberMode(team) === "isolated"
-                ? null
-                : (roleProblems[role] ?? null);
-          return { role, serves: serves(step, role), agents: staff.map((agent) => agent.name), problem };
-        }),
+        staffing,
         members: teamMemberMode(team),
         reportOnly: teamRightsWords(team),
         finalAction: { role: kind, action, answeredBy: team.coordination === "independent" ? "eo" : "leader", problem: finalProblem },
         results: team.coordination === "independent" ? teamResultKeys(team) : (facts?.results.map((result) => result.key) ?? []),
         facts: teamFacts(team),
         declared: declaredOf(step.teamId, context),
-        problems: teamProblems([step], { registry: context.registry, agents: context.agents, staffedRoles: context.staffedRoles, runTimeoutMs: context.runTimeoutMs, reportOnlyRoleProblems: roleProblems, isolatedCopyProblems: copyProblems }).map(
-          (problem) => problem.message,
-        ),
+        problems: [
+          ...teamProblems([step], { registry: context.registry, agents: context.agents, staffedRoles: context.staffedRoles, runTimeoutMs: context.runTimeoutMs, reportOnlyRoleProblems: roleProblems, isolatedCopyProblems: copyProblems }).map(
+            (problem) => problem.message,
+          ),
+          ...(context.declared === undefined
+            ? []
+            : declaredTeamProblems([step], { projectId: context.declared.projectId, registry: context.registry, teams: context.declared.teams, agents: context.agents, surfaces: context.declared.surfaces, reportOnly: agentProblems }).map(
+                (problem) => problem.message,
+              )),
+        ],
       },
     ];
   });

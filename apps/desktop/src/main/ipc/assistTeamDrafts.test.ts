@@ -470,10 +470,10 @@ describe("a team drafted by the assistant (EO-848)", () => {
       expect(reason).toContain(`"Check" runs as the team "Review leads", whose leader "${nameOf("implementer")}" is a implementer agent, and that kind has no "check" action to answer.`);
     });
 
-    it("a role an agent of which EO could not hold to report-only", async () => {
+    it("a member EO could not hold to report-only (EO-882)", async () => {
       const implementer = listAgents(handle.db).find((agent) => agent.role === "implementer")!;
       updateAgent(handle.db, implementer.id, { config: { inheritAmbientConfig: true } });
-      expect(await refused(INDEPENDENT())).toContain(`could be staffed by a "implementer" agent EO cannot hold to report-only: ${implementer.name} uses the person's own setup`);
+      expect(await refused(INDEPENDENT())).toContain(`Its member "${implementer.name}" cannot be held to report-only: ${implementer.name} uses the person's own setup`);
     });
 
     it("a role an agent of which runs its own executable, whose version EO cannot vouch for (EO-850)", async () => {

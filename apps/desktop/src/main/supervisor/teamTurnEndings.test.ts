@@ -236,8 +236,8 @@ const assign = () => ({
   outcome: {
     decision: "assign",
     assignments: [
-      { key: "auth", role: "sec", instructions: "Look only at how the export authenticates.", required: true },
-      { key: "suite", role: "tester", instructions: "Check the export's tests cover the CSV path.", required: true },
+      { key: "auth", member: "Sasha", instructions: "Look only at how the export authenticates.", required: true },
+      { key: "suite", member: "Tess", instructions: "Check the export's tests cover the CSV path.", required: true },
     ],
     note: "Split it up.",
   },

@@ -138,6 +138,11 @@ describe("validatePipeline: a team on an agent step (EO-843)", () => {
     expect(teamErrors(pipeline(leader({ roles: ["security"] })))).toEqual([expect.stringContaining('needs a "security" agent')]);
   });
 
+  it("staffs no role for a step naming a declared team, whose agents are judged as themselves (EO-882)", () => {
+    const reportOnlyRoleProblems = { tester: "Another tester cannot be locked down." };
+    expect(teamErrors(pipeline(independent(), { teamId: "t1" } as Partial<PipelineStep>, { staffedRoles: ["reviewer"], reportOnlyRoleProblems }))).toEqual([]);
+  });
+
   it("refuses a result the action cannot return", () => {
     const team = independent({ completion: { rules: [{ when: "all", outcomes: ["clear"], result: "merged" }], fallback: "rejected" } });
     expect(teamErrors(pipeline(team))).toEqual([expect.stringContaining('can decide "merged"'), expect.stringContaining('can decide "rejected"')]);

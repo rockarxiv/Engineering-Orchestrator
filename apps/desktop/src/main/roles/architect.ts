@@ -59,7 +59,7 @@ import {
 import { sideEffectingServersByStep } from "../connectors/sideEffects.js";
 import { agentNamed, UNKNOWN_AGENT_ID } from "../stepAgents.js";
 import { changesTeam, listTeams, teamByName, teamNameKey, teamReader, teamsForValidation } from "../db/repos/teamsRepo.js";
-import { declaredTeamReachProblems, isolatedCopyProblemsForPipeline, teamSaveProblems, itemTypesJudged, readGuards, reportOnlyRoleProblemsForPipeline, staffedRolesForPipeline, stepAgentsForPipeline } from "../ipc/configCommands.js";
+import { declaredTeamReachProblems, isolatedCopyProblemsForPipeline, teamSaveProblems, itemTypesJudged, readGuards, reportOnlyAgentProblemsForAgents, reportOnlyRoleProblemsForPipeline, staffedRolesForPipeline, stepAgentsForPipeline } from "../ipc/configCommands.js";
 import { actionUsedBy, describeActionUse } from "../ipc/roleActionCommands.js";
 import { activeProjectId } from "../ipc/repositoryCommands.js";
 
@@ -186,6 +186,8 @@ export function validateDraft(
     // the publish path asks it.
     staffedRoles: staffedRolesForPipeline(db, pipelineId),
     reportOnlyRoleProblems: reportOnlyRoleProblemsForPipeline(db, pipelineId),
+    // A declared team's agents run as themselves (EO-882), each judged so, as the publish path asks it.
+    reportOnlyAgentProblems: reportOnlyAgentProblemsForAgents(db),
     // And whether each isolated team's members could have copies of their
     // own (EO-867), as the publish path asks it.
     isolatedCopyProblems: isolatedCopyProblemsForPipeline(db, pipelineId, domainSteps),

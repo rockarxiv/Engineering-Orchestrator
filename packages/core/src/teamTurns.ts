@@ -4,7 +4,7 @@ import { asClarification, parseIfFenced, unwrapOutcome, type ClarificationRequir
 import { placeSubschema, providerSchemaFor } from "./schemas/index.js";
 import { dialectOf, type JsonSchemaDocument } from "./schemas/outputSchema.js";
 import { ACTION_KEY_PATTERN } from "./schemas/actionDefinition.js";
-import { participantAnswerJsonSchema, TEAM_CEILINGS, type LeaderTeam, type TeamOutcome } from "./team.js";
+import { participantAnswerJsonSchema, TEAM_CEILINGS, type TeamOutcome } from "./team.js";
 
 /**
  * What a team's turns answer with (EO-846, EO-847, ARCHITECTURE.md, "A team
@@ -20,8 +20,9 @@ import { participantAnswerJsonSchema, TEAM_CEILINGS, type LeaderTeam, type TeamO
  * (`ClarificationRequiredSchema`), offered beside the turn's own answer
  * under `outcome` as `providerSchemaFor` offers it.
  *
- * Nothing here grants anything. A leader's request names roles the team
- * declares and instructions; it cannot name an agent, a tool or a grant,
+ * Nothing here grants anything. A leader's request names members of its
+ * team, by name, and instructions (EO-882); it cannot name an agent
+ * outside the team, a tool or a grant,
  * and a contributor's answer cannot assign work at all — an answer that
  * tries is refused, with the reason recorded, not followed.
  */
@@ -31,11 +32,12 @@ export const LEADER_ASSIGNMENT_KEY = "leader";
 
 const KeySchema = z.string().regex(ACTION_KEY_PATTERN, "Use lowercase letters, digits and underscores.");
 
-/** One piece of work a leader asks for: a key of its choosing, a permitted role, and what to look at. */
+/** One piece of work a leader asks for: a key of its choosing, a member of its team by name, and what to look at. */
 export const LeaderAssignmentSchema = z.strictObject({
   /** Stable for the assignment: a later round naming the same key is a follow-up that supersedes what it said. */
   key: KeySchema,
-  role: z.string().trim().min(1),
+  /** The name of the team member who does it (EO-882). EO refuses a name that is not a member's. */
+  member: z.string().trim().min(1),
   instructions: z.string().trim().min(1).max(4000),
   /** Whether the leader may not answer without it. EO holds the final answer to every required assignment's report. */
   required: z.boolean(),
@@ -139,43 +141,85 @@ export function participantTurnSchema(outcomes: readonly TeamOutcome[]): JsonSch
 }
 
 /**
- * The output schema a leader's turn is constrained to: a round of work
- * from the roles the team permits, a final answer carrying the step's
- * action's own answer (`answerDocument`, placed so its references keep
- * their meaning), or questions for the person.
+ * One member of a leader's team as the leader is told of it (EO-882):
+ * the agent's name, which an assignment names it by; its kind; the
+ * runtime, model and reasoning it runs on; and a short line from its own
+ * instructions.
  */
-export function leaderTurnSchema(team: Pick<LeaderTeam, "roles">, answerDocument: JsonSchemaDocument): JsonSchema {
+export interface TeamMemberFacts {
+  name: string;
+  kind: string;
+  runtime: string;
+  model: string | null;
+  reasoning: string | null;
+  /** A short line from its instructions; empty where it has none. */
+  summary: string;
+}
+
+/** The longest a member's line from its instructions runs to. */
+const MEMBER_SUMMARY_MAX = 160;
+
+/** A short line from an agent's instructions: its first line with words in it, markdown heading marks taken off, bounded. */
+export function instructionsSummary(instructions: string): string {
+  const line = instructions
+    .split(/\r?\n/)
+    .map((one) => one.replace(/^\s*#+\s*/, "").trim())
+    .find((one) => one !== "");
+  if (line === undefined) return "";
+  return line.length <= MEMBER_SUMMARY_MAX ? line : `${line.slice(0, MEMBER_SUMMARY_MAX - 1).trimEnd()}…`;
+}
+
+/** One member in a line: "Name — a kind agent on runtime, model m, reasoning r: what it does". */
+export function teamMemberLine(member: TeamMemberFacts): string {
+  const on = [member.runtime, ...(member.model === null ? [] : [`model ${member.model}`]), ...(member.reasoning === null ? [] : [`reasoning ${member.reasoning}`])].join(", ");
+  return `${member.name} — a ${member.kind} agent on ${on}${member.summary === "" ? "" : `: ${member.summary}`}`;
+}
+
+/**
+ * The output schema a leader's turn is constrained to: a round of work
+ * for its team's members, by name (EO-882), a final answer carrying the
+ * step's action's own answer (`answerDocument`, placed so its references
+ * keep their meaning), or questions for the person.
+ */
+export function leaderTurnSchema(members: readonly TeamMemberFacts[], answerDocument: JsonSchemaDocument): JsonSchema {
   const defs: Record<string, unknown> = {};
   const answer = placeSubschema(answerDocument, "answer", defs);
   const text = (description: string) => ({ type: "string", description });
+  // With nobody left to assign to there is no round to ask for, and an
+  // empty `enum` is a schema some backends refuse outright.
+  const assign = {
+    type: "object",
+    description: "Ask for a round of work. Your turn ends here; EO runs the assignments and starts your next turn with their reports.",
+    properties: {
+      decision: { type: "string", const: "assign" },
+      assignments: {
+        type: "array",
+        minItems: 1,
+        items: {
+          type: "object",
+          properties: {
+            key: text("A short key for this assignment (lowercase letters, digits, underscores). Use an earlier key again to ask that assignment to follow up."),
+            member: {
+              type: "string",
+              enum: members.map((member) => member.name),
+              description: ["Which member of your team does it, by name:", ...members.map((member) => `- ${teamMemberLine(member)}`)].join("\n"),
+            },
+            instructions: text("What to look at and report on."),
+            required: { type: "boolean", description: "Whether you cannot answer without its report." },
+          },
+          required: ["key", "member", "instructions", "required"],
+          additionalProperties: false,
+        },
+      },
+      note: text("Why you ask for this, and any feedback on what came back."),
+    },
+    required: ["decision", "assignments", "note"],
+    additionalProperties: false,
+  };
   const document: JsonSchema = {
     $schema: dialectOf(answerDocument),
     anyOf: [
-      {
-        type: "object",
-        description: "Ask for a round of work. Your turn ends here; EO runs the assignments and starts your next turn with their reports.",
-        properties: {
-          decision: { type: "string", const: "assign" },
-          assignments: {
-            type: "array",
-            minItems: 1,
-            items: {
-              type: "object",
-              properties: {
-                key: text("A short key for this assignment (lowercase letters, digits, underscores). Use an earlier key again to ask that assignment to follow up."),
-                role: { type: "string", enum: [...team.roles], description: "Which permitted role does it." },
-                instructions: text("What to look at and report on."),
-                required: { type: "boolean", description: "Whether you cannot answer without its report." },
-              },
-              required: ["key", "role", "instructions", "required"],
-              additionalProperties: false,
-            },
-          },
-          note: text("Why you ask for this, and any feedback on what came back."),
-        },
-        required: ["decision", "assignments", "note"],
-        additionalProperties: false,
-      },
+      ...(members.length === 0 ? [] : [assign]),
       {
         type: "object",
         description: "Answer the step. EO checks every required report is in and that this answer is valid before it is used.",

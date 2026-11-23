@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_TEAM_MEMBER_CAP, TEAM_NAME_MAX, TeamDefinitionSchema, generatedTeamName, stepTeamOf, teamAgentIds } from "./declaredTeam.js";
+import { DEFAULT_TEAM_MEMBER_CAP, TEAM_NAME_MAX, TeamDefinitionSchema, generatedTeamName, sessionTeamNamesAgents, sessionTeamOf, stepTeamOf, storedSessionTeam, teamAgentIds } from "./declaredTeam.js";
+import { StepTeamSchema } from "./team.js";
 
-/** A declared team's shape (EO-881): what parsing refuses, and how it runs as a role-staffed team until EO-882. */
+/** A declared team's shape (EO-881): what parsing refuses, its role-shaped form a step carries, and the form a session runs (EO-882). */
 describe("a declared team's definition (EO-881)", () => {
   const leader = {
     name: "Review leads",
@@ -28,7 +29,7 @@ describe("a declared team's definition (EO-881)", () => {
     expect(TeamDefinitionSchema.safeParse({ ...leader, leader: { role: "reviewer", instructions: "Lead." } }).success).toBe(false);
   });
 
-  it("runs as the role-staffed team a step always ran: each member as its agent's kind", () => {
+  it("is carried by a step in the role-shaped form: each member as its agent's kind", () => {
     const kinds = new Map([
       ["lead", "reviewer"],
       ["sec", "reviewer"],
@@ -55,6 +56,34 @@ describe("a declared team's definition (EO-881)", () => {
     });
     // An agent EO does not know reads as no team at all, never a partial one.
     expect(stepTeamOf(independent, (id) => (id === "sec" ? "reviewer" : undefined))).toBeNull();
+  });
+
+  it("runs in a session with the agent behind each part of it, its kind kept for what a person reads (EO-882)", () => {
+    const kinds = new Map([
+      ["lead", "reviewer"],
+      ["sec", "reviewer"],
+      ["tests", "tester"],
+    ]);
+    const led = sessionTeamOf(TeamDefinitionSchema.parse(leader), (id) => kinds.get(id))!;
+    expect(led).toMatchObject({ coordination: "leader", leader: { role: "reviewer", agentId: "lead" }, memberAgentIds: ["sec", "tests"], roles: ["reviewer", "tester"] });
+    expect(sessionTeamNamesAgents(led)).toBe(true);
+    const independent = TeamDefinitionSchema.parse({
+      name: "Change review",
+      coordination: "independent",
+      members: [{ key: "security", agentId: "sec", instructions: "Look for auth gaps." }, { key: "auth", agentId: "sec", instructions: "Look at the login." }],
+      outcomes: [{ key: "clear", label: "Clear" }],
+      completion: { rules: [], fallback: "approved" },
+    });
+    const one = sessionTeamOf(independent, (id) => kinds.get(id))!;
+    expect(one.coordination === "independent" && one.participants.map((participant) => [participant.key, participant.agentId])).toEqual([
+      ["security", "sec"],
+      ["auth", "sec"],
+    ]);
+    expect(storedSessionTeam(JSON.parse(JSON.stringify(one)))).toEqual(one);
+    expect(sessionTeamOf(independent, () => undefined)).toBeNull();
+    // A session from before EO-882 still reads, and says it names no agents.
+    const before = storedSessionTeam(StepTeamSchema.parse({ coordination: "leader", leader: { role: "reviewer", instructions: "Lead." }, roles: ["tester"] }))!;
+    expect(sessionTeamNamesAgents(before)).toBe(false);
   });
 });
 

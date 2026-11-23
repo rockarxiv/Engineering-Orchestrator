@@ -13,10 +13,12 @@ import { ACTION_KEY_PATTERN, RESERVED_ANSWER_FIELDS } from "./schemas/actionDefi
  * graph like every other step field (invariant 7). A step without one is
  * a single agent, which is every step written before this existed.
  *
- * Portable by construction. A participant is staffed by **role**, under
- * the project's ordinary staffing rule (`staffingAgents`), and never by an
- * agent id, so a pipeline exported from one installation means the same
- * thing on another. Nothing here names a tool, a server or a grant: a
+ * Portable by construction. This shape names a participant by **role**
+ * and never by an agent id, so a pipeline exported from one installation
+ * means the same thing on another; import binds each role to an agent and
+ * declares a team of them (EO-881). What a session runs is the declared
+ * team with its agents in it (`SessionTeam`, EO-882): each part as the
+ * agent the team names, never one chosen by its kind. Nothing here names a tool, a server or a grant: a
  * participant is dispatched with what its role's agent already has —
  * reduced to report-only, or as it is in a copy of its own where the team's
  * members are `isolated` (EO-867) — and the objects are strict so a key that tried to say otherwise —
@@ -33,8 +35,8 @@ import { ACTION_KEY_PATTERN, RESERVED_ANSWER_FIELDS } from "./schemas/actionDefi
  *   result and the assembled reports — so only an action whose answer is
  *   `result` and `summary` alone can be answered that way
  *   (`deterministicAnswerProblem`).
- * - `leader`: one leader, in a named role, assigns bounded work to agents
- *   of the permitted roles and answers the step's action itself; its answer
+ * - `leader`: one leader assigns bounded work to the team's members, by
+ *   name (EO-882), and answers the step's action itself; its answer
  *   is held to that action's schema like any agent's.
  *
  * Contracts only. This file declares the shape and decides what a set of
@@ -151,7 +153,7 @@ export type TeamOutcome = z.infer<typeof TeamOutcomeSchema>;
 export const TeamParticipantSchema = z.strictObject({
   /** Stable within the step: what its reports, retries and the summary are attributed to. */
   key: TeamKeySchema,
-  /** Who is dispatched: an agent of this role, by the project's staffing rule. */
+  /** The kind of agent it is: in a session, the agent the declared team names for it (EO-882). */
   role: RoleSchema,
   instructions: TeamInstructionsSchema,
   /**
@@ -196,9 +198,9 @@ export const LeaderTeamSchema = z.strictObject({
   coordination: z.literal("leader"),
   /** How its members work, the leader included (`TEAM_MEMBER_MODES`). */
   members: TeamMemberModeSchema,
-  /** Who leads: an agent of this role, assigning work and answering the step's action. */
+  /** Who leads, by kind: in a session, the team's leader agent (EO-882), assigning work and answering the step's action. */
   leader: z.strictObject({ role: RoleSchema, instructions: TeamInstructionsSchema }),
-  /** The roles the leader may assign work to. */
+  /** The kinds of the members the leader may assign work to; in a session, it assigns to the members themselves, by name (EO-882). */
   roles: z.array(RoleSchema).min(1).max(TEAM_CEILINGS.participants),
   /** Outcomes a participant may report, if the team declares any. */
   outcomes: z.array(TeamOutcomeSchema).default([]),

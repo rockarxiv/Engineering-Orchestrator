@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { StepTeamSchema } from "./team.js";
+import { SessionTeamSchema } from "./declaredTeam.js";
 
 /**
  * A team session and its participants' attempts, as they are kept and as
@@ -13,7 +13,7 @@ import { StepTeamSchema } from "./team.js";
  * process is running: that is each attempt's run.
  *
  * An **attempt** is one participant's go at one assignment: its key, the
- * role and the agent it resolved to (by name too, so a retired agent still
+ * agent the team names for it and that agent's kind (by name too, so a retired agent still
  * reads as who it was), the round and the attempt number, the evidence
  * baseline it was given, and the run behind it — the provider thread, the
  * timing and the spending are that run's, so a team's spending is the sum
@@ -82,8 +82,8 @@ export const TeamSessionRowSchema = z.object({
   pipelineVersionId: z.string().nullable(),
   /** The orchestration's own run — the step's run — whose spending is its own and never its children's. */
   runId: z.string().nullable(),
-  /** The team as configured when the session opened. */
-  team: StepTeamSchema,
+  /** The team as configured when the session opened, with the agent behind each part of it (EO-882). */
+  team: SessionTeamSchema,
   status: TeamSessionStatusSchema,
   /** The step's result key the session settled on, once it has. */
   result: z.string().nullable(),
@@ -105,8 +105,9 @@ export const TeamAttemptRowSchema = z.object({
   itemId: z.string(),
   /** The participant's stable assignment key. */
   assignmentKey: z.string(),
+  /** The kind of the agent it runs as. */
   role: z.string(),
-  /** The agent the role resolved to. Kept by id and by name, so a retired or renamed agent still reads as who it was. */
+  /** The agent the team names for it (EO-882). Kept by id and by name, so a retired or renamed agent still reads as who it was. */
   agentId: z.string().nullable(),
   agentName: z.string(),
   /** The focused instructions this attempt was given. */
