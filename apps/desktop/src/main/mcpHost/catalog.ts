@@ -121,6 +121,7 @@ import {
   renderItems,
   renderWorktrees,
   kindBindingLine,
+  teamAgentBindingLine,
   type MemoryConsolidationRestored,
   type RuntimeEntry,
   type SpendReport,
@@ -4304,7 +4305,7 @@ const UNGATED_WRITE_TOOLS: readonly ToolSpec[] = [
       "it wants that are not set, modules that would reach the network, and module slugs that collide with ones " +
       "already here. A pack also brings item types, roles and connectors, so it reports, for each kind of agent its steps " +
       "need, which agent here its steps would name, which several you must choose between in pipeline_import's `agents`, " +
-      "or that one would be created from the document's prompt; which backend each role was built on, which connectors would land disconnected, and what the " +
+      "or that one would be created from the document's prompt; for each team a step runs as, which of its agents would be bound to an agent here of its kind with the same instructions and which created; which backend each role was built on, which connectors would land disconnected, and what the " +
       "pack's tool surface amounts to. It also lists values in the document that look like they only hold on the " +
       "machine it was written on — a home-directory path, a drive letter, a loopback address — as advice that " +
       "refuses nothing. Writes nothing. Read this before pipeline_import — an imported module " +
@@ -4341,6 +4342,10 @@ const UNGATED_WRITE_TOOLS: readonly ToolSpec[] = [
           }),
           "",
         );
+      }
+      // Each declared team, and which of its agents bind to one here and which are created (EO-885).
+      for (const team of p.teams) {
+        lines.push(`Team "${team.teamName}" (the step "${team.stepName}"):`, ...team.agents.map((agent) => `- ${teamAgentBindingLine(agent)}`), "");
       }
       if (p.connectors.length > 0) {
         lines.push("Connectors (they land disconnected):", ...p.connectors.map((item) => `- ${item.label}${item.connected ? " — connected here" : " — not connected here"}`), "");

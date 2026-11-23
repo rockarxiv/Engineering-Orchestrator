@@ -21,7 +21,9 @@ import {
   type AgentProviderStartOptions,
   type AgentWriteBridgeAddress,
   type AgentWriteTool,
+  type ExportedTeam,
   type IpcChannel,
+  isExportedTeam,
   type Item,
   type LeaderTeam,
   type StepTeam,
@@ -261,11 +263,19 @@ function supervisor(extra: Partial<Parameters<typeof createRunSupervisor>[0]> = 
 }
 
 /**
- * Delivery on the template's newest version — or the newest in `history`
- * — as a fresh installation has it after its first launch, with the
- * reviewers on `roster`.
+ * The template up to 1.7, the last version whose Review team is staffed by
+ * role: one reviewer agent leading and doing every pass. The scenarios
+ * written for that team (EO-868, EO-870, EO-882, EO-888) run on it; 1.8's
+ * team of a reviewer per pass (EO-885) is the describe at the end.
  */
-function freshInstallation(roster?: Roster, history: TemplateHistory = loadTemplateHistory(GALLERY_DIRECTORY)): void {
+const UP_TO_17 = templateHistoryUpTo(GALLERY_DIRECTORY, "software-feature-to-merge", "1.7");
+
+/**
+ * Delivery on 1.7 — or the newest version in `history` — as a fresh
+ * installation has it after its first launch, with the reviewers on
+ * `roster`.
+ */
+function freshInstallation(roster?: Roster, history: TemplateHistory = UP_TO_17): void {
   syncRolePrompts(handle.db);
   backfillPipelineOrigins(handle.db, history);
   applyTemplateUpdates(handle.db, history, { isTheRecord: false });
@@ -1111,3 +1121,161 @@ describe.each([
   });
 });
 
+
+/**
+ * The bundled template as it ships (EO-885, 1.8): Review is a declared
+ * team, a lead reviewer and one reviewer per pass with instructions of its
+ * own. Installed on a fresh installation, as its first launch brings it to
+ * the newest version, and run end to end with its lead and members on
+ * Claude, on Codex, and on both — each through its own backend's real
+ * adapter (invariant 12).
+ */
+describe("the bundled Review team of a reviewer per pass, installed fresh (EO-885)", () => {
+  /** The backends of the lead, then of each member in the team's order, cycled. */
+  const SPLITS: { name: string; lead: Backend; members: Backend[] }[] = [
+    { name: "every agent on Claude", lead: "claude", members: ["claude"] },
+    { name: "every agent on Codex", lead: "codex", members: ["codex"] },
+    { name: "the lead on Claude and its members on both backends", lead: "claude", members: ["codex", "claude"] },
+  ];
+
+  /** The passes the lead's instructions list, each with the member they give it to (EO-885): numbered for every review, bulleted for when the change calls for them. */
+  function passesByMember(context: string): { every: [string, string][]; calledFor: [string, string][] } {
+    const start = context.indexOf("## What you lead");
+    const end = context.indexOf("## This turn", start);
+    const told = context.slice(start, end === -1 ? undefined : end);
+    return {
+      every: [...told.matchAll(/^\d+\. `(\w+)`, to (.+?):/gm)].map((match): [string, string] => [match[1]!, match[2]!]),
+      calledFor: [...told.matchAll(/^- `(\w+)`, to (.+?), when /gm)].map((match): [string, string] => [match[1]!, match[2]!]),
+    };
+  }
+
+  /** A lead that gives each pass its instructions list to the member they name, and then answers from the reports. */
+  function leadingByMember(calledFor: readonly Pass[], answer: (reports: { id: string; body: string }[]) => Record<string, unknown>): (turn: Parameters<Script>[0]) => unknown {
+    let turns = 0;
+    return ({ opts }) => {
+      turns += 1;
+      if (turns > 1) {
+        const reports = reportsIn(opts.context);
+        return { outcome: { decision: "final", answer: answer(reports), contributions: reports.map((one) => one.id), disagreements: "None.", limitations: "None." } };
+      }
+      const listed = passesByMember(opts.context);
+      const members = reviewersIn(opts.context);
+      const passes = [...listed.every, ...listed.calledFor.filter(([key]) => calledFor.includes(key as Pass))];
+      for (const [, member] of passes) expect(members).toContain(member);
+      return {
+        outcome: {
+          decision: "assign",
+          assignments: passes.map(([key, member]) => ({ key, member, scope: COVERS[key as Pass], instructions: `This change adds a per-key limit; look at ${key}.`, required: true })),
+          note: "security and user_facing assigned: the change takes a key from the request and answers with a 429.",
+        },
+      };
+    };
+  }
+
+  function installed(split: (typeof SPLITS)[number]): { teamId: string; template: ExportedTeam } {
+    syncRolePrompts(handle.db);
+    const history = loadTemplateHistory(GALLERY_DIRECTORY);
+    backfillPipelineOrigins(handle.db, history);
+    applyTemplateUpdates(handle.db, history, { isTheRecord: false });
+    expect(getPipelineOrigin(handle.db, "default")?.version).toBe("1.8");
+    const template = history.get("software-feature-to-merge")!.at(-1)!.document.steps.find((step) => step.id === "review")!.team;
+    if (template === undefined || !isExportedTeam(template)) throw new Error("1.8's Review carries no declared team");
+    const teamId = listStepsForPipeline(handle.db, "default").find((step) => step.id === "review")!.teamId!;
+    const definition = getTeam(handle.db, teamId)!.definition!;
+    if (definition.coordination !== "leader") throw new Error("Review's team is not leader-led");
+    const on = (backend: Backend) => (backend === "codex" ? { provider: "codex", model: "gpt-reviewer" } : { provider: "claude" });
+    updateAgent(handle.db, definition.leader.agentId as Uuid, on(split.lead));
+    definition.members.forEach((member, index) => updateAgent(handle.db, member.agentId as Uuid, on(split.members[index % split.members.length]!)));
+    return { teamId, template };
+  }
+
+  describe.each(SPLITS)("$name", (split) => {
+    let template: ExportedTeam;
+    beforeEach(() => {
+      ({ template } = installed(split));
+    });
+
+    /** Every turn reached its own agent's backend through that backend's adapter, each pass its own member, and nothing failed. */
+    async function ranAsDeclared(item: Item, passes: readonly Pass[]): Promise<void> {
+      expect(listTeamSessionsForItem(handle.db, item.id).map((record) => record.session.status)).toEqual(["finalized"]);
+      expect(crossed.map((one) => [one.agent.id, one.backend])).toEqual(started.map((one) => [one.agent.id, one.agent.provider]));
+      expect(new Set(crossed.map((one) => one.backend))).toEqual(new Set([split.lead, ...split.members]));
+      expect(new Set(leaderTurns().map((one) => one.agent.name))).toEqual(new Set(["Lead reviewer"]));
+      // Each pass done by the member its instructions name, sent that member's own instructions.
+      const byPass = Object.fromEntries(memberTurns().map((one) => [/## Your assignment: (\w+)/.exec(one.opts.context)![1]!, one]));
+      expect(Object.keys(byPass).sort()).toEqual([...passes].sort());
+      for (const pass of passes) {
+        const one = byPass[pass]!;
+        const declared = template.members.find((member) => member.name === one.agent.name);
+        expect(declared, pass).toBeDefined();
+        expect(one.agent.teamId).not.toBeNull();
+        expect(one.opts.instructions.startsWith(`${declared!.instructions}\n\n## Your part in a team`), pass).toBe(true);
+        expect(one.opts.instructions, pass).not.toContain("prompt-version");
+      }
+      expect(memberTurns().map((one) => one.agent.name).sort()).toEqual(
+        passes.map((pass) => ({ criteria: "Criteria reviewer", impact: "Impact reviewer", tests: "Tests reviewer", rules: "Rules reviewer", security: "Security reviewer", user_facing: "User-facing reviewer" })[pass]).sort(),
+      );
+      for (const [index, one] of crossed.entries()) {
+        const heading = /## Your assignment: \w+|## What you lead/.exec(started[index]!.opts.context)![0];
+        expect(await one.said(), `${one.backend} turn ${index}`).toContain(heading);
+        expect(one.schema(), `${one.backend} turn ${index}`).toBeTypeOf("object");
+      }
+      expect(listRunsForItem(handle.db, item.id).filter((run) => run.status === "failed")).toEqual([]);
+    }
+
+    it("approves on clean reports, each of the four passes every review gets done by its own member", async () => {
+      const item = story();
+      const lead = leadingByMember([], () => ({ verdict: "approve", feedback: "Every pass came back clean.", pull_request_body: "Rate limits the API per key." }));
+      script = (turn) => (turn.leader ? lead(turn) : { outcome: { outcome: "clear", report: `Checked ${turn.assignment}: nothing blocks. Not read: the rest of the change.` } });
+
+      await supervisor().runOnce();
+
+      await ranAsDeclared(item, EVERY_REVIEW);
+      expect(listTransitionsForItem(handle.db, item.id)).toHaveLength(1);
+      expect(getItem(handle.db, item.id)?.stepId).toBe(routeOf("approved"));
+    });
+
+    it("rejects once, carrying every blocking issue from all six passes, each done by its own member", async () => {
+      const item = story();
+      const lead = leadingByMember(["security", "user_facing"], (reports) => ({ verdict: "reject", feedback: "Six passes, six faults.", blocking_issues: blockingIn(reports), criteria_coverage: coverage() }));
+      script = (turn) => (turn.leader ? lead(turn) : memberFinding(turn.assignment!));
+
+      await supervisor().runOnce();
+
+      await ranAsDeclared(item, Object.keys(PASSES) as Pass[]);
+      expect(getItem(handle.db, item.id)?.stepId).toBe(routeOf("changes_requested"));
+      expect(listReviewVerdicts(handle.db, item.id)).toEqual([expect.objectContaining({ verdict: "reject", blockingIssues: 6 })]);
+    });
+  });
+
+  it("sends each member less, instructions and prompt together, than the reviewer answering Review alone is sent, for the same item", async () => {
+    installed(SPLITS[0]!);
+    const reviewer = listAgents(handle.db).find((agent) => agent.id === listStepsForPipeline(handle.db, "default").find((step) => step.id === "review")!.agentId)!;
+    updateAgent(handle.db, reviewer.id, { provider: "claude" });
+    const item = story();
+    const lead = leadingByMember(["security", "user_facing"], () => ({ verdict: "approve", feedback: "Clean.", pull_request_body: "Body." }));
+    script = (turn) => (turn.leader ? lead(turn) : { outcome: { outcome: "clear", report: "Nothing blocks." } });
+    await supervisor().runOnce();
+    expect(getItem(handle.db, item.id)?.stepId).toBe(routeOf("approved"));
+    expect(memberTurns()).toHaveLength(6);
+    const largestMember = Math.max(...memberTurns().map((one) => one.opts.instructions.length + one.opts.context.length));
+
+    // The same item on a fresh installation whose Review is the reviewer alone.
+    for (const made of supervisors.splice(0)) await made.shutdown();
+    dropWarmCodexThread();
+    handle.close();
+    handle = openMigratedTestDb();
+    started = [];
+    crossed = [];
+    installed(SPLITS[0]!);
+    const alone = listAgents(handle.db).find((agent) => agent.id === listStepsForPipeline(handle.db, "default").find((step) => step.id === "review")!.agentId)!;
+    updateAgent(handle.db, alone.id, { provider: "claude" });
+    const steps = listStepsForPipeline(handle.db, "default").map(({ teamId, ...step }) => (step.id === "review" ? { ...step, team: null, teamId: null } : { ...step, teamId }));
+    replacePipelineGraph(handle.db, "default", steps, listRoutesForPipeline(handle.db, "default"));
+    story();
+    script = () => ({ verdict: "approve", feedback: "Clean.", pull_request_body: "Body." });
+    await supervisor().runOnce();
+    expect(started.map((one) => one.agent.id)).toEqual([alone.id]);
+    expect(largestMember).toBeLessThan(started[0]!.opts.instructions.length + started[0]!.opts.context.length);
+  });
+});

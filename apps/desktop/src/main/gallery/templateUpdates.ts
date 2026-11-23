@@ -1,6 +1,8 @@
 import {
   boardDocument,
   boardHolding,
+  documentStepTeam,
+  isExportedTeam,
   DEFAULT_WORKSPACE_MODE,
   documentBoards,
   documentSteps,
@@ -13,9 +15,11 @@ import {
   uuidv7,
   type Agent,
   type CommentOption,
+  type ExportedTeam,
   type PipelineExport,
   type PipelineStep,
   type StepRoute,
+  type StepTeam,
   type Uuid,
 } from "@eo/core";
 import { mergeThreeWay, type ComparableGraph, type ComparedStepField, type KeyChange } from "@eo/engine";
@@ -52,6 +56,7 @@ import {
   type TemplateDocument,
 } from "../db/repos/index.js";
 import { TEMPLATE_CONFLICT_SOURCE } from "../db/repos/pipelineUpdateConflictsRepo.js";
+import { exportedTeamOf, getTeam, sameExportedTeam } from "../db/repos/teamsRepo.js";
 import { projectMovedToTheRecord } from "../db/repos/projectsRepo.js";
 import { storedGraphProblems } from "../ipc/configCommands.js";
 import { sendMessageHere } from "../messages/messages.js";
@@ -532,7 +537,34 @@ export function newerTemplateVersion(origin: PipelineOrigin, history: TemplateHi
  * (`withKind`), and a step is compared by kind and action. Which agent
  * of that kind it names is the person's, and no update changes it.
  */
-export type KindedStep = PipelineStep & { ownerRole: string | null };
+export type KindedStep = Omit<PipelineStep, "team"> & { ownerRole: string | null; team: CarriedTeam };
+
+/**
+ * A step's team as the comparison reads it (EO-885): a template version
+ * of export format 18 carries the declared team, its agents by kind and
+ * instructions, and one before it the role-staffed team (EO-843). The
+ * pipeline's own is read in the form its base carries
+ * (`comparedCurrentTeam`), so a team nobody touched reads as untouched.
+ */
+export type CarriedTeam = StepTeam | ExportedTeam | null;
+
+/**
+ * The team a pipeline's step runs as, in the form its base's step carries
+ * it (EO-885): role-staffed where the base's is, so a pipeline on a version
+ * from before declared teams travelled compares as it always did; the
+ * declared team otherwise, under the base's name — what a team is called
+ * here is the person's, and is never what an update changes.
+ */
+function comparedCurrentTeam(db: Db, step: PipelineStep, base: CarriedTeam | undefined, next: CarriedTeam | undefined): CarriedTeam {
+  if (step.team === null) return null;
+  // The form the base has, or where it has none the new version's.
+  const form = base ?? next ?? null;
+  if (form !== null && !isExportedTeam(form)) return step.team;
+  const exported = exportedTeamOf(db, step.teamId);
+  if (exported === null) return step.team;
+  // Neither its name nor its tool pool is a person's change to the template's team: both are the installation's.
+  return base !== undefined && base !== null && isExportedTeam(base) ? { ...exported, name: base.name, toolPool: base.toolPool } : exported;
+}
 
 /** The three graphs, in this pipeline's own step ids, and how they compare. */
 export interface PipelineComparison {
@@ -593,7 +625,7 @@ export function compareWithTemplate(db: Db, pipelineId: string, template: Templa
     // publish never sees them either (`savePipeline`).
     steps: listStepsForPipeline(db, pipelineId)
       .filter((step) => !step.offBoard)
-      .map((step) => withKind(agents, step)),
+      .map((step) => ({ ...withKind(agents, step), team: comparedCurrentTeam(db, step, base.steps.find((each) => each.id === step.id)?.team, next.steps.find((each) => each.id === step.id)?.team) })),
     routes: listRoutesForPipeline(db, pipelineId),
   };
   return { origin, template, base, current, next, merge: mergeThreeWay(base, current, next), baseBoard, nextBoard, nextLocal };
@@ -644,7 +676,7 @@ interface Prepared {
   compared: PipelineComparison;
   /** The template's changes it takes; none is only its base moving. */
   taken: KeyChange[];
-  steps: PipelineStep[];
+  steps: PlacedStep[];
   routes: StepRoute[];
   stepIds: Record<string, string>;
   entryStepId: string | null;
@@ -758,7 +790,7 @@ function updateInstallation(db: Db, pipelineIds: readonly string[], history: Tem
     // run on, at start, and never holds the board on its old version.
     for (const each of prepared) {
       if (each.taken.length === 0) continue;
-      const problems = [...unheldLinks(db, each), ...storedGraphProblems(db, each.candidate.pipelineId, each.steps, each.routes, each.entryStepId, alongside, undefined, { templateUpdate: true }).filter((problem) => problem.severity === "error").map((problem) => problem.message)];
+      const problems = [...unheldLinks(db, each), ...lockedTeamChanges(db, each), ...storedGraphProblems(db, each.candidate.pipelineId, each.steps, each.routes, each.entryStepId, alongside, undefined, { templateUpdate: true }).filter((problem) => problem.severity === "error").map((problem) => problem.message)];
       if (problems.length === 0) continue;
       hold(each, [], problems);
       leaving.add(each.candidate.pipelineId);
@@ -785,6 +817,22 @@ function updateInstallation(db: Db, pipelineIds: readonly string[], history: Tem
     break;
   }
   return results;
+}
+
+/**
+ * What a board's update would change of a team a person locked (EO-885):
+ * a locked team refuses every change, a template's included, so the
+ * update is held, saying which, rather than the step being given another
+ * team behind the lock.
+ */
+function lockedTeamChanges(db: Db, prepared: Pick<Prepared, "steps">): string[] {
+  return prepared.steps.flatMap((step) => {
+    if (step.carriedTeam === null || !isExportedTeam(step.carriedTeam)) return [];
+    const teamId = getStep(db, step.id)?.teamId ?? null;
+    const team = teamId === null ? undefined : getTeam(db, teamId);
+    if (team === undefined || !team.locked || sameExportedTeam(exportedTeamOf(db, team.id), step.carriedTeam)) return [];
+    return [`The team "${team.name}" that "${step.name}" runs as is locked, and this version changes it: a person must unlock it before the update can apply.`];
+  });
 }
 
 /** A replacement the repository refused, which rolls the whole batch back. */
@@ -823,11 +871,11 @@ function writeInstallation(
           const replaced = replacePipelineGraph(
             db,
             pipelineId,
-            // Without the declared team's id (EO-881): the merge compares
-            // teams as they run, by role, so the step's team is written from
-            // `team` — the team it names where that reads the same, a team
-            // declared from the template's otherwise.
-            [...each.steps, ...preserved].map(({ ownerPersonId: _person, ownerGroupId: _group, teamId: _teamId, ...step }) => step),
+            // Without the declared team's id (EO-881): the step's team is
+            // written from the team the merge left it — the team it names
+            // where that declares the same, the template's otherwise
+            // (`teamIdForCarriedTeam`, EO-885).
+            [...each.steps.map(({ carriedTeam, ...step }) => ({ ...step, team: carriedTeam })), ...preserved].map(({ ownerPersonId: _person, ownerGroupId: _group, teamId: _teamId, ...step }) => step),
             each.routes.map(({ id: _id, ...route }) => route),
             { entryStepId: each.entryStepId, createdBy: author, releaseNotes: notes === "" ? null : notes },
           );
@@ -1172,7 +1220,7 @@ function placeMerge(
   mint: (templateStepId: string) => string = () => uuidv7(),
   /** The agent each added kind is bound to (`bindAddedKinds`, EO-877). */
   bound: ReadonlyMap<string, Uuid> = new Map(),
-): { steps: PipelineStep[]; routes: StepRoute[]; stepIds: Record<string, string> } {
+): { steps: PlacedStep[]; routes: StepRoute[]; stepIds: Record<string, string> } {
   const pipelineId = compared.origin.pipelineId;
   const before = new Set(compared.current.steps.map((step) => step.id));
   const renamed = new Map<string, string>();
@@ -1203,6 +1251,10 @@ function placeMerge(
   };
   const steps = merged.steps.map(({ ownerRole: _kind, ...step }, index) => ({
     ...step,
+    // Read as its kinds for the step's settings, and carried as the merge
+    // left it for the write to declare (EO-885).
+    team: documentStepTeam(step.team),
+    carriedTeam: step.team,
     agentId: agentOf({ ...step, ownerRole: _kind }),
     id: placed(step.id),
     pipelineId: pipelineId as Uuid,
@@ -1228,6 +1280,9 @@ function placeMerge(
   }
   return { steps, routes, stepIds };
 }
+
+/** A merged step as `placeMerge` places it: the step, and the team the merge left it, as the write declares it (`CarriedTeam`). */
+type PlacedStep = PipelineStep & { carriedTeam: CarriedTeam };
 
 /**
  * A template document's graph, as this pipeline's rows would hold it.

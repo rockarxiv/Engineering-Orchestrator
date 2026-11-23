@@ -113,7 +113,7 @@ describe("the bundled software template", () => {
     syncRolePrompts(handle.db, PROMPTS_DIRECTORY);
     const history = loadTemplateHistory(GALLERY_DIRECTORY);
     backfillPipelineOrigins(handle.db, history);
-    expect(applyTemplateUpdates(handle.db, history, { isTheRecord: false })).toEqual([expect.objectContaining({ pipelineId: "default", outcome: "applied", from: "1.1", to: "1.7" })]);
+    expect(applyTemplateUpdates(handle.db, history, { isTheRecord: false })).toEqual([expect.objectContaining({ pipelineId: "default", outcome: "applied", from: "1.1", to: "1.8" })]);
     expect(listPipelines(handle.db).map((pipeline) => pipeline.name)).toContain("Pull request comments");
     const built = exportPipeline(handle.db, "default");
     expect(built.ok).toBe(true);

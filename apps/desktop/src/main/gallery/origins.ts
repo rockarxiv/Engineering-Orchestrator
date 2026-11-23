@@ -1,4 +1,5 @@
 import type { PipelineStep } from "@eo/core";
+import { documentStepTeam } from "@eo/core";
 import { sameValue } from "@eo/engine";
 import type { Db } from "../db/client.js";
 import { getSetting, listAgents, listStepsForPipeline, pipelinesWithoutOrigin, recordPipelineOrigin, setSetting } from "../db/repos/index.js";
@@ -111,7 +112,8 @@ function differingSettings(version: TemplateVersion, steps: ReadonlyMap<string, 
   for (const step of version.document.steps) {
     const held = steps.get(step.id);
     if (held === undefined) continue;
-    for (const field of MATCHED_SETTINGS) if (!sameValue(step[field], held[field])) differing += 1;
+    // A declared team (EO-885) is matched as its kinds, the form a step's team is read in.
+    for (const field of MATCHED_SETTINGS) if (!sameValue(field === "team" ? documentStepTeam(step.team) : step[field], held[field])) differing += 1;
   }
   return differing;
 }

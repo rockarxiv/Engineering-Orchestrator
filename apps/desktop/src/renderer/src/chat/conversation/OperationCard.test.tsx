@@ -60,6 +60,7 @@ function preflight(overrides: Partial<ImportPreflightView> = {}): ImportPrefligh
     itemTypes: [],
     oldNames: [],
     machineSpecific: [],
+    teams: [],
     moduleCount: 2,
     ...overrides,
   };

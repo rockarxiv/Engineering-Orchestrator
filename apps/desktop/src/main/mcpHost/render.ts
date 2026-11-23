@@ -1205,6 +1205,16 @@ export function kindBindingLine(slot: { binding: "existing" | "choose" | "create
   }
 }
 
+/**
+ * How a declared team's agent binds on import (EO-885), as
+ * `pipeline_import_check` says it: to an agent here of its kind with the
+ * same instructions, or created.
+ */
+export function teamAgentBindingLine(agent: { name: string; kind: string; binding: "existing" | "create"; agent: string | null }): string {
+  if (agent.binding === "existing") return `${agent.name} (${agent.kind}): bound to ${agent.agent ?? "an agent here"}, which has the same instructions, copied for the team`;
+  return `${agent.name} (${agent.kind}): created with the document's instructions${agent.agent === null ? ", made like the agent of this kind the import creates" : `, on the runtime, model and tools of ${agent.agent}`}`;
+}
+
 export function renderModuleTestRun(run: ModuleTestRun): string {
   if (run.cases.length === 0) return "This module has no test cases, so nothing ran. Line and branch coverage are 0%.";
   const lines = run.cases.map((each) => {

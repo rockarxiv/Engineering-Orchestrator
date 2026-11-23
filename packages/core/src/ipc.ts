@@ -677,6 +677,23 @@ export const ImportPreflightViewSchema = z.object({
    * import is refused or changed because of one.
    */
   machineSpecific: z.array(z.object({ where: z.string(), warnings: z.array(MachineSpecificWarningSchema) })).default([]),
+  /**
+   * The declared teams the document's steps run as (EO-885), and how each
+   * of a team's agents would be bound here: to an agent of its kind with
+   * the same instructions (`existing`, named in `agent`), or created
+   * (`create`), made like the kind's agent named in `agent` where there is
+   * one. Every member is the team's own (EO-897), so a bound agent is
+   * copied for the team.
+   */
+  teams: z
+    .array(
+      z.object({
+        stepName: z.string(),
+        teamName: z.string(),
+        agents: z.array(z.object({ name: z.string(), kind: z.string(), binding: z.enum(["existing", "create"]), agent: z.string().nullable() })),
+      }),
+    )
+    .default([]),
   moduleCount: z.number(),
 });
 export type ImportPreflightView = z.infer<typeof ImportPreflightViewSchema>;

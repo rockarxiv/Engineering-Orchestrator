@@ -29,6 +29,7 @@ import {
   EO_SERVER_CAPABILITIES,
   instructionsMachineSpecificWarnings,
   isBoundAgent,
+  isExportedTeam,
   isPreviewAgent,
   JIRA_CONNECTOR,
   jsonSchemaOutputSchema,
@@ -47,6 +48,7 @@ import {
   staffingAgents,
   stepAgentKind,
   stepAgentOf,
+  teamAgentIds,
   TERMINAL_TARGET,
   USER_ATTENTION_TARGET,
   UNBOUND_BACKEND,
@@ -97,6 +99,7 @@ import {
 import { briefProblems, entryRuleProblems } from "@eo/engine";
 import { registry } from "../registry.js";
 import { kindBinder, kindCandidates } from "../stepAgents.js";
+import { exportedTeamBindings, exportedTeamOf, getTeam } from "../db/repos/teamsRepo.js";
 import { adoptCarriedSchemas, adoptExportedActions, carriedSchemaRefusal, exportedActionRefusal, malformedActionRefusal } from "../actionDefinitionAdoption.js";
 import { loadRolePrompt } from "../roles/prompts.js";
 import { binariesNotFound } from "./readiness.js";
@@ -415,10 +418,12 @@ function exportedBoard(db: Db, board: BoardToExport, exported: ReadonlySet<strin
       // naming steps by the ids this document carries. Written only where
       // a step declares one, so a document without briefs reads as before.
       ...(step.brief === null ? {} : { brief: step.brief }),
-      // The team an agent step runs as (EO-843), staffed by role, so it
-      // names nothing of this installation. Written only where one is
+      // The declared team an agent step runs as (EO-885): its agents by
+      // kind and instructions, so it names nothing of this installation.
+      // A team that can no longer be read whole travels as the step reads
+      // it, staffed by role (EO-843). Written only where one is
       // configured, so a document without teams reads as before.
-      ...(step.team === null ? {} : { team: step.team }),
+      ...(step.team === null ? {} : { team: exportedTeamOf(db, step.teamId) ?? step.team }),
     })),
     // Only routes both of whose ends the document carries — on this
     // board or on another it carries (EO-762). Exporting one that
@@ -479,14 +484,20 @@ function exportedBoard(db: Db, board: BoardToExport, exported: ReadonlySet<strin
  */
 function exportedRoles(
   db: Db,
-  steps: readonly { type: string; agentId: string | null }[],
+  steps: readonly { type: string; agentId: string | null; teamId?: string | null }[],
   projectId: string | null,
 ): { document: ExportedRole[]; adminGrantHeldBy: string | null } {
   // A document names kinds, never agents (EO-875): each kind the steps'
   // agents are of, carried with the prompt, tools, backend and model of
   // the agent a step names — the recommendation the importer binds from.
+  // Then each kind of the agents of the teams they run as (EO-885), so an
+  // import has an agent of every kind a team's agent is made like.
   const agents = listAgents(db);
-  const named = steps.flatMap((step) => stepAgentOf(agents, step) ?? []);
+  const teamAgents = steps.flatMap((step) => {
+    const definition = step.type === "agent" && step.teamId !== null && step.teamId !== undefined ? (getTeam(db, step.teamId)?.definition ?? null) : null;
+    return definition === null ? [] : teamAgentIds(definition).flatMap((id) => agents.find((agent) => agent.id === id) ?? []);
+  });
+  const named = [...steps.flatMap((step) => stepAgentOf(agents, step) ?? []), ...teamAgents];
   const wanted = [...new Set(named.map((agent) => agent.role))];
   const reaching = agents.filter((agent) => agent.archivedAt === null && servesProject(agent, { projectId: projectId as Uuid | null }));
   // An archived or deleted agent is recommended to nobody: its kind still
@@ -797,6 +808,8 @@ export interface ImportPreflight {
    * a step refuses to dispatch for the want of somebody in that role.
    */
   roleSlots: RoleSlot[];
+  /** The declared teams its steps run as, and how each of their agents would be bound here (EO-885) — see `ImportPreflightViewSchema.teams`. */
+  teams: ImportTeamLine[];
   /**
    * What this pack talks to outside EO, and whether it is connected here
    * (EO-314, ARCHITECTURE.md, "Import is the needs check").
@@ -891,6 +904,47 @@ export interface RoleSlot {
  */
 export type KindBinding = "existing" | "choose" | "create" | "none";
 
+/** One declared team a document's step runs as, as the preflight says how its agents bind (EO-885). */
+export interface ImportTeamLine {
+  stepName: string;
+  teamName: string;
+  agents: { name: string; kind: string; binding: "existing" | "create"; agent: string | null }[];
+}
+
+/**
+ * How each declared team the document's steps run as would be bound on
+ * the project (EO-885): each of its agents to an agent of its kind with
+ * the same instructions, or created — what `teamIdForExportedTeam` does,
+ * read through the same `exportedTeamBindings`. A role-staffed team from
+ * an older document binds by kind, as `roleSlots` says, and is not listed.
+ */
+function teamLinesIn(db: Db, document: PipelineExport, projectId: Uuid | null, chosen: Readonly<Record<string, string>>): ImportTeamLine[] {
+  const roster = listAgents(db);
+  // A created agent is made like the agent the import names on the steps of its kind, as `teamIdForCarriedTeam` makes it.
+  const baseAgent = (kind: string) => roster.find((agent) => agent.id === stepAgentOfKind(roster, kind, projectId, chosen));
+  return documentSteps(document).flatMap((step) => {
+    if (step.type !== "agent" || step.team === undefined || !isExportedTeam(step.team)) return [];
+    const agents = exportedTeamBindings(db, step.team, { projectId, baseAgent }).map((binding) => ({
+      name: binding.name,
+      kind: binding.kind,
+      binding: binding.binding === "create" ? ("create" as const) : ("existing" as const),
+      agent: binding.agent?.name ?? null,
+    }));
+    return [{ stepName: step.name, teamName: step.team.name, agents }];
+  });
+}
+
+/**
+ * The agent an import names on its steps of `kind`: the one the person
+ * chose where there were several (EO-877), otherwise the kind's first
+ * candidate on the project. The import check reads it too, so it says
+ * which agent a team's created agents are made like (EO-885).
+ */
+function stepAgentOfKind(agents: readonly Agent[], kind: string, projectId: Uuid | null, chosen: Readonly<Record<string, string>> | ReadonlyMap<string, string>): string | null {
+  const answer = chosen instanceof Map ? chosen.get(kind) : (chosen as Readonly<Record<string, string>>)[kind];
+  return answer ?? kindCandidates(agents, kind, projectId)[0]?.id ?? null;
+}
+
 /** The binding `kindCandidates` and the document's role come to — see `KindBinding`. */
 function kindBinding(candidates: number, role: ExportedRole | undefined): KindBinding {
   if (candidates === 1) return "existing";
@@ -946,6 +1000,8 @@ export interface PreflightOptions {
    * where an import naming no project writes them (EO-735).
    */
   projectId?: Uuid | null;
+  /** The agent the person chose for each kind with several, as `importPipeline` is given it; absent, each kind's first. */
+  agents?: Readonly<Record<string, string>>;
 }
 
 export function parseExport(text: string): { ok: true; document: PipelineExport } | { ok: false; reason: string } {
@@ -1045,6 +1101,7 @@ export function preflightImport(db: Db, secrets: ModuleSecretsOptions, document:
     oldNames: oldNamesIn(document),
     machineSpecific: machineSpecificIn(document),
     roleSlots: roleSlotsIn(db, document, options.signedInBackends, options.projectId ?? null),
+    teams: teamLinesIn(db, document, options.projectId ?? null, options.agents ?? {}),
     connectors: connectorNeeds(db, document, projectId),
     capabilities: capabilitiesOf(db, document),
     // Stated, not thrown. `parseExport` already refuses a document that
@@ -1761,7 +1818,7 @@ function writeImport(
   const agentFor = (step: { type: string; ownerRole: string | null }): Uuid | null => {
     if (step.type !== "agent" || step.ownerRole === null) return null;
     if (preview) return rehearsal(step);
-    return (chosen.get(step.ownerRole) ?? kindCandidates(agentsNow, step.ownerRole, projectId)[0]?.id ?? null) as Uuid | null;
+    return stepAgentOfKind(agentsNow, step.ownerRole, projectId, chosen) as Uuid | null;
   };
 
   // Every board, each a pipeline of its own, in this one transaction
