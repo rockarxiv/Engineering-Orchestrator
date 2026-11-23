@@ -1,6 +1,6 @@
 import { and, asc, count, eq, inArray, isNotNull, isNull, ne } from "drizzle-orm";
 import { DEFAULT_WORKSPACE_MODE, EntryRulesSchema, SUGGESTIONS_PIPELINE_NAME, PreviewItemSchema, StepInputsSchema, StepResultsSchema, WorkspaceModeSchema, storedBrief, uuidv7 } from "@eo/core";
-import type { EntryRule, IncomingHandOff, Pipeline, PipelineStep, PipelineStepType, PreviewItem, StepHoldingItems, StepInputs, StepBrief, StepResult, StepTeam, StepRoute, StepWatch, Uuid, WorkspaceMode } from "@eo/core";
+import type { EntryRule, ExportedTeam, IncomingHandOff, Pipeline, PipelineStep, PipelineStepType, PreviewItem, StepHoldingItems, StepInputs, StepBrief, StepResult, StepTeam, StepRoute, StepWatch, Uuid, WorkspaceMode } from "@eo/core";
 import type { Db } from "../client.js";
 import { pipelines, pipelineSteps, projects, stepRoutes, items } from "../schema.js";
 // A cycle with `pipelineVersionsRepo`, and a deliberate one: the graph
@@ -9,7 +9,7 @@ import { pipelines, pipelineSteps, projects, stepRoutes, items } from "../schema
 // both modules have loaded, which is what makes it safe.
 import { catchUpCurrentVersion, createPipelineVersion, ensureCurrentVersion, pipelineVersionsToKeep, prunePipelineVersions, setCurrentVersion } from "./pipelineVersionsRepo.js";
 import { getSetting } from "./settingsRepo.js";
-import { teamIdForInlineTeam, teamReader } from "./teamsRepo.js";
+import { teamIdForCarriedTeam, teamReader } from "./teamsRepo.js";
 import { pinEntryRules, stepModuleVersion } from "./moduleVersionsRepo.js";
 
 /**
@@ -446,9 +446,11 @@ export interface CreateStepInput {
    * and an exported document still does: read only where `teamId` is
    * absent, and declared as a team of its own unless the step already
    * names one that reads the same (`teamIdForInlineTeam`). `null` makes
-   * the step one agent again.
+   * the step one agent again. A document of format 18 carries the
+   * declared team itself (EO-885), its agents by kind and instructions,
+   * bound or made here (`teamIdForExportedTeam`).
    */
-  team?: StepTeam | null | undefined;
+  team?: StepTeam | ExportedTeam | null | undefined;
 }
 
 export function createStep(db: Db, input: CreateStepInput): PipelineStep {
@@ -479,7 +481,7 @@ export function createStep(db: Db, input: CreateStepInput): PipelineStep {
           ? input.teamId
           : input.team === undefined || input.team === null
             ? null
-            : teamIdForInlineTeam(db, { pipelineId: input.pipelineId, stepName: input.name, team: input.team, current: null }),
+            : teamIdForCarriedTeam(db, { pipelineId: input.pipelineId, stepName: input.name, team: input.team, current: null, stepAgentIds: [input.agentId] }),
       moduleVersion: stepModuleVersion(db, { type: input.type ?? "agent", entryAction: input.entryAction, moduleVersion: input.moduleVersion }),
     })
     .returning()
@@ -1081,13 +1083,18 @@ export function replacePipelineGraph(
       // caller naming it by id names it; one still carrying a team inline
       // (an imported document, a template update) gets the team the step
       // already names where that reads as the same team, and otherwise one
-      // declared from it (`teamIdForInlineTeam`).
+      // declared from it (`teamIdForCarriedTeam`).
       const teaming =
         step.teamId !== undefined
           ? { teamId: step.teamId }
           : step.team === undefined
             ? {}
-            : { teamId: step.team === null ? null : teamIdForInlineTeam(inTx, { pipelineId, stepName: step.name, team: step.team, current: existing.get(id)?.teamId ?? null }) };
+            : {
+                teamId:
+                  step.team === null
+                    ? null
+                    : teamIdForCarriedTeam(inTx, { pipelineId, stepName: step.name, team: step.team, current: existing.get(id)?.teamId ?? null, stepAgentIds: steps.map((each) => each.agentId) }),
+              };
       if (existing.has(id))
         tx.update(pipelineSteps).set({ ...values, ...configured, ...limit, ...mode, ...disk, ...owner, ...group, ...decisions, ...watching, ...briefing, ...teaming }).where(eq(pipelineSteps.id, id)).run();
       else

@@ -1,6 +1,11 @@
 import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
 import {
   DEFAULT_TEAM_MEMBER_CAP,
+  exportedAgentKey,
+  exportedTeamAgents,
+  exportedTeamDefinition,
+  ExportedTeamSchema,
+  isExportedTeam,
   generatedTeamName,
   TeamDefinitionSchema,
   sessionTeamOf,
@@ -12,12 +17,13 @@ import {
   uuidv7,
 } from "@eo/core";
 import { TeamMemberSettingsSchema } from "@eo/core";
-import type { Agent, SessionTeam, StepTeam, TeamAuthor, TeamDefinition, TeamMemberSettings, TeamSave, TeamVersion, Uuid } from "@eo/core";
-import type { AgentToolSurface, PipelineTeamFacts } from "@eo/engine";
+import type { Agent, ExportedTeam, ExportedTeamAgent, SessionTeam, StepTeam, TeamAuthor, TeamDefinition, TeamMemberSettings, TeamSave, TeamVersion, Uuid } from "@eo/core";
+import { sameValue, type AgentToolSurface, type PipelineTeamFacts } from "@eo/engine";
 import type { Db } from "../client.js";
 import { foldCase } from "../textFold.js";
 import { createAgent, deleteAgent, getAgent, listAgents, updateAgent } from "./agentsRepo.js";
 import { agentReasoningEffort, reasoningEffortKey } from "../../providers/smallModels.js";
+import { kindCandidates } from "../../stepAgents.js";
 import { agentCliTools, agentMcpServers, agentSkills, agents, cliTools, mcpServers, pipelineSteps, pipelines, skills, teamVersions, teams } from "../schema.js";
 
 /**
@@ -821,4 +827,221 @@ export function trialTeams(
 /** Marks a team as a trial's own copy of a draft's team (`trialTeams`). Inside the save's transaction. */
 export function claimTrialTeam(db: Db, teamId: string, trialPipelineId: string, source: string): void {
   db.update(teams).set({ trialPipelineId, trialSource: source }).where(eq(teams.id, teamId)).run();
+}
+
+/**
+ * A declared team as a document carries it (EO-885, `ExportedTeamSchema`):
+ * everything it declares, with its leader and members as the kinds and
+ * instructions of the agents it names — never their ids. Two of its
+ * agents that share a name travel apart, the later numbered, since a
+ * document tells a team's agents apart by name. Null where it no longer
+ * parses, or an agent it names no longer exists.
+ */
+export function exportedTeamOf(db: Db, teamId: string | null): ExportedTeam | null {
+  if (teamId === null) return null;
+  const definition = getTeam(db, teamId)?.definition ?? null;
+  if (definition === null) return null;
+  const parts = new Map<string, ExportedTeamAgent>();
+  const names = new Set<string>();
+  for (const agentId of teamAgentIds(definition)) {
+    if (parts.has(agentId)) continue;
+    const agent = getAgent(db, agentId as Uuid);
+    if (agent === undefined) return null;
+    let name = agent.name.trim();
+    for (let n = 2; names.has(exportedAgentKey(name)); n += 1) name = `${agent.name.trim()} (${n})`;
+    names.add(exportedAgentKey(name));
+    parts.set(agentId, { name, kind: agent.role, instructions: agent.instructions });
+  }
+  const part = (agentId: string) => parts.get(agentId) as ExportedTeamAgent;
+  const shared = { name: definition.name, memberMode: definition.memberMode, toolPool: definition.toolPool, modelRange: definition.modelRange, memberCap: definition.memberCap };
+  const shaped =
+    definition.coordination === "leader"
+      ? {
+          coordination: "leader" as const,
+          ...shared,
+          leader: { ...part(definition.leader.agentId), teamInstructions: definition.leader.instructions },
+          members: definition.members.map((member) => part(member.agentId)),
+          outcomes: definition.outcomes,
+          limits: definition.limits,
+        }
+      : {
+          coordination: "independent" as const,
+          ...shared,
+          members: definition.members.map((member) => ({ ...part(member.agentId), key: member.key, teamInstructions: member.instructions, required: member.required })),
+          outcomes: definition.outcomes,
+          completion: definition.completion,
+          limits: definition.limits,
+        };
+  return ExportedTeamSchema.safeParse(shaped).data ?? null;
+}
+
+/** Whether two exported teams declare the same, their names aside: a team's name is what a person calls it here. */
+export function sameExportedTeam(a: ExportedTeam | null, b: ExportedTeam | null): boolean {
+  if (a === null || b === null) return a === b;
+  return sameValue({ ...a, name: "" }, { ...b, name: "" });
+}
+
+/**
+ * How one agent of an exported team is bound (EO-885): to the team's own
+ * agent of its kind with the same instructions (`team`, a team being
+ * updated), to one of the project's ordinary agents of its kind with the
+ * same instructions (`existing`, copied for the team, as every member is
+ * the team's own, EO-897), or to a new agent (`create`).
+ */
+export interface ExportedTeamBinding {
+  name: string;
+  kind: string;
+  binding: "team" | "existing" | "create";
+  /** The agent it is bound to, or for `create` the agent of its kind its runtime, model and tools are taken from, where there is one. */
+  agent: Agent | null;
+}
+
+function sameInstructions(a: string, b: string): boolean {
+  return a.replace(/\r\n/g, "\n").trim() === b.replace(/\r\n/g, "\n").trim();
+}
+
+/**
+ * How each agent of an exported team would be bound on a project: what
+ * the import does (`teamIdForExportedTeam`) and what `pipeline_import_check`
+ * says it would. `ownTeamId` is the team being changed, whose own agents
+ * are offered first; `baseAgent` the agent of a kind a created one is
+ * made like — the one the pipeline's steps of that kind name — falling
+ * back to the kind's agent on the project. Writes nothing.
+ */
+export function exportedTeamBindings(
+  db: Db,
+  team: ExportedTeam,
+  input: { projectId: string | null; ownTeamId?: string | null; baseAgent?: (kind: string) => Agent | undefined },
+): ExportedTeamBinding[] {
+  const roster = listAgents(db);
+  const own = input.ownTeamId === null || input.ownTeamId === undefined ? [] : teamOwnedAgents(db, input.ownTeamId).filter((agent) => agent.archivedAt === null && agent.deletedAt === null);
+  const taken = new Set<string>();
+  const pick = (candidates: readonly Agent[], part: ExportedTeamAgent): Agent | undefined => {
+    const fitting = candidates.filter((agent) => !taken.has(agent.id) && agent.role === part.kind && sameInstructions(agent.instructions, part.instructions));
+    return fitting.find((agent) => exportedAgentKey(agent.name) === exportedAgentKey(part.name)) ?? fitting[0];
+  };
+  return exportedTeamAgents(team).map((part): ExportedTeamBinding => {
+    const ownAgent = pick(own, part);
+    const ordinary = ownAgent === undefined ? pick(kindCandidates(roster, part.kind, input.projectId), part) : undefined;
+    const bound = ownAgent ?? ordinary;
+    if (bound !== undefined) {
+      taken.add(bound.id);
+      return { name: part.name, kind: part.kind, binding: ownAgent !== undefined ? "team" : "existing", agent: bound };
+    }
+    const base = input.baseAgent?.(part.kind) ?? kindCandidates(roster, part.kind, input.projectId)[0] ?? null;
+    return { name: part.name, kind: part.kind, binding: "create", agent: base };
+  });
+}
+
+/** Detaches every tool a team's member has beyond the team's pool: a member the import makes has only what the team declares. */
+function keepToPool(db: Db, agentId: string, pool: TeamDefinition["toolPool"]): void {
+  const surface = agentToolSurfaces(db, [agentId])[agentId];
+  if (surface === undefined) return;
+  for (const command of surface.cliTools.filter((name) => !pool.cliTools.includes(name))) {
+    const tool = db.select({ id: cliTools.id }).from(cliTools).where(eq(cliTools.command, command)).get();
+    if (tool !== undefined) db.delete(agentCliTools).where(and(eq(agentCliTools.agentId, agentId), eq(agentCliTools.cliToolId, tool.id))).run();
+  }
+  for (const name of surface.mcpServers.filter((server) => !pool.mcpServers.includes(server))) {
+    const server = db.select({ id: mcpServers.id }).from(mcpServers).where(eq(mcpServers.name, name)).get();
+    if (server !== undefined) db.delete(agentMcpServers).where(and(eq(agentMcpServers.agentId, agentId), eq(agentMcpServers.serverId, server.id))).run();
+  }
+  for (const slug of surface.skills.filter((skill) => !pool.skills.includes(skill))) {
+    const skill = db.select({ id: skills.id }).from(skills).where(eq(skills.slug, slug)).get();
+    if (skill !== undefined) db.delete(agentSkills).where(and(eq(agentSkills.agentId, agentId), eq(agentSkills.skillId, skill.id))).run();
+  }
+}
+
+/**
+ * An exported team as a definition of `team`'s own agents (EO-885): each
+ * agent bound as `exportedTeamBindings` says — the team's own kept, an
+ * ordinary one copied for the team under the document's name, a missing
+ * one made like the kind's agent with the document's name and
+ * instructions — and each member's tools kept to the team's pool. Null
+ * where an agent can be neither bound nor made: a kind no agent here has.
+ * Inside the caller's transaction.
+ */
+function definitionOfExportedTeam(
+  db: Db,
+  exported: ExportedTeam,
+  team: { id: string; projectId: string | null; name: string },
+  baseAgent: ((kind: string) => Agent | undefined) | undefined,
+  now: number,
+): TeamDefinition | null {
+  const bindings = exportedTeamBindings(db, exported, { projectId: team.projectId, ownTeamId: team.id, ...(baseAgent === undefined ? {} : { baseAgent }) });
+  const ids = new Map<string, string>();
+  const members = new Set((exported.members as readonly ExportedTeamAgent[]).map((member) => exportedAgentKey(member.name)));
+  for (const binding of bindings) {
+    const part = exportedTeamAgents(exported).find((one) => exportedAgentKey(one.name) === exportedAgentKey(binding.name)) as ExportedTeamAgent;
+    if (binding.agent === null) return null;
+    let id: string;
+    if (binding.binding === "team") id = binding.agent.id;
+    else {
+      const from = binding.binding === "existing" ? binding.agent : { ...binding.agent, instructions: part.instructions };
+      id = copyAgentForTeam(db, { ...from, name: part.name.trim(), archivedAt: null, deletedAt: null }, team, now);
+      if (members.has(exportedAgentKey(part.name))) keepToPool(db, id, exported.toolPool);
+    }
+    ids.set(exportedAgentKey(binding.name), id);
+  }
+  const definition = exportedTeamDefinition({ ...exported, name: team.name }, (part) => ids.get(exportedAgentKey(part.name)) as string);
+  return TeamDefinitionSchema.safeParse(definition).data ?? null;
+}
+
+/**
+ * The declared team a step that arrives with an exported team runs as
+ * (EO-885): imported, installed from a template, or written by a template
+ * update.
+ *
+ * - The team the step names, where it declares the same (its name aside).
+ * - Otherwise that team changed to the document's, as a new version by
+ *   EO, keeping its name — a template update the person had not changed
+ *   the team against. Its own agents with the same kind and instructions
+ *   are kept, with whatever runtime, model and reasoning a person gave
+ *   them. Not a locked or archived team: that one stays as it is, and the
+ *   step is given a team of its own.
+ * - Otherwise the project's team of the document's name where it declares
+ *   the same, so several steps of one document share their team.
+ * - Otherwise a new team, under the document's name (numbered where the
+ *   project has it), by EO.
+ *
+ * Null where the team cannot be declared: a kind no agent here has.
+ */
+export function teamIdForExportedTeam(
+  db: Db,
+  input: { pipelineId: string; team: ExportedTeam; current: string | null; baseAgent?: (kind: string) => Agent | undefined; now?: number },
+): string | null {
+  const pipeline = db.select({ projectId: pipelines.projectId }).from(pipelines).where(eq(pipelines.id, input.pipelineId)).get();
+  if (pipeline === undefined) return null;
+  const now = input.now ?? Date.now();
+  if (input.current !== null && sameExportedTeam(exportedTeamOf(db, input.current), input.team)) return input.current;
+  const existing = input.current === null ? undefined : getTeam(db, input.current);
+  if (existing !== undefined && !existing.locked && existing.archivedAt === null && existing.projectId === pipeline.projectId) {
+    const definition = definitionOfExportedTeam(db, input.team, existing, input.baseAgent, now);
+    if (definition === null) return null;
+    const changed = changeTeam(db, existing.id, { definition, author: { kind: "eo" }, now });
+    if (changed.ok) return existing.id;
+  }
+  const named = teamByName(db, pipeline.projectId, input.team.name);
+  if (named !== undefined && named.archivedAt === null && sameExportedTeam(exportedTeamOf(db, named.id), input.team)) return named.id;
+  const id = uuidv7();
+  const name = freeTeamName(db, pipeline.projectId, input.team.name);
+  const definition = definitionOfExportedTeam(db, input.team, { id, projectId: pipeline.projectId, name }, input.baseAgent, now);
+  if (definition === null) return null;
+  const created = createTeam(db, { id, projectId: pipeline.projectId, definition, author: { kind: "eo" }, now });
+  return created.ok ? created.team.id : null;
+}
+
+/**
+ * The declared team a step carrying a team inline runs as: a role-staffed
+ * one as before EO-881 (`teamIdForInlineTeam`), or a document's declared
+ * one (`teamIdForExportedTeam`, EO-885), whose created agents are made like
+ * the agent this graph's steps of their kind name (`stepAgentIds`).
+ */
+export function teamIdForCarriedTeam(
+  db: Db,
+  input: { pipelineId: string; stepName: string; team: StepTeam | ExportedTeam; current: string | null; stepAgentIds?: readonly (string | null | undefined)[]; now?: number },
+): string | null {
+  if (!isExportedTeam(input.team)) return teamIdForInlineTeam(db, { pipelineId: input.pipelineId, stepName: input.stepName, team: input.team, current: input.current, ...(input.now === undefined ? {} : { now: input.now }) });
+  const named = (input.stepAgentIds ?? []).flatMap((id) => (id === null || id === undefined ? [] : (getAgent(db, id as Uuid) ?? [])));
+  const baseAgent = (kind: string) => named.find((agent) => agent.role === kind && !isTeamOwned(agent) && agent.archivedAt === null && agent.deletedAt === null);
+  return teamIdForExportedTeam(db, { pipelineId: input.pipelineId, team: input.team, current: input.current, baseAgent, ...(input.now === undefined ? {} : { now: input.now }) });
 }

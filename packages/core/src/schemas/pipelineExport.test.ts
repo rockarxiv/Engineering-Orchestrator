@@ -284,7 +284,7 @@ describe("an agent step's team, in a document", () => {
   const review = { id: "review", position: 1, name: "Review", type: "agent", ownerRole: "reviewer", entryAction: "check", instructionsSummary: null, isTerminal: true, planMode: false, team };
 
   it("parses under the step schema a version-16 build reads, so that build reaches its format check", () => {
-    expect(PIPELINE_EXPORT_VERSION).toBe(17);
+    expect(PIPELINE_EXPORT_VERSION).toBeGreaterThanOrEqual(17);
     expect(ExportedStepSchema.omit({ team: true }).safeParse(review).success).toBe(true);
   });
 
@@ -308,5 +308,59 @@ describe("an agent step's team, in a document", () => {
     const withTools = { ...team, participants: [{ ...team.participants[0], allowedTools: ["Bash"] }] };
     expect(PipelineExportSchema.safeParse(document({ steps: [{ ...review, team: withAgent }] })).success).toBe(false);
     expect(PipelineExportSchema.safeParse(document({ steps: [{ ...review, team: withTools }] })).success).toBe(false);
+  });
+});
+
+/**
+ * Format 18 (EO-885): a step's team is the declared team it runs as, its
+ * agents by kind and instructions and never by id. A version-17 build
+ * cannot read that team, so the number refuses it at the format check;
+ * a format-17 document's role-staffed team still reads.
+ */
+describe("a declared team, in a document", () => {
+  const declared = {
+    coordination: "leader",
+    name: "Reviewers",
+    memberMode: "isolated",
+    toolPool: { cliTools: ["git"], mcpServers: ["repo"], skills: [] },
+    modelRange: { runtimes: ["claude", "codex"], models: [], reasoning: ["high"] },
+    memberCap: 6,
+    leader: { name: "Lead", kind: "reviewer", instructions: "You review.", teamInstructions: "Assign criteria to Criteria and tests to Tests." },
+    members: [
+      { name: "Criteria", kind: "reviewer", instructions: "Check each criterion." },
+      { name: "Tests", kind: "reviewer", instructions: "Check the tests." },
+    ],
+    limits: { maxRounds: 2 },
+  };
+  const review = { id: "review", position: 1, name: "Review", type: "agent", ownerRole: "reviewer", entryAction: "review", instructionsSummary: null, isTerminal: true, planMode: false, team: declared };
+
+  it("is the newest format", () => {
+    expect(PIPELINE_EXPORT_VERSION).toBe(18);
+  });
+
+  it("reads back through JSON unchanged, naming no agent id", () => {
+    const parsed = PipelineExportSchema.parse(JSON.parse(JSON.stringify(document({ steps: [document().steps[0], review] }))));
+    const team = parsed.steps[1]?.team;
+    expect(team).toMatchObject(declared);
+    expect(PipelineExportSchema.parse(JSON.parse(JSON.stringify(parsed))).steps[1]?.team).toEqual(team);
+    expect(JSON.stringify(team)).not.toContain("agentId");
+  });
+
+  it("refuses eo_admin in the pool, an agent id on a member, and two agents of one name that differ", () => {
+    const admin = { ...declared, toolPool: { ...declared.toolPool, mcpServers: ["eo_admin"] } };
+    const withId = { ...declared, members: [{ ...declared.members[0], agentId: "019f0000-0000-7000-8000-000000000001" }] };
+    const twins = { ...declared, members: [...declared.members, { name: "criteria", kind: "reviewer", instructions: "Something else." }] };
+    for (const team of [admin, withId, twins]) expect(PipelineExportSchema.safeParse(document({ steps: [{ ...review, team }] })).success).toBe(false);
+  });
+
+  it("refuses more members than the team's cap", () => {
+    const over = { ...declared, memberCap: 1 };
+    expect(PipelineExportSchema.safeParse(document({ steps: [{ ...review, team: over }] })).success).toBe(false);
+  });
+
+  it("still reads a format-17 document's role-staffed team", () => {
+    const team = { coordination: "leader", members: "isolated", leader: { role: "reviewer", instructions: "Split the review." }, roles: ["reviewer"] };
+    const parsed = PipelineExportSchema.parse(document({ eoPipelineExport: 17, steps: [document().steps[0], { ...review, team }] }));
+    expect(parsed.steps[1]?.team).toMatchObject(team);
   });
 });

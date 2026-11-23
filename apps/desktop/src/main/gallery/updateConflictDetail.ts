@@ -1,4 +1,5 @@
 import {
+  documentStepTeam,
   boardDocument,
   documentSteps,
   sameBoard,
@@ -181,7 +182,8 @@ function heldTemplate(db: Db, conflict: PipelineUpdateConflict): TemplateVersion
 
 function graphView(graph: ComparableGraph<KindedStep, StepRoute>, entryStepId: string | null): UpdateConflictGraph {
   return {
-    steps: graph.steps.map((step) => ({ ...PipelineStepViewSchema.parse(step), ownerRole: step.type === "agent" ? step.ownerRole : null })),
+    // A declared team a template carries (EO-885) read as its kinds, the form a step's view has.
+    steps: graph.steps.map((step) => ({ ...PipelineStepViewSchema.parse({ ...step, team: documentStepTeam(step.team) }), ownerRole: step.type === "agent" ? step.ownerRole : null })),
     routes: graph.routes.map((route) => StepRouteViewSchema.parse(route)),
     entryStepId,
   };

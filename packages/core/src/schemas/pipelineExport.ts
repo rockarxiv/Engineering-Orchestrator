@@ -2,6 +2,7 @@ import { z } from "zod";
 import { namesAdminServer } from "../agent-capabilities.js";
 import { EntryRulesSchema } from "../entryRules.js";
 import { StepBriefSchema } from "../stepBrief.js";
+import { ExportedTeamSchema } from "../declaredTeam.js";
 import { StepTeamSchema } from "../team.js";
 import { ConnectorSetupSchema, connectorSetupProblems } from "./connectors.js";
 import { PipelineStepViewSchema, StepRouteViewSchema } from "../ipc-schemas.js";
@@ -274,8 +275,23 @@ import { SpecShapeSchema } from "./specShape.js";
  * A team's `members` (EO-867, `report_only` or `isolated`) joined format
  * 16 before any build reading it was released, so it did not take a
  * number of its own; a team written without it is report-only.
+ *
+ * **18 (EO-885).** A step's `team` is the **declared team** it runs as
+ * (`ExportedTeamSchema`): its name, its leader and members each as an
+ * agent of a kind with its own instructions, its tool pool by tool name,
+ * its model range, member cap and limits — never an agent id. An import
+ * binds each of its agents to an agent of that kind with the same
+ * instructions where there is one, creates one otherwise, and declares
+ * the team.
+ *
+ * Bumped for version 16's reason: the key is the same and what it holds
+ * changed. A version-17 build reads it as a role-staffed team, fails to
+ * parse it, and would call the document damaged; refused at its format
+ * check instead, it says "Update EO and try again". Reading an older
+ * document is unchanged: its role-staffed team still imports, declared
+ * as a team of the agents its roles bind to.
  */
-export const PIPELINE_EXPORT_VERSION = 17;
+export const PIPELINE_EXPORT_VERSION = 18;
 
 /**
  * An action a role defines, as the document carries it (EO-424).
@@ -759,9 +775,11 @@ export const ExportedStepSchema = PipelineStepViewSchema.omit({ pipelineId: true
   // The brief a person step declares (EO-827), optional for the same
   // reason: written where one is declared and absent everywhere else.
   brief: StepBriefSchema.optional(),
-  // The team an agent step runs as (EO-843), optional for the same
-  // reason: written where one is configured and absent everywhere else.
-  team: StepTeamSchema.optional(),
+  // The team an agent step runs as, optional for the same reason:
+  // written where one is configured and absent everywhere else. The
+  // declared team (EO-885) from format 18; a role-staffed one (EO-843) in
+  // a document written before it, which still imports.
+  team: z.union([ExportedTeamSchema, StepTeamSchema]).optional(),
 });
 /** A route as the document carries it. Its target is a step of any board in the document, or a sentinel. */
 export const ExportedRouteSchema = StepRouteViewSchema.omit({ id: true, pipelineId: true });

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { documentStepTeam } from "./declaredTeam.js";
 import { diffVersions, VersionDiffSchema, type VersionDiff, type VersionRoute, type VersionStep } from "./pipelineVersions.js";
 import { GalleryNeedSchema } from "./schemas/gallery.js";
 import type { IpcChannel } from "./ipc.js";
@@ -200,8 +201,9 @@ export function documentGraph(
       moduleVersion: null,
       // What the decision's details show (EO-827), which a document carries.
       brief: step.brief ?? null,
-      // The team an agent step runs as (EO-843), which a document carries.
-      team: step.team ?? null,
+      // The team an agent step runs as (EO-843), which a document carries,
+      // read as its kinds where it is a declared team (EO-885).
+      team: documentStepTeam(step.team),
       // A document names a team's roles and no declared team (EO-881), so it says nothing about which.
       teamId: null,
       results: step.results.map((result) => ({

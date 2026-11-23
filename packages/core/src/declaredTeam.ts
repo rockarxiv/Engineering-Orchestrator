@@ -441,3 +441,132 @@ export const TeamViewSchema = z.object({
   versions: z.array(TeamVersionViewSchema),
 });
 export type TeamView = z.infer<typeof TeamViewSchema>;
+
+/**
+ * One agent of a team as a document carries it (EO-885): its name, its
+ * kind and its own instructions — never its id, which means nothing on
+ * another installation, and never its runtime or model, which are the
+ * installing machine's to choose. An import binds it to an agent of that
+ * kind with the same instructions where one exists, and creates one
+ * otherwise (`ExportedTeamSchema`).
+ */
+export const ExportedTeamAgentSchema = z.strictObject({
+  /** What the team calls it: the name a leader assigns work to. */
+  name: z.string().trim().min(1).max(TEAM_NAME_MAX),
+  kind: z.string().trim().min(1),
+  /** The agent's own instructions, what it is dispatched with. */
+  instructions: z.string(),
+});
+export type ExportedTeamAgent = z.infer<typeof ExportedTeamAgentSchema>;
+
+export const ExportedIndependentTeamSchema = z.strictObject({
+  coordination: z.literal("independent"),
+  ...sharedDefinition,
+  /** Each member, with the assignment key its reports are attributed to and what the team asks of it. */
+  members: z
+    .array(ExportedTeamAgentSchema.extend({ key: TeamKeySchema, teamInstructions: TeamInstructionsSchema, required: z.boolean().default(true) }))
+    .min(1)
+    .max(TEAM_CEILINGS.participants),
+  outcomes: z.array(TeamOutcomeSchema).min(1),
+  completion: IndependentTeamSchema.shape.completion,
+  limits: IndependentTeamLimitsSchema.prefault({}),
+});
+
+export const ExportedLeaderTeamSchema = z.strictObject({
+  coordination: z.literal("leader"),
+  ...sharedDefinition,
+  /** Who leads, with what the team asks of it (`LeaderTeamDefinition.leader.instructions`). */
+  leader: ExportedTeamAgentSchema.extend({ teamInstructions: TeamInstructionsSchema }),
+  members: z.array(ExportedTeamAgentSchema).min(1).max(TEAM_MEMBER_CAP_CEILING),
+  outcomes: z.array(TeamOutcomeSchema).default([]),
+  limits: LeaderTeamLimitsSchema.prefault({}),
+});
+
+/**
+ * A declared team as a pipeline document carries it (EO-885, export
+ * format 18): everything the team declares — its name, coordination,
+ * member mode, outcomes, completion or limits, tool pool (tool names),
+ * model range and member cap — with its leader and members as agents of a
+ * kind with their instructions (`ExportedTeamAgentSchema`), so it means
+ * the same on any installation.
+ *
+ * Agents are told apart by name: two of a team's agents with one name are
+ * one agent, and must agree on kind and instructions. The leader may be
+ * one of its members, as a team declared from a step's role-staffed team
+ * is. Held to every check a definition is held to (`teamDefinitionProblems`).
+ */
+export const ExportedTeamSchema = z.discriminatedUnion("coordination", [ExportedIndependentTeamSchema, ExportedLeaderTeamSchema]).superRefine((team, context) => {
+  for (const message of exportedTeamProblems(team)) context.addIssue({ code: "custom", message });
+});
+export type ExportedTeam = z.infer<typeof ExportedTeamSchema>;
+
+/** Every agent an exported team names, the leader's first, each once (by name). */
+export function exportedTeamAgents(team: ExportedTeam): ExportedTeamAgent[] {
+  const parts: ExportedTeamAgent[] = team.coordination === "leader" ? [team.leader, ...team.members] : [...team.members];
+  const seen = new Map<string, ExportedTeamAgent>();
+  for (const part of parts) if (!seen.has(exportedAgentKey(part.name))) seen.set(exportedAgentKey(part.name), { name: part.name, kind: part.kind, instructions: part.instructions });
+  return [...seen.values()];
+}
+
+/** How an exported team's agents are told apart: by name, as a person reads it. */
+export function exportedAgentKey(name: string): string {
+  return name.trim().toLowerCase();
+}
+
+/**
+ * An exported team as a definition, with each agent's name standing in
+ * for its id (`agentIdOf`, by default the name itself), so the checks and
+ * shapes written for a definition read it unchanged.
+ */
+export function exportedTeamDefinition(team: ExportedTeam, agentIdOf: (part: ExportedTeamAgent) => string = (part) => part.name.trim()): TeamDefinition {
+  const shared = { name: team.name, memberMode: team.memberMode, toolPool: team.toolPool, modelRange: team.modelRange, memberCap: team.memberCap };
+  if (team.coordination === "leader") {
+    return {
+      coordination: "leader",
+      ...shared,
+      leader: { agentId: agentIdOf(team.leader), instructions: team.leader.teamInstructions },
+      members: team.members.map((member) => ({ agentId: agentIdOf(member) })),
+      outcomes: team.outcomes,
+      limits: team.limits,
+    };
+  }
+  return {
+    coordination: "independent",
+    ...shared,
+    members: team.members.map((member) => ({ key: member.key, agentId: agentIdOf(member), instructions: member.teamInstructions, required: member.required })),
+    outcomes: team.outcomes,
+    completion: team.completion,
+    limits: team.limits,
+  };
+}
+
+/** What is wrong with an exported team on its own terms, as sentences. */
+export function exportedTeamProblems(team: ExportedTeam): string[] {
+  const problems: string[] = [];
+  const parts = team.coordination === "leader" ? [team.leader, ...team.members] : team.members;
+  const byName = new Map<string, ExportedTeamAgent>();
+  for (const part of parts) {
+    const seen = byName.get(exportedAgentKey(part.name));
+    if (seen === undefined) byName.set(exportedAgentKey(part.name), part);
+    else if (seen.kind !== part.kind || seen.instructions !== part.instructions) problems.push(`Two of the team's agents are called "${part.name.trim()}" and differ: one agent has one kind and one set of instructions.`);
+  }
+  problems.push(...teamDefinitionProblems(exportedTeamDefinition(team)));
+  return problems;
+}
+
+/** Whether a document step's team is a declared team (format 18) rather than a role-staffed one (EO-843). */
+export function isExportedTeam(team: ExportedTeam | StepTeam): team is ExportedTeam {
+  return "name" in team;
+}
+
+/**
+ * A document step's team in the role-shaped form a step view carries
+ * (`StepTeam`): each agent read as its kind. A role-staffed team is
+ * already that. Null for a step with no team, or none EO can run.
+ */
+export function documentStepTeam(team: ExportedTeam | StepTeam | null | undefined): StepTeam | null {
+  if (team === null || team === undefined) return null;
+  if (!isExportedTeam(team)) return team;
+  const kinds = new Map(exportedTeamAgents(team).map((part) => [part.name.trim(), part.kind]));
+  return stepTeamOf(exportedTeamDefinition(team), (name) => kinds.get(name));
+}
