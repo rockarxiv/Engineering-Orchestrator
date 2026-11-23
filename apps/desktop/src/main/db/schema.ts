@@ -3280,6 +3280,35 @@ export const sideCalls = sqliteTable(
 );
 
 /**
+ * What the person did with a suggested reply shown in an assistant
+ * chat's composer (EO-895, migration 0182): `shown`, `accepted`, `sent`
+ * (with `edited`) or `dismissed` (with `dismissed_by`).
+ *
+ * Keyed by the run whose turn the suggestion follows — the run EO-810's
+ * `prompt_suggestion` side call and `suggested_reply` run event name — so
+ * what a suggestion cost, what became of it and what the person did with
+ * it read together. One row per action, and the unique index holds each
+ * to once per suggestion. Append-only: a row goes only with its run.
+ */
+export const suggestedReplyUses = sqliteTable(
+  "suggested_reply_uses",
+  {
+    id: text("id").primaryKey(), // uuidv7
+    runId: text("run_id")
+      .notNull()
+      .references((): AnySQLiteColumn => runs.id, { onDelete: "cascade" }),
+    /** `SuggestedReplyAction`. */
+    action: text("action").notNull(),
+    /** On `sent`: whether the accepted text was changed before it was sent. Null on every other action. */
+    edited: integer("edited", { mode: "boolean" }),
+    /** On `dismissed`: `SuggestedReplyDismissal`. Null on every other action. */
+    dismissedBy: text("dismissed_by"),
+    createdAt: integer("created_at").notNull(),
+  },
+  (table) => [uniqueIndex("idx_suggested_reply_uses_action").on(table.runId, table.action)],
+);
+
+/**
  * One memory entry (EO-478, ARCHITECTURE.md, "What an agent is given").
  *
  * Something true of a project, or of one of its workspaces, that the

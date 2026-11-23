@@ -66,6 +66,8 @@ export function Composer({
   clearOnSend = false,
   suggestion = null,
   onDismissSuggestion,
+  onSuggestionShown,
+  onAcceptSuggestion,
 }: ComposerProps & {
   /**
    * A turn is running in the conversation this box sends to. With
@@ -118,8 +120,16 @@ export function Composer({
    * leaves alone, nor once anything is in the box.
    */
   suggestion?: string | null;
-  /** The suggestion was typed over, or taken into the box: it is spent either way. */
+  /**
+   * The suggestion was typed over, or taken into the box: it is spent
+   * either way. Taking it calls `onAcceptSuggestion` instead where there
+   * is one, so the two can be told apart (EO-895).
+   */
   onDismissSuggestion?: () => void;
+  /** The suggestion was drawn in the empty box: called each time it comes into view, for the caller to count once. */
+  onSuggestionShown?: () => void;
+  /** The suggestion was taken into the box with Tab or Right arrow. */
+  onAcceptSuggestion?: () => void;
 }) {
   const [body, setBody] = useState("");
   const [caret, setCaret] = useState(0);
@@ -198,6 +208,11 @@ export function Composer({
   // Only into a box with nothing in it, nothing staged and nothing open
   // over it — and one the person can type into.
   const shownSuggestion = suggestion && body === "" && attachmentState.attachments.length === 0 && suggestions.length === 0 && !busy && !readOnly ? suggestion : null;
+  // Said as it comes into view rather than on every draw; the caller
+  // counts a suggestion's showing once however often this fires.
+  useEffect(() => {
+    if (shownSuggestion) onSuggestionShown?.();
+  }, [shownSuggestion, onSuggestionShown]);
 
   function accept(item: ComposerCompletion) {
     if (!completion) return;
@@ -328,7 +343,8 @@ export function Composer({
       const text = shownSuggestion;
       setBody(text);
       setCaret(text.length);
-      spendSuggestion();
+      if (onAcceptSuggestion) onAcceptSuggestion();
+      else spendSuggestion();
       requestAnimationFrame(() => textarea.current?.setSelectionRange(text.length, text.length));
       return;
     }

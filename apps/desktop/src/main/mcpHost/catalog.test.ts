@@ -295,6 +295,7 @@ const NOT_CATALOGUED: Partial<Record<RecordChannel, string>> = {
   "assist:stop": "a person stopping the turn running in the conversation in front of them",
   "assist:settings": "a person choosing the model and reasoning for their own conversation",
   "assist:prewarm": "a person typing in the window in front of them",
+  "assist:suggestionUsed": "what a person did with a suggested reply in the composer in front of them",
   "assist:withdraw": "a person taking back their own message before the assistant reads it",
   "assist:earlier": "a person scrolling back through their own conversation in the window in front of them",
   "assist:fork": "a person branching their own conversation into a new one in the window in front of them",

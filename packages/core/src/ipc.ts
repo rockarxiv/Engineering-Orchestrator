@@ -112,6 +112,7 @@ import {
   ITEM_COMMENTS_PAGE,
   ItemSectionsSchema,
   ItemSummarySchema,
+  SuggestedReplyUseSchema,
 } from "./ipc-schemas.js";
 import { SpecFieldDraftSchema } from "./itemTypeAuthoring.js";
 import {
@@ -2593,6 +2594,17 @@ export const recordContract = {
    * warm backend is shut down if nobody sends within a minute.
    */
   "assist:prewarm": channel(z.object({ conversationId: z.string() }), z.object({ warming: z.boolean() })),
+  /**
+   * What the person did with a suggested reply shown in the composer
+   * (EO-895): shown, taken into the box, sent from it (edited or not), or
+   * dismissed. Stored beside what EO-810 recorded of the same suggestion
+   * — keyed by the run it follows — and never as a comment, a message or
+   * a run event. Each action is recorded at most once per suggestion, and
+   * only for one EO pushed to this chat (`assist:suggestion`):
+   * `recorded: false` is an action already recorded, out of order, or for
+   * a suggestion EO did not make.
+   */
+  "assist:suggestionUsed": channel(SuggestedReplyUseSchema, z.object({ recorded: z.boolean() })),
   /**
    * Takes back a message that is waiting for the next turn — Claude
    * Desktop's Cancel on a queued message. The message stays in the thread

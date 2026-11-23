@@ -355,10 +355,15 @@ export function ChatConversation({
               placeholder={thinking ? "Add to the running turn…" : narrow ? "Ask about it, or change it…" : "Ask, plan work, or change a pipeline…"}
               statusText={thinking ? `Esc to stop · ${SENT_INTO_THE_TURN}` : (active?.name ?? "Attach, paste or drop files")}
               suggestion={suggestion}
-              onDismissSuggestion={suggested.clear}
+              onDismissSuggestion={() => suggested.clear("typed_over")}
+              onSuggestionShown={suggested.shown}
+              onAcceptSuggestion={suggested.accept}
               onSubmit={async (body, _mentions, attachmentIds) => {
+                // What the person did with a suggestion they took (EO-895):
+                // this message came from it, edited or not.
+                suggested.sent(body);
                 // Sending anything is past the reply a suggestion was for.
-                suggested.clear();
+                suggested.clear("typed_over");
                 // Sending is wanting to see the answer: back to the end.
                 jumpToLatest();
                 await room.send(body, attachmentIds);
