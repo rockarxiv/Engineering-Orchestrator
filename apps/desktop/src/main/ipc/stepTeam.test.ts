@@ -130,12 +130,12 @@ describe("a step's team, as part of the graph (EO-843)", () => {
   });
 
   it("refuses a team this project cannot staff, or on a step no agent does, and writes nothing", () => {
-    // A member whose kind no enabled agent of this project has.
+    // A member that cannot run as itself (EO-882): never stood in for by another agent of its kind.
     const implementer = listAgents(handle.db).find((agent) => agent.role === "implementer")!;
     updateAgent(handle.db, implementer.id, { enabled: false });
     const refused = save("team");
     expect(refused.saved).toBe(false);
-    expect(refused.problems).toContainEqual(expect.objectContaining({ severity: "error", stateId: check.id, message: 'The team on "Check" needs a "implementer" agent, and this project has none enabled.' }));
+    expect(refused.problems).toContainEqual(expect.objectContaining({ severity: "error", stateId: check.id, message: `"Check" runs as the team "Security pass": Its member "${implementer.name}" is disabled, so it cannot run.` }));
     expect(teamOf()).toBeNull();
     // Nothing written: neither the step's team nor the team.
     expect(getTeam(handle.db, TEAM_ID)).toBeUndefined();
@@ -377,8 +377,8 @@ describe("a step's team through pipeline_save (EO-843)", () => {
     expect(read.finalAction.problem).toMatch(/also requires "findings"\. Use a leader-led team/);
     expect(read.staffing.find((staff) => staff.role === "implementer")?.problem).toContain("uses the person's own setup");
     expect(read.problems).toEqual([
-      expect.stringContaining('could be staffed by a "implementer" agent EO cannot hold to report-only'),
       expect.stringMatching(/also requires "findings"/),
+      expect.stringContaining(`Its member "${implementer.name}" cannot be held to report-only`),
     ]);
     // The same sentences the validator refuses a publish with.
     const problems = (refused.data as IpcResponse<"pipeline:validate">).problems.map((problem) => problem.message);

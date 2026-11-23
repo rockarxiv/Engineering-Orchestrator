@@ -241,8 +241,9 @@ export function staffingAgents<A extends StaffingAgent>(agents: readonly A[], ro
 
 /**
  * The roles some agent could be dispatched for on this item, by
- * `staffingAgents`' rule. A team still staffs its members by role
- * (EO-843) until declared teams name their agents (EO-880).
+ * `staffingAgents`' rule: what a team that names no agents yet — one
+ * carried inline, as an imported document carries it — is bound by. A
+ * declared team runs each of its agents as itself (EO-882).
  */
 export function rolesStaffedFor(agents: readonly StaffingAgent[], item: Pick<Item, "previewAt" | "projectId">): string[] {
   const roles = [...new Set(agents.map((agent) => agent.role))];
