@@ -60,7 +60,7 @@ import type { AdminMcpDispatch } from "../agentAttachments/adminDelivery.js";
 import { deliverableSkills, writeWorktreeSkills, worktreeSkillsPromptSection, type WorktreeSkillDelivery } from "../agentAttachments/worktreeSkills.js";
 import { codexSkillLoaded, skillsOffered, withoutEvents } from "./skillUsage.js";
 import { openedFork } from "./threadFork.js";
-import { judgeSuggestion, lastRequestMostlyUncached, PROMPT_SUGGESTION_PROMPT, SUGGESTION_MIN_COMPLETED_TURNS, SUGGESTION_NEAR_LIMIT_PERCENT, SUGGESTION_TIMEOUT_MS } from "./promptSuggestion.js";
+import { isSuggestionAnswer, judgeSuggestionAnswer, lastRequestMostlyUncached, PROMPT_SUGGESTION_PROMPT, SUGGESTION_MIN_COMPLETED_TURNS, SUGGESTION_NEAR_LIMIT_PERCENT, SUGGESTION_TIMEOUT_MS } from "./promptSuggestion.js";
 import { agentMcpStdioConfig, eoMcpStdioConfig, type EoMcpServiceConfig } from "../mcp/serviceConfig.js";
 import { codexModelPrice, codexTurnCostCents, codexTurnCostMicrocents } from "./codexPricing.js";
 import { personCodexHome } from "./codexHome.js";
@@ -3118,9 +3118,8 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
     // A tool call tried, or nothing said: no suggestion, and no failure either.
     if (sample.text === null) return { outcome: { kind: "no_suggestion" } };
     // The sample is sent no answer schema, but a thread whose turns had
-    // one may still answer in it (`PROMPT_SUGGESTION_PROMPT`).
-    const answer = resumeOpts.outputSchema !== undefined && sample.text.trimStart().startsWith("{") ? suggestionIn(sample.text, true) : sample.text;
-    return { outcome: judged(answer) };
+    // one may still answer in it (`suggestionIn`).
+    return { outcome: judged(suggestionIn(sample.text, resumeOpts.outputSchema !== undefined)) };
   }
 
   /**
@@ -3362,26 +3361,30 @@ function suggestionSkipped(
   return null;
 }
 
-/** An answer the filters kept, or the rule that dropped it (`judgeSuggestion`). */
+/** An answer the filters kept, an abstention, or the rule that dropped it (`judgeSuggestionAnswer`, EO-894). */
 function judged(answer: string): SuggestionOutcome {
-  const verdict = judgeSuggestion(answer);
-  return verdict.kept ? { kind: "emitted", text: verdict.text, answer } : { kind: "dropped", answer, rule: verdict.rule };
+  const verdict = judgeSuggestionAnswer(answer);
+  if (verdict.kind === "kept") return { kind: "emitted", text: verdict.text, answer };
+  if (verdict.kind === "abstained") return { kind: "abstained", answer };
+  return { kind: "dropped", answer, rule: verdict.rule };
 }
 
 /** What a suggestion's `thread/sample` is for, as the app-server records it (EO-893). */
 export const SUGGESTION_THREAD_SOURCE = "prompt_suggestion";
 
 /**
- * What a suggestion's fork answered, as the text its filters judge
- * (EO-839). On a turn sent with an answer schema the fork answers in
- * that schema, with the suggestion in the answer's message
- * (`PROMPT_SUGGESTION_PROMPT`), read as the chat reads any answer's
- * message (`liveMessageOf`): a structured answer without one is "". On a
- * turn sent without one, the fork's plain text, as it was.
+ * What a suggestion's sample or fork answered, as the text its filters
+ * judge: the JSON `PROMPT_SUGGESTION_PROMPT` asks for (EO-894), as
+ * written. On a turn sent with an answer schema the fork must answer in
+ * that schema instead (EO-839), and a sample of its thread may, so an
+ * answer that is not the JSON is read for the answer's message, as the
+ * chat reads any answer's message (`liveMessageOf`) — where the JSON is
+ * looked for again. A structured answer without a message is "", which
+ * is not the JSON either.
  */
 function suggestionIn(data: unknown, structured: boolean): string {
   const text = typeof data === "string" ? data : JSON.stringify(data);
-  return structured ? liveMessageOf([text]) : text;
+  return structured && !isSuggestionAnswer(text) ? liveMessageOf([text]) : text;
 }
 
 /**
