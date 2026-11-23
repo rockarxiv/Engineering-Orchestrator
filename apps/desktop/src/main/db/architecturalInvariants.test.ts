@@ -120,6 +120,11 @@ describe("architectural invariant: items.stepId has exactly one writer", () => {
  * `job_watch_checks` is the sixth (EO-800): every check a watch job ran,
  * one row each. No file is exempt; a row goes only with its job, by the
  * schema's cascade.
+ *
+ * `suggested_reply_uses` (EO-895): what a person did with a suggested
+ * reply, one row per action, each recorded once. An action overwritten
+ * is a use nobody can count. No file is exempt; a row goes only with its
+ * run, by the schema's cascade.
  */
 const APPEND_ONLY: Readonly<Record<string, readonly string[]>> = {
   runEvents: [join("db", "repos", "itemsRepo.ts")],
@@ -131,6 +136,7 @@ const APPEND_ONLY: Readonly<Record<string, readonly string[]>> = {
   moduleChangeProposals: [],
   // Every version of a declared team (EO-881): a restore is a new version, and rows go only with their team.
   teamVersions: [],
+  suggestedReplyUses: [],
 };
 
 /**

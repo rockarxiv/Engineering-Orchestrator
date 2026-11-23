@@ -139,8 +139,9 @@ milliseconds), and \`where\` narrows the list or the groups further. EO's
 own short model calls, such as memory upkeep, are there too, as the action
 \`side_call:<purpose>\`, so what they cost adds up with the runs; a side call
 made by forking a thread (a learning review, a suggested reply) also says
-how the fork was made, \`forkMode\` \`prediction\` or \`plain\`, and for a plain one
-\`forkFallbackReason\`. Sum a list's
+how the fork was made, \`forkMode\` \`prediction\` or \`plain\` — or \`sample\`, a
+suggested reply made with one \`thread/sample\` and no fork's turn — and
+\`forkFallbackReason\`, why the preferred way was not used. Sum a list's
 \`costMicrocents\`, not its \`costCents\`: a side call costs a fraction of a
 cent. This is the way to ask how long review took or what a week cost —
 there is no need to read EO's database.

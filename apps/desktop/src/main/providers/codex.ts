@@ -16,7 +16,9 @@ import { dropWarmCodexThread,
   type ThreadEvent,
   type ThreadItem,
   type Usage,
+  type CodexSample,
   TOO_FEW_COMPLETED_TURNS,
+  TURNS_NOT_COUNTED,
 } from "./codexClient.js";
 import {
   ADMIN_MCP_SERVER_NAME,
@@ -47,6 +49,7 @@ import {
   type ServerStatusEvent,
   type Skill,
   type SuggestionOutcome,
+  type SuggestionSpend,
   type UsageEvent,
   type ForkCopy,
   liveMessageOf,
@@ -58,7 +61,7 @@ import type { AdminMcpDispatch } from "../agentAttachments/adminDelivery.js";
 import { deliverableSkills, writeWorktreeSkills, worktreeSkillsPromptSection, type WorktreeSkillDelivery } from "../agentAttachments/worktreeSkills.js";
 import { codexSkillLoaded, skillsOffered, withoutEvents } from "./skillUsage.js";
 import { openedFork } from "./threadFork.js";
-import { judgeSuggestion, lastRequestMostlyUncached, PROMPT_SUGGESTION_PROMPT, SUGGESTION_MIN_COMPLETED_TURNS, SUGGESTION_NEAR_LIMIT_PERCENT, SUGGESTION_TIMEOUT_MS } from "./promptSuggestion.js";
+import { isSuggestionAnswer, judgeSuggestionAnswer, lastRequestMostlyUncached, PROMPT_SUGGESTION_PROMPT, SUGGESTION_MIN_COMPLETED_TURNS, SUGGESTION_NEAR_LIMIT_PERCENT, SUGGESTION_TIMEOUT_MS } from "./promptSuggestion.js";
 import { agentMcpStdioConfig, eoMcpStdioConfig, type EoMcpServiceConfig } from "../mcp/serviceConfig.js";
 import { codexModelPrice, codexTurnCostCents, codexTurnCostMicrocents } from "./codexPricing.js";
 import { personCodexHome } from "./codexHome.js";
@@ -336,7 +339,7 @@ export interface CodexProviderOptions {
     skillSlugs?: readonly string[],
     /** The item the turn works on, whose Codex home it runs in (EO-829). Handed only on a turn on one. */
     itemId?: string,
-  ) => Pick<CodexClient, "startThread" | "resumeThread"> & Partial<Pick<CodexClient, "prewarm" | "forkThread">>;
+  ) => Pick<CodexClient, "startThread" | "resumeThread"> & Partial<Pick<CodexClient, "prewarm" | "forkThread" | "sampleThread">>;
   /**
    * Seam for tests — the client a side call runs on (EO-477), built from
    * `codexSideCallClientOptions` in production. Its own seam because a
@@ -600,8 +603,9 @@ export function codexErrorRefusal(info: unknown): QuotaEvent | null {
  * Whether a failed turn's classification says its sign-in is no good
  * (EO-797).
  *
- * Read off the pinned app-server (0.167.1,
- * `__fixtures__/codex-0.167.1-auth-errors.json`), which says it two ways:
+ * Read off the pinned app-server (0.171.0,
+ * `__fixtures__/codex-0.171.0-auth-errors.json`, every case as 0.167.1
+ * said it), which says it two ways:
  * a ChatGPT sign-in whose tokens cannot be refreshed — while
  * `codex login status` still says "Logged in using ChatGPT" — is
  * `codexErrorInfo: "unauthorized"`; a stored API key the API refuses, and
@@ -623,8 +627,8 @@ export function codexSignInFailure(info: unknown): boolean {
  * The app-server does not name its windows; it says how long each one
  * is. `primary` was 300 minutes and `secondary` 10080 on a Plus account
  * at 0.161.0, and still were at 0.163.0 (EO-453), 0.165.0 (EO-599) and
- * 0.166.0 (EO-644, `account/rateLimits/read`) and 0.167.1 (EO-774, the
- * same), so these read `5_hour`
+ * 0.166.0 (EO-644, `account/rateLimits/read`), 0.167.1 (EO-774, the
+ * same) and 0.171.0 (EO-889, the same), so these read `5_hour`
  * and `7_day` — Claude's `five_hour`
  * and `seven_day` in other words, and phrased the same way on the item
  * ("its 5-hour usage window"). A length nobody has seen still names
@@ -1502,11 +1506,17 @@ function codexSpawnEnvironment(
  * person's own setup, the person's own memories would reach it.
  *
  * Read from the pinned CLI (0.165.0, EO-599, again at 0.166.0 for
- * EO-644 and at 0.167.1 for EO-774), where `codex features list` reports
- * `memories` as stable and **off** by default, as 0.163.0 did. At 0.167.1
- * a real turn in an empty home, under the three switches below over a
- * `config.toml` that turns memories on, again wrote neither store, and
- * one with `-c features.memories=true` wrote the v2 store.
+ * EO-644, at 0.167.1 for EO-774 and at 0.171.0 for EO-889), where
+ * `codex features list` reports `memories` as stable and **off** by
+ * default, as 0.163.0 did. At 0.167.1 a real turn in an empty home,
+ * under the three switches below over a `config.toml` that turns
+ * memories on, again wrote neither store, and one with
+ * `-c features.memories=true` wrote the v2 store. At 0.171.0 the same,
+ * beside 0.167.1, with the turn answered by a local scripted model
+ * rather than a real one: neither store under the switches, the v2 store
+ * with the feature on — both pins alike. (Both also make an empty
+ * `memories_1.sqlite`, with no jobs and no outputs, either way: a
+ * database opened at start-up, not a store written.)
  * 0.165.0 "enabled memory v2 by default for fresh profiles": a home whose
  * memories are on now gets a second store (`memories_v2/`,
  * `memories_v2_1.sqlite`). Measured with one real turn in an empty home
@@ -1784,7 +1794,11 @@ function codexOptionsWith(
   //     exactly as 0.165.0 did, beside it, and has neither string. And
   //     at EO-774's: 0.167.1 accepted the stdio and HTTP keys EO writes
   //     and refused `always_load`, `alwaysLoad` and `defer_loading` as
-  //     unknown, and has neither string either.
+  //     unknown, and has neither string either. And at EO-889's: 0.171.0,
+  //     beside 0.167.1, started a thread under `--strict-config` with a
+  //     turn's whole configuration — a stdio and an HTTP server with
+  //     every key EO writes, the hook and its trust, the memory switches
+  //     — and with a side call's, and refused an invented feature name.
   //   - It does not defer them in the first place. Across 338 Codex runs
   //     in `run_events` there is not one `ToolSearch` call, and EO's own
   //     tools were called 130 times directly — `ticket_detail` 88,
@@ -2615,7 +2629,10 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
             return;
           }
         }
-        if (event.type === "turn.completed" && facts && event.lastRequest) facts.lastRequest = event.lastRequest;
+        if (event.type === "turn.completed" && facts) {
+          if (event.lastRequest) facts.lastRequest = event.lastRequest;
+          if (event.turnId) facts.turnId = event.turnId;
+        }
         const { mapped: all, recognised } = mapThreadEvent(event);
         if (!recognised) options.onUnmappedEvent?.(event);
         const mapped = streamDeltas ? all : all.filter((agentEvent) => agentEvent.type !== "output_delta");
@@ -2705,6 +2722,22 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
     return { slugs: restored.delivered.map((skill) => skill.slug), section: worktreeSkillsPromptSection(restored.delivered) };
   }
 
+  /** What a thread is resumed with: the turn's options, as `threadOptionsFrom` reads them. */
+  function resumedThreadOptions(resumeOpts: AgentProviderResumeOptions | undefined): CodexThreadOptions {
+    // Through `turnThreadOptions`, so a report-only participant's resumed
+    // turn is locked down exactly as its first one is (EO-843).
+    return turnThreadOptions(
+      {
+        ...(resumeOpts?.cwd ? { cwd: resumeOpts.cwd } : {}),
+        ...(resumeOpts?.model ? { model: resumeOpts.model } : {}),
+        ...(resumeOpts?.reasoningEffort ? { reasoningEffort: resumeOpts.reasoningEffort } : {}),
+        ...(resumeOpts?.showReasoning === undefined ? {} : { showReasoning: resumeOpts.showReasoning }),
+        ...(resumeOpts?.processScope ? { processScope: resumeOpts.processScope } : {}),
+      },
+      options.config,
+    );
+  }
+
   async function* resumedTurn(
     threadId: string,
     message: string,
@@ -2766,16 +2799,7 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
       const openThread = fork ? client.forkThread?.bind(client) : client.resumeThread.bind(client);
       if (!openThread) throw new Error("This Codex client cannot fork a thread.");
       const thread = openThread(threadId, {
-        ...turnThreadOptions(
-          {
-            ...(resumeOpts?.cwd ? { cwd: resumeOpts.cwd } : {}),
-            ...(resumeOpts?.model ? { model: resumeOpts.model } : {}),
-            ...(resumeOpts?.reasoningEffort ? { reasoningEffort: resumeOpts.reasoningEffort } : {}),
-            ...(resumeOpts?.showReasoning === undefined ? {} : { showReasoning: resumeOpts.showReasoning }),
-            ...(resumeOpts?.processScope ? { processScope: resumeOpts.processScope } : {}),
-          },
-          options.config,
-        ),
+        ...resumedThreadOptions(resumeOpts),
         ...(forkAfterCompletedTurns === undefined ? {} : { forkAfterCompletedTurns }),
       });
       const prompt = withAttachmentNote(withSkillsSection(message, skills.section), resumeOpts?.attachments);
@@ -2885,7 +2909,7 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
       const facts: TurnFacts = {};
       const stream = refusingCalls(
         resumeOpts,
-        reachableTurn((reach) => suggestingAfter(lostThreadTranslated(threadId, message, resumeOpts, reach, false, skills, facts), threadId, resumeOpts, facts, stop)),
+        reachableTurn((reach) => suggestingAfter(lostThreadTranslated(threadId, message, resumeOpts, reach, false, skills, facts), threadId, resumeOpts, facts, stop, skills.slugs)),
       );
       // Cancelling the turn cancels the suggestion after it too, which by
       // then has no turn of the thread's own left to interrupt (EO-808).
@@ -3059,13 +3083,16 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
    * The turn, and after it a suggested next message where one was asked
    * for and is worth making (EO-808).
    *
-   * Codex makes none of its own, so this makes it the way the learning
-   * review reads a run (EO-716, EO-732): on a fork of the thread just
-   * finished, in prediction mode where the app-server allows it, so the
-   * fork's request reads the thread from the prompt cache. The fork is
-   * sent EO's prompt with every call refused, and its answer is cleaned
-   * up and filtered (`promptSuggestion.ts`) before it is passed on as a
-   * `prompt_suggestion` event — the one Claude's adapter passes on.
+   * Codex makes none of its own, so this makes it: with one
+   * `thread/sample` on the thread just finished (EO-893), a single model
+   * response on a hidden copy that reads the thread from the prompt
+   * cache and runs no tool. Where the app-server refuses or does not
+   * know it, the way the learning review reads a run (EO-716, EO-732):
+   * on a fork of the thread, in prediction mode where the app-server
+   * allows it, sent EO's prompt with every call refused. Either answer
+   * is cleaned up and filtered (`promptSuggestion.ts`) before it is
+   * passed on as a `prompt_suggestion` event — the one Claude's adapter
+   * passes on.
    *
    * After the turn's `result`, never before: the turn is over there, and
    * its process ended, whether or not the caller reads on. One that stops
@@ -3092,6 +3119,8 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
     resumeOpts: AgentProviderResumeOptions | undefined,
     facts: TurnFacts,
     stop: AbortController,
+    /** The skills the turn was given, by slug: what a sample's process is launched with, as the turn's was. */
+    skillSlugs: readonly string[] = [],
   ): AsyncIterable<AgentEvent> {
     const asked = resumeOpts?.suggestNextMessage === true && options.reportOnly !== true;
     let answered = false;
@@ -3144,7 +3173,7 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
         stop.abort();
       }, options.suggestionTimeoutMs ?? SUGGESTION_TIMEOUT_MS);
       try {
-        const outcome = await suggestionOn(threadId, resumeOpts, stop.signal);
+        const outcome = await suggestionOn(threadId, resumeOpts, facts.turnId, skillSlugs, stop.signal);
         // An answer that came once the suggestion was stopped is too late to show.
         if (outcome.kind === "stopped" || (outcome.kind === "emitted" && stop.signal.aborted)) {
           told({ kind: "stopped", by: timedOut ? "time_limit" : "stopped" });
@@ -3168,12 +3197,96 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
   }
 
   /**
-   * What one fork of the thread made of the suggestion (EO-810): not
-   * opened, failed, stopped, or answered — and then dropped by the
-   * filters or kept. Never a throw. What the fork spent is reported
-   * (`onSuggestionSpend`) however it ended, where its turn said.
+   * What became of the suggestion (EO-810), made with one `thread/sample`
+   * on the thread (EO-893) — or, where the app-server refuses or does not
+   * know it, on a fork of the thread as before, which records why
+   * (`forkedSuggestion`). Never a throw.
    */
-  async function suggestionOn(threadId: string, resumeOpts: AgentProviderResumeOptions, signal: AbortSignal): Promise<SuggestionOutcome> {
+  async function suggestionOn(threadId: string, resumeOpts: AgentProviderResumeOptions, turnId: string | undefined, skillSlugs: readonly string[], signal: AbortSignal): Promise<SuggestionOutcome> {
+    const sampled = turnId === undefined ? { fallback: "The turn's id was not reported, so the thread could not be sampled after it." } : await sampledSuggestion(threadId, resumeOpts, turnId, skillSlugs, signal);
+    if ("outcome" in sampled) return sampled.outcome;
+    if (signal.aborted) return { kind: "stopped", by: "stopped" };
+    return forkedSuggestion(threadId, resumeOpts, signal, sampled.fallback);
+  }
+
+  /**
+   * The suggestion from one `thread/sample` of the thread (EO-893): one
+   * model response on a hidden copy, after `turnId` and only if that is
+   * still the thread's latest turn, with MCP off and no tool ever run —
+   * a response that tried one has no text, and is no suggestion. Its
+   * process is launched as the turn's was, so the thread it loads, and
+   * the request on the copy, read as the turn's did from the prompt
+   * cache.
+   *
+   * Counted first, as a fork is (`SUGGESTION_MIN_COMPLETED_TURNS`): a
+   * thread too short, or whose turns cannot be counted, is not sampled
+   * and not forked either. Anything else refused is a `fallback`, in the
+   * app-server's words. What the response spent is reported however
+   * the suggestion then fares, with `{ mode: "sample" }`.
+   */
+  async function sampledSuggestion(
+    threadId: string,
+    resumeOpts: AgentProviderResumeOptions,
+    turnId: string,
+    skillSlugs: readonly string[],
+    signal: AbortSignal,
+  ): Promise<{ outcome: SuggestionOutcome } | { fallback: string }> {
+    const startedAt = Date.now();
+    const client = clientFor(
+      resumeOpts.repositoryMcp,
+      null,
+      resumeOpts.attachFrom,
+      resumeOpts.memoryScopes,
+      resumeOpts.environmentVariables,
+      resumeOpts.writeBridge,
+      resumeOpts.withheldEnvironmentVariables,
+      resumeOpts.cwd,
+      skillSlugs,
+      resumeOpts.itemId,
+    );
+    if (!client.sampleThread) return { fallback: "This Codex client cannot sample a thread." };
+    let sample: CodexSample;
+    try {
+      sample = await client.sampleThread(threadId, resumedThreadOptions(resumeOpts), {
+        expectedTurnId: turnId,
+        prompt: PROMPT_SUGGESTION_PROMPT,
+        threadSource: SUGGESTION_THREAD_SOURCE,
+        afterCompletedTurns: SUGGESTION_MIN_COMPLETED_TURNS,
+        signal,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (signal.aborted || (error instanceof Error && error.name === "AbortError")) return { outcome: { kind: "stopped", by: "stopped" } };
+      if (message.includes(TOO_FEW_COMPLETED_TURNS)) return { outcome: { kind: "skipped", rule: "too_few_turns" } };
+      if (message.includes(TURNS_NOT_COUNTED)) return { outcome: { kind: "fork_not_opened", message } };
+      return { fallback: message };
+    }
+    if (sample.usage) {
+      const usage = usageEvent(
+        { input_tokens: sample.usage.inputTokens, cached_input_tokens: sample.usage.cachedInputTokens, cache_write_input_tokens: 0, output_tokens: sample.usage.outputTokens ?? 0, reasoning_output_tokens: 0 },
+        sample.model ?? undefined,
+      );
+      // The sample says nothing of what it wrote to the cache.
+      delete usage.cacheWriteTokens;
+      reportSuggestionSpend(resumeOpts, { usage, fork: { mode: "sample" }, startedAt, durationMs: Math.max(0, Date.now() - startedAt), completed: !signal.aborted });
+    }
+    if (signal.aborted) return { outcome: { kind: "stopped", by: "stopped" } };
+    // A tool call tried, or nothing said: no suggestion, and no failure either.
+    if (sample.text === null) return { outcome: { kind: "no_suggestion" } };
+    // The sample is sent no answer schema, but a thread whose turns had
+    // one may still answer in it (`suggestionIn`).
+    return { outcome: judged(suggestionIn(sample.text, resumeOpts.outputSchema !== undefined)) };
+  }
+
+  /**
+   * What one fork of the thread made of the suggestion (EO-810), where it
+   * could not be sampled (EO-893): not opened, failed, stopped, or
+   * answered — and then dropped by the filters or kept. Never a throw.
+   * What the fork spent is reported (`onSuggestionSpend`) however it
+   * ended, where its turn said, with how the thread was copied and why
+   * it was not sampled (`sampleRefused`, the app-server's words).
+   */
+  async function forkedSuggestion(threadId: string, resumeOpts: AgentProviderResumeOptions, signal: AbortSignal, sampleRefused: string): Promise<SuggestionOutcome> {
     const startedAt = Date.now();
     let spent: UsageEvent | undefined;
     /** How the thread was copied (EO-811): kept, so a plain fork's fallback and its reason are recorded with what it spent. */
@@ -3197,24 +3310,30 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
       failure = error instanceof Error ? error.message : String(error);
     } finally {
       if (spent) {
-        try {
-          resumeOpts.onSuggestionSpend?.({
-            usage: spent,
-            ...(fork ? { fork } : {}),
-            startedAt,
-            durationMs: Math.max(0, Date.now() - startedAt),
-            completed: failure === null && !signal.aborted && answer !== null,
-          });
-        } catch (error) {
-          console.warn(`[codex] what a suggested reply spent could not be reported: ${error instanceof Error ? error.message : String(error)}`);
-        }
+        // Why the thread was not sampled, before why the fork was plain where it was.
+        const copied = fork ? { fork: { mode: fork.mode, fallbackReason: fork.fallbackReason ? `${sampleRefused}; ${fork.fallbackReason}` : sampleRefused } } : {};
+        reportSuggestionSpend(resumeOpts, {
+          usage: spent,
+          ...copied,
+          startedAt,
+          durationMs: Math.max(0, Date.now() - startedAt),
+          completed: failure === null && !signal.aborted && answer !== null,
+        });
       }
     }
     if (signal.aborted) return { kind: "stopped", by: "stopped" };
     if (failure !== null) return { kind: "fork_failed", message: failure };
     if (answer === null) return { kind: "fork_failed", message: "The fork's turn ended without an answer." };
-    const verdict = judgeSuggestion(answer);
-    return verdict.kept ? { kind: "emitted", text: verdict.text, answer } : { kind: "dropped", answer, rule: verdict.rule };
+    return judged(answer);
+  }
+
+  /** A suggestion's spend, told to the turn's caller (`onSuggestionSpend`). Never throws. */
+  function reportSuggestionSpend(resumeOpts: AgentProviderResumeOptions, spend: SuggestionSpend): void {
+    try {
+      resumeOpts.onSuggestionSpend?.(spend);
+    } catch (error) {
+      console.warn(`[codex] what a suggested reply spent could not be reported: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   async function* startedTurn(opts: AgentProviderStartOptions, skillsSection: string, reach: (turn: CodexTurn) => void, skillSlugs: readonly string[]): AsyncIterable<AgentEvent> {
@@ -3357,9 +3476,11 @@ function withInterceptions(mapped: AgentEvent[], pending: SearchInterceptionEven
  * `interrupt` does nothing and `steer` answers false, which is the
  * contract's "the turn had already ended".
  */
-/** What a turn says of itself that is read after it (EO-808): its last model response's own usage. */
+/** What a turn says of itself that is read after it (EO-808): its last model response's own usage, and its id (EO-893). */
 interface TurnFacts {
   lastRequest?: Usage;
+  /** The app-server's id for the turn, which a suggestion's `thread/sample` names as the one it follows. */
+  turnId?: string;
 }
 
 /** Tokens a request spent outside the prompt cache: its uncached input, and its output. */
@@ -3396,17 +3517,30 @@ function suggestionSkipped(
   return null;
 }
 
+/** An answer the filters kept, an abstention, or the rule that dropped it (`judgeSuggestionAnswer`, EO-894). */
+function judged(answer: string): SuggestionOutcome {
+  const verdict = judgeSuggestionAnswer(answer);
+  if (verdict.kind === "kept") return { kind: "emitted", text: verdict.text, answer };
+  if (verdict.kind === "abstained") return { kind: "abstained", answer };
+  return { kind: "dropped", answer, rule: verdict.rule };
+}
+
+/** What a suggestion's `thread/sample` is for, as the app-server records it (EO-893). */
+export const SUGGESTION_THREAD_SOURCE = "prompt_suggestion";
+
 /**
- * What a suggestion's fork answered, as the text its filters judge
- * (EO-839). On a turn sent with an answer schema the fork answers in
- * that schema, with the suggestion in the answer's message
- * (`PROMPT_SUGGESTION_PROMPT`), read as the chat reads any answer's
- * message (`liveMessageOf`): a structured answer without one is "". On a
- * turn sent without one, the fork's plain text, as it was.
+ * What a suggestion's sample or fork answered, as the text its filters
+ * judge: the JSON `PROMPT_SUGGESTION_PROMPT` asks for (EO-894), as
+ * written. On a turn sent with an answer schema the fork must answer in
+ * that schema instead (EO-839), and a sample of its thread may, so an
+ * answer that is not the JSON is read for the answer's message, as the
+ * chat reads any answer's message (`liveMessageOf`) — where the JSON is
+ * looked for again. A structured answer without a message is "", which
+ * is not the JSON either.
  */
 function suggestionIn(data: unknown, structured: boolean): string {
   const text = typeof data === "string" ? data : JSON.stringify(data);
-  return structured ? liveMessageOf([text]) : text;
+  return structured && !isSuggestionAnswer(text) ? liveMessageOf([text]) : text;
 }
 
 /**

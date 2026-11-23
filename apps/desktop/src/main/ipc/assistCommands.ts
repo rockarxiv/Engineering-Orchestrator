@@ -36,6 +36,7 @@ import {
   getModule,
   getPipeline,
   getProject,
+  getRun,
   listActiveRuns,
   listAgents,
   listCommentsForItem,
@@ -49,6 +50,7 @@ import {
   listStepsForPipeline,
   openUpdateConflictForChat,
   publishedSectionRow,
+  recordSuggestedReplyUse,
   renameModule,
   type PipelineUpdateConflict,
   defaultModuleVersion,
@@ -776,6 +778,33 @@ export async function prewarmAssist(db: Db, engine: EngineHandle | undefined, in
   const agent = assistAgent(db);
   if (!engine?.prewarmConversation || !conversation || conversation.stepId !== ASSIST_STEP || conversation.archivedAt !== null || !agent) return { warming: false };
   return { warming: await engine.prewarmConversation(conversation.id, agent.id as Uuid) };
+}
+
+/**
+ * Records what the person did with a suggested reply shown in the
+ * composer (`assist:suggestionUsed`, EO-895), beside what EO-810 recorded
+ * of the same suggestion: keyed by the run it follows.
+ *
+ * Only for a suggestion EO passed on for this chat after that run, which
+ * the engine remembers (`suggestedReplyMade`): the renderer's word that
+ * one was shown is not taken for a run that made none. Each action is
+ * recorded once and in order (`recordSuggestedReplyUse`). Nothing here is
+ * a comment, a message or a run event.
+ */
+export function recordSuggestedReplyUseCommand(db: Db, engine: EngineHandle | undefined, input: IpcPayload<"assist:suggestionUsed">): IpcResponse<"assist:suggestionUsed"> {
+  if (!engine?.suggestedReplyMade?.(input.conversationId, input.runId)) return { recorded: false };
+  const run = getRun(db, input.runId as Uuid);
+  if (!run || run.itemId !== input.conversationId) return { recorded: false };
+  const runId = run.id as Uuid;
+  switch (input.action) {
+    case "shown":
+    case "accepted":
+      return { recorded: recordSuggestedReplyUse(db, { runId, action: input.action }) };
+    case "sent":
+      return { recorded: recordSuggestedReplyUse(db, { runId, action: "sent", edited: input.edited }) };
+    case "dismissed":
+      return { recorded: recordSuggestedReplyUse(db, { runId, action: "dismissed", by: input.by }) };
+  }
 }
 
 /**

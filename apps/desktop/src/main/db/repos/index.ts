@@ -714,3 +714,11 @@ export {
   type TrialStop,
 } from "./trialLoopsRepo.js";
 export { arrivalRefusal, itemEntryRefusal, moduleRulesApply } from "./entryRulesRepo.js";
+export {
+  listSuggestedReplyUses,
+  readSuggestedReplyRecord,
+  recordSuggestedReplyUse,
+  type SuggestedReplyRecord,
+  type SuggestedReplyUseInput,
+  type SuggestedReplyUseRow,
+} from "./suggestedReplyUsesRepo.js";

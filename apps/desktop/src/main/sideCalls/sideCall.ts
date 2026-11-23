@@ -18,6 +18,7 @@ import type { Db } from "../db/client.js";
 import { getRun, sumCostCentsForItem, sumCostCentsSince } from "../db/repos/index.js";
 import { recordSideCall } from "../db/repos/sideCallsRepo.js";
 import { createUsageTally } from "../supervisor/usageTally.js";
+import { planUsage } from "../planUsage/store.js";
 import type { SideCallSlots } from "./slots.js";
 
 /**
@@ -464,6 +465,8 @@ export function createSideCaller(options: SideCallerOptions): SideCaller {
             usage.record(event);
             if (event.model) reportedModel = event.model;
           } else if (event.type === "thread_started" && event.model && reportedModel === null) reportedModel = event.model;
+          // A plan reading is the account's, whatever became of the call (EO-896).
+          if (event.type === "quota") planUsage.record(event);
           if (controller.signal.aborted) continue;
           // Winding down: what it spent is read until it ends, and nothing
           // else it says — its answer is past the cap whatever it is.

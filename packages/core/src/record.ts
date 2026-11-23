@@ -655,7 +655,7 @@ export const RecordSideCallCommandSchema = z.object({
    */
   cacheReadTokens: z.number().int().nonnegative().nullable().optional(),
   cacheWriteTokens: z.number().int().nonnegative().nullable().optional(),
-  forkMode: z.enum(["prediction", "plain"]).nullable().optional(),
+  forkMode: z.enum(["sample", "prediction", "plain"]).nullable().optional(),
   forkFallbackReason: z.string().nullable().optional(),
 });
 export type RecordSideCallCommand = z.infer<typeof RecordSideCallCommandSchema>;

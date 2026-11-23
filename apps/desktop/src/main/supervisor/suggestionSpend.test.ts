@@ -84,6 +84,25 @@ describe("what a suggested next message spent (EO-808)", () => {
     ]);
   });
 
+  it("stores a sample as one, and a fork made because the thread could not be sampled with the reason (EO-893)", async () => {
+    const refused = "thread/sample failed: method not found (code -32601)";
+    const supervisor = createRunSupervisor({
+      db: handle.db,
+      limits: LIMITS,
+      provider: suggestingProvider([
+        { usage: { ...usage, cacheReadTokens: 11_300 }, fork: { mode: "sample" }, startedAt: 1_000, durationMs: 250, completed: true },
+        { usage: { ...usage, cacheReadTokens: 300 }, fork: { mode: "prediction", fallbackReason: refused }, startedAt: 2_000, durationMs: 250, completed: true },
+      ]),
+    });
+    await sendToAssist(handle.db, undefined, { page: pageDescriptorFor("/chat"), conversationId: null, body: "What is waiting?", attachmentIds: [], interrupt: false });
+    await supervisor.runOnce();
+
+    expect(listSideCalls(handle.db).filter((call) => call.purpose === "prompt_suggestion")).toEqual([
+      expect.objectContaining({ startedAt: 1_000, cacheReadTokens: 11_300, forkMode: "sample", forkFallbackReason: null }),
+      expect.objectContaining({ startedAt: 2_000, cacheReadTokens: 300, forkMode: "prediction", forkFallbackReason: refused }),
+    ]);
+  });
+
   it("records nothing for a turn whose backend reported none", async () => {
     const supervisor = createRunSupervisor({ db: handle.db, limits: LIMITS, provider: suggestingProvider([]) });
     await sendToAssist(handle.db, undefined, { page: pageDescriptorFor("/chat"), conversationId: null, body: "What is waiting?", attachmentIds: [], interrupt: false });

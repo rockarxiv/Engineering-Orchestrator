@@ -181,6 +181,8 @@ export interface EngineHandle {
   finishingRunCount: () => number;
   /** Starts the backend for the turn a person is typing in a conversation; see `RunSupervisor.prewarmConversation`. */
   prewarmConversation?: (itemId: Uuid, agentId: Uuid) => Promise<boolean>;
+  /** Whether EO passed on a suggested reply for this chat after this run; see `RunSupervisor.suggestedReplyMade` (EO-895). */
+  suggestedReplyMade?: (conversationId: string, runId: string) => boolean;
   /** `promptly` brings the tick forward for a person's own send in a conversation. */
   notifyStateChange: (options?: { promptly?: boolean }) => void;
   /**

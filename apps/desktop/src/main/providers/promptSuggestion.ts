@@ -1,9 +1,10 @@
-import type { SuggestionFilterRule } from "@eo/core";
+import { SuggestionAnswerSchema, type SuggestionFilterRule } from "@eo/core";
 
 /**
  * A suggested next message, made by EO itself where the backend makes
- * none (EO-808): the prompt sent on a fork of the turn just finished, and
- * the clean-up and filters its answer goes through before anybody sees it.
+ * none (EO-808): the prompt sent on a copy of the turn just finished, and
+ * the JSON (EO-894), clean-up and filters its answer goes through before
+ * anybody sees it.
  *
  * Kept together and apart from any adapter so both can be read, and
  * tested, in one place. Only the Codex adapter uses them today: Claude's
@@ -13,7 +14,12 @@ import type { SuggestionFilterRule } from "@eo/core";
  * but is Anthropic's, all rights reserved, and EO is Apache-2.0.
  */
 
-/** What the fork is sent: predict the person's next message, or say nothing. */
+/**
+ * What the copy is sent: predict the person's next message, or say
+ * nothing, answered as `SuggestionAnswerSchema`'s JSON with null for
+ * nothing (EO-894). Kept under 4,000 bytes: the 0.167.1 CLI refuses a
+ * longer `thread/sample` prompt.
+ */
 export const PROMPT_SUGGESTION_PROMPT = `[EO: suggest the person's next message]
 
 This is not a message from the person, and nothing you write here is shown to them as yours. Do not call any tool: every call on this turn is refused.
@@ -29,9 +35,11 @@ Write it the way the person writes, in 2 to 12 words and one sentence at most. N
 
 Answers that fit: "file it on Delivery", "publish the draft", "approve the proposal", "run the tests", "yes".
 
-Reply with the message alone: no quotes, no label, no explanation. To give nothing, reply with nothing.
+Return only JSON matching this schema, with nothing before or after it:
 
-When your answer has a structure, put the suggested message in the answer's message field and leave every other field empty or null. To give nothing there, leave the message empty.`;
+{ "suggestion": string | null }
+
+Put the message in "suggestion" as the person would type it: no quotes around it, no label, no explanation. When there is nothing to suggest, "suggestion" is null.`;
 
 /**
  * How many tokens the turn's last request may have spent uncached, input
@@ -121,6 +129,39 @@ export function cleanSuggestion(answer: string): string | null {
  * never reached the composer can be told apart from one never made.
  */
 export type SuggestionVerdict = { kept: true; text: string } | { kept: false; rule: SuggestionFilterRule };
+
+/**
+ * What the filters made of an answer to `PROMPT_SUGGESTION_PROMPT`
+ * (EO-894): its JSON's `suggestion`, kept or dropped as `judgeSuggestion`
+ * judges it; an abstention, where `suggestion` is null or empty; or
+ * dropped as `malformed_output` where the answer is not that JSON.
+ * Never a throw.
+ */
+export type SuggestionAnswerVerdict = { kind: "kept"; text: string } | { kind: "abstained" } | { kind: "dropped"; rule: SuggestionFilterRule };
+
+export function judgeSuggestionAnswer(answer: string): SuggestionAnswerVerdict {
+  const parsed = suggestionAnswerOf(answer);
+  if (parsed === null) return { kind: "dropped", rule: "malformed_output" };
+  if (parsed.suggestion === null || parsed.suggestion.trim() === "") return { kind: "abstained" };
+  const verdict = judgeSuggestion(parsed.suggestion);
+  return verdict.kept ? { kind: "kept", text: verdict.text } : { kind: "dropped", rule: verdict.rule };
+}
+
+/** Whether an answer is the JSON `PROMPT_SUGGESTION_PROMPT` asks for (`SuggestionAnswerSchema`). */
+export function isSuggestionAnswer(answer: string): boolean {
+  return suggestionAnswerOf(answer) !== null;
+}
+
+function suggestionAnswerOf(answer: string): { suggestion: string | null } | null {
+  let json: unknown;
+  try {
+    json = JSON.parse(answer);
+  } catch {
+    return null;
+  }
+  const parsed = SuggestionAnswerSchema.safeParse(json);
+  return parsed.success ? parsed.data : null;
+}
 
 /** `cleanSuggestion`, saying which rule dropped an answer rather than only that one did. */
 export function judgeSuggestion(answer: string): SuggestionVerdict {

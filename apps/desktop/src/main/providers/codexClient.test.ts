@@ -130,8 +130,9 @@ describe("a Codex turn over a stubbed app-server", () => {
 
     // The field's shape is 0.161.0's `ThreadStartParams`, read from
     // `codex app-server generate-ts`: an optional string (EO-385), and
-    // 0.163.0's (EO-453), 0.165.0's (EO-599), 0.166.0's (EO-644) and
-    // 0.167.1's (EO-774) are the same file byte for byte.
+    // 0.163.0's (EO-453), 0.165.0's (EO-599), 0.166.0's (EO-644),
+    // 0.167.1's (EO-774) and 0.171.0's (EO-889) are the same file byte
+    // for byte.
     expect(fake.paramsOf("thread/start")).toEqual({ cwd, baseInstructions: "You are the implementer." });
     expect(fake.paramsOf("turn/start")).toEqual({ threadId: "thr-fake", input: [{ type: "text", text: "EO-1: do the thing", text_elements: [] }] });
   });
@@ -154,6 +155,8 @@ describe("a Codex turn over a stubbed app-server", () => {
         usage: { input_tokens: 120, cached_input_tokens: 20, cache_write_input_tokens: 0, output_tokens: 7, reasoning_output_tokens: 0 },
         model: "gpt-6.1-sol",
         lastRequest: { input_tokens: 120, cached_input_tokens: 20, cache_write_input_tokens: 0, output_tokens: 7, reasoning_output_tokens: 0 },
+        // And the turn's own id (EO-893), which a suggestion's `thread/sample` names.
+        turnId: "turn-1",
       },
     ]);
   });
@@ -212,6 +215,7 @@ describe("a Codex turn over a stubbed app-server", () => {
       model: "gpt-6.1-sol",
       // The reading's own response, said whole (EO-808): `last` is the total here.
       lastRequest: { input_tokens: 1_300, cached_input_tokens: 600, cache_write_input_tokens: 0, output_tokens: 70, reasoning_output_tokens: 0 },
+      turnId: "turn-1",
     });
   });
 
@@ -240,6 +244,7 @@ describe("a Codex turn over a stubbed app-server", () => {
       model: "gpt-6.1-sol",
       // The last response's own, not the turn's two (EO-808).
       lastRequest: { input_tokens: 300, cached_input_tokens: 200, cache_write_input_tokens: 0, output_tokens: 20, reasoning_output_tokens: 0 },
+      turnId: "turn-1",
     });
   });
 
@@ -467,6 +472,54 @@ describe("a Codex turn over a stubbed app-server", () => {
     expect(configArguments(undefined, { webSearchEnabled: true })).toEqual(["-c", 'web_search="live"']);
     expect(configArguments(undefined, { webSearchEnabled: false })).toEqual(["-c", 'web_search="disabled"']);
     expect(configArguments(undefined, {})).toEqual([]);
+  });
+});
+
+/**
+ * One model response on a copy of the thread, without a turn (EO-893):
+ * `thread/sample`, in a process of its own.
+ */
+describe("a Codex thread sampled once", () => {
+  const request = { expectedTurnId: "turn-7", prompt: "suggest", threadSource: "prompt_suggestion" };
+
+  it("loads the thread, then asks one `thread/sample` with MCP off, and answers with its text, model and tokens", async () => {
+    const fake = fakeAppServer({ sample: { text: "run the tests", inputTokens: 12_400, cachedInputTokens: 11_300, outputTokens: 9 } });
+    const sample = await client(fake).sampleThread("thr-chat", { workingDirectory: repository() }, request);
+    expect(sample).toEqual({ text: "run the tests", model: "gpt-6.1-sol", usage: { inputTokens: 12_400, cachedInputTokens: 11_300, outputTokens: 9 } });
+    expect(fake.sent.filter((message) => message.id !== undefined).map((message) => message.method)).toEqual(["initialize", "thread/resume", "thread/sample"]);
+    expect(fake.paramsOf("initialize")).toMatchObject({ capabilities: { experimentalApi: true } });
+    expect(fake.paramsOf("thread/sample")).toEqual({ threadId: "thr-chat", expectedTurnId: "turn-7", prompt: "suggest", threadSource: "prompt_suggestion", disableMcp: true });
+    const pid = fake.launches[0]?.pid as number;
+    pids.push(pid);
+    expect(await goneWithin(pid, 2_000)).toBe(true);
+  });
+
+  it("answers a null text as null", async () => {
+    const fake = fakeAppServer({ sample: { text: null } });
+    expect((await client(fake).sampleThread("thr-chat", { workingDirectory: repository() }, request)).text).toBeNull();
+  });
+
+  it("counts the thread's completed turns first where asked, and samples none too short", async () => {
+    const fake = fakeAppServer({ replies: { "thread/turns/list": { result: { data: [{ id: "turn-1", items: [], itemsView: "notLoaded", status: "completed", error: null }], nextCursor: null, backwardsCursor: null } } } });
+    await expect(client(fake).sampleThread("thr-chat", { workingDirectory: repository() }, { ...request, afterCompletedTurns: 2 })).rejects.toThrow(/too few completed turns/);
+    expect(fake.paramsOf("thread/sample")).toBeUndefined();
+  });
+
+  it("throws a refusal in the app-server's words", async () => {
+    const fake = fakeAppServer({ replies: { "thread/sample": { error: { code: -32601, message: "method not found" } } } });
+    await expect(client(fake).sampleThread("thr-chat", { workingDirectory: repository() }, request)).rejects.toThrow(/method not found/);
+  });
+
+  it("ends its process at a cancel and throws the abort", async () => {
+    const fake = fakeAppServer({ sample: { delayMs: 10_000 } });
+    const controller = new AbortController();
+    const sampling = client(fake).sampleThread("thr-chat", { workingDirectory: repository() }, { ...request, signal: controller.signal });
+    await vi.waitFor(() => expect(fake.paramsOf("thread/sample")).toBeDefined());
+    controller.abort();
+    await expect(sampling).rejects.toMatchObject({ name: "AbortError" });
+    const pid = fake.launches[0]?.pid as number;
+    pids.push(pid);
+    expect(await goneWithin(pid, 2_000)).toBe(true);
   });
 });
 
@@ -836,6 +889,11 @@ describe("what a Codex turn is told and does nothing with", () => {
   it("recognises 0.167.0's `thread/section/changed` without passing anything on (EO-774)", () => {
     const translator = new TurnTranslator("thr-1", "turn-1");
     expect(translator.translate({ method: "thread/section/changed", params: { threadId: "thr-1", sectionId: null } } as never)).toEqual({ events: [], recognised: true });
+  });
+
+  it("recognises 0.171.0's `thread/search/partial` without passing anything on (EO-889)", () => {
+    const translator = new TurnTranslator("thr-1", "turn-1");
+    expect(translator.translate({ method: "thread/search/partial", params: { requestId: 7, data: [] } } as never)).toEqual({ events: [], recognised: true });
   });
 });
 

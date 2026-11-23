@@ -14,12 +14,14 @@
 export interface RuntimeChoice {
   id: string;
   label: string;
+  /** The backend's own name, where the runtime's is longer than a glance needs — the rail's Usage block (EO-896). */
+  shortLabel?: string;
 }
 
 /** Runtimes EO knows how to fetch and keep up to date. Mirrors `RUNTIMES`. */
 export const MANAGED_RUNTIMES: readonly RuntimeChoice[] = [
   { id: "codex", label: "Codex" },
-  { id: "claude", label: "Claude Code" },
+  { id: "claude", label: "Claude Code", shortLabel: "Claude" },
 ];
 
 /**

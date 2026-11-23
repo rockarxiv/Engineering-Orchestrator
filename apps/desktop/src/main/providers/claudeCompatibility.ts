@@ -1,6 +1,6 @@
 /**
  * What EO hands the Claude CLI so its agents behave as they did on the
- * pins before this one (EO-599, EO-644, EO-774).
+ * pins before this one (EO-599, EO-644, EO-774, EO-889).
  *
  * claude@0.3.312 (Claude Code 2.1.312) changed defaults that claude@0.3.302
  * (2.1.302) decided differently, each in a configuration EO's agents can be
@@ -9,9 +9,13 @@
  * 2.1.312 read them, and added one more change EO's own default setup
  * meets: a built-in plugin that refuses an unattended agent some calls
  * holding the person's account email (`privacyPluginHeldOff`).
- * claude@0.3.322 (2.1.322), the pin now, reads all five switches as
- * 2.1.318 did and narrows that plugin's check without removing it, so
- * every hold below stands as it was (EO-774).
+ * claude@0.3.322 (2.1.322) read all five switches as 2.1.318 did and
+ * narrowed that plugin's check without removing it, so every hold stood
+ * as it was (EO-774). claude@0.3.329 (2.1.329), the pin now, reads the
+ * five as 2.1.322 did, widens the plugin's check again (2.1.325), and
+ * changes one more default an EO agent can meet behind a person's
+ * gateway or cloud platform: the context window it assumes for a model
+ * name it does not recognise (`unknownModelWindowHeld`, EO-889).
  * A pin bump is not a decision to adopt them, so each
  * that can be kept exactly is held here to the old answer, in exactly the
  * case the old CLI gave it and nowhere else, and never over a choice the
@@ -350,6 +354,57 @@ export function modelCatalogHeldOff(env: ClaudeEnvironment): boolean {
   return !set(env["CLAUDE_CODE_MODEL_CATALOG"]) && isCloudPlatform(claudeProvider(env));
 }
 
+/** What `DISABLE_COMPACT` must say for the CLI to read it as on: its `isEnvTruthy`, read off the binary. */
+function truthy(value: string | undefined): boolean {
+  return value !== undefined && ["1", "true", "yes", "on"].includes(value.trim().toLowerCase());
+}
+
+/** The window 2.1.322 assumed for a model it does not recognise, in tokens. */
+export const CLAUDE_UNKNOWN_MODEL_WINDOW = 200_000;
+
+/**
+ * A 200K context window for a model name the CLI does not recognise, as
+ * before 2.1.323 ("Changed the context window assumed for a model ID that
+ * Claude Code doesn't recognize from 200K to 1M … `CLAUDE_CODE_DISABLE_1M_CONTEXT=1`
+ * to keep 200K"; "sessions on other vendors' models with a smaller window:
+ * once full, they can fail every turn until `/clear`").
+ *
+ * The window is what auto-compaction keeps a session inside, so behind a
+ * gateway or on a cloud platform whose deployment the CLI cannot name, a
+ * model with a 200K window would run on to 1M and fail every turn once
+ * full. Read off both binaries: for a name its registry does not know,
+ * 2.1.322 answered `CLAUDE_CODE_MAX_CONTEXT_TOKENS` when set and 200K
+ * otherwise (`pT`), and 2.1.329 answers 200K only when the name matches a
+ * known model in some spelling, then `CLAUDE_CODE_MAX_CONTEXT_TOKENS`,
+ * then 1M unless `CLAUDE_CODE_DISABLE_1M_CONTEXT` is on (`Qk`). Measured
+ * through the SDK against a capture server, by `modelUsage[…].contextWindow`
+ * on the result: `my-custom-deployment` and `claude-gateway-latest` had
+ * 200K at 2.1.322, 1M at 2.1.329, and 200K at 2.1.329 with this variable
+ * at 200000; `claude-sonnet-4-6` (200K), `claude-sonnet-4-6[1m]` and
+ * `opus` (1M) were the same at both pins with it set and without.
+ *
+ * So the variable, not `CLAUDE_CODE_DISABLE_1M_CONTEXT`, and on every
+ * model rather than only a name EO can tell is custom: the CLI reads it
+ * only for a name it does not recognise, which is exactly where the
+ * answer changed — a gateway's `claude-` alias included, and a subagent
+ * on a known model left alone. The other switch would also take 1M away
+ * from a known model's `[1m]`.
+ *
+ * Not held where `DISABLE_COMPACT` is on: there 2.1.329 (as 2.1.322)
+ * lets this variable set the window of every model, known ones too —
+ * measured, `claude-sonnet-4-6[1m]` drops to 200K — so holding it would
+ * take more away than the bump changed. That one case is left to 2.1.329
+ * whole, as the person's switch has it: an unrecognised model's window is
+ * 1M there, with compaction, which is what the window paces, off.
+ *
+ * Also what the CLI's "doesn't recognize the model" notice is silenced by
+ * (2.1.329's `M`); in stream-json that is a `system`/`notification`
+ * message, which EO does not read.
+ */
+export function unknownModelWindowHeld(env: ClaudeEnvironment): boolean {
+  return !set(env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"]) && !truthy(env["DISABLE_COMPACT"]);
+}
+
 /** The built-in plugin 2.1.317 added, by the id `enabledPlugins` names it with. */
 export const CLAUDE_PRIVACY_PLUGIN = "cc-plugin-privacy@builtin";
 
@@ -367,8 +422,13 @@ export const CLAUDE_PRIVACY_PLUGIN = "cc-plugin-privacy@builtin";
  * `echo curl --user-agent <the account's email>` ran with EO's flag and
  * was refused with the plugin on ("denied by plugin cc-plugin-privacy"),
  * while 2.1.312, which had no such plugin, ran it. So the hold is still
- * what keeps the old answer, and it stays (EO-774). What is written next
- * is the plugin as 2.1.317 shipped it.
+ * what keeps the old answer, and it stays (EO-774). 2.1.325 widened it
+ * again ("Improved the account email check: it now also refuses your
+ * email as a client's identity in scripts a command runs, file writes,
+ * web fetches and MCP calls"); 2.1.329 still registers it by the same id
+ * and still reads the same switch, so the hold stands, and
+ * `privacyPlugin.live.test.ts` re-measured it at 2.1.329 (EO-889). What
+ * is written next is the plugin as 2.1.317 shipped it.
  *
  * It is a built-in plugin, `cc-plugin-privacy`, on by default: a
  * `tool.check` hook on Bash, PowerShell, Monitor, Tmux, WebFetch,
@@ -438,5 +498,6 @@ export function claudeCompatibilityHolds(options: {
   hold("CLAUDE_CODE_SIMPLE_SYSTEM_PROMPT", "0", fullPromptHeld(effective, model));
   hold("CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK", "1", refusalFallbackHeldOff(effective, model));
   hold("CLAUDE_CODE_MODEL_CATALOG", "off", modelCatalogHeldOff(effective));
+  hold("CLAUDE_CODE_MAX_CONTEXT_TOKENS", String(CLAUDE_UNKNOWN_MODEL_WINDOW), unknownModelWindowHeld(effective));
   return { env, settings: privacyPluginHeldOff(layers) ? { enabledPlugins: { [CLAUDE_PRIVACY_PLUGIN]: false } } : {} };
 }

@@ -46,6 +46,20 @@ import { AppServerConnection, type AppServerExit, AppServerExitedError, type App
 // `commandExecution` with its `aggregatedOutput`, `agentMessage`,
 // `RateLimitWindow`, `thread/tokenUsage/updated` — are unchanged.
 //
+// 0.171.0's set beside 0.167.1's (EO-889): one notification added,
+// `thread/search/partial`, a batch of results for a `thread/search/stream`
+// request — EO sends none, and it is listed with the ignored ones below.
+// No server request was added or removed, and `ServerRequest`, `Turn`,
+// `ThreadStartParams`, `ThreadResumeParams`, `TurnStartParams` and
+// `RateLimitWindow` are the same files byte for byte. What moved is what
+// EO does not send or read: four client requests EO does not make
+// (`account/securitySetup/read`, `modelProvider/list`,
+// `modelProvider/default/set`, `modelProvider/config/write`); an
+// `agentMessage` item gains `moderation`; an MCP server status gains an
+// `environmentId`; `model/list` may name a `modelProvider`; and
+// `CodexErrorInfo` gains `inferenceHookDenied` and `bioPolicy` (EO reads
+// only `usageLimitExceeded` and a sign-in failure out of it).
+//
 // 0.167.1's set beside 0.166.0's (EO-774): one notification added,
 // `thread/section/changed`, broadcast after a client moves a thread into
 // or out of a sidebar section — EO moves none, and it is listed with the
@@ -167,8 +181,11 @@ export type ThreadEvent =
    * model response used on its own (the reading's `last`), when a reading
    * said. Whether that request was mostly uncached is what decides that a
    * suggested next message is not worth a fork.
+   *
+   * `turnId` is EO's addition too (EO-893): the app-server's id for the
+   * turn, which a suggestion's `thread/sample` names as the turn it follows.
    */
-  | { type: "turn.completed"; usage: Usage; model?: string; lastRequest?: Usage }
+  | { type: "turn.completed"; usage: Usage; model?: string; lastRequest?: Usage; turnId?: string }
   /**
    * `usage` is EO's addition (EO-373): what the turn spent before it
    * ended badly — interrupted, most of all — when the app-server reported
@@ -355,6 +372,28 @@ export const TOO_FEW_COMPLETED_TURNS = "Not forked: the thread holds too few com
  * thread too short to fork.
  */
 export const TURNS_NOT_COUNTED = "Not forked: the thread's completed turns could not be counted";
+
+/** What `CodexClient.sampleThread` asks (EO-893). */
+export interface CodexSampleRequest {
+  /** The thread's latest turn, finished: the one the sample follows. */
+  expectedTurnId: string;
+  prompt: string;
+  /** What the sample is for, as the app-server records it. */
+  threadSource: string;
+  /** Sampled only on a thread holding at least this many completed turns (`CodexThreadOptions.forkAfterCompletedTurns`'s rule and refusals). */
+  afterCompletedTurns?: number;
+  signal?: AbortSignal;
+}
+
+/** What `thread/sample` answered (EO-893). */
+export interface CodexSample {
+  /** The response's text; null where the model tried a tool call or said nothing. */
+  text: string | null;
+  /** The model the thread runs on, as `thread/resume` named it; null where it did not. */
+  model: string | null;
+  /** What the one response used — input, the cached share of it, and output where said; null where the app-server said nothing. */
+  usage: { inputTokens: number; cachedInputTokens: number; outputTokens: number | null } | null;
+}
 
 export const CODEX_NOT_INSTALLED = "The Codex CLI is not installed. Install it from the Agents screen, or set the agent's executable path.";
 
@@ -632,15 +671,7 @@ export class CodexClient {
     // prediction-mode fork is part of (EO-732). Nothing else does, so no
     // other turn hears experimental fields it was not written for.
     await opened.connection.initialize(forking ? { experimentalApi: true } : null);
-    const cwd = threadOptions.workingDirectory ?? process.cwd();
-    const threadParams = {
-      ...(threadOptions.model ? { model: threadOptions.model } : {}),
-      cwd,
-      ...(threadOptions.sandboxMode ? { sandbox: threadOptions.sandboxMode } : {}),
-      ...(threadOptions.approvalPolicy ? { approvalPolicy: threadOptions.approvalPolicy } : {}),
-      ...(threadOptions.baseInstructions ? { baseInstructions: threadOptions.baseInstructions } : {}),
-      ...(threadOptions.ephemeral ? { ephemeral: true } : {}),
-    };
+    const threadParams = threadParamsOf(threadOptions);
     if (forking) return this.openFork(opened, resumeId, threadParams, ask, threadOptions.forkAfterCompletedTurns);
     const answer = (resumeId === null
       ? await ask("thread/start", threadParams, opened.connection)
@@ -728,6 +759,81 @@ export class CodexClient {
     if (!threadId) throw new Error("thread/fork returned no thread id");
     const model = typeof answer?.model === "string" && answer.model ? answer.model : null;
     return { pipe: opened, threadId, model, fork: { mode: "plain", fallbackReason } };
+  }
+
+  /**
+   * One model response on a copy of the thread, without a turn
+   * (EO-893): the app-server's experimental `thread/sample`, which copies
+   * the loaded thread's history into a hidden ephemeral fork, asks the
+   * model once with `request.prompt`, and answers with its text — null
+   * where the model tried a tool call, which is never run, or said
+   * nothing. The copy is the app-server's to clean up, and the thread
+   * itself is not written to.
+   *
+   * Its own process, as a turn's is: spawned, given the experimental
+   * API, the thread loaded with `thread/resume` (the sample reads a
+   * loaded thread), its completed turns counted where asked
+   * (`afterCompletedTurns`, as `forkAfterCompletedTurns` counts a fork's,
+   * with the same two refusals), and then the one request — with MCP off
+   * and `expectedTurnId` the turn it follows, so a thread that has moved
+   * on since is refused rather than sampled. Ended however it ends; a
+   * cancel ends it at once and throws the abort.
+   *
+   * Throws where anything is refused — the method an app-server does
+   * not know included — in the app-server's words, as any request does;
+   * the caller decides whether to fall back to a fork.
+   */
+  async sampleThread(threadId: string, threadOptions: CodexThreadOptions, request: CodexSampleRequest): Promise<CodexSample> {
+    const signal = request.signal;
+    if (signal?.aborted) throw abortError(signal);
+    if (!this.options.executablePath) throw new Error(CODEX_NOT_INSTALLED);
+    const pipe = new Pipe(this.connect(threadOptions));
+    const connection = pipe.connection;
+    let aborted = false;
+    const onAbort = () => {
+      aborted = true;
+      connection.close();
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+    const ask = async (method: string, params: unknown): Promise<unknown> => {
+      try {
+        return await connection.request(method, params);
+      } catch (error) {
+        if (aborted && signal) throw abortError(signal);
+        throw error;
+      }
+    };
+    let answered = false;
+    try {
+      await connection.initialize({ experimentalApi: true });
+      const resumed = (await ask("thread/resume", { threadId, ...threadParamsOf(threadOptions), excludeTurns: true })) as { model?: unknown } | undefined;
+      const model = typeof resumed?.model === "string" && resumed.model ? resumed.model : null;
+      if (request.afterCompletedTurns !== undefined) await this.holdsCompletedTurns(pipe, threadId, request.afterCompletedTurns, (method, params) => ask(method, params));
+      const sampled = await ask("thread/sample", {
+        threadId,
+        expectedTurnId: request.expectedTurnId,
+        prompt: request.prompt,
+        threadSource: request.threadSource,
+        disableMcp: true,
+      });
+      answered = true;
+      const answer = sampled as { text?: unknown; inputTokens?: unknown; cachedInputTokens?: unknown; outputTokens?: unknown } | undefined;
+      const count = (value: unknown): number | null => (typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null);
+      const inputTokens = count(answer?.inputTokens);
+      return {
+        text: typeof answer?.text === "string" ? answer.text : null,
+        model,
+        usage: inputTokens === null ? null : { inputTokens, cachedInputTokens: count(answer?.cachedInputTokens) ?? 0, outputTokens: count(answer?.outputTokens) },
+      };
+    } catch (error) {
+      if (aborted && signal) throw abortError(signal);
+      throw error;
+    } finally {
+      signal?.removeEventListener("abort", onAbort);
+      pipe.release();
+      if (answered) await connection.shutdown(this.options.shutdownGraceMs ?? SHUTDOWN_GRACE_MS, this.options.killGraceMs);
+      else await connection.terminate(this.options.killGraceMs);
+    }
   }
 
   /**
@@ -957,6 +1063,18 @@ export class CodexClient {
       else await connection.terminate(this.options.killGraceMs);
     }
   }
+}
+
+/** What a thread is opened, resumed or forked with on the app-server, from its options. */
+function threadParamsOf(threadOptions: CodexThreadOptions): Record<string, unknown> {
+  return {
+    ...(threadOptions.model ? { model: threadOptions.model } : {}),
+    cwd: threadOptions.workingDirectory ?? process.cwd(),
+    ...(threadOptions.sandboxMode ? { sandbox: threadOptions.sandboxMode } : {}),
+    ...(threadOptions.approvalPolicy ? { approvalPolicy: threadOptions.approvalPolicy } : {}),
+    ...(threadOptions.baseInstructions ? { baseInstructions: threadOptions.baseInstructions } : {}),
+    ...(threadOptions.ephemeral ? { ephemeral: true } : {}),
+  };
 }
 
 /**
@@ -1213,6 +1331,9 @@ const IGNORED_NOTIFICATIONS = new Set([
   // New at 0.167.0 (EO-774): a thread moved into or out of a sidebar
   // section, which only a client moving it causes.
   "thread/section/changed",
+  // New at 0.171.0 (EO-889): the partial results of a thread search,
+  // which only a client that asked for one is sent.
+  "thread/search/partial",
   "project/changed",
   "skills/changed",
   "remoteControl/status/changed",
@@ -1551,7 +1672,7 @@ export class TurnTranslator {
       });
     }
     if (turn.status === "completed") {
-      events.push({ type: "turn.completed", usage: this.turnUsage(), ...this.modelNamed(), ...(this.lastRequest ? { lastRequest: this.lastRequest } : {}) });
+      events.push({ type: "turn.completed", usage: this.turnUsage(), ...this.modelNamed(), ...(this.lastRequest ? { lastRequest: this.lastRequest } : {}), turnId: this.turnId });
     } else {
       const message = typeof turn.error?.message === "string" && turn.error.message ? turn.error.message : `Codex turn ${String(turn.status ?? "ended")}`;
       const info = errorInfo((turn.error as { codexErrorInfo?: unknown } | null | undefined)?.codexErrorInfo);
@@ -1654,7 +1775,7 @@ function windowOf(value: unknown): RateLimitWindow | null {
  * account — a null window "does not clear a previously observed value" —
  * so a snapshot with neither window says nothing.
  */
-function rateLimitSnapshotOf(value: unknown): RateLimitSnapshot | null {
+export function rateLimitSnapshotOf(value: unknown): RateLimitSnapshot | null {
   if (!value || typeof value !== "object") return null;
   const snapshot = value as { limitId?: unknown; limitName?: unknown; primary?: unknown; secondary?: unknown };
   const primary = windowOf(snapshot.primary);

@@ -9,6 +9,8 @@ import { createRun, sumCostCentsForItem, sumCostCentsSince, updateRun } from "..
 import { listSideCalls } from "../db/repos/sideCallsRepo.js";
 import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import { createFakeProvider, type FakeProviderScript } from "../providers/fake.js";
+import { onPush } from "../ipc/push.js";
+import { planUsage } from "../planUsage/store.js";
 import { createSideCaller, SIDE_CALL_ABORT_GRACE_MS, SIDE_CALL_GAVE_WAY, type SideCallerOptions, type SideCallRequest } from "./sideCall.js";
 import { createSideCallSlots, type SideCallSlots } from "./slots.js";
 
@@ -230,6 +232,26 @@ describe("sideCall", () => {
       },
     };
     expect(await caller(provider).sideCall(request())).toMatchObject({ ok: false, reason: "quota" });
+  });
+
+  it("keeps a side call's plan reading as the rail's latest for that backend and window (EO-896)", async () => {
+    const rang: unknown[] = [];
+    const stop = onPush("planUsage:changed", (payload) => rang.push(payload));
+    try {
+      const provider: AgentProvider = {
+        ...fake({}),
+        async *sideCall() {
+          yield { type: "quota", provider: "codex", window: "5_hour", utilization: 37, status: "allowed" } satisfies AgentEvent;
+          yield { type: "result", data: { picked: ["a"] } } satisfies AgentEvent;
+        },
+      };
+      expect(await caller(provider).sideCall(request({ backend: "codex" }))).toEqual({ ok: true, value: { picked: ["a"] } });
+      const codex = planUsage.view().backends.find((backend) => backend.provider === "codex");
+      expect(codex?.windows).toEqual([expect.objectContaining({ window: "5_hour", utilization: 37, status: "allowed" })]);
+      expect(rang).toEqual([{}]);
+    } finally {
+      stop();
+    }
   });
 
   it("fails with `budget` when the backend stopped it at the cap it was handed", async () => {

@@ -171,6 +171,7 @@ import {
   answerAssistQuestions,
   forkAssistConversation,
   prewarmAssist,
+  recordSuggestedReplyUseCommand,
   readEarlierAssist,
   withdrawAssistMessage,
   stopAssistTurn,
@@ -246,6 +247,7 @@ import { getItemBrief } from "./itemBrief.js";
 import type { JiraContext } from "../packs/developer/jira/connection.js";
 import { capabilitiesFor, fetchClaudeModels } from "../providers/capabilities.js";
 import { fetchCodexModels } from "../providers/codexModels.js";
+import { planUsage } from "../planUsage/store.js";
 import { chooseSmallModel, describeSmallModels, smallModelSources } from "../providers/smallModels.js";
 import { connectJira, disconnectJira, jiraFields, listJiraConnectionsCommand, removeJiraConnection, saveJiraConnection, jiraOutboxView, jiraStatuses, saveJiraConfig, saveJiraStatusMap, saveJiraTransitionFields, testJira } from "./jiraCommands.js";
 import { importJiraIssue, previewJiraIssue, searchJira } from "./jiraImportCommands.js";
@@ -1296,6 +1298,7 @@ export function registerAllHandlers(db: Db, engine: EngineHandle | undefined, re
   );
   // The backend started while a person types, so the turn starts sooner.
   registerHandler("assist:prewarm", (payload) => prewarmAssist(db, engine, payload), opts);
+  registerHandler("assist:suggestionUsed", (payload) => recordSuggestedReplyUseCommand(db, engine, payload), opts);
   // Older pages of a chat, read as the person scrolls back.
   registerHandler("assist:earlier", (payload) => readEarlierAssist(db, payload), opts);
   // A queued message taken back before its turn starts. Pushed, so every
@@ -1776,6 +1779,9 @@ export function registerAllHandlers(db: Db, engine: EngineHandle | undefined, re
   // The one caller that asks the binary whether it is signed in (EO-82):
   // this is the channel every surface showing a runtime renders from.
   registerHandler("runtime:status", (payload) => runtimeStatusWithAuth(runtimes, payload), opts);
+  // EO-896: the latest plan usage reading per backend and window, from
+  // this process's memory — asking spawns nothing.
+  registerHandler("planUsage:get", () => planUsage.view(), opts);
   registerHandler("runtime:describe", (payload) => describeRuntime(runtimes, payload), opts);
   // EO-477: the small model each backend's side calls run on, with its
   // default — Codex's is the smallest its runtime reports, which asks

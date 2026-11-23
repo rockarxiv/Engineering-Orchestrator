@@ -274,6 +274,7 @@ import {
 import type { AgentCliTool, CliTool, CliToolDetection, RuntimeId } from "@eo/core";
 import { invalidateRuntimeAuth, type RuntimeAuthCheck } from "../runtimes/auth.js";
 import { resolveMessagesAbout, reviseMessage, sendMessageHere } from "../messages/messages.js";
+import { planUsage } from "../planUsage/store.js";
 import {
   heldByBlockedRuntimes,
   RUNTIME_BLOCK_RECHECK_MS,
@@ -1255,6 +1256,8 @@ export interface RunSupervisor {
    * that comes later (EO-809): a person said something in it.
    */
   dropSuggestedReply: (conversationId: Uuid) => void;
+  /** Whether EO passed on a suggested reply for this chat after this run's turn (EO-895, `SuggestedReplies.made`). */
+  suggestedReplyMade: (conversationId: string, runId: string) => boolean;
   /** Asks for a tick soon — at once with `promptly`, for a person's own send. */
   notifyStateChange: (options?: { promptly?: boolean }) => void;
   /**
@@ -5673,6 +5676,10 @@ export function createRunSupervisor(
         // refusals to know when a window has come back.
         if (event.type === "quota") {
           ctx.refusals.record(event);
+          // And the rail's Usage block (EO-896): the newest reading per
+          // backend and window, whoever's turn it arrived in — an ordinary
+          // run's or a team's, since both are driven here (EO-886).
+          planUsage.record(event);
           continue;
         }
 
@@ -13344,6 +13351,7 @@ export function createRunSupervisor(
     notifyStateChange,
     prewarmConversation,
     dropSuggestedReply: (conversationId: Uuid) => suggestedReplies.drop(conversationId),
+    suggestedReplyMade: (conversationId: string, runId: string) => suggestedReplies.made(conversationId, runId),
     cancelRun,
     cancelTeamSession,
     teamControlSite,

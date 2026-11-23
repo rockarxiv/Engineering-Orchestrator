@@ -312,6 +312,7 @@ const NOT_CATALOGUED: Partial<Record<RecordChannel, string>> = {
   "assist:stop": "a person stopping the turn running in the conversation in front of them",
   "assist:settings": "a person choosing the model and reasoning for their own conversation",
   "assist:prewarm": "a person typing in the window in front of them",
+  "assist:suggestionUsed": "what a person did with a suggested reply in the composer in front of them",
   "assist:withdraw": "a person taking back their own message before the assistant reads it",
   "assist:earlier": "a person scrolling back through their own conversation in the window in front of them",
   "assist:fork": "a person branching their own conversation into a new one in the window in front of them",
@@ -771,6 +772,10 @@ const NOT_CATALOGUED_MACHINE: Partial<Record<MachineChannel, string>> = {
   // model EO's own calls about it run on would be an agent reaching
   // into how it is itself served (invariant 11).
   "sideCalls:smallModels": "spawns a CLI",
+  // The rail's glance at this machine's plan windows (EO-896). When a
+  // window fills, EO holds the work itself (EO-172, EO-798); an agent
+  // pacing itself on the share left would be second-guessing that.
+  "planUsage:get": "a glance for the person at the rail; when a window fills EO holds the work itself, and no agent paces itself on the share left",
   "sideCalls:setSmallModel": "a person choosing a model on the Runtimes card in front of them; an agent must not choose what EO's own calls about it run on",
 };
 

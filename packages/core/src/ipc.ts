@@ -21,6 +21,7 @@ import { PipelineTemplateStatusSchema } from "./templateStatus.js";
 import { OrganisationPolicySchema, PersonBudgetSchema, PublishedMcpServerSchema, UnavailableServerSchema } from "./policy.js";
 import { PublishedSectionNameSchema, PublishedSectionSchema, SectionLockSchema, sectionLockedMessage, type SectionLock } from "./sections.js";
 import { SuggestionViewSchema } from "./suggestions.js";
+import { PlanUsageViewSchema } from "./planUsage.js";
 import { DebugAgentSchema } from "./debug.js";
 import { ModuleReadinessCheckSchema } from "./moduleReadiness.js";
 import { RuntimeIdSchema } from "./schemas/commentOptions.js";
@@ -116,6 +117,7 @@ import {
   ITEM_COMMENTS_PAGE,
   ItemSectionsSchema,
   ItemSummarySchema,
+  SuggestedReplyUseSchema,
 } from "./ipc-schemas.js";
 import { SpecFieldDraftSchema } from "./itemTypeAuthoring.js";
 import {
@@ -2721,6 +2723,17 @@ export const recordContract = {
    * warm backend is shut down if nobody sends within a minute.
    */
   "assist:prewarm": channel(z.object({ conversationId: z.string() }), z.object({ warming: z.boolean() })),
+  /**
+   * What the person did with a suggested reply shown in the composer
+   * (EO-895): shown, taken into the box, sent from it (edited or not), or
+   * dismissed. Stored beside what EO-810 recorded of the same suggestion
+   * — keyed by the run it follows — and never as a comment, a message or
+   * a run event. Each action is recorded at most once per suggestion, and
+   * only for one EO pushed to this chat (`assist:suggestion`):
+   * `recorded: false` is an action already recorded, out of order, or for
+   * a suggestion EO did not make.
+   */
+  "assist:suggestionUsed": channel(SuggestedReplyUseSchema, z.object({ recorded: z.boolean() })),
   /**
    * Takes back a message that is waiting for the next turn — Claude
    * Desktop's Cancel on a queued message. The message stays in the thread
@@ -7720,6 +7733,14 @@ export const machineContract = {
    * separate channel: nobody should pay for a network round trip just to
    * render a settings screen.
    */
+  /**
+   * Each backend's latest plan usage reading (EO-896), for the rail's
+   * Usage block: per backend and window, from runs, side calls and the
+   * reads taken every five minutes. Held in memory; asking spawns
+   * nothing. `planUsage:changed` says when to ask again.
+   */
+  "planUsage:get": channel(z.void(), PlanUsageViewSchema),
+
   "runtime:status": channel(
     z.object({
       provider: z.string(),
@@ -8727,6 +8748,12 @@ export const ipcPushContract = {
    * views that were already rendered — not just the one that made it.
    */
   "config:changed": z.object({}),
+  /**
+   * A backend's plan usage reading changed (EO-896). Ask `planUsage:get`
+   * again — a plain doorbell, as the rule at the top of this contract
+   * says.
+   */
+  "planUsage:changed": z.object({}),
   /**
    * The update status changed (EO-201) — a plain "ask again", carrying
    * nothing, exactly as the rule at the top of this contract says.

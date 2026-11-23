@@ -786,11 +786,13 @@ export const RunRecordSchema = z.object({
    * On a fork-based side call — `side_call:learning_review`,
    * `side_call:prompt_suggestion` — how the backend copied the thread
    * (EO-811): `prediction`, the fork that keeps the prompt cache, or
-   * `plain`, with `forkFallbackReason` saying why the other was not used.
+   * `plain`, with `forkFallbackReason` saying why the other was not used;
+   * on a suggested reply, `sample` — one `thread/sample`, no fork's turn —
+   * and on its fork, `forkFallbackReason` saying why it was not sampled (EO-893).
    * Null on a run, on a side call that is no fork, and where the backend
    * did not say.
    */
-  forkMode: z.enum(["prediction", "plain"]).nullable(),
+  forkMode: z.enum(["sample", "prediction", "plain"]).nullable(),
   forkFallbackReason: z.string().nullable(),
 });
 export type RunRecord = z.infer<typeof RunRecordSchema>;
@@ -2788,3 +2790,38 @@ export const ItemTypeViewSchema = z.object({
   itemCount: z.number().int(),
 });
 export type ItemTypeView = z.infer<typeof ItemTypeViewSchema>;
+
+/**
+ * How a shown suggested reply went without being taken (EO-895): the
+ * person typed over it, a newer run started in the chat, or the chat
+ * stopped being the one drawn.
+ */
+export const SUGGESTED_REPLY_DISMISSALS = ["typed_over", "newer_turn", "left"] as const;
+export const SuggestedReplyDismissalSchema = z.enum(SUGGESTED_REPLY_DISMISSALS);
+export type SuggestedReplyDismissal = z.infer<typeof SuggestedReplyDismissalSchema>;
+
+/** The actions recorded of a suggested reply (EO-895), each at most once per suggestion. */
+export const SUGGESTED_REPLY_ACTIONS = ["shown", "accepted", "sent", "dismissed"] as const;
+export type SuggestedReplyAction = (typeof SUGGESTED_REPLY_ACTIONS)[number];
+
+const suggestedReplyOf = { conversationId: z.string(), runId: z.string() };
+
+/**
+ * What the person did with a suggested reply shown in an assistant chat's
+ * composer (EO-895, `assist:suggestionUsed`). The suggestion is named by
+ * its chat and the run whose turn it follows, as `assist:suggestion`
+ * pushed it — the run EO-810's spend and outcome are recorded against.
+ *
+ * - `shown` — drawn in the empty box.
+ * - `accepted` — taken into the box with Tab or Right arrow.
+ * - `sent` — the message sent next came from the accepted suggestion;
+ *   `edited` says whether the text was changed after it was taken.
+ * - `dismissed` — gone without being taken, and `by` what.
+ */
+export const SuggestedReplyUseSchema = z.discriminatedUnion("action", [
+  z.object({ ...suggestedReplyOf, action: z.literal("shown") }),
+  z.object({ ...suggestedReplyOf, action: z.literal("accepted") }),
+  z.object({ ...suggestedReplyOf, action: z.literal("sent"), edited: z.boolean() }),
+  z.object({ ...suggestedReplyOf, action: z.literal("dismissed"), by: SuggestedReplyDismissalSchema }),
+]);
+export type SuggestedReplyUse = z.infer<typeof SuggestedReplyUseSchema>;
