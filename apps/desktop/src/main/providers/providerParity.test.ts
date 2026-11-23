@@ -3763,24 +3763,23 @@ const shellCall = (id: string) =>
 
 const CODEX: Record<CapabilityName, Proof> = {
   "a suggested next message": async () => {
-    // Codex's backend makes none, so the adapter makes it (EO-808): a
-    // fork of the thread just finished, sent EO's prompt, its answer
-    // filtered. Asked for is a fork opened at all.
+    // Codex's backend makes none, so the adapter makes it (EO-808): one
+    // `thread/sample` of the thread just finished (EO-893), sent EO's
+    // prompt, its answer filtered. Asked for is a sample made at all.
     const cwd = scratchDirectory();
     const chat = [note.turnStarted("turn-1", "$THREAD"), note.agentMessage("done", "m", "turn-1", "$THREAD"), note.turnCompleted("completed", null, "turn-1", "$THREAD")];
-    const forkAnswers = (answer: string) => [note.turnStarted("turn-1", "$THREAD"), note.agentMessage(answer, "s", "turn-1", "$THREAD"), note.turnCompleted("completed", null, "turn-1", "$THREAD")];
     const options = { searchHookCommandPath: "/opt/eo/hook.mjs", searchHookTrust: HOOK_TRUST };
     const turn = async (suggestNextMessage: boolean, answer: string) => {
-      const { fake, provider } = codexOver({ forkId: "thr-suggest", after: { "turn/start": chat }, afterFork: { "turn/start": forkAnswers(answer) } }, options);
+      const { fake, provider } = codexOver({ sample: { text: answer }, after: { "turn/start": chat } }, options);
       const events = await collect(provider.resume("sess-1", "carry on", { cwd, ...(suggestNextMessage ? { suggestNextMessage } : {}) }));
-      return { events, forked: fake.sent.some((message) => message.method === "thread/fork") };
+      return { events, sampled: fake.sent.some((message) => message.method === "thread/sample") };
     };
     const off = await turn(false, "run the tests");
     const on = await turn(true, "run the tests");
-    // A fork whose answer the filters drop is a backend that made none.
+    // A sample whose answer the filters drop is a backend that made none.
     const none = await turn(true, "nothing to suggest");
     return {
-      asked: { off: off.forked, on: on.forked },
+      asked: { off: off.sampled, on: on.sampled },
       off: { outcome: outcomeOf(off.events), suggested: suggestionsSeen(off.events) },
       on: { outcome: outcomeOf(on.events), suggested: suggestionsSeen(on.events) },
       none: { outcome: outcomeOf(none.events), suggested: suggestionsSeen(none.events), errors: none.events.filter((event) => event.type === "error").length },

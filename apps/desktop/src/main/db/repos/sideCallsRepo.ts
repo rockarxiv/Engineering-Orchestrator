@@ -45,7 +45,7 @@ export interface SideCallRow {
   cacheWriteTokens: number | null;
   /** How a fork-based call copied its thread (`ForkCopy`); null on a call that is no fork, or whose backend did not say. */
   forkMode: ForkCopy["mode"] | null;
-  /** Why a `plain` fork was not the prediction-mode one, as the adapter said; null otherwise. */
+  /** Why the call's copy was not the preferred one, as the adapter said — a `plain` fork's, or a suggestion's fork made because the thread could not be sampled (EO-893); null otherwise. */
   forkFallbackReason: string | null;
 }
 
@@ -56,7 +56,7 @@ export type RecordSideCallInput = Omit<SideCallRow, "id" | "cacheReadTokens" | "
 /** A fork's `ForkCopy` as the row's two columns; both null where there was no fork or it went unsaid. */
 export function forkColumns(fork: ForkCopy | null | undefined): Pick<SideCallRow, "forkMode" | "forkFallbackReason"> {
   if (!fork) return { forkMode: null, forkFallbackReason: null };
-  return { forkMode: fork.mode, forkFallbackReason: fork.mode === "plain" ? (fork.fallbackReason ?? null) : null };
+  return { forkMode: fork.mode, forkFallbackReason: fork.fallbackReason ?? null };
 }
 
 function withDefaults(input: RecordSideCallInput): SideCallRow {
@@ -112,7 +112,7 @@ export function listSideCalls(db: Db): SideCallRow[] {
 
 /** A stored `fork_mode` read back; anything else is null rather than a claim the row never made. */
 export function forkModeOf(value: string | null): ForkCopy["mode"] | null {
-  return value === "prediction" || value === "plain" ? value : null;
+  return value === "sample" || value === "prediction" || value === "plain" ? value : null;
 }
 
 /**

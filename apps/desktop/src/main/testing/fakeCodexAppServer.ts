@@ -30,6 +30,13 @@ export interface FakeAppServerScenario {
   /** The id `turn/start` answers with. */
   turnId?: string;
   /**
+   * What `thread/sample` answers (EO-893), unless `replies` says
+   * otherwise: the response's text — null for a response that tried a
+   * tool call — and its token counts, after `delayMs` where given. The
+   * answer names the turn the request expected as its source.
+   */
+  sample?: { text?: string | null; inputTokens?: number; cachedInputTokens?: number; outputTokens?: number; delayMs?: number };
+  /**
    * The model `thread/start` and `thread/resume` answer with when EO
    * asked for none — the CLI's own default. The real server always names
    * one (EO-374), and names the one asked for when EO asked.
@@ -93,6 +100,17 @@ const defaults = (message) => {
     case "thread/resume": return { thread: { id: message.params.threadId }, model: message.params.model || scenario.model || "gpt-6.1-sol", modelProvider: "openai" };
     case "thread/fork": return { thread: { id: scenario.forkId || "thr-fork" }, model: message.params.model || scenario.model || "gpt-6.1-sol", modelProvider: "openai" };
     case "turn/start": return { turn: { id: scenario.turnId || "turn-1", items: [], status: "inProgress", error: null } };
+    case "thread/sample": {
+      const sample = scenario.sample || {};
+      return {
+        responseId: "resp-1",
+        sourceTurnId: message.params.expectedTurnId,
+        text: sample.text === undefined ? "yes" : sample.text,
+        inputTokens: sample.inputTokens === undefined ? 12400 : sample.inputTokens,
+        cachedInputTokens: sample.cachedInputTokens === undefined ? 11300 : sample.cachedInputTokens,
+        outputTokens: sample.outputTokens === undefined ? 10 : sample.outputTokens,
+      };
+    }
     // Two completed turns, newest first: a thread a suggestion may follow (EO-808).
     case "thread/turns/list": return { data: [{ id: "turn-2", items: [], itemsView: "notLoaded", status: "completed", error: null }, { id: "turn-1", items: [], itemsView: "notLoaded", status: "completed", error: null }], nextCursor: null, backwardsCursor: null };
     default: return {};
@@ -110,6 +128,7 @@ lines.on("line", async (line) => {
     return;
   }
   const reply = (scenario.replies || {})[message.method];
+  if (message.method === "thread/sample" && scenario.sample && scenario.sample.delayMs) await new Promise((resolve) => setTimeout(resolve, scenario.sample.delayMs));
   if (message.method === "thread/fork" && !(reply && reply.error)) {
     thread = scenario.forkId || "thr-fork";
     forked = true;

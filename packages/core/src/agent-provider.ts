@@ -162,8 +162,9 @@ export interface AgentTurnOverrides {
   suggestNextMessage?: boolean;
   /**
    * Told what making the suggested next message spent, where the adapter
-   * made it with a turn of its own that reported it (EO-808): Codex's
-   * fork of the thread, called once when the fork ends, however it ended.
+   * made it with a request of its own that reported it (EO-808): Codex's
+   * `thread/sample` of the thread (EO-893), or its fork where the thread
+   * could not be sampled, called once when that ends, however it ended.
    * Never the turn's own spend, which its `usage` events carry as always,
    * so the caller records it apart — as a side call's row, the way the
    * learning review's fork is recorded.
@@ -237,6 +238,9 @@ export const SUGGESTED_REPLY_EVENT = "suggested_reply";
  * - `stopped` — the fork was under way when a newer turn, a cancel or
  *   the run's own stop (`stopped`), or its time limit (`time_limit`),
  *   ended it.
+ * - `no_suggestion` — the backend's one response held no text (EO-893):
+ *   Codex's `thread/sample` answered null, because the model tried a
+ *   tool call, which is never run, or said nothing. Not a failure.
  * - `dropped` — the fork answered and the filters dropped it: the raw
  *   answer and the rule.
  * - `emitted` — passed on as a `PromptSuggestionEvent`: the text, and the
@@ -251,6 +255,7 @@ export type SuggestionOutcome =
   | { kind: "fork_failed"; message: string }
   | { kind: "stopped"; by: "stopped" | "time_limit" }
   | { kind: "dropped"; answer: string; rule: SuggestionFilterRule }
+  | { kind: "no_suggestion" }
   | { kind: "emitted"; text: string; answer: string };
 
 /** What making a suggested next message spent (`AgentTurnOverrides.onSuggestionSpend`, EO-808). */
@@ -1047,11 +1052,14 @@ export interface PromptSuggestionEvent {
  * own config, tools and prompt-cache key, so the fork's first request
  * reads the thread from the cache. `plain` is an ordinary `thread/fork`,
  * which gets a cache key of its own, so the whole thread is written to
- * the cache again. `fallbackReason` says why `plain` was used: the
- * backend refused the prediction fork, in its own words.
+ * the cache again. `sample` is a suggested next message's `thread/sample`
+ * (EO-893): one response on a hidden copy, with no turn at all.
+ * `fallbackReason` says why the preferred way was not used, in the
+ * backend's own words: why `plain` rather than `prediction`, and on a
+ * suggestion's fork, why the thread was not sampled first.
  */
 export interface ForkCopy {
-  mode: "prediction" | "plain";
+  mode: "sample" | "prediction" | "plain";
   fallbackReason?: string;
 }
 
