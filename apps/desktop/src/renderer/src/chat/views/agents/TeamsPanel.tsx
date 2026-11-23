@@ -88,6 +88,9 @@ function AddedBy({ member }: { member: TeamMemberView }) {
   }
   if (origin.kind === "person") return <span>Added by {origin.personName ?? "a person"}</span>;
   if (origin.kind === "assistant") return <span>Added by a person, through the assistant</span>;
+  // Neither of EO's tools adds a member (EO-900), but a version either made is what a member's origin is read from.
+  if (origin.kind === "system") return <span>Added by EO's system agent</span>;
+  if (origin.kind === "client") return <span>Added by an outside client, over EO's MCP server</span>;
   return <span>Added when EO declared a team that already existed (from a step, an import or the record)</span>;
 }
 
@@ -258,6 +261,9 @@ function VersionAuthor({ version }: { version: TeamVersionView }) {
   }
   if (author.kind === "person") return <span>{version.authorName ?? "A person"}</span>;
   if (author.kind === "assistant") return <span>The assistant, in a draft a person published</span>;
+  // Members' runtime, model and reasoning, set through EO's tools (EO-900).
+  if (author.kind === "system") return <span>{version.authorName ?? "EO's system agent"}, EO's system agent</span>;
+  if (author.kind === "client") return <span>An outside client, over EO's MCP server</span>;
   // A version EO made for a reason of its own says it in its note (EO-899).
   if (version.note !== null) return <span>EO</span>;
   return <span>EO, declaring a team that already existed (from a step, an import or the record)</span>;

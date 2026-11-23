@@ -373,7 +373,7 @@ describe("what the system agent's prompt says about teams on a step (EO-848)", (
 
   it("offers `team` on a draft's agent step, by name, and `\"none\"` for one agent again", () => {
     expect(flat).toContain("- **An `agent` step may set `team`** — the name of the declared team it runs as,");
-    expect(teams()).toContain("A team is created, changed and named only through a draft published from its card; `pipeline_save` takes the keys off.");
+    expect(teams()).toContain("A team is created, changed and named only through a draft published from its card — all but what its members run on, below; `pipeline_save` takes the keys off.");
   });
 
   it("says every member is report-only by default, and what it cannot do", () => {
@@ -465,5 +465,23 @@ describe("what the system agent's prompt says about a team's new members (EO-898
 
   it("is a newer version than the one before a team's new members", () => {
     expect(Number(/prompt-version:\s*(\d+)/.exec(prompt)![1])).toBeGreaterThanOrEqual(67);
+  });
+});
+
+describe("what the system agent's prompt says about its team members' runtime, model and reasoning (EO-900)", () => {
+  const teams = () => section("### A declared team on an agent step");
+
+  it("says it can read what each member runs on and set it with team_member_settings_set, nothing else of a member or the team", () => {
+    expect(teams()).toContain("all but what its members run on, below;");
+    expect(teams()).toContain("`teams_list` gives each team's id, its model range, and the runtime, model and reasoning each member — the leader included — runs on now; say what a team runs before you change it.");
+    expect(teams()).toContain("`team_member_settings_set` sets one or more members, named by their names within the team, to one runtime, model and reasoning, as a person does in the Teams tab.");
+    expect(teams()).toContain("files one version of the team, recorded as yours, which a person can restore.");
+  });
+
+  it("names what refuses it, what it saves and says, and is newer than the prompt before it", () => {
+    expect(teams()).toContain("It is refused for a locked team, saying so, and for a backend the organisation does not allow.");
+    expect(teams()).toContain("It does not ask the team's model range, which bounds only the members a leader adds.");
+    expect(teams()).toContain("A runtime this machine has not installed or is not signed in to is still saved, and the answer says so, as the Teams tab does: pass that on to the person.");
+    expect(Number(/prompt-version:\s*(\d+)/.exec(prompt)![1])).toBeGreaterThanOrEqual(68);
   });
 });

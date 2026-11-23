@@ -2159,9 +2159,9 @@ export const teamVersions = sqliteTable(
       .references(() => teams.id, { onDelete: "cascade" }),
     number: integer("number").notNull(),
     definition: text("definition", { mode: "json" }).notNull(),
-    /** `TeamAuthor["kind"]`: person, assistant, leader or eo. */
+    /** `TeamAuthor["kind"]`: person, assistant, leader, eo, system (EO's system agent) or client (an outside MCP client). */
     authorKind: text("author_kind").notNull(),
-    /** The person's id for a person, the leader agent's for a leader; null otherwise. */
+    /** The person's id for a person, the leader agent's for a leader, the system agent's for `system`; null otherwise. */
     authorId: text("author_id"),
     /** The item a leader added a member for (EO-883); null otherwise. */
     authorItemId: text("author_item_id"),

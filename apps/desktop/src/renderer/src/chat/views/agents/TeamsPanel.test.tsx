@@ -313,6 +313,23 @@ describe("the Teams tab (EO-884)", () => {
     expect(within(versions).getByRole("listitem", { name: "Version 1" })).toHaveTextContent("EO, declaring a team that already existed");
   });
 
+  it("says a version was EO's system agent's or an outside client's, set through EO's tools (EO-900)", async () => {
+    mockIpc(() => [
+      team({
+        versions: [
+          { number: 3, author: { kind: "client" }, authorName: null, itemKey: null, restoredFrom: null, note: null, createdAt: 3_000 },
+          { number: 2, author: { kind: "system", agentId: "ag-system" }, authorName: "Assistant", itemKey: null, restoredFrom: null, note: null, createdAt: 2_000 },
+          { number: 1, author: { kind: "eo" }, authorName: null, itemKey: null, restoredFrom: null, note: null, createdAt: 1_000 },
+        ],
+      }),
+    ]);
+    mount();
+    await openTeams();
+    const versions = screen.getByRole("list", { name: "Versions" });
+    expect(within(versions).getByRole("listitem", { name: "Version 3" })).toHaveTextContent("An outside client, over EO's MCP server");
+    expect(within(versions).getByRole("listitem", { name: "Version 2" })).toHaveTextContent("Assistant, EO's system agent");
+  });
+
   it("says where a member's runtime is shown that this machine is not signed in to its backend", async () => {
     mockIpc(() => [team()], {}, (provider) => (provider === "codex" ? SIGNED_OUT_CODEX : null));
     mount();

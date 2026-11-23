@@ -4,7 +4,7 @@ import { ArchivedItemListFiltersSchema, ItemListFiltersSchema, toRegistryView, t
 import { AttachmentStorage } from "../attachments/storage.js";
 import { pipelineHome } from "./pipelineHome.js";
 import { cancelTeamSessionCommand, retryTeamSessionCommand, teamSessionsCommand } from "./teamCommands.js";
-import { archiveTeamCommand, deleteTeamCommand, listTeamsCommand, restoreTeamCommand, setTeamLockedCommand, setTeamMemberSettingsCommand } from "./declaredTeamCommands.js";
+import { archiveTeamCommand, deleteTeamCommand, listTeamsCommand, restoreTeamCommand, setTeamLockedCommand, setTeamMemberSettingsCommand, setTeamMembersSettingsCommand } from "./declaredTeamCommands.js";
 import type { Db } from "../db/client.js";
 import { archiveAgentCommand, customiseAgent, deleteAgentCommand, listAgentDetails, projectStaffing, readGuards, saveAgent, setAgentBinding, savePipeline, validatePipelineCommand, writeGuards } from "./configCommands.js";
 import { runMemoryFacts } from "../process/runScope.js";
@@ -1572,6 +1572,17 @@ export function registerAllHandlers(db: Db, engine: EngineHandle | undefined, re
     if (result.saved) emitPush("config:changed", {});
     return result;
   }, opts);
+  // The same change through EO's tools (EO-900), several members at once,
+  // asked of the runtime as the Teams tab asks before it lets one be chosen.
+  registerHandler(
+    "teams:setMembersSettings",
+    async (payload) => {
+      const result = await setTeamMembersSettingsCommand(db, payload, async (provider) => (await runtimeStatusWithAuth(runtimes, { provider })).runtime);
+      if (result.changed.length > 0) emitPush("config:changed", {});
+      return result;
+    },
+    opts,
+  );
   registerHandler("teams:setLocked", (payload) => {
     const result = setTeamLockedCommand(db, payload);
     if (result.changed) emitPush("config:changed", {});

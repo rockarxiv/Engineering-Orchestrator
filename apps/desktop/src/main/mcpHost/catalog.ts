@@ -2231,9 +2231,10 @@ const READ_TOOLS: readonly ToolSpec[] = [
     name: "teams_list",
     channel: "teams:list",
     description:
-      "The declared teams: each one's id, project, version and whether a person locked it, its leader and members by name, " +
-      "and the steps that run as it. An archived team is not listed. A team is created or changed only by a draft's `teams` " +
-      "entry, which a person publishes; team_archive and team_delete take one away.",
+      "The declared teams: each one's id, project, version and whether a person locked it, its model range, its leader and " +
+      "members by name with the runtime, model and reasoning each runs on, and the steps that run as it. An archived team " +
+      "is not listed. A team is created or changed only by a draft's `teams` entry, which a person publishes; " +
+      "team_member_settings_set changes what its members run on, and team_archive and team_delete take one away.",
     kind: "read",
     list: "teams",
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
@@ -2722,6 +2723,82 @@ const TEAM_ARCHIVE_TOOL: ToolSpec = channelTool({
   render: () => "Team archived, with its own agents. No step may run as it now; the rows are kept, so its runs and comments still resolve.",
   refusal: (data, tool) => (data.archived ? null : unconfirmedTeamRemoval(data, "archived", tool)),
 });
+
+const TeamMemberSettingsArgsSchema = z.object({
+  teamId: z.string().min(1).describe("The team, by its id from teams_list."),
+  members: z
+    .array(z.string().trim().min(1))
+    .min(1)
+    .max(64)
+    .describe("The members to set, by their names within the team as teams_list gives them — the leader's name included."),
+  provider: z.string().min(1).describe("The runtime they run on, by id: runtime_status reports the ids."),
+  model: z.string().nullable().optional().describe("The model, as the runtime names it; null or left out for the runtime's default."),
+  reasoning: z.string().nullable().optional().describe("The reasoning effort, such as low, medium or high; null or left out for the model's default."),
+});
+
+/**
+ * Set one or more members of a declared team to a runtime, model and
+ * reasoning (EO-900): what the Teams tab does, under its rules, by EO's
+ * system agent on `eo_admin` or an outside client over EO's MCP server.
+ *
+ * Built by hand rather than with `channelTool` because who made the
+ * version is the door's to say: the administrative host stamps the system
+ * agent, and only this tool, called on the outside listener, says the
+ * version is a client's. A client's own `throughClient` or
+ * `actingAgentId` never reaches the channel — the schema has neither.
+ *
+ * Ungated: it deletes nothing, and the version it files can be restored.
+ * The system agent may call it under invariant 11's exception — it owns
+ * no step, and reconfiguring the installation is its job; it changes a
+ * member's runtime, model and reasoning only, never a tool or the team.
+ */
+const TEAM_MEMBER_SETTINGS_SET_TOOL: ToolSpec = {
+  name: "team_member_settings_set",
+  description:
+    "Set one or more members of a declared team — its leader included — to a runtime, model and reasoning effort, as a " +
+    "person does in the Teams tab. Name the team by its id and the members by their names within it, both as " +
+    "teams_list gives them, with each member's runtime, model and reasoning now. Nothing but those three settings " +
+    "changes: a member's instructions and tools, and who is on the team, stay as they are (those change only through " +
+    "a draft's `teams` entry a person publishes). The whole change is one new version of the team, filed as yours, " +
+    "which a person can restore. Refused whole, with nothing changed: a locked team (a person must unlock it); a name " +
+    "that is not on the team; and a backend the organisation does not allow. The team's model range is not asked: it " +
+    "bounds only the members a leader adds. A runtime this machine has not installed or is not signed in to is still " +
+    "saved, and the answer says so, as the Teams tab does — pass that on. Tell the person what a team runs before you change it.",
+  kind: "write",
+  annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  channels: ["teams:setMembersSettings"],
+  inputSchema: inputSchemaFor(TeamMemberSettingsArgsSchema),
+  async run(dispatch, args, call) {
+    const parsed = TeamMemberSettingsArgsSchema.safeParse(args);
+    if (!parsed.success) {
+      return { ok: false, message: 'Invalid arguments for "team_member_settings_set". Nothing was changed.', issues: parsed.error.issues.map((issue) => issue.message) };
+    }
+    const { teamId, members, provider, model, reasoning } = parsed.data;
+    const set = await ask(dispatch, "teams:setMembersSettings", {
+      teamId,
+      members,
+      provider,
+      model: model ?? null,
+      reasoning: reasoning ?? null,
+      // The outside listener is a client's; the administrative one stamps its system agent itself.
+      ...(call?.audience === "external" ? { throughClient: true } : {}),
+    });
+    if (!set.ok) return set;
+    const data = set.data;
+    if (!data.saved) return { ok: true, refused: true, data, text: `Nothing was changed: ${data.problem ?? "it refused."}` };
+    const runsOn = `${provider}${model === null || model === undefined ? ", the runtime's default model" : `, model ${model}`}${reasoning === null || reasoning === undefined ? ", the model's default reasoning" : `, reasoning ${reasoning}`}`;
+    return {
+      ok: true,
+      refused: false,
+      data,
+      text:
+        (data.changed.length === 0
+          ? `Nothing changed: ${members.join(", ")} already ${members.length === 1 ? "runs" : "run"} on ${runsOn}. No version was filed.`
+          : `Set ${data.changed.join(", ")} to ${runsOn}, as version ${String(data.version)} of the team, which a person can restore. Each runs on it from its next turn.`) +
+        (data.note === null ? "" : ` ${data.note}`),
+    };
+  },
+};
 
 /**
  * Define an action for a role, or change the definition it has (EO-425).
@@ -4413,6 +4490,7 @@ const UNGATED_WRITE_TOOLS: readonly ToolSpec[] = [
   AGENT_SAVE_TOOL,
   AGENT_ARCHIVE_TOOL,
   TEAM_ARCHIVE_TOOL,
+  TEAM_MEMBER_SETTINGS_SET_TOOL,
   ROLE_ACTION_SAVE_TOOL,
   ...PROJECT_SETUP_TOOLS,
   PROJECT_SET_ACTIVE_TOOL,
