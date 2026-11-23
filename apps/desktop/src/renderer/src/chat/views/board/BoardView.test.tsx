@@ -536,6 +536,35 @@ describe("a column's owner line", () => {
     expect(where()).toBe("/agents?instructions=agent-implementer");
   });
 
+  // A line longer than its column ends in an ellipsis inside it (EO-902).
+  // jsdom lays nothing out, so this holds the classes that do: the link
+  // keeps to its text (`self-start`), is never wider than the header it
+  // sits in (`max-w-full`), and clips (`truncate`) — `self-start` without
+  // the cap sized the link to its text, which nothing then clipped — in a
+  // header and a column that may themselves shrink to the board's track.
+  it("cuts an agent line longer than its column short inside the column, keeping the whole line in its tooltip", async () => {
+    const name = "An implementer whose name alone is far wider than any column the board draws";
+    mockIpc({
+      states: [{ id: "todo", pipelineId: "default", position: 0, name: "To Do", type: "agent", agentId: "agent-implementer", entryAction: "implement", instructionsSummary: null, isTerminal: false }],
+      items: [],
+      agents: [{ ...kindAgent("implementer"), name, model: "a-model-with-a-long-name-too" }],
+    });
+    renderBoard();
+
+    const todo = await column("To Do");
+    const line = `${name} — implementer · Built in (fake) · a-model-with-a-long-name-too`;
+    const link = await within(todo).findByRole("link", { name: line });
+    const tokens = (node: Element | null) => new Set(node?.className.split(/\s+/) ?? []);
+    for (const token of ["self-start", "max-w-full", "min-w-0", "truncate"]) expect(tokens(link).has(token), token).toBe(true);
+    expect([...tokens(link)].filter((token) => /^(w-|max-w-(?!full)|whitespace-|overflow-(?!hidden))/.test(token))).toEqual([]);
+    const header = link.closest("header");
+    expect(link.parentElement).toBe(header);
+    for (const token of ["flex", "flex-col", "min-w-0"]) expect(tokens(header).has(token), `header ${token}`).toBe(true);
+    expect(tokens(todo).has("min-w-0")).toBe(true);
+    expect(link.getAttribute("title")).toContain(line);
+    expect(link).toHaveAttribute("href", instructionsAddress("agent-implementer"));
+  });
+
   // Two agents of one kind are told different things (EO-876): the
   // header of a step naming the second opens the second, not the first
   // agent of the kind.
