@@ -217,18 +217,32 @@ export async function setTeamMembersSettingsCommand(db: Db, input: IpcPayload<"t
   const definition = team.definition;
   if (definition === null) return refuse(`EO cannot read what the team "${team.name}" declares, so it cannot change a member of it.`, team.version);
 
-  // Its members by name, the leader's included — once each, as the Teams tab lists them.
-  const named = new Map<string, { agentId: string; name: string }>();
-  for (const agentId of teamAgentIds(definition)) {
-    const agent = getAgent(db, agentId as Uuid);
-    if (agent !== undefined && agent.deletedAt === null && !named.has(foldCase(agent.name.trim()))) named.set(foldCase(agent.name.trim()), { agentId, name: agent.name });
+  if (input.members.length > 0 && input.agentIds.length > 0) return refuse("Name the members by name or by agent, not both. Nothing has changed.", team.version);
+  if (input.members.length === 0 && input.agentIds.length === 0) return refuse("Choose at least one member to apply the settings to. Nothing has changed.", team.version);
+  const onTeam = teamAgentIds(definition);
+  let targets: { agentId: string; name: string }[];
+  if (input.agentIds.length > 0) {
+    // The Teams tab's bulk change (EO-901) picks members by agent, exact where two share a name.
+    targets = [];
+    for (const agentId of new Set(input.agentIds)) {
+      const agent = onTeam.includes(agentId) ? getAgent(db, agentId as Uuid) : undefined;
+      if (agent === undefined) return refuse(`That agent is not on the team "${team.name}".`, team.version);
+      targets.push({ agentId, name: agent.name });
+    }
+  } else {
+    // Its members by name, the leader's included — once each, as the Teams tab lists them.
+    const named = new Map<string, { agentId: string; name: string }>();
+    for (const agentId of onTeam) {
+      const agent = getAgent(db, agentId as Uuid);
+      if (agent !== undefined && agent.deletedAt === null && !named.has(foldCase(agent.name.trim()))) named.set(foldCase(agent.name.trim()), { agentId, name: agent.name });
+    }
+    const unknown = input.members.filter((name) => !named.has(foldCase(name.trim())));
+    if (unknown.length > 0) {
+      const listed = [...named.values()].map((member) => `"${member.name}"`).join(", ");
+      return refuse(`${unknown.map((name) => `"${name.trim()}"`).join(", ")} ${unknown.length === 1 ? "is" : "are"} not on the team "${team.name}", whose leader and members are ${listed || "none"}. Nothing has changed.`, team.version);
+    }
+    targets = [...new Map(input.members.map((name) => named.get(foldCase(name.trim())) as { agentId: string; name: string }).map((member) => [member.agentId, member])).values()];
   }
-  const unknown = input.members.filter((name) => !named.has(foldCase(name.trim())));
-  if (unknown.length > 0) {
-    const listed = [...named.values()].map((member) => `"${member.name}"`).join(", ");
-    return refuse(`${unknown.map((name) => `"${name.trim()}"`).join(", ")} ${unknown.length === 1 ? "is" : "are"} not on the team "${team.name}", whose leader and members are ${listed || "none"}. Nothing has changed.`, team.version);
-  }
-  const targets = [...new Map(input.members.map((name) => named.get(foldCase(name.trim())) as { agentId: string; name: string }).map((member) => [member.agentId, member])).values()];
 
   const provider = input.provider.trim();
   if (!KNOWN_RUNTIMES.includes(provider)) return refuse(`EO has no runtime called "${provider}": a member runs on one of ${KNOWN_RUNTIMES.map((id) => `"${id}"`).join(", ")}. Nothing has changed.`, team.version);

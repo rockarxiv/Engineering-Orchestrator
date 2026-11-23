@@ -432,6 +432,172 @@ describe("the Teams tab (EO-884)", () => {
   });
 });
 
+describe("changing several members at once (EO-901)", () => {
+  /**
+   * A Teams tab whose bulk change answers with `refusal`, or applies the
+   * settings to the members asked for as version 4; a restore of version 4's
+   * predecessor puts every member back as version 5.
+   */
+  function bulk(refusal: string | null = null): Call[] {
+    let applied: { agentIds: string[]; provider: string; model: string | null; reasoning: string | null } | null = null;
+    let restored = false;
+    const shown = (): TeamView => {
+      const base = team();
+      if (applied === null || restored) return restored ? team({ version: 5 }) : base;
+      const moved = applied;
+      const change = (one: TeamMemberView): TeamMemberView => (moved.agentIds.includes(one.agentId) ? { ...one, provider: moved.provider, model: moved.model, reasoning: moved.reasoning } : one);
+      return {
+        ...base,
+        version: 4,
+        leader: base.leader === null ? null : change(base.leader),
+        members: base.members.map(change),
+        versions: [{ number: 4, author: { kind: "person", personId: "anna" }, authorName: "Anna", itemKey: null, restoredFrom: null, note: null, createdAt: 4_000 }, ...base.versions],
+      };
+    };
+    const calls = mockIpc(() => [shown()]);
+    const base = window.eo.ipc.invoke;
+    window.eo.ipc.invoke = vi.fn(async (channel: string, payload: unknown) => {
+      if (channel === "teams:setMembersSettings") {
+        calls.push({ channel, payload });
+        if (refusal !== null) return { ok: true, data: { saved: false, changed: [], version: 3, problem: refusal, note: null } };
+        applied = payload as typeof applied;
+        return { ok: true, data: { saved: true, changed: ["Review lead"], version: 4, problem: null, note: null } };
+      }
+      if (channel === "teams:restore") {
+        calls.push({ channel, payload });
+        restored = true;
+        return { ok: true, data: { restored: true, problem: null } };
+      }
+      return base(channel as never, payload as never);
+    }) as never;
+    return calls;
+  }
+
+  async function openBulk(): Promise<HTMLElement> {
+    await openTeams();
+    fireEvent.click(within(screen.getByRole("region", { name: "Several at once" })).getByRole("button", { name: "Change several members at once" }));
+    return screen.getByRole("group", { name: "Several members' runtime, model and reasoning" });
+  }
+
+  async function chooseCodex(editor: HTMLElement) {
+    fireEvent.change(within(editor).getByRole("combobox", { name: "Runtime" }), { target: { value: "codex" } });
+    await waitFor(() => expect(within(editor).getByRole("option", { name: "GPT-5.1 Codex" })).toBeInTheDocument());
+    fireEvent.change(within(editor).getByRole("combobox", { name: "Model" }), { target: { value: "gpt-5.1-codex" } });
+    fireEvent.change(within(editor).getByRole("combobox", { name: "Reasoning effort" }), { target: { value: "low" } });
+  }
+
+  const applied = (calls: Call[]) => calls.filter((call) => call.channel === "teams:setMembersSettings").map((call) => call.payload);
+
+  it("offers every member, the leader included, and applies to the ones selected — the rest unchanged", async () => {
+    const calls = bulk();
+    mount();
+    const editor = await openBulk();
+    const chosen = within(editor).getByRole("group", { name: "Members to apply it to" });
+    expect(within(chosen).getAllByRole("checkbox").map((box) => box.parentElement?.textContent)).toEqual(["Select all", "Review lead (leader)", "Criteria expert", "Test expert"]);
+    // Nothing is offered to apply until a member is chosen.
+    expect(within(editor).getByRole("button", { name: "Apply" })).toBeDisabled();
+
+    await chooseCodex(editor);
+    fireEvent.click(within(chosen).getByRole("checkbox", { name: "Review lead (leader)" }));
+    fireEvent.click(within(chosen).getByRole("checkbox", { name: "Criteria expert" }));
+    expect(within(chosen).getByRole("checkbox", { name: "Select all" })).not.toBeChecked();
+    fireEvent.click(within(editor).getByRole("button", { name: "Apply to 2 members" }));
+
+    await waitFor(() => expect(applied(calls)).toEqual([{ teamId: "team-1", agentIds: ["ag-lead", "ag-criteria"], provider: "codex", model: "gpt-5.1-codex", reasoning: "low" }]));
+    await waitFor(() => expect(screen.getByRole("region", { name: "EO reviewers" })).toHaveTextContent("version 4"));
+    expect(screen.queryByRole("group", { name: "Several members' runtime, model and reasoning" })).toBeNull();
+    const members = screen.getByRole("region", { name: "Members" });
+    expect(within(members).getByRole("listitem", { name: "Member Criteria expert" })).toHaveTextContent("Reasoning effortlow");
+    expect(within(members).getByRole("listitem", { name: "Member Test expert" })).toHaveTextContent("Reasoning effortxhigh");
+    expect(within(screen.getByRole("region", { name: "Leader" })).getByRole("listitem", { name: "Leader Review lead" })).toHaveTextContent("RuntimeCodex");
+  });
+
+  it("selects every member with select all, and clears them with it again", async () => {
+    const calls = bulk();
+    mount();
+    const editor = await openBulk();
+    const chosen = within(editor).getByRole("group", { name: "Members to apply it to" });
+    fireEvent.click(within(chosen).getByRole("checkbox", { name: "Select all" }));
+    expect(within(chosen).getAllByRole("checkbox").every((box) => (box as HTMLInputElement).checked)).toBe(true);
+    fireEvent.click(within(chosen).getByRole("checkbox", { name: "Select all" }));
+    expect(within(chosen).getAllByRole("checkbox").some((box) => (box as HTMLInputElement).checked)).toBe(false);
+    // Choosing each one by hand checks select all too.
+    for (const name of ["Review lead (leader)", "Criteria expert", "Test expert"]) fireEvent.click(within(chosen).getByRole("checkbox", { name }));
+    expect(within(chosen).getByRole("checkbox", { name: "Select all" })).toBeChecked();
+
+    await chooseCodex(editor);
+    fireEvent.click(within(editor).getByRole("button", { name: "Apply to 3 members" }));
+    await waitFor(() => expect(applied(calls)).toEqual([{ teamId: "team-1", agentIds: ["ag-lead", "ag-criteria", "ag-tests"], provider: "codex", model: "gpt-5.1-codex", reasoning: "low" }]));
+  });
+
+  it("says a refusal as the sentence it came back as, and changes nothing", async () => {
+    const refusal = 'The team "EO reviewers" is locked: a person must unlock it before it can change.';
+    const calls = bulk(refusal);
+    mount();
+    const editor = await openBulk();
+    fireEvent.click(within(editor).getByRole("checkbox", { name: "Select all" }));
+    await chooseCodex(editor);
+    fireEvent.click(within(editor).getByRole("button", { name: "Apply to 3 members" }));
+    expect(await within(editor).findByText(refusal)).toBeInTheDocument();
+    expect(applied(calls)).toHaveLength(1);
+    // Still open, and the team as it was.
+    expect(screen.getByRole("group", { name: "Several members' runtime, model and reasoning" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "EO reviewers" })).toHaveTextContent("version 3");
+    expect(within(screen.getByRole("region", { name: "Members" })).getByRole("listitem", { name: "Member Criteria expert" })).toHaveTextContent("RuntimeClaude Code");
+  });
+
+  it("files one version, which one restore of the version before it undoes", async () => {
+    const calls = bulk();
+    mount();
+    const editor = await openBulk();
+    fireEvent.click(within(editor).getByRole("checkbox", { name: "Select all" }));
+    await chooseCodex(editor);
+    fireEvent.click(within(editor).getByRole("button", { name: "Apply to 3 members" }));
+    const versions = await screen.findByRole("listitem", { name: "Version 4" });
+    expect(versions).toHaveTextContent(/Anna.*current/);
+    expect(within(screen.getByRole("list", { name: "Versions" })).getAllByRole("listitem")).toHaveLength(4);
+
+    fireEvent.click(within(screen.getByRole("list", { name: "Versions" }).querySelector('[aria-label="Version 3"]') as HTMLElement).getByRole("button", { name: "Restore" }));
+    await waitFor(() => expect(calls.filter((call) => call.channel === "teams:restore").map((call) => call.payload)).toEqual([{ teamId: "team-1", version: 3 }]));
+    await waitFor(() => expect(screen.getByRole("region", { name: "EO reviewers" })).toHaveTextContent("version 5"));
+    const members = screen.getByRole("region", { name: "Members" });
+    expect(within(members).getByRole("listitem", { name: "Member Criteria expert" })).toHaveTextContent("RuntimeClaude Code");
+    expect(within(screen.getByRole("region", { name: "Leader" })).getByRole("listitem", { name: "Leader Review lead" })).toHaveTextContent("Reasoning efforthigh");
+  });
+
+  it("says, as the one-member change does, that this machine is not signed in to the runtime chosen — and still applies", async () => {
+    const calls = bulk();
+    // A Codex this machine is signed out of, answered over the bulk mock's own.
+    const base = window.eo.ipc.invoke;
+    window.eo.ipc.invoke = vi.fn(async (channel: string, payload: unknown) => {
+      if (channel === "runtime:status" && (payload as { provider: string }).provider === "codex") return { ok: true, data: { runtime: SIGNED_OUT_CODEX } };
+      return base(channel as never, payload as never);
+    }) as never;
+    mount();
+    const editor = await openBulk();
+    await waitFor(() => expect(within(editor).getByRole("option", { name: "Codex — not signed in on this machine" })).toBeInTheDocument());
+    fireEvent.click(within(editor).getByRole("checkbox", { name: "Criteria expert" }));
+    await chooseCodex(editor);
+    expect(within(editor).getByRole("note")).toHaveTextContent("This machine is not signed in to Codex");
+    fireEvent.click(within(editor).getByRole("button", { name: "Apply to 1 member" }));
+    await waitFor(() => expect(applied(calls)).toEqual([{ teamId: "team-1", agentIds: ["ag-criteria"], provider: "codex", model: "gpt-5.1-codex", reasoning: "low" }]));
+    await waitFor(() => expect(screen.getByRole("region", { name: "EO reviewers" })).toHaveTextContent("version 4"));
+  });
+
+  it("is not offered on a locked team, nor for an archived member", async () => {
+    mockIpc(() => [team({ locked: true })]);
+    mount();
+    await openTeams();
+    expect(screen.queryByRole("region", { name: "Several at once" })).toBeNull();
+    cleanup();
+
+    mockIpc(() => [team({ members: [member(), member({ agentId: "ag-old", name: "Old expert", archived: true })] })]);
+    mount();
+    const editor = await openBulk();
+    expect(within(editor).queryByRole("checkbox", { name: "Old expert" })).toBeNull();
+  });
+});
+
 describe("archiving or deleting a team from the Teams tab (EO-897)", () => {
   /** A Teams tab whose archive and delete answer as `answer` says; the team leaves the list once one is confirmed. */
   function removable(answer: (channel: "teams:archive" | "teams:delete", confirm: boolean) => { done: boolean; problem: string | null; members: string[] }): Call[] {

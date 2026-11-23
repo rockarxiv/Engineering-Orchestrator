@@ -51,7 +51,7 @@ function runtime(over: Partial<RuntimeStatusView> & { signedIn?: "signed_in" | "
 let readiness: RuntimeReadiness;
 
 function setMembers(input: Partial<IpcPayload<"teams:setMembersSettings">>) {
-  return setTeamMembersSettingsCommand(handle.db, { teamId, members: [memberName], provider: "claude", model: "sonnet", reasoning: "high", ...input }, readiness);
+  return setTeamMembersSettingsCommand(handle.db, { teamId, members: [memberName], agentIds: [], provider: "claude", model: "sonnet", reasoning: "high", ...input }, readiness);
 }
 
 beforeEach(() => {
