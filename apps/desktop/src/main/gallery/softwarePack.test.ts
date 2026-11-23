@@ -106,13 +106,14 @@ describe("the bundled software template", () => {
    * (EO-763), which adds the Pull request comments board: the export of
    * Delivery carries it, since Delivery routes into it. And 1.5 (EO-868),
    * which gives Review its team of focused reviewers. And 1.6 (EO-873),
-   * whose Review team declares what its passes rule out.
+   * whose Review team declares what its passes rule out. And 1.7
+   * (EO-888), whose Review lead says what each pass covers.
    */
   it("is exactly what exporting the shipped Delivery pipeline produces, once the first launch has brought it up to date", () => {
     syncRolePrompts(handle.db, PROMPTS_DIRECTORY);
     const history = loadTemplateHistory(GALLERY_DIRECTORY);
     backfillPipelineOrigins(handle.db, history);
-    expect(applyTemplateUpdates(handle.db, history, { isTheRecord: false })).toEqual([expect.objectContaining({ pipelineId: "default", outcome: "applied", from: "1.1", to: "1.6" })]);
+    expect(applyTemplateUpdates(handle.db, history, { isTheRecord: false })).toEqual([expect.objectContaining({ pipelineId: "default", outcome: "applied", from: "1.1", to: "1.7" })]);
     expect(listPipelines(handle.db).map((pipeline) => pipeline.name)).toContain("Pull request comments");
     const built = exportPipeline(handle.db, "default");
     expect(built.ok).toBe(true);

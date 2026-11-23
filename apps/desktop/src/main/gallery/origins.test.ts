@@ -109,6 +109,25 @@ describe("matching step ids against the history", () => {
     expect(matchTemplateVersion(ids, history, withTeam("1.6"))?.version.version).toBe("1.6");
   });
 
+  /**
+   * 1.6 and 1.7 differ only in what Review's lead is told (EO-888): a
+   * Delivery whose team's lead names no scope for its passes is on 1.6,
+   * and is brought to 1.7 by the update.
+   */
+  it("tells 1.6 from 1.7 by what Review's lead is told", () => {
+    const onSixteen = templateHistoryUpTo(GALLERY_DIRECTORY, SOFTWARE, "1.6");
+    backfillPipelineOrigins(handle.db, onSixteen);
+    applyTemplateUpdates(handle.db, onSixteen, { isTheRecord: false });
+    const agents = listAgents(handle.db);
+    const steps = listStepsForPipeline(handle.db, "default").map((step) => withKind(agents, step));
+    const ids = steps.map((step) => step.id);
+    const teamOf = (version: string) => history.get(SOFTWARE)!.find((entry) => entry.version === version)!.document.steps.find((step) => step.id === "review")!.team!;
+    const withTeam = (version: string) => steps.map((step) => (step.id === "review" ? { ...step, team: teamOf(version) } : step));
+    expect(teamOf("1.6")).not.toEqual(teamOf("1.7"));
+    expect(matchTemplateVersion(ids, history, withTeam("1.6"))?.version.version).toBe("1.6");
+    expect(matchTemplateVersion(ids, history, withTeam("1.7"))?.version.version).toBe("1.7");
+  });
+
   it("still matches a pipeline the person removed a step from, and leaves that step out of the map", () => {
     const held = DELIVERY_BEFORE_EO_461.filter((id) => id !== "repository_index");
     const match = matchTemplateVersion(held, history);

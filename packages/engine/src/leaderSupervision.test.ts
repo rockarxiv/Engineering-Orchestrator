@@ -34,7 +34,7 @@ const MEMBERS: LeaderTeamMember[] = [
   { agentId: "agent-rita", name: "Rita", role: "reviewer" },
   { agentId: "agent-tom", name: "Tom", role: "tester" },
 ];
-const ask = (key: string, member = "Rita", required = true): LeaderAssignment => ({ key, member, instructions: `Look at ${key}.`, required });
+const ask = (key: string, member = "Rita", required = true): LeaderAssignment => ({ key, member, scope: `src/${key}/`, instructions: `Look at ${key}.`, required });
 /** An assignment EO accepted, with the member's agent. */
 const want = (key: string, member = "Rita", required = true): AcceptedAssignment => {
   const one = MEMBERS.find((each) => each.name === member)!;

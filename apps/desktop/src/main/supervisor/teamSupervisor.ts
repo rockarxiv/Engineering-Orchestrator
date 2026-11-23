@@ -84,6 +84,7 @@ import {
 import type { AgentWriteBridge } from "../mcp/writeBridge.js";
 import { agentReasoningEffort } from "../providers/smallModels.js";
 import { postClarificationQuestions, unansweredQuestions } from "../roles/clarificationQuestions.js";
+import { withoutAnsweringAlone } from "../roles/answeringAlone.js";
 import { captureTeamEvidence, type MemberCopy, type TeamEvidence } from "./teamEvidence.js";
 import { reportOnlyCredential, type TeamParticipantScopes, type ThreadBoundary } from "./teamParticipants.js";
 import type { TurnDrive, TurnOutcome } from "./turnOutcome.js";
@@ -209,6 +210,13 @@ export interface IsolatedTurnRequest {
   workspace: PreparedWorkspace | null;
   /** The team framing: what is added after the agent's own instructions, and after the ordinary context. */
   framing: { instructions: string; context: string };
+  /**
+   * Whether it is a member on an assignment (EO-888), sent its own
+   * instructions without what they say only to an agent answering the
+   * step alone, and the item's context without what only the step's own
+   * agent acts on; false for the leader, which answers the step.
+   */
+  member: boolean;
   /** Where the member's view of the thread ends: its team's other reports are not part of it. */
   boundary: ThreadBoundary;
 }
@@ -371,6 +379,8 @@ function turnFailure(outcome: TurnOutcome): string {
 
 /** One turn, as its provider is started and its answer taken. */
 interface TurnSpec {
+  /** Whether it is a member's turn on an assignment rather than the leader's (EO-888): a member is not sent what is for answering the step. */
+  member: boolean;
   instructions: string;
   context: string;
   outputSchema: JsonSchema;
@@ -478,12 +488,31 @@ const ASKING =
   "If only the person can settle something you need, ask them instead of answering: your turn ends, EO posts your questions, and you are started again with their answer. A permission or tool you do not have is something to ask for, never something you can give yourself.";
 
 /**
- * What an isolated member is told of where it stands (EO-867): the
- * sentence that replaces `REPORT_ONLY` for a member that works as its
- * role's agent does.
+ * Where an isolated turn works (EO-867): a copy of the item's workspace of
+ * its own, which nothing it does leaves.
  */
-const ISOLATED =
-  "You work as you would on this step alone, with everything you are given for it, in a working directory that is a copy of the item's workspace EO made for you alone. Change, build and test whatever you need there. Nothing you do in it reaches the item's work, its branch or another member's copy, and EO removes it when your turn ends, saying on your report what you changed; do not push from it. Where you have the repository index, it describes the same files as they stand in the item's own workspace: read and change them in your copy. You post nothing on the item yourself — EO posts your answer as your report, attributed to you — and you are not shown the other members' reports.";
+const ISOLATED_COPY =
+  "in a working directory that is a copy of the item's workspace EO made for you alone. Change, build and test whatever you need there. Nothing you do in it reaches the item's work, its branch or another member's copy, and EO removes it when your turn ends, saying on your report what you changed; do not push from it. Where you have the repository index, it describes the same files as they stand in the item's own workspace: read and change them in your copy. You post nothing on the item yourself — EO posts your answer as your report, attributed to you —";
+
+/**
+ * What an isolated member is told of where it stands (EO-867): the
+ * sentence that replaces `REPORT_ONLY` for a member. Not that it works as
+ * it would on the step alone (EO-888): it answers one assignment, and is
+ * told to read for that.
+ */
+const ISOLATED = `You work on your assignment ${ISOLATED_COPY} and you are not shown the other members' reports.`;
+
+/** What an isolated leader is told of where it stands (EO-867): it answers the step, so it works as it would on the step alone. */
+const ISOLATED_LEADER = `You work as you would on this step alone, with everything you are given for it, ${ISOLATED_COPY} and you read the members' reports below, as EO gives them to you.`;
+
+/**
+ * What a member is told to read (EO-888): what its assignment names and
+ * what that leads to, never the whole of the work for its own sake, and
+ * to say what it left unread — so the leader knows what its report does
+ * not cover, and every member does not do a whole review's reading.
+ */
+const READING =
+  "Read what your assignment names and what that leads to — the code it calls or is called by, its tests, the rules that bear on it — and no more. The rest of the work is other members' assignments: do not print or page through the whole change to find your part, go to what your assignment names. Where your assignment names all of the work, read all of it.";
 
 /** Whether a team's members are isolated (EO-867). */
 function isolatedTeam(team: SessionTeam): boolean {
@@ -497,33 +526,50 @@ function participantInstructions(agent: Agent, step: PipelineStep, team: Session
       : "A leader assigned you this piece of the work, and reads your report with the others' before it answers the step.";
   const answer =
     team.outcomes.length === 0
-      ? "Answer with your report: what you looked at, what you found, and why. If you could not establish something, say so in the report rather than guessing."
-      : "Answer with one of the outcomes your assignment declares and your report: what you looked at, what you found, and why it supports that outcome. If you could not establish something, say so in the report rather than guessing.";
+      ? "Answer with your report: what you looked at, what you found, and why, and what you did not read that a reader might expect you to have. If you could not establish something, say so in the report rather than guessing."
+      : "Answer with one of the outcomes your assignment declares and your report: what you looked at, what you found, and why it supports that outcome, and what you did not read that a reader might expect you to have. If you could not establish something, say so in the report rather than guessing.";
   // An isolated member's own instructions come first, as on any dispatch
   // of its agent; this is the team framing after them (EO-867).
   if (isolatedTeam(team)) {
-    return ["## Your part in a team", "", `You are ${agent.name}, one member of a team EO runs on the step "${step.name}". ${how}`, "", ISOLATED, "", answer, "", ASKING].join("\n");
+    return ["## Your part in a team", "", `You are ${agent.name}, one member of a team EO runs on the step "${step.name}". ${how}`, "", ISOLATED, "", READING, "", answer, "", ASKING].join("\n");
   }
+  // Its own instructions without what they say only to an agent answering
+  // the step alone (EO-888); an isolated member's are left out the same way
+  // where its turn is built.
+  const standing = withoutAnsweringAlone(agent.instructions).trim();
   return [
     `You are ${agent.name}, one participant of a team EO runs on the step "${step.name}". ${how}`,
     "",
     REPORT_ONLY,
     "",
+    READING,
+    "",
     answer,
     "",
     ASKING,
-    ...(agent.instructions.trim() === "" ? [] : ["", "## Your standing instructions", "", agent.instructions.trim()]),
+    ...(standing === "" ? [] : ["", "## Your standing instructions", "", standing]),
   ].join("\n");
 }
 
-function participantContext(item: Item, outcomes: readonly TeamOutcome[], key: string, instructions: string, extra: readonly string[], isolated = false): string {
-  // An isolated member's context is its step's ordinary one, the item
-  // included, with this after it (EO-867).
+/**
+ * What a leader-led team's assignment covers (EO-888), as its member is
+ * shown it: null for an independent team's participant, and for an
+ * assignment accepted before a leader was asked to say.
+ */
+function scopeOf(assignment: object): string | null {
+  const scope = (assignment as { scope?: unknown }).scope;
+  return typeof scope === "string" && scope.trim() !== "" ? scope.trim() : null;
+}
+
+function participantContext(item: Item, outcomes: readonly TeamOutcome[], key: string, instructions: string, extra: readonly string[], isolated = false, scope: string | null = null): string {
+  // An isolated member's context is the item's, without what only the
+  // step's own agent acts on (EO-888), with this after it (EO-867).
   const head = isolated ? [] : [`# ${item.key} — ${item.title}`, "", item.body ?? "", ""];
   return [
     ...head,
     `## Your assignment: ${key}`,
     "",
+    ...(scope === null ? [] : [`**What it covers:** ${scope}`, ""]),
     instructions,
     ...(outcomes.length === 0 ? [] : ["", "## The outcomes you may report", "", ...outcomeLines(outcomes)]),
     ...(extra.length === 0 ? [] : ["", ...extra]),
@@ -850,7 +896,7 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
         built =
           deps.isolatedTurn === undefined
             ? { ok: false, problem: `EO did not start ${agent.name} as an isolated team member, because this desktop has no way to build its turn.` }
-            : await deps.isolatedTurn({ item, step: input.step, agent, attemptId: attempt.id, run: getRun(db, run.id) ?? run, cwd, ...(copyEnvironment === undefined ? {} : { environment: copyEnvironment }), workspace: input.workspace?.prepared ?? null, framing: { instructions: input.turn.instructions, context: input.turn.context }, boundary: input.boundary });
+            : await deps.isolatedTurn({ item, step: input.step, agent, attemptId: attempt.id, run: getRun(db, run.id) ?? run, cwd, ...(copyEnvironment === undefined ? {} : { environment: copyEnvironment }), workspace: input.workspace?.prepared ?? null, framing: { instructions: input.turn.instructions, context: input.turn.context }, member: input.turn.member, boundary: input.boundary });
       } catch (error) {
         built = { ok: false, problem: `EO could not build its turn: ${error instanceof Error ? error.message : String(error)}` };
       }
@@ -1441,6 +1487,7 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
             outstanding: outstanding - started,
             boundary: () => ({ visibleThrough, exposedCommentIds: exchange.ids, hiddenCommentIds: sessionReportIds(sessionId) }),
             turn: (attempt, agent) => ({
+              member: true,
               instructions: participantInstructions(agent, step, teamNow),
               context: participantContext(itemNow(), teamNow.outcomes, participant.key, participant.instructions, exchange.lines, isolatedTeam(teamNow)),
               outputSchema: participantTurnSchema(teamNow.outcomes),
@@ -1527,8 +1574,9 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
             hiddenCommentIds: sessionReportIds(sessionId),
           }),
           turn: (attempt, agent) => ({
+            member: true,
             instructions: participantInstructions(agent, step, teamNow),
-            context: participantContext(itemNow(), teamNow.outcomes, assignment.key, assignment.instructions, extra, isolatedTeam(teamNow)),
+            context: participantContext(itemNow(), teamNow.outcomes, assignment.key, assignment.instructions, extra, isolatedTeam(teamNow), scopeOf(assignment)),
             outputSchema: participantTurnSchema(teamNow.outcomes),
             accepts: (raw) => readParticipantAnswer(teamNow.outcomes, raw).kind !== "invalid",
             // A contributor that tries to hand work on is refused, and the
@@ -1565,6 +1613,7 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
           // and what it asked: the reports are why its next turn exists.
           boundary: () => ({ visibleThrough, exposedCommentIds: [...reportIds, ...leaderIds, ...exchange.ids] }),
           turn: (attempt, agent) => ({
+            member: false,
             instructions: leaderInstructions(agent, step, teamNow),
             context: leaderContext(teamNow, roster.facts, offer, start, previous, attempts, states, ledger, exchange.lines),
             outputSchema: leaderTurnSchema(roster.facts, input.answer!.document!, offer),
@@ -1658,7 +1707,7 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
           const known = new Set(ledger.keys);
           words = [
             verdict.accepted.length === 0 ? `Asked for round ${attempt.round} of work; EO accepted none of it.` : `Assigns round ${attempt.round}:`,
-            ...verdict.accepted.map((one) => `- **${one.key}** (${one.member}, ${one.role}${one.required ? "" : ", optional"}${known.has(one.key) ? ", follow-up" : ""}): ${one.instructions}`),
+            ...verdict.accepted.map((one) => `- **${one.key}** (${one.member}, ${one.role}${one.required ? "" : ", optional"}${known.has(one.key) ? ", follow-up" : ""}), covering ${one.scope}: ${one.instructions}`),
             ...(read.request.note.trim() === "" ? [] : ["", read.request.note.trim()]),
           ].join("\n");
           if (verdict.refused.length > 0) {
@@ -1750,10 +1799,10 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
         ...(isolated ? ["## Your part in a team", ""] : []),
         `You are ${agent.name}, the leader of a team EO runs on the step "${stepNow.name}". You plan the work, assign focused pieces of it to the members of your team by name, read their reports, and answer the step yourself.`,
         "",
-        isolated ? ISOLATED.replace(" and you are not shown the other members' reports.", " and you read the members' reports below, as EO gives them to you.") : REPORT_ONLY,
+        isolated ? ISOLATED_LEADER : REPORT_ONLY,
         "",
         "You act only through your answer, and every answer ends your turn:",
-        "- **assign** a round of work: each assignment a key, a member of your team by name, focused instructions and whether you cannot answer without it. EO runs what it accepts and starts your next turn with the reports. Name an earlier key again to ask that assignment to follow up; its earlier report is then superseded. Participants cannot assign work on.",
+        "- **assign** a round of work: each assignment a key, a member of your team by name, what it covers — the files, areas or questions it is about — focused instructions and whether you cannot answer without it. A member reads what its assignment covers and what that leads to, not the whole of the work, so say it covers everything only where the assignment needs all of it. EO runs what it accepts and starts your next turn with the reports. Name an earlier key again to ask that assignment to follow up; its earlier report is then superseded. Participants cannot assign work on.",
         "- **final**: answer the step's action. Name in `contributions` the ids of the reports you relied on — only current ones, never a superseded report — say where they disagreed and how you settled it, and what you could not establish. EO checks that every required assignment has reported and that your answer is a valid answer to the step; saying the work is done does not make it so.",
         `- or ${ASKING.charAt(0).toLowerCase()}${ASKING.slice(1)}`,
         "",
@@ -1818,7 +1867,8 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
         const latest = states.find((state) => state.key === assignment.key && state.round === assignment.round && state.supersededBy === null);
         const contribution = ledger.contributions.find((one) => one.key === assignment.key);
         const head = `### ${assignment.key} — ${assignment.member} (${assignment.role}), ${assignment.required ? "required" : "optional"}, round ${assignment.round}`;
-        lines.push(head, "", `Asked: ${assignment.instructions}`, "");
+        const covers = scopeOf(assignment);
+        lines.push(head, "", ...(covers === null ? [] : [`Covering: ${covers}`]), `Asked: ${assignment.instructions}`, "");
         if (contribution !== undefined) {
           const label = teamNow.outcomes.find((outcome) => outcome.key === contribution.outcome)?.label;
           lines.push(`Report (comment ${contribution.reportId ?? "?"})${label === undefined ? "" : ` — ${label}`}:`, "", contribution.report ?? "", "");

@@ -505,7 +505,7 @@ describe("a person's controls on a leader-led team (EO-849)", () => {
 
   it("parks a leader whose turns failed and were refused past its retries, retries the leader alone, accepts the corrected answer once, and never again", async () => {
     leaderTurns = [
-      says({ outcome: { decision: "assign", assignments: [{ key: "auth", member: "Sasha", instructions: "Check the login.", required: true }], note: "One thing to check." } }),
+      says({ outcome: { decision: "assign", assignments: [{ key: "auth", member: "Sasha", scope: "the whole change", instructions: "Check the login.", required: true }], note: "One thing to check." } }),
       // A turn that crashes, then an answer EO refuses: two corrections past the one retry.
       () =>
         (async function* () {

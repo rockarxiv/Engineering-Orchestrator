@@ -41,6 +41,8 @@ const reviewOf = (document: Document) => document.steps.find((step) => step.id =
 const TEAM = reviewOf(bundled).team as LeaderTeam;
 /** Review's team as 1.5 shipped it, before its outcomes ruled anything out (EO-873). */
 const TEAM_15 = reviewOf(versionOf("1.5").document).team as LeaderTeam;
+/** Review's team as 1.6 shipped it, before its lead said what each pass covers (EO-888). */
+const TEAM_16 = reviewOf(versionOf("1.6").document).team as LeaderTeam;
 
 /** Whitespace-insensitive: the prompt is hard-wrapped. */
 const flat = (text: string) => text.replace(/\s+/g, " ").trim();
@@ -114,13 +116,14 @@ describe("the software template's Review team (EO-868)", () => {
   });
 
   it("rules out an approval where a pass reports a blocking issue or something only a person can decide, and nothing where it reports none (EO-873)", () => {
-    expect(bundled.template!.version).toBe("1.6");
+    expect(bundled.template!.version).toBe("1.7");
     expect(TEAM.outcomes.map((outcome) => [outcome.key, outcome.rulesOut])).toEqual([
       ["clear", undefined],
       ["blocking", ["approved"]],
       ["needs_decision", ["approved"]],
     ]);
-    expect({ ...TEAM, outcomes: TEAM.outcomes.map(({ rulesOut: _rulesOut, ...outcome }) => outcome) }).toEqual(TEAM_15);
+    expect({ ...TEAM_16, outcomes: TEAM_16.outcomes.map(({ rulesOut: _rulesOut, ...outcome }) => outcome) }).toEqual(TEAM_15);
+    expect(TEAM.outcomes).toEqual(TEAM_16.outcomes);
   });
 
   it("validates and imports cleanly, its team and all", () => {
@@ -154,6 +157,29 @@ describe("the software template's Review team (EO-868)", () => {
     expect(leader).toContain('When the repository has none, do not assign it, and say so in one line in your note and in your final answer\'s limitations: "Rules pass skipped: the repository has no written rules."');
     expect(leader).toContain("Keep every assignment focused and bounded");
     expect(leader).toContain("with the file, the case and what correct would look like");
+  });
+
+  /**
+   * A member reads what its assignment covers (EO-888), so the leader is
+   * told to say what each covers, and which part of the change that is:
+   * the criteria pass alone is given the whole of it.
+   */
+  it("has the leader say what each pass covers, giving the whole change to the criteria pass alone (EO-888)", () => {
+    const leader = flat(TEAM.leader.instructions);
+    expect(leader).toContain("Every assignment says what it covers: the files, areas or questions it is about, by name.");
+    expect(leader).toContain("A member reads what its assignment covers and what that leads to, not the whole change");
+    expect(leader).toContain("Only `criteria` covers the whole change.");
+    const passes = TEAM.leader.instructions.split("\n").filter((line) => /^(\d+\. `\w+`:|- `\w+`, when )/.test(line));
+    const covering = Object.fromEntries(passes.map((line) => [/`(\w+)`/.exec(line)![1]!, line.slice(line.indexOf("It covers"))]));
+    expect(Object.keys(covering)).toEqual(["criteria", "impact", "tests", "rules", "security", "user_facing"]);
+    expect(covering["criteria"]).toContain("It covers the whole change");
+    expect(covering["impact"]).toContain("It covers the symbols, schemas and configuration the change alters, named, and what depends on them, not the rest of the diff.");
+    expect(covering["tests"]).toContain("It covers the test files the change adds or alters and the code they test, both named.");
+    expect(covering["rules"]).toContain("It covers those files and the parts of the change they govern, named.");
+    expect(covering["security"]).toContain("It covers the files that do, named, and what their input reaches.");
+    expect(covering["user_facing"]).toContain("It covers the files that do, named.");
+    for (const key of ["impact", "tests", "rules", "security", "user_facing"]) expect(covering[key], key).not.toContain("whole");
+    expect(leader).toContain("and to say what it did not read");
   });
 
   it("has the leader add a security and a user-facing pass when the change calls for them, and say why it did or did not", () => {
@@ -366,11 +392,56 @@ describe("an installation on 1.5, when 1.6 ships", () => {
   it("is compared as a change to Review's team alone, and applied where the person left Review as it was", () => {
     expect(review().team).toEqual(TEAM_15);
     expect(compareWithTemplate(handle.db, "default", versionOf("1.6"))!.merge.comparison.changes).toEqual([
-      expect.objectContaining({ key: { kind: "setting", stepId: "review", field: "team" }, outcome: "template", base: TEAM_15, current: TEAM_15, template: TEAM }),
+      expect.objectContaining({ key: { kind: "setting", stepId: "review", field: "team" }, outcome: "template", base: TEAM_15, current: TEAM_15, template: TEAM_16 }),
     ]);
-    expect(applyTemplateUpdates(handle.db, shipped, { isTheRecord: false })).toContainEqual(expect.objectContaining({ pipelineId: "default", outcome: "applied", from: "1.5", to: "1.6" }));
+    expect(applyTemplateUpdates(handle.db, templateHistoryUpTo(GALLERY_DIRECTORY, SOFTWARE, "1.6"), { isTheRecord: false })).toContainEqual(
+      expect.objectContaining({ pipelineId: "default", outcome: "applied", from: "1.5", to: "1.6" }),
+    );
+    expect(openUpdateConflict(handle.db, "default")).toBeUndefined();
+    expect(review().team).toEqual(TEAM_16);
+    expect(getPipelineOrigin(handle.db, "default")?.version).toBe("1.6");
+  });
+});
+
+/**
+ * An installation on 1.6 (EO-888): 1.7, whose lead says what each pass
+ * covers, reaches it as any template update does, and is held where the
+ * person changed Review's team.
+ */
+describe("an installation on 1.6, when 1.7 ships", () => {
+  let handle: DbHandle;
+
+  beforeEach(() => {
+    handle = openMigratedTestDb();
+    const onSixteen = templateHistoryUpTo(GALLERY_DIRECTORY, SOFTWARE, "1.6");
+    backfillPipelineOrigins(handle.db, onSixteen);
+    adoptPipeline(handle.db, "default", createProject(handle.db, { name: "Shop", keyPrefix: "SHOP" }).id as Uuid);
+    applyTemplateUpdates(handle.db, onSixteen, { isTheRecord: false });
+    expect(getPipelineOrigin(handle.db, "default")?.version).toBe("1.6");
+  });
+
+  afterEach(() => handle.close());
+
+  const review = () => listStepsForPipeline(handle.db, "default").find((step) => step.id === "review")!;
+
+  it("is compared as a change to Review's team alone, and applied where the person left Review as it was", () => {
+    expect(review().team).toEqual(TEAM_16);
+    expect(compareWithTemplate(handle.db, "default", versionOf("1.7"))!.merge.comparison.changes).toEqual([
+      expect.objectContaining({ key: { kind: "setting", stepId: "review", field: "team" }, outcome: "template", base: TEAM_16, current: TEAM_16, template: TEAM }),
+    ]);
+    expect(applyTemplateUpdates(handle.db, shipped, { isTheRecord: false })).toContainEqual(expect.objectContaining({ pipelineId: "default", outcome: "applied", from: "1.6", to: "1.7" }));
     expect(openUpdateConflict(handle.db, "default")).toBeUndefined();
     expect(review().team).toEqual(TEAM);
+    expect(getPipelineOrigin(handle.db, "default")?.version).toBe("1.7");
+  });
+
+  it("is held as a conflict where the person changed Review's team, and leaves theirs", () => {
+    const theirs = { ...TEAM_16, leader: { ...TEAM_16.leader, instructions: "Review it by risk." } };
+    const steps = listStepsForPipeline(handle.db, "default").map(({ teamId, ...step }) => (step.id === "review" ? { ...step, team: theirs } : { ...step, teamId }));
+    replacePipelineGraph(handle.db, "default", steps, listRoutesForPipeline(handle.db, "default"));
+
+    expect(applyTemplateUpdates(handle.db, shipped, { isTheRecord: false })).toContainEqual(expect.objectContaining({ pipelineId: "default", outcome: "conflict", from: "1.6", to: "1.7" }));
+    expect(review().team).toEqual(theirs);
     expect(getPipelineOrigin(handle.db, "default")?.version).toBe("1.6");
   });
 });

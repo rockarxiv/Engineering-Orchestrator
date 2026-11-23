@@ -330,6 +330,7 @@ import { archivedAgentRefusal, mentionDepthRefusal, outOfProjectDispatchRefusal,
 import { watchDependencyRegressions } from "./dependencyGates.js";
 import { declaresNoCriteria, isMissingCriteriaAsk, missingCriteriaRefusal } from "./reviewCriteria.js";
 import { promptHash } from "../roles/prompts.js";
+import { withoutAnsweringAlone } from "../roles/answeringAlone.js";
 import { readDebugMode } from "../debug/debugMode.js";
 import { capturingProvider, type SendContext } from "../providers/sentCapture.js";
 import { scenarioResultProblem } from "../roles/scenario.js";
@@ -907,6 +908,12 @@ export interface RunSupervisorOptions {
      * does not empty its "human comments since".
      */
     notLooked?: ReadonlySet<string>,
+    /**
+     * Whom it is for (EO-888): absent, or `step`, on every ordinary
+     * dispatch and an isolated leader's turn; `member` on an isolated
+     * member's, which leaves out what only the step's own agent acts on.
+     */
+    audience?: "step" | "member",
   ) => string | Promise<string>;
   /**
    * What state an item moves to on success.
@@ -2111,7 +2118,7 @@ export function createRunSupervisor(
     // Wrapped rather than passed as the bare default, so the pack's own
     // sections reach the assembly without the seam growing a parameter
     // every test that stubs it would have to ignore.
-    buildContext = (db, item, agent, action, resumingRun, visible, notLooked) => buildTurnContext(db, item, agent, action, resumingRun, sectionRenderers, visible, notLooked),
+    buildContext = (db, item, agent, action, resumingRun, visible, notLooked, audience) => buildTurnContext(db, item, agent, action, resumingRun, sectionRenderers, visible, notLooked, audience),
     resolveNextState = () => undefined,
     resultKeyOf = () => undefined,
     onRunSucceeded = () => {},
@@ -8270,7 +8277,10 @@ export function createRunSupervisor(
     const attempt = getTeamAttempt(db, request.attemptId);
     const record = attempt === undefined ? undefined : getTeamSessionRecord(db, attempt.sessionId);
     const ownSession = new Set(record === undefined ? [] : runsOfTeamSession(record));
-    const ordinary = await buildContext(db, item, agent, action, null, visible, ownSession);
+    // A member's is the item and its thread, without what only the step's
+    // own agent acts on (EO-888); a leader answers the step, and is sent
+    // the step's ordinary context.
+    const ordinary = await buildContext(db, item, agent, action, null, visible, ownSession, request.member ? "member" : "step");
     const copyWorkspace: PreparedWorkspace = { cwd, kind: kindFor(item).slug, workspaceId: item.workspaceId };
     // The index the step's ordinary dispatch is lent, which is the item's
     // own: an index is kept per item, and building one for a copy would
@@ -8291,7 +8301,10 @@ export function createRunSupervisor(
       else postComment(db, { itemId: item.id, runId: run.id, author: { type: "engine" }, kind: "note", body: missingCliToolNotice(tool, agent.name) });
     }
     for (const notice of attachment.notices) postComment(db, { itemId: item.id, runId: run.id, author: { type: "engine" }, kind: "note", body: notice });
-    const instructions = agent.instructions.trim() === "" ? request.framing.instructions : `${agent.instructions}\n\n${request.framing.instructions}`;
+    // A member is not sent what its instructions say only to an agent
+    // answering the step alone (EO-888).
+    const own = request.member ? withoutAnsweringAlone(agent.instructions) : agent.instructions;
+    const instructions = own.trim() === "" ? request.framing.instructions : `${own}\n\n${request.framing.instructions}`;
     const context = [ordinary, ...(memory.section === null ? [] : [memory.section]), request.framing.context].join("\n\n");
     return {
       ok: true,
