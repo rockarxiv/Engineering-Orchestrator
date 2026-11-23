@@ -2303,6 +2303,31 @@ export const recordContract = {
    * what the team is: it writes no version.
    */
   "teams:setLocked": channel(z.object({ teamId: z.string(), locked: z.boolean() }), z.object({ changed: z.boolean(), problem: z.string().nullable() })),
+  /**
+   * A person archiving one declared team (EO-897): one-way, as archiving an
+   * agent is, so nothing brings it back. Its own agents — leader and
+   * members — are archived with it; it leaves the Teams tab and no step may
+   * name it after. Refused, as `problem`, while any step names it, in its
+   * pipeline's current version or an older one items still run on (the
+   * refusal names those steps), and while it is locked. Nothing is archived
+   * until `confirm` is true: an unconfirmed call answers with `members`,
+   * the names of the agents that would go with it.
+   */
+  "teams:archive": channel(
+    z.object({ teamId: z.string(), confirm: z.boolean().default(false) }),
+    z.object({ archived: z.boolean(), problem: z.string().nullable(), members: z.array(z.string()).default([]) }),
+  ),
+  /**
+   * A person deleting one declared team (EO-897), archived ones included,
+   * the way deleting a project deletes its teams: the team and its versions
+   * go, and its own agents stay only as tombstones its runs, reports and
+   * comments still name. Refused as `teams:archive` is, and confirmed the
+   * same way.
+   */
+  "teams:delete": channel(
+    z.object({ teamId: z.string(), confirm: z.boolean().default(false) }),
+    z.object({ deleted: z.boolean(), problem: z.string().nullable(), members: z.array(z.string()).default([]) }),
+  ),
   "engine:pause": channel(z.object({ cancelRunning: z.boolean().default(false) }), EngineStatusSchema),
   "engine:resume": channel(z.void(), EngineStatusSchema),
   "engine:status": channel(z.void(), EngineStatusSchema),

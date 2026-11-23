@@ -2133,6 +2133,12 @@ export const teams = sqliteTable(
      */
     trialPipelineId: text("trial_pipeline_id"),
     trialSource: text("trial_source"),
+    /**
+     * When a person archived the team (EO-897, migration 0188), or NULL.
+     * One-way, as an agent's archive is: its members are archived with it,
+     * it leaves the Teams tab and no step may name it.
+     */
+    archivedAt: integer("archived_at"),
     createdAt: integer("created_at").notNull(),
     updatedAt: integer("updated_at").notNull(),
   },

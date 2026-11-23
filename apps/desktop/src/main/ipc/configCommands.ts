@@ -257,22 +257,37 @@ export function writeGuards(db: Db, input: IpcPayload<"guards:set">): IpcRespons
  * somebody rewired one.
  */
 export function stepsNamingAgents(db: Db): Map<string, StepNamingAgent[]> {
+  return stepsNaming(db, (step) => (step.type === "agent" ? step.agentId : null));
+}
+
+/**
+ * Every pipeline step that names each declared team, by team id (EO-897),
+ * read as `stepsNamingAgents` reads agents: the current graph of every
+ * pipeline, archived ones included, and every older version unfinished
+ * items still run on — an item there is dispatched as the team its own
+ * version's step names.
+ */
+export function stepsNamingTeams(db: Db): Map<string, StepNamingAgent[]> {
+  return stepsNaming(db, (step) => step.teamId ?? null);
+}
+
+function stepsNaming(db: Db, named: (step: PipelineStep) => string | null): Map<string, StepNamingAgent[]> {
   const pipelineNames = new Map(listPipelines(db, undefined, true).map((pipeline) => [pipeline.id as string, pipeline.name]));
-  const byAgent = new Map<string, StepNamingAgent[]>();
-  const add = (agentId: string, entry: StepNamingAgent) => byAgent.set(agentId, [...(byAgent.get(agentId) ?? []), entry]);
+  const byId = new Map<string, StepNamingAgent[]>();
+  const add = (id: string, entry: StepNamingAgent) => byId.set(id, [...(byId.get(id) ?? []), entry]);
   for (const [pipelineId, pipelineName] of pipelineNames) {
     for (const step of listStepsForPipeline(db, pipelineId)) {
-      if (step.type !== "agent" || step.agentId === null) continue;
-      add(step.agentId, { stepId: step.id, stepName: step.name, pipelineId, pipelineName, version: null });
+      const id = named(step);
+      if (id !== null) add(id, { stepId: step.id, stepName: step.name, pipelineId, pipelineName, version: null });
     }
     for (const older of olderVersionsInUse(db, pipelineId)) {
       for (const step of older.steps) {
-        if (step.type !== "agent" || step.agentId === null) continue;
-        add(step.agentId, { stepId: step.id, stepName: step.name, pipelineId, pipelineName, version: older.number });
+        const id = named(step);
+        if (id !== null) add(id, { stepId: step.id, stepName: step.name, pipelineId, pipelineName, version: older.number });
       }
     }
   }
-  return byAgent;
+  return byId;
 }
 
 /** Steps as a sentence names them: "Review" on Delivery, and "QA" on Release's v3. */
@@ -1041,6 +1056,11 @@ export function teamSaveProblems(db: Db, pipelineId: string, declared: readonly 
       problems.push({ severity: "error", stateId: null, message: `This project already has a team called "${name}": give the team another name.` });
       continue;
     }
+    // An archived team is not changed, nor brought back (EO-897).
+    if (stored !== undefined && stored.archivedAt !== null) {
+      problems.push({ severity: "error", stateId: null, message: `The team "${stored.name}" is archived: an archived team does not change, and is not brought back. Declare a new team instead.` });
+      continue;
+    }
     if (stored !== undefined) holder.delete(teamNameKey(stored.name));
     holder.set(key, team.id);
     if (stored === undefined || !stored.locked) continue;
@@ -1247,7 +1267,7 @@ export function teamReadingsForPipeline(db: Db, pipelineId: string, steps: reado
       ...listAllTeams(db).map((team) => [team.id, team] as const),
       ...declaredTeams.map((team) => {
         const stored = getTeam(db, team.id);
-        return [team.id, { ...(stored ?? { id: team.id, projectId: null, locked: false, version: 0, createdAt: 0, updatedAt: 0 }), name: team.definition.name, definition: team.definition }] as const;
+        return [team.id, { ...(stored ?? { id: team.id, projectId: null, locked: false, version: 0, archivedAt: null, createdAt: 0, updatedAt: 0 }), name: team.definition.name, definition: team.definition }] as const;
       }),
     ]),
     // Judged as the validator judges them, member by member (EO-882).

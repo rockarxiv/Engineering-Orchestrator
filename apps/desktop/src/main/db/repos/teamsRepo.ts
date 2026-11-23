@@ -39,6 +39,8 @@ export interface StoredTeam {
   locked: boolean;
   version: number;
   definition: TeamDefinition | null;
+  /** When a person archived it (EO-897), or null. */
+  archivedAt: number | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -54,6 +56,7 @@ function toTeam(row: typeof teams.$inferSelect): StoredTeam {
     locked: row.locked,
     version: row.version,
     definition: storedTeamDefinition(row.definition),
+    archivedAt: row.archivedAt,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -64,18 +67,22 @@ export function getTeam(db: Db, id: string): StoredTeam | undefined {
   return row === undefined ? undefined : toTeam(row);
 }
 
-/** A project's teams, by name; `null` for the teams of pipelines on no project. */
+/**
+ * A project's teams, by name; `null` for the teams of pipelines on no
+ * project. An archived team is left out (EO-897): nothing may name it, and
+ * its name is free for another team.
+ */
 export function listTeams(db: Db, projectId: string | null): StoredTeam[] {
   return db
     .select()
     .from(teams)
-    .where(projectId === null ? isNull(teams.projectId) : eq(teams.projectId, projectId))
+    .where(and(projectId === null ? isNull(teams.projectId) : eq(teams.projectId, projectId), isNull(teams.archivedAt)))
     .orderBy(asc(teams.name), asc(teams.id))
     .all()
     .map(toTeam);
 }
 
-/** Every team, whichever project it is on. */
+/** Every team, whichever project it is on, archived ones included. */
 export function listAllTeams(db: Db): StoredTeam[] {
   return db.select().from(teams).orderBy(asc(teams.name), asc(teams.id)).all().map(toTeam);
 }
@@ -186,6 +193,11 @@ function touchPipelinesNaming(db: Db, teamId: string, now: number): void {
       ),
     )
     .run();
+}
+
+/** Why an archived team refuses a change (EO-897): archiving is one-way. */
+function archivedReason(team: Pick<StoredTeam, "name">): string {
+  return `The team "${team.name}" is archived: an archived team does not change, and is not brought back.`;
 }
 
 function nameTaken(db: Db, projectId: string | null, name: string, except: string | null): boolean {
@@ -338,6 +350,7 @@ export function changeTeam(
 ): TeamWrite {
   const team = getTeam(db, id);
   if (team === undefined) return { ok: false, reason: "That team no longer exists." };
+  if (team.archivedAt !== null) return { ok: false, reason: archivedReason(team) };
   const definition = TeamDefinitionSchema.parse(input.definition);
   // Writing what it already is changes nothing, so a locked team allows it —
   // its own agents named by the agents they were copied from included (EO-897).
@@ -377,6 +390,7 @@ export function restoreTeamVersion(db: Db, id: string, number: number, person: {
   if (recorded === null) return changeTeam(db, id, { definition: version.definition, author, restoredFrom: number, ...when });
   const team = getTeam(db, id);
   if (team === undefined) return { ok: false, reason: "That team no longer exists." };
+  if (team.archivedAt !== null) return { ok: false, reason: archivedReason(team) };
   if (team.locked) return { ok: false, reason: `The team "${team.name}" is locked: a person must unlock it before it can change.` };
   try {
     return db.transaction((tx) => {
@@ -410,6 +424,7 @@ export function restoreTeamVersion(db: Db, id: string, number: number, person: {
 export function setTeamMemberSettings(db: Db, id: string, agentId: string, settings: TeamMemberSettings, person: { personId: string | null; now?: number }): TeamWrite {
   const team = getTeam(db, id);
   if (team === undefined) return { ok: false, reason: "That team no longer exists." };
+  if (team.archivedAt !== null) return { ok: false, reason: archivedReason(team) };
   if (team.locked) return { ok: false, reason: `The team "${team.name}" is locked: a person must unlock it before it can change.` };
   if (team.definition === null) return { ok: false, reason: `EO cannot read what the team "${team.name}" declares, so it cannot change a member of it.` };
   const definition = team.definition;
@@ -453,6 +468,7 @@ class VersionRefused extends Error {
 export function setTeamLocked(db: Db, id: string, locked: boolean, now: number = Date.now()): TeamWrite {
   const team = getTeam(db, id);
   if (team === undefined) return { ok: false, reason: "That team no longer exists." };
+  if (team.archivedAt !== null) return { ok: false, reason: archivedReason(team) };
   if (team.locked === locked) return { ok: true, team, changed: false };
   db.transaction((tx) => {
     tx.update(teams).set({ locked, updatedAt: now }).where(eq(teams.id, id)).run();
@@ -461,14 +477,55 @@ export function setTeamLocked(db: Db, id: string, locked: boolean, now: number =
   return { ok: true, team: getTeam(db, id) as StoredTeam, changed: true };
 }
 
-/** Removes a project's teams, for `deleteProject`, letting go of the steps that name them first. Their versions go with them. */
+/** Removes a project's teams, for `deleteProject`, as `deleteTeam` removes one: its own agents and its versions go with it. */
 export function deleteProjectTeams(db: Db, projectId: string): void {
   const ids = db.select({ id: teams.id }).from(teams).where(eq(teams.projectId, projectId)).all().map((row) => row.id);
-  if (ids.length === 0) return;
-  db.update(pipelineSteps).set({ teamId: null }).where(inArray(pipelineSteps.teamId, ids)).run();
+  for (const id of ids) removeTeam(db, id, Date.now());
+}
+
+/**
+ * Removes a team: the steps that name it — a retired step's row included
+ * — let go of it, its own agents become tombstones (`deleteTeamMembers`)
+ * and its versions go with its row. Inside the caller's transaction.
+ */
+function removeTeam(db: Db, teamId: string, at: number): void {
+  touchPipelinesNaming(db, teamId, at);
+  db.update(pipelineSteps).set({ teamId: null }).where(eq(pipelineSteps.teamId, teamId)).run();
   // Its own agents go with it (EO-897).
-  for (const id of ids) deleteTeamMembers(db, id);
-  db.delete(teams).where(inArray(teams.id, ids)).run();
+  deleteTeamMembers(db, teamId, at);
+  db.delete(teams).where(eq(teams.id, teamId)).run();
+}
+
+/**
+ * Archives a team, as a person (EO-897): one-way, as an agent's archive
+ * is. Its own agents are archived with it, so none is left behind without
+ * its team; it leaves the Teams tab, and no step may name it after. The
+ * row and its versions stay. Whether a step still names it, or a person
+ * locked it, is the caller's question (`archiveTeamCommand`). False when
+ * there is no such team.
+ */
+export function archiveTeam(db: Db, id: string, at: number = Date.now()): boolean {
+  const team = getTeam(db, id);
+  if (team === undefined) return false;
+  if (team.archivedAt !== null) return true;
+  db.transaction((tx) => {
+    tx.update(teams).set({ archivedAt: at, updatedAt: at }).where(eq(teams.id, id)).run();
+    archiveTeamMembers(tx as unknown as Db, id, at);
+  });
+  return true;
+}
+
+/**
+ * Deletes a team, as a person (EO-897), archived or not, the way
+ * `deleteProject` deletes a project's: the row and its versions go, and
+ * its own agents stay only as tombstones its runs, reports and comments
+ * still name. The caller asks what refuses it (`deleteTeamCommand`).
+ * False when there is no such team.
+ */
+export function deleteTeam(db: Db, id: string, at: number = Date.now()): boolean {
+  if (getTeam(db, id) === undefined) return false;
+  db.transaction((tx) => removeTeam(tx as unknown as Db, id, at));
+  return true;
 }
 
 /** The agents a team owns (EO-897): every one it ever had, those removed from it, archived or deleted included. */
@@ -533,10 +590,10 @@ export function agentToolSurfaces(db: Db, agentIds: readonly string[]): Record<s
  */
 export function teamsForValidation(db: Db, projectId: string | null, declared: readonly TeamSave[] = []): { teams: PipelineTeamFacts[]; surfaces: Record<string, AgentToolSurface> } {
   const byId = new Map<string, PipelineTeamFacts>();
-  for (const team of listAllTeams(db)) byId.set(team.id, { id: team.id, name: team.name, projectId: team.projectId, definition: team.definition });
+  for (const team of listAllTeams(db)) byId.set(team.id, { id: team.id, name: team.name, projectId: team.projectId, definition: team.definition, archived: team.archivedAt !== null });
   for (const team of declared) {
     const stored = byId.get(team.id);
-    byId.set(team.id, { id: team.id, name: team.definition.name, projectId: stored?.projectId ?? projectId, definition: team.definition });
+    byId.set(team.id, { id: team.id, name: team.definition.name, projectId: stored?.projectId ?? projectId, definition: team.definition, archived: stored?.archived ?? false });
   }
   const list = [...byId.values()];
   const agentIds = list.flatMap((team) => (team.definition === null ? [] : teamAgentIds(team.definition)));

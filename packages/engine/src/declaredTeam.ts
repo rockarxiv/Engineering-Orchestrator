@@ -119,6 +119,8 @@ export interface PipelineTeamFacts {
   name: string;
   projectId: string | null;
   definition: TeamDefinition | null;
+  /** A team a person archived (EO-897): no step may name it. Absent is not archived. */
+  archived?: boolean;
 }
 
 /** One problem with the declared team a step names. */
@@ -129,8 +131,8 @@ export interface DeclaredTeamProblem {
 
 /**
  * What is wrong with the declared teams these steps name (EO-881), each a
- * sentence naming the step and the team: a team that does not exist, that
- * belongs to another project or that EO cannot read; a step that is not
+ * sentence naming the step and the team: a team that does not exist, is
+ * archived (EO-897), belongs to another project or that EO cannot read; a step that is not
  * an agent's; a leader whose kind lacks the step's action; and every
  * `validateTeam` problem with it.
  */
@@ -160,6 +162,10 @@ export function declaredTeamProblems(
       continue;
     }
     const lead = `"${step.name}" runs as the team "${team.name}"`;
+    if (team.archived === true) {
+      say(`${lead}, which is archived: an archived team runs nowhere, so have the step run as another team, or as none.`);
+      continue;
+    }
     if (step.type !== "agent") {
       say(`${lead}, but only a step an agent does can run as a team.`);
       continue;

@@ -4,7 +4,7 @@ import { ArchivedItemListFiltersSchema, ItemListFiltersSchema, toRegistryView, t
 import { AttachmentStorage } from "../attachments/storage.js";
 import { pipelineHome } from "./pipelineHome.js";
 import { cancelTeamSessionCommand, retryTeamSessionCommand, teamSessionsCommand } from "./teamCommands.js";
-import { listTeamsCommand, restoreTeamCommand, setTeamLockedCommand, setTeamMemberSettingsCommand } from "./declaredTeamCommands.js";
+import { archiveTeamCommand, deleteTeamCommand, listTeamsCommand, restoreTeamCommand, setTeamLockedCommand, setTeamMemberSettingsCommand } from "./declaredTeamCommands.js";
 import type { Db } from "../db/client.js";
 import { archiveAgentCommand, customiseAgent, deleteAgentCommand, listAgentDetails, projectStaffing, readGuards, saveAgent, setAgentBinding, savePipeline, validatePipelineCommand, writeGuards } from "./configCommands.js";
 import { runMemoryFacts } from "../process/runScope.js";
@@ -1572,6 +1572,17 @@ export function registerAllHandlers(db: Db, engine: EngineHandle | undefined, re
   registerHandler("teams:setLocked", (payload) => {
     const result = setTeamLockedCommand(db, payload);
     if (result.changed) emitPush("config:changed", {});
+    return result;
+  }, opts);
+  // Archiving or deleting one (EO-897) takes its own agents with it.
+  registerHandler("teams:archive", (payload) => {
+    const result = archiveTeamCommand(db, payload);
+    if (result.archived) emitPush("config:changed", {});
+    return result;
+  }, opts);
+  registerHandler("teams:delete", (payload) => {
+    const result = deleteTeamCommand(db, payload);
+    if (result.deleted) emitPush("config:changed", {});
     return result;
   }, opts);
   registerHandler("engine:pause", (payload) => pauseEngine(db, engine, payload), opts);
