@@ -500,7 +500,7 @@ describe("an isolated team behaves as a team does (EO-867)", () => {
     script = ({ agent }) => {
       if (agent.name === "Sasha") return answer({ outcome: { report: "SASHA-REPORT: the login holds." } });
       quinnTurns += 1;
-      if (quinnTurns === 1) return answer({ outcome: { decision: "assign", assignments: [{ key: "auth", role: "sec", instructions: "Look at the login.", required: true }], note: "One thing to check." } });
+      if (quinnTurns === 1) return answer({ outcome: { decision: "assign", assignments: [{ key: "auth", member: "Sasha", instructions: "Look at the login.", required: true }], note: "One thing to check." } });
       const reportId = listTeamSessionsForItem(handle.db, item.id).at(-1)!.attempts.find((attempt) => attempt.assignmentKey === "auth" && attempt.status === "completed")!.reportCommentId!;
       return answer({ outcome: { decision: "final", answer: { result: "aligned", summary: "The login holds." }, contributions: [reportId], disagreements: "None.", limitations: "None." } });
     };
@@ -553,7 +553,7 @@ describe("an isolated member's skill usage (EO-867)", () => {
     script = ({ agent }) => {
       if (agent.name === "Sasha") return withSkill("probing", { outcome: { report: "SASHA-REPORT: the login holds." } });
       quinnTurns += 1;
-      if (quinnTurns === 1) return withSkill("leading", { outcome: { decision: "assign", assignments: [{ key: "auth", role: "sec", instructions: "Look at the login.", required: true }], note: "One thing to check." } });
+      if (quinnTurns === 1) return withSkill("leading", { outcome: { decision: "assign", assignments: [{ key: "auth", member: "Sasha", instructions: "Look at the login.", required: true }], note: "One thing to check." } });
       const reportId = listTeamSessionsForItem(handle.db, item.id).at(-1)!.attempts.find((attempt) => attempt.assignmentKey === "auth" && attempt.status === "completed")!.reportCommentId!;
       return withSkill("leading", { outcome: { decision: "final", answer: { result: "aligned", summary: "The login holds." }, contributions: [reportId], disagreements: "None.", limitations: "None." } });
     };

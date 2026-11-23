@@ -2,6 +2,9 @@ import { z } from "zod";
 import { ADMIN_MCP_SERVER_NAME } from "./schemas/mcpServers.js";
 import {
   DEFAULT_TEAM_MEMBER_MODE,
+  IndependentTeamSchema as StepIndependentTeamSchema,
+  LeaderTeamSchema as StepLeaderTeamSchema,
+  TeamParticipantSchema,
   IndependentTeamLimitsSchema,
   IndependentTeamSchema,
   LeaderTeamLimitsSchema,
@@ -36,10 +39,11 @@ import {
  * own tools go beyond the pool — is `validateTeam` in the engine, since
  * it reads agents.
  *
- * What runs is still the role-staffed team the supervisor has always run:
- * `stepTeamOf` reads a declared team as that shape, each member as its
- * agent's kind, until a team session dispatches each member as its own
- * agent (EO-882).
+ * A step still carries its team in the role-shaped, portable form
+ * (`stepTeamOf`) — what versions, exports and the step's settings show.
+ * What a session runs is that shape with the agents in it
+ * (`sessionTeamOf`, EO-882): the leader and each member dispatched as the
+ * agent the team names, on that agent's own runtime, model and reasoning.
  */
 
 /** The most members a team may cap itself at, whatever it declares. */
@@ -196,14 +200,13 @@ export function teamDefinitionProblems(team: TeamDefinition): string[] {
 }
 
 /**
- * A declared team as the role-staffed team a step has always run
- * (`StepTeam`): each member read as its agent's kind. Null where an agent
- * it names is not known to `kindOf`, or the result is not a team EO can
- * run.
+ * A declared team in the role-shaped form a step carries (`StepTeam`):
+ * each member read as its agent's kind. Null where an agent it names is
+ * not known to `kindOf`, or the result is not a team EO can run.
  *
- * This is how a declared team runs until EO-882: a session copies this
- * shape and staffs each kind as it always has, so a team migrated from a
- * step runs exactly what that step ran.
+ * What a step's settings, versions and exports say: portable, naming no
+ * agent. What a session runs is `sessionTeamOf`, which is this with the
+ * agents in it (EO-882).
  */
 export function stepTeamOf(team: TeamDefinition, kindOf: (agentId: string) => string | undefined, options: { parse?: boolean } = {}): StepTeam | null {
   const kinds = new Map<string, string>();
@@ -233,6 +236,67 @@ export function stepTeamOf(team: TeamDefinition, kindOf: (agentId: string) => st
         };
   if (options.parse === false) return shaped as StepTeam;
   return StepTeamSchema.safeParse(shaped).data ?? null;
+}
+
+/**
+ * A team as a session runs it (EO-882): the step's role-shaped team
+ * (`StepTeam`) with the agents in it — an independent team's participants
+ * each with the agent it runs as, a leader-led team's leader with its
+ * agent and the agents it may assign work to. Each runs as that agent,
+ * with its own backend, model, reasoning, instructions and tools; no
+ * agent is ever chosen by its kind. `role` stays, as the agent's kind, for
+ * what a person reads.
+ *
+ * Copied onto the session as it opens, so a later change to the team does
+ * not rewrite what the session was. The agents are optional in the shape
+ * only so a session opened before EO-882, which named none, still reads:
+ * such a session is never adopted again (`sessionTeamNamesAgents`) — the
+ * next dispatch opens a session that does.
+ */
+const SessionParticipantSchema = TeamParticipantSchema.extend({ agentId: AgentIdSchema.optional() });
+
+export const SessionIndependentTeamSchema = StepIndependentTeamSchema.extend({
+  participants: z.array(SessionParticipantSchema).min(1).max(TEAM_CEILINGS.participants),
+});
+export type SessionIndependentTeam = z.infer<typeof SessionIndependentTeamSchema>;
+
+export const SessionLeaderTeamSchema = StepLeaderTeamSchema.extend({
+  leader: StepLeaderTeamSchema.shape.leader.extend({ agentId: AgentIdSchema.optional() }),
+  /** The agents the leader may assign work to, in the team's order. */
+  memberAgentIds: z.array(AgentIdSchema).max(TEAM_MEMBER_CAP_CEILING).optional(),
+});
+export type SessionLeaderTeam = z.infer<typeof SessionLeaderTeamSchema>;
+
+export const SessionTeamSchema = z.discriminatedUnion("coordination", [SessionIndependentTeamSchema, SessionLeaderTeamSchema]).superRefine((team, context) => {
+  for (const message of teamConfigProblems(team)) context.addIssue({ code: "custom", message });
+});
+export type SessionTeam = z.infer<typeof SessionTeamSchema>;
+
+/** A session's stored team, or null for one that no longer parses. */
+export function storedSessionTeam(value: unknown): SessionTeam | null {
+  return SessionTeamSchema.safeParse(value).data ?? null;
+}
+
+/** Whether a session's team names the agent behind every part of it (EO-882): false only for a session opened before it did. */
+export function sessionTeamNamesAgents(team: SessionTeam): boolean {
+  if (team.coordination === "independent") return team.participants.every((participant) => participant.agentId !== undefined);
+  return team.leader.agentId !== undefined && team.memberAgentIds !== undefined && team.memberAgentIds.length > 0;
+}
+
+/**
+ * A declared team as a session runs it (EO-882): `stepTeamOf`, with each
+ * part's agent. Null where `stepTeamOf` is.
+ */
+export function sessionTeamOf(team: TeamDefinition, kindOf: (agentId: string) => string | undefined): SessionTeam | null {
+  const shaped = stepTeamOf(team, kindOf);
+  if (shaped === null) return null;
+  const withAgents =
+    shaped.coordination === "leader" && team.coordination === "leader"
+      ? { ...shaped, leader: { ...shaped.leader, agentId: team.leader.agentId }, memberAgentIds: [...new Set(team.members.map((member) => member.agentId))] }
+      : shaped.coordination === "independent" && team.coordination === "independent"
+        ? { ...shaped, participants: shaped.participants.map((participant, index) => ({ ...participant, agentId: team.members[index]!.agentId })) }
+        : null;
+  return withAgents === null ? null : (SessionTeamSchema.safeParse(withAgents).data ?? null);
 }
 
 /**

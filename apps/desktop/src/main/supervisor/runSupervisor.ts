@@ -143,7 +143,7 @@ import {
   type SuggestionOutcome,
   type SuggestionSpend,
   MICROCENTS_PER_CENT,
-  type StepTeam,
+  type SessionTeam,
   type PipelineStep,
   type WorkspaceKindSlug,
   actionFactsFor,
@@ -362,6 +362,7 @@ import { answerTeamCall, createTeamParticipantScopes, memberAttemptOf, MEMBER_NO
 import type { TurnDrive, TurnOutcome } from "./turnOutcome.js";
 import { createTeamSupervisor, reportMemberCopy, type TeamTurnDrive, TEAM_RETRY_WORDS, type IsolatedTurnAnswer, type IsolatedTurnRequest, type ReportOnlyProviderAnswer, type TeamAnswerContract } from "./teamSupervisor.js";
 import { currentTeamSession, endTeamSession, getTeamAttempt, getTeamSession, getTeamSessionRecord, runsOfTeamSession } from "../db/repos/teamSessionsRepo.js";
+import { sessionTeamFor } from "../db/repos/teamsRepo.js";
 import { teamNotHereProblem, type TeamControlSite } from "./teamSessionView.js";
 
 function safeTurnAttachments(attachments: NonNullable<ReturnType<typeof listCommentsForItem>[number]["attachments"]>): AgentInputAttachment[] {
@@ -8127,12 +8128,17 @@ export function createRunSupervisor(
    * agent's too. A reply to a team's question is the step's entry action
    * again, so it reaches the team and adopts its session.
    */
-  function teamStepFor(item: Item, action: string, stepId: string | undefined): { step: PipelineStep; team: StepTeam } | null {
+  function teamStepFor(item: Item, action: string, stepId: string | undefined): { step: PipelineStep; team: SessionTeam } | null {
     if (item.previewAt !== null) return null;
     const step = stepForItem(db, getItem(db, item.id) ?? item);
     if (step === undefined || step.type !== "agent" || step.entryAction !== action) return null;
     if (stepId !== undefined && stepId !== step.id) return null;
-    return step.team === null || step.team === undefined ? null : { step, team: step.team };
+    if (step.team === null || step.team === undefined) return null;
+    // The declared team with its agents (EO-882): each part runs as the
+    // agent the team names. Read from what the step's team was read from,
+    // so the two stand or fall together.
+    const team = sessionTeamFor(db, step.teamId);
+    return team === null ? null : { step, team };
   }
 
   /**
@@ -8148,7 +8154,7 @@ export function createRunSupervisor(
     agent: Agent,
     action: string,
     step: PipelineStep,
-    team: StepTeam,
+    team: SessionTeam,
     workspace: PreparedWorkspace,
     initiationId: string,
     attempt: number,

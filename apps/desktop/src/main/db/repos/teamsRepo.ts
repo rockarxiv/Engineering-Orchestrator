@@ -3,13 +3,14 @@ import {
   DEFAULT_TEAM_MEMBER_CAP,
   generatedTeamName,
   TeamDefinitionSchema,
+  sessionTeamOf,
   stepTeamOf,
   staffingAgents,
   storedTeamDefinition,
   teamAgentIds,
   uuidv7,
 } from "@eo/core";
-import type { Agent, StepTeam, TeamAuthor, TeamDefinition, TeamSave, TeamVersion, Uuid } from "@eo/core";
+import type { Agent, SessionTeam, StepTeam, TeamAuthor, TeamDefinition, TeamSave, TeamVersion, Uuid } from "@eo/core";
 import type { AgentToolSurface, PipelineTeamFacts } from "@eo/engine";
 import type { Db } from "../client.js";
 import { foldCase } from "../textFold.js";
@@ -304,6 +305,20 @@ export function teamReader(db: Db, declared: readonly TeamSave[] = []): (teamId:
     read.set(teamId, shaped);
     return shaped;
   };
+}
+
+/**
+ * A declared team as a session runs it (EO-882, `sessionTeamOf`): the
+ * step's team with the agent behind each part of it. Null where the step
+ * names none, or one EO cannot read — where its `team` is null too.
+ */
+export function sessionTeamFor(db: Db, teamId: string | null): SessionTeam | null {
+  if (teamId === null) return null;
+  const definition = getTeam(db, teamId)?.definition ?? null;
+  if (definition === null) return null;
+  const ids = teamAgentIds(definition);
+  const kinds = new Map(db.select({ id: agents.id, role: agents.role }).from(agents).where(inArray(agents.id, ids)).all().map((row) => [row.id, row.role]));
+  return sessionTeamOf(definition, (agentId) => kinds.get(agentId));
 }
 
 /** The agent a role is bound to on a project: EO-874's staffing rule first, then any agent that held the role there. */

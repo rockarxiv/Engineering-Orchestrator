@@ -17,6 +17,10 @@ export interface TeamAgentFacts {
   name: string;
   /** Its kind. */
   role: string;
+  /** Whether it may be dispatched at all (EO-882): left out, it is taken to be. */
+  enabled?: boolean;
+  archivedAt?: number | null;
+  deletedAt?: number | null;
 }
 
 /**
@@ -29,7 +33,13 @@ export interface TeamAgentFacts {
  *   holder of `eo_admin` (invariant 11);
  * - no member's own tool surface may go beyond the team's tool pool, so
  *   the pool is the whole of what the team's members may use and a
- *   leader adding a member picks from what a person declared (EO-883).
+ *   leader adding a member picks from what a person declared (EO-883);
+ * - where it is judged to run (`dispatch`, as a step naming it is): each
+ *   agent it names must be one EO can dispatch — enabled, and not
+ *   archived or deleted — since a session runs each as itself and never
+ *   another of its kind in its place (EO-882); and on a report-only team
+ *   one EO can hold to report-only (by agent id), or its first turn would
+ *   be refused.
  *
  * Data in, data out (invariant 2).
  */
@@ -39,17 +49,36 @@ export function validateTeam(
     agents: readonly TeamAgentFacts[];
     /** Each member's tools, by agent id. An agent absent here has none. */
     surfaces?: Readonly<Record<string, AgentToolSurface>>;
+    /**
+     * Judged as a team a step runs (EO-882): its agents must be ones EO can
+     * dispatch, and `reportOnly` says why EO cannot hold an agent to
+     * report-only, by agent id — read for a report-only team only, absent
+     * is "every agent can be". Left out, as for a team on its own.
+     */
+    dispatch?: { reportOnly?: Readonly<Record<string, string>> };
   },
 ): string[] {
   const problems = [...teamDefinitionProblems(team)];
   const byId = new Map(context.agents.map((agent) => [agent.id, agent]));
   const named = (agentId: string) => byId.get(agentId);
+  // Each agent as itself (EO-882): one that cannot run is not stood in
+  // for by another of its kind.
+  const usable = (agent: TeamAgentFacts, as: string) => {
+    if (context.dispatch === undefined) return;
+    if ((agent.deletedAt ?? null) !== null || (agent.archivedAt ?? null) !== null) problems.push(`${as} "${agent.name}" has been retired, so it cannot run.`);
+    else if (agent.enabled === false) problems.push(`${as} "${agent.name}" is disabled, so it cannot run.`);
+    else if (team.memberMode === "report_only") {
+      const why = context.dispatch.reportOnly?.[agent.id];
+      if (why !== undefined) problems.push(`${as} "${agent.name}" cannot be held to report-only: ${why}`);
+    }
+  };
 
   const leaderId = team.coordination === "leader" ? team.leader.agentId : null;
   if (leaderId !== null) {
     const leader = named(leaderId);
     if (leader === undefined) problems.push(`Its leader is an agent EO does not have (${leaderId}).`);
     else if (leader.role === SYSTEM_ROLE) problems.push(`Its leader "${leader.name}" is EO's system agent, which administers EO and can never lead a team.`);
+    else usable(leader, "Its leader");
   }
 
   const pool = {
@@ -70,6 +99,8 @@ export function validateTeam(
       problems.push(`"${agent.name}" is EO's system agent, which administers EO and can never be a team member.`);
       continue;
     }
+    // The leader as a member too is said of once.
+    if (agentId !== leaderId) usable(agent, "Its member");
     const surface = context.surfaces?.[agentId];
     if (surface === undefined) continue;
     const beyond = [
@@ -111,6 +142,8 @@ export function declaredTeamProblems(
     teams: readonly PipelineTeamFacts[];
     agents: readonly TeamAgentFacts[];
     surfaces?: Readonly<Record<string, AgentToolSurface>>;
+    /** Why EO cannot hold an agent to report-only, by agent id (`validateTeam`'s `reportOnly`). */
+    reportOnly?: Readonly<Record<string, string>>;
   },
 ): DeclaredTeamProblem[] {
   const teams = new Map(context.teams.map((team) => [team.id, team]));
@@ -146,7 +179,7 @@ export function declaredTeamProblems(
         say(`${lead}, whose leader "${leader.name}" is a ${leader.role} agent, and that kind has no "${step.entryAction}" action to answer.`);
       }
     }
-    for (const message of validateTeam(definition, { agents: context.agents, ...(context.surfaces === undefined ? {} : { surfaces: context.surfaces }) })) {
+    for (const message of validateTeam(definition, { agents: context.agents, ...(context.surfaces === undefined ? {} : { surfaces: context.surfaces }), dispatch: context.reportOnly === undefined ? {} : { reportOnly: context.reportOnly } })) {
       say(`${lead}: ${message}`);
     }
   }

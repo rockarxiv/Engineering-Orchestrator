@@ -8,7 +8,9 @@ import {
   planIndependentTeam,
   planLeaderTeam,
   ruledOutProblems,
+  type AcceptedAssignment,
   type LeaderAttemptState,
+  type LeaderTeamMember,
   type LeaderVerdict,
 } from "./teamSupervision.js";
 
@@ -27,8 +29,18 @@ function attempt(key: string, status: LeaderAttemptState["status"], extra: Parti
   counter += 1;
   return { id: `a${counter}`, key, status, supersededBy: null, outcome: null, report: null, error: null, baseline: "B1", live: false, round: 1, reportId: null, ...extra };
 }
-const want = (key: string, role = "reviewer", required = true): LeaderAssignment => ({ key, role, instructions: `Look at ${key}.`, required });
-const assigned = (assignments: LeaderAssignment[], extra: Partial<LeaderAttemptState> = {}): LeaderAttemptState =>
+/** The team's members, by name (EO-882): what an assignment names. */
+const MEMBERS: LeaderTeamMember[] = [
+  { agentId: "agent-rita", name: "Rita", role: "reviewer" },
+  { agentId: "agent-tom", name: "Tom", role: "tester" },
+];
+const ask = (key: string, member = "Rita", required = true): LeaderAssignment => ({ key, member, instructions: `Look at ${key}.`, required });
+/** An assignment EO accepted, with the member's agent. */
+const want = (key: string, member = "Rita", required = true): AcceptedAssignment => {
+  const one = MEMBERS.find((each) => each.name === member)!;
+  return { ...ask(key, member, required), agentId: one.agentId, role: one.role };
+};
+const assigned = (assignments: AcceptedAssignment[], extra: Partial<LeaderAttemptState> = {}): LeaderAttemptState =>
   attempt(LEADER_ASSIGNMENT_KEY, "completed", { verdict: { decision: "assign", accepted: assignments, refused: [] }, ...extra });
 const reported = (key: string, extra: Partial<LeaderAttemptState> = {}) => attempt(key, "completed", { report: `${key} is fine.`, reportId: `c-${key}-${counter + 1}`, ...extra });
 const finalTurn = (verdict: Extract<LeaderVerdict, { decision: "final" }>, extra: Partial<LeaderAttemptState> = {}) => attempt(LEADER_ASSIGNMENT_KEY, "completed", { verdict, ...extra });
@@ -52,7 +64,7 @@ describe("planLeaderTeam (EO-847)", () => {
   });
 
   it("runs what the leader assigned with no leader turn alongside, then gives the leader its next turn once the round settles", () => {
-    const lead = assigned([want("auth"), want("suite", "tester", false)]);
+    const lead = assigned([want("auth"), want("suite", "Tom", false)]);
     const first = plan([lead]);
     expect(first.start).toEqual([
       { key: "auth", supersedes: null, why: "first", round: 1 },
@@ -122,7 +134,7 @@ describe("planLeaderTeam (EO-847)", () => {
   });
 
   it("names each member that ran out of retries with its last error when the leader stops (EO-886)", () => {
-    const lead = assigned([want("auth"), want("suite", "tester")]);
+    const lead = assigned([want("auth"), want("suite", "Tom")]);
     const auth = [attempt("auth", "failed", { error: "Crashed." }), attempt("auth", "failed", { error: "The backend refused: rate limited." })];
     const suite = [attempt("suite", "failed", { error: "Timed out." }), attempt("suite", "failed", { error: "Its turn ended without an answer." })];
     // Each retry supersedes the attempt before it, as the supervisor writes them.
@@ -136,7 +148,7 @@ describe("planLeaderTeam (EO-847)", () => {
   });
 
   it("parks on a question nobody has answered, and carries the asker on once it is answered — participant or leader", () => {
-    const lead = assigned([want("auth"), want("suite", "tester")]);
+    const lead = assigned([want("auth"), want("suite", "Tom")]);
     const asking = attempt("auth", "cancelled", { question: "open" });
     const parked = plan([lead, asking, reported("suite")]);
     expect(parked.next).toEqual({ kind: "park" });
@@ -164,11 +176,11 @@ describe("planLeaderTeam (EO-847)", () => {
 describe("checkLeaderAssignments (EO-847)", () => {
   const ledger = { roundsUsed: 0, keys: [] as string[] };
 
-  it("accepts permitted roles within the limits, and refuses the rest with a reason each", () => {
-    const verdict = checkLeaderAssignments(TEAM, ledger, [want("auth"), want("ops", "admin"), want(LEADER_ASSIGNMENT_KEY), want("auth"), want("suite", "tester"), want("more", "tester")]);
-    expect(verdict.accepted.map((one) => one.key)).toEqual(["auth", "suite"]);
+  it("accepts members by name within the limits, each as its agent, and refuses the rest with a reason each", () => {
+    const verdict = checkLeaderAssignments(TEAM, ledger, [ask("auth"), ask("ops", "Ada"), ask(LEADER_ASSIGNMENT_KEY), ask("auth"), ask("suite", "Tom"), ask("more", "Tom")], MEMBERS);
+    expect(verdict.accepted).toEqual([want("auth"), want("suite", "Tom")]);
     expect(verdict.refused).toEqual([
-      { key: "ops", reason: expect.stringContaining('The role "admin" is not one this team permits') },
+      { key: "ops", reason: '"Ada" is not a member of this team ("Rita", "Tom"), and a leader cannot widen who it may assign.' },
       { key: LEADER_ASSIGNMENT_KEY, reason: expect.stringContaining("the leader's own turns") },
       { key: "auth", reason: "The same key is named twice in one request." },
       { key: "more", reason: expect.stringContaining("2 participants in all") },
@@ -176,8 +188,8 @@ describe("checkLeaderAssignments (EO-847)", () => {
   });
 
   it("takes a follow-up on a key in force as no new participant, and refuses every assignment past the last round", () => {
-    expect(checkLeaderAssignments(TEAM, { roundsUsed: 1, keys: ["auth", "suite"] }, [want("auth")]).accepted).toHaveLength(1);
-    const past = checkLeaderAssignments(TEAM, { roundsUsed: 2, keys: ["auth"] }, [want("auth"), want("suite", "tester")]);
+    expect(checkLeaderAssignments(TEAM, { roundsUsed: 1, keys: ["auth", "suite"] }, [ask("auth")], MEMBERS).accepted).toHaveLength(1);
+    const past = checkLeaderAssignments(TEAM, { roundsUsed: 2, keys: ["auth"] }, [ask("auth"), ask("suite", "Tom")], MEMBERS);
     expect(past.accepted).toEqual([]);
     expect(past.refused.every((one) => one.reason.includes("2 rounds of assignments and all of them are used"))).toBe(true);
   });
@@ -185,7 +197,7 @@ describe("checkLeaderAssignments (EO-847)", () => {
 
 describe("leaderFinalProblems (EO-847)", () => {
   it("refuses a missing required report, a superseded or unknown reliance, and naming none, whatever the answer claims", () => {
-    const lead = assigned([want("auth"), want("suite", "tester", false)]);
+    const lead = assigned([want("auth"), want("suite", "Tom", false)]);
     const old = reported("auth");
     const follow = assigned([want("auth")], { round: 2 });
     const fresh = reported("auth", { round: 2 });

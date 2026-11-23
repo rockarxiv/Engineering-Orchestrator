@@ -325,8 +325,26 @@ export function allocateParticipantBudget(input: ParticipantBudgetInput): number
  * and those it refused, each refusal with its reason; or, for a final
  * answer, whether it was accepted and why not.
  */
+/**
+ * An assignment EO accepted (EO-882): what the leader asked for, with the
+ * agent the member it named is and that agent's kind — so the turn that
+ * does it runs as that agent, whatever the agent is called by then.
+ */
+export interface AcceptedAssignment extends LeaderAssignment {
+  agentId: string;
+  /** The kind of the member's agent, for what a person reads. */
+  role: string;
+}
+
+/** A member of a leader's team as EO holds an assignment to it: its agent, by id, and the name and kind the leader is told. */
+export interface LeaderTeamMember {
+  agentId: string;
+  name: string;
+  role: string;
+}
+
 export type LeaderVerdict =
-  | { decision: "assign"; accepted: LeaderAssignment[]; refused: { key: string; reason: string }[] }
+  | { decision: "assign"; accepted: AcceptedAssignment[]; refused: { key: string; reason: string }[] }
   | { decision: "final"; accepted: boolean; problems: string[]; contributions: string[] };
 
 /** One attempt on a leader's team as the planner reads it; the leader's own turns carry what EO made of their answers. */
@@ -337,7 +355,7 @@ export interface LeaderAttemptState extends TeamAttemptState {
 }
 
 /** An assignment the leader asked for and EO accepted, as it stands: the latest round naming its key. */
-export interface AssignmentInForce extends LeaderAssignment {
+export interface AssignmentInForce extends AcceptedAssignment {
   round: number;
 }
 
@@ -414,19 +432,26 @@ export function leaderLedger(attempts: readonly LeaderAttemptState[], baseline: 
 /**
  * What EO accepts of a leader's request for work (EO-847), each refusal
  * with its reason. Refused: a key the leader's own turns are kept under, a
- * key named twice in one request, a role the team does not permit, a new
- * participant past `maxParticipants`, and any round past `maxRounds`.
+ * key named twice in one request, a name that is none of the team's
+ * `members` (EO-882), a new participant past `maxParticipants`, and any
+ * round past `maxRounds`.
  * A key already in force is a follow-up: it supersedes what that
  * assignment said and counts as no new participant.
  */
-export function checkLeaderAssignments(team: LeaderTeam, ledger: Pick<LeaderLedger, "roundsUsed" | "keys">, assignments: readonly LeaderAssignment[]): Extract<LeaderVerdict, { decision: "assign" }> {
-  const accepted: LeaderAssignment[] = [];
+export function checkLeaderAssignments(
+  team: LeaderTeam,
+  ledger: Pick<LeaderLedger, "roundsUsed" | "keys">,
+  assignments: readonly LeaderAssignment[],
+  members: readonly LeaderTeamMember[],
+): Extract<LeaderVerdict, { decision: "assign" }> {
+  const accepted: AcceptedAssignment[] = [];
   const refused: { key: string; reason: string }[] = [];
   if (ledger.roundsUsed >= team.limits.maxRounds) {
     const reason = `The team allows ${team.limits.maxRounds} round${team.limits.maxRounds === 1 ? "" : "s"} of assignments and all of them are used, so no more work can be assigned: answer from the reports there are.`;
     return { decision: "assign", accepted, refused: assignments.map((assignment) => ({ key: assignment.key, reason })) };
   }
-  const permitted = new Set(team.roles);
+  const byName = new Map(members.map((member) => [member.name, member]));
+  const names = members.map((member) => `"${member.name}"`).join(", ");
   const keys = new Set(ledger.keys);
   const seen = new Set<string>();
   for (const assignment of assignments) {
@@ -439,8 +464,9 @@ export function checkLeaderAssignments(team: LeaderTeam, ledger: Pick<LeaderLedg
       continue;
     }
     seen.add(assignment.key);
-    if (!permitted.has(assignment.role)) {
-      refused.push({ key: assignment.key, reason: `The role "${assignment.role}" is not one this team permits (${team.roles.join(", ")}), and a leader cannot widen who it may assign.` });
+    const member = byName.get(assignment.member);
+    if (member === undefined) {
+      refused.push({ key: assignment.key, reason: `"${assignment.member}" is not a member of this team (${names || "it has none"}), and a leader cannot widen who it may assign.` });
       continue;
     }
     if (!keys.has(assignment.key) && keys.size >= team.limits.maxParticipants) {
@@ -448,7 +474,7 @@ export function checkLeaderAssignments(team: LeaderTeam, ledger: Pick<LeaderLedg
       continue;
     }
     keys.add(assignment.key);
-    accepted.push(assignment);
+    accepted.push({ ...assignment, agentId: member.agentId, role: member.role });
   }
   return { decision: "assign", accepted, refused };
 }

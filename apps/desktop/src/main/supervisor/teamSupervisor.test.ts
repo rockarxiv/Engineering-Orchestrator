@@ -38,7 +38,7 @@ import {
 import { listTransitionsForItem } from "../db/repos/transitionsRepo.js";
 import { trialSpendCentsSince } from "../db/repos/trialLoopsRepo.js";
 import { writeTrialPlan } from "../db/repos/trialsRepo.js";
-import { createTestItem, openMigratedTestDb, agentOfKind, setStepTeam } from "../db/testHelpers.js";
+import { createTestItem, openMigratedTestDb, agentOfKind, setStepTeam, stepSessionTeam } from "../db/testHelpers.js";
 import { createRunSupervisor, type RunSupervisor } from "./runSupervisor.js";
 import { taskContextOf } from "./teamEvidence.js";
 import type { ReportOnlyProviderAnswer } from "./teamSupervisor.js";
@@ -432,7 +432,7 @@ describe("an independent team across a restart (EO-846)", () => {
 
   it("at assignment creation: begins the assignment afresh, once, and routes once", async () => {
     const parent = crashedTeamRun();
-    const session = openTeamSession(handle.db, { itemId: item.id, stepId: "check", team: team(), runId: parent });
+    const session = openTeamSession(handle.db, { itemId: item.id, stepId: "check", team: stepSessionTeam(handle.db, "check"), runId: parent });
     const queued = startTeamAttempt(handle.db, { sessionId: session.id, assignmentKey: "security", role: "sec", agentId: agentId("Sasha"), instructions: "Look for ways in." });
     if (!queued.ok) throw new Error(queued.problem);
 
@@ -450,7 +450,7 @@ describe("an independent team across a restart (EO-846)", () => {
 
   it("at process startup: ends the turn nobody runs as EO stopping it, keeps the session and its entry, and replaces it", async () => {
     const parent = crashedTeamRun();
-    const session = openTeamSession(handle.db, { itemId: item.id, stepId: "check", team: team(), runId: parent });
+    const session = openTeamSession(handle.db, { itemId: item.id, stepId: "check", team: stepSessionTeam(handle.db, "check"), runId: parent });
     const run = participantRun("Sasha");
     const attempt = startTeamAttempt(handle.db, { sessionId: session.id, assignmentKey: "security", role: "sec", agentId: agentId("Sasha"), instructions: "Look for ways in.", runId: run });
     if (!attempt.ok) throw new Error(attempt.problem);
@@ -469,7 +469,7 @@ describe("an independent team across a restart (EO-846)", () => {
 
   it("at report persistence: keeps the accepted report, posts it once, and runs only the assignment still missing", async () => {
     const parent = crashedTeamRun();
-    const session = openTeamSession(handle.db, { itemId: item.id, stepId: "check", team: team(), runId: parent });
+    const session = openTeamSession(handle.db, { itemId: item.id, stepId: "check", team: stepSessionTeam(handle.db, "check"), runId: parent });
     // Captured from what this item holds — no disk, no attachments — as the supervisor would capture it again.
     const baseline = nothingCaptured();
     const reported = startTeamAttempt(handle.db, { sessionId: session.id, assignmentKey: "security", role: "sec", agentId: agentId("Sasha"), instructions: "Look for ways in.", runId: participantRun("Sasha"), evidenceBaseline: baseline });
@@ -489,10 +489,29 @@ describe("an independent team across a restart (EO-846)", () => {
     expect(listTransitionsForItem(handle.db, item.id)).toHaveLength(1);
   });
 
+  it("does not carry on a session opened before sessions named their agents: it is superseded, and a session that names them runs everyone as the agents the team names (EO-882)", async () => {
+    const parent = crashedTeamRun();
+    // What a session held before EO-882: the team by roles alone.
+    const before = openTeamSession(handle.db, { itemId: item.id, stepId: "check", team: team(), runId: parent });
+    const queued = startTeamAttempt(handle.db, { sessionId: before.id, assignmentKey: "security", role: "sec", agentId: agentId("Sasha"), instructions: "Look for ways in." });
+    if (!queued.ok) throw new Error(queued.problem);
+
+    const engine = supervisor();
+    await engine.reconcile();
+    await engine.runOnce();
+
+    const sessions = listTeamSessionsForItem(handle.db, item.id).map((record) => record.session);
+    expect(sessions.map((session) => session.status)).toEqual(["superseded", "finalized"]);
+    expect(sessions[1]!.team.coordination === "independent" && sessions[1]!.team.participants.map((participant) => participant.agentId)).toEqual([agentId("Sasha"), agentId("Tess")]);
+    expect(started.map((one) => one.agent).sort()).toEqual(["Sasha", "Tess"]);
+    expect(getItem(handle.db, item.id)?.stepId).toBe("accepted");
+    expect(listTransitionsForItem(handle.db, item.id)).toHaveLength(1);
+  });
+
   /** A team that settled on "gaps_found", on the evidence as it stood, and EO stopped before the move. */
   function settledBeforeTheMove(): string {
     const parent = crashedTeamRun();
-    const session = openTeamSession(handle.db, { itemId: item.id, stepId: "check", team: team(), runId: parent });
+    const session = openTeamSession(handle.db, { itemId: item.id, stepId: "check", team: stepSessionTeam(handle.db, "check"), runId: parent });
     for (const [key, role, name, outcome] of [
       ["security", "sec", "Sasha", "blocking"],
       ["tests", "tester", "Tess", "clear"],
@@ -602,7 +621,7 @@ describe("stopping an independent team (EO-846)", () => {
     const done = engine.runOnce();
     await vi.waitFor(() => expect(started).toHaveLength(2));
     const old = currentTeamSession(handle.db, item.id)!;
-    openTeamSession(handle.db, { itemId: item.id, stepId: "check", team: team() });
+    openTeamSession(handle.db, { itemId: item.id, stepId: "check", team: stepSessionTeam(handle.db, "check") });
     release.open();
     await done;
     expect(listTeamSessionsForItem(handle.db, item.id).find((record) => record.session.id === old.id)?.session.status).toBe("superseded");

@@ -16,10 +16,13 @@ export interface TeamProblem {
  * (`teamConfigProblems`, which parsing a team already applies):
  *
  * - only an `agent` step may have a team;
- * - every role it would dispatch must be staffed on the pipeline's
- *   project, by the same rule the scheduler uses (`staffedRoles`) — an
- *   error rather than the warning an unstaffed owner role gets, because a
- *   team that cannot be staffed whole cannot reach a result at all;
+ * - on a team that names no agents yet — one still carried inline, as an
+ *   imported document carries it, which is declared by binding each role
+ *   to an agent — every role must be staffed on the pipeline's project
+ *   (`staffedRoles`), an error rather than the warning an unstaffed owner
+ *   role gets, because a team that cannot be staffed whole cannot reach a
+ *   result at all. A step naming a declared team runs each of its agents
+ *   as itself (EO-882), and `declaredTeamProblems` judges those agents;
  * - the step's action is the contract the team answers: an independent
  *   team's results must be keys it declares, and its answer must be one
  *   EO can build from a result and a summary (`deterministicAnswerProblem`);
@@ -27,8 +30,9 @@ export interface TeamProblem {
  *   for its answer to be held to anything;
  * - what an outcome rules out (EO-873) must be results the action declares;
  * - a team's own time limit can only be tighter than the run timeout;
- * - every agent dispatch could staff one of its roles with must be one EO
- *   can hold to report-only (EO-848, `reportOnlyRoleProblems`), so a team
+ * - on such a team too, every agent one of its roles could be bound to
+ *   must be one EO can hold to report-only (EO-848,
+ *   `reportOnlyRoleProblems`), so a team
  *   that would be refused at its first participant is refused at publish —
  *   for a report-only team only: an isolated team's member runs as its
  *   role's agent does on an ordinary dispatch (EO-867), so any agent that
@@ -55,7 +59,7 @@ export interface IsolatedCopyProblem {
 }
 
 export function teamProblems(
-  steps: readonly Pick<PipelineStep, "id" | "name" | "type" | "agentId" | "entryAction" | "team">[],
+  steps: readonly (Pick<PipelineStep, "id" | "name" | "type" | "agentId" | "entryAction" | "team"> & { teamId?: string | null })[],
   context: {
     registry: RegistryFacts;
     /** The agents a step may name (EO-875): a step's action is its agent's kind's, so the team answers that kind's action. */
@@ -80,7 +84,9 @@ export function teamProblems(
     }
     for (const message of teamConfigProblems(team)) error(`The team on "${step.name}": ${message}`);
     const isolated = teamMemberMode(team) === "isolated";
-    for (const role of new Set(teamRoles(team))) {
+    // A declared team's agents are its own, judged by name (EO-882): no role is staffed.
+    const declared = step.teamId !== null && step.teamId !== undefined;
+    for (const role of declared ? [] : new Set(teamRoles(team))) {
       if (!staffed.has(role)) error(`The team on "${step.name}" needs a "${role}" agent, and this project has none enabled.`);
       else if (!isolated) {
         const why = context.reportOnlyRoleProblems?.[role];

@@ -28,7 +28,7 @@ import { getPipeline, getStep, listPipelineSteps, listRoutesForPipeline, listSte
 import { createRun, getRun, listRunsForItem, sumCostCentsForItem, updateRun } from "../db/repos/runsRepo.js";
 import { acceptTeamReport, endTeamSession, listTeamSessionsForItem, openTeamSession, startTeamAttempt } from "../db/repos/teamSessionsRepo.js";
 import { listTransitionsForItem } from "../db/repos/transitionsRepo.js";
-import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
+import { createTestItem, openMigratedTestDb, stepSessionTeam } from "../db/testHelpers.js";
 import { storedGraphProblems } from "../ipc/configCommands.js";
 import { importPipeline, parseExport } from "../modules/pipelineTransfer.js";
 import { createRunSupervisor, type RunSupervisor } from "./runSupervisor.js";
@@ -197,8 +197,17 @@ function untilStopped(signal: AbortSignal, cents: number, afterStop = 0): AsyncG
 
 const verdict = (outcome: "ready" | "blocking", report: string) => ({ outcome, report });
 const report = (text: string) => ({ outcome: { report: text } });
+/**
+ * A round of work as a leader asks for it: each assignment to the team
+ * member by name (EO-882) — here the one agent of each kind the example's
+ * import made, which is the member its declared team names.
+ */
 const assign = (assignments: { key: string; role: string; instructions: string; required?: boolean }[], note: string) => ({
-  outcome: { decision: "assign", assignments: assignments.map((one) => ({ required: true, ...one })), note },
+  outcome: {
+    decision: "assign",
+    assignments: assignments.map(({ role, ...one }) => ({ required: true, ...one, member: listAgents(handle.db).find((agent) => agent.role === role)!.name })),
+    note,
+  },
 });
 const final = (answer: { result: string; summary: string }, contributions: string[], disagreements = "None.", limitations = "Only the item and its attachments were read.") => ({
   outcome: { decision: "final", answer, contributions, disagreements, limitations },
@@ -573,10 +582,9 @@ describe("the integrated failure matrix (EO-850)", () => {
 
   it("restart during finalization: a session settled before EO stopped answers again without running anyone, and moves the item once", async () => {
     const item = draft(review);
-    const step = getStep(handle.db, review)!;
     const owner = listAgents(handle.db).find((agent) => agent.role === "editor")!;
     const parent = createRun(handle.db, { itemId: item.id, agentId: owner.id, action: "assess", stepId: review, status: "running", initiationId: `entered:${item.id}` }).id;
-    const session = openTeamSession(handle.db, { itemId: item.id, stepId: review, team: step.team!, runId: parent });
+    const session = openTeamSession(handle.db, { itemId: item.id, stepId: review, team: stepSessionTeam(handle.db, review), runId: parent });
     const captured = await captureTeamEvidence({ db: handle.db, item, workspace: null });
     if (!captured.ok) throw new Error(captured.problem);
     for (const [key, role, outcome] of [

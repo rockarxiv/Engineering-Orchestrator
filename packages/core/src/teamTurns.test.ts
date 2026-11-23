@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { asClarification } from "./schemas/clarification.js";
 import { jsonSchemaOutputSchema } from "./schemas/outputSchema.js";
-import { leaderTurnSchema, participantTurnSchema, readLeaderAnswer, readParticipantAnswer } from "./teamTurns.js";
+import { instructionsSummary, leaderTurnSchema, participantTurnSchema, readLeaderAnswer, readParticipantAnswer, type TeamMemberFacts } from "./teamTurns.js";
 
 /** What a team's turns answer with (EO-847). */
 
@@ -32,7 +32,7 @@ describe("readParticipantAnswer (EO-847)", () => {
 
 describe("readLeaderAnswer (EO-847)", () => {
   it("reads a request for work, a final answer and a question", () => {
-    expect(readLeaderAnswer({ outcome: { decision: "assign", assignments: [{ key: "auth", role: "sec", instructions: "Look.", required: true }], note: "" } })).toMatchObject({ kind: "assign" });
+    expect(readLeaderAnswer({ outcome: { decision: "assign", assignments: [{ key: "auth", member: "Sasha", instructions: "Look.", required: true }], note: "" } })).toMatchObject({ kind: "assign" });
     expect(readLeaderAnswer({ outcome: { decision: "final", answer: { result: "ok" }, contributions: [], disagreements: "None.", limitations: "None." } })).toMatchObject({ kind: "final", final: { answer: { result: "ok" } } });
     expect(readLeaderAnswer({ outcome: { status: "clarification_required", questions: [{ id: "q", question: "May I?", why: "Blocks." }] } })).toMatchObject({ kind: "asked" });
   });
@@ -40,7 +40,20 @@ describe("readLeaderAnswer (EO-847)", () => {
   it("refuses what is neither, saying where", () => {
     expect(readLeaderAnswer({ outcome: { decision: "assign", assignments: [], note: "" } })).toMatchObject({ kind: "invalid", error: expect.stringContaining("assignments") });
     expect(readLeaderAnswer({ outcome: { decision: "final", answer: {}, contributions: [], disagreements: "", limitations: "x" } })).toMatchObject({ kind: "invalid" });
-    expect(readLeaderAnswer({ outcome: { decision: "assign", assignments: [{ key: "auth", role: "sec", instructions: "Look.", required: true, agentId: "x" }], note: "" } })).toMatchObject({ kind: "invalid" });
+    expect(readLeaderAnswer({ outcome: { decision: "assign", assignments: [{ key: "auth", member: "Sasha", instructions: "Look.", required: true, agentId: "x" }], note: "" } })).toMatchObject({ kind: "invalid" });
+  });
+});
+
+const SASHA: TeamMemberFacts = { name: "Sasha", kind: "sec", runtime: "claude", model: "claude-opus-4-5", reasoning: "high", summary: "You find ways in." };
+const TESS: TeamMemberFacts = { name: "Tess", kind: "tester", runtime: "codex", model: "gpt-5", reasoning: null, summary: "You read tests." };
+
+describe("instructionsSummary (EO-882)", () => {
+  it("is the first line with words in it, heading marks taken off, bounded", () => {
+    expect(instructionsSummary("\n\n# Security reviewer\n\nYou find ways in.")).toBe("Security reviewer");
+    expect(instructionsSummary("   ")).toBe("");
+    const long = instructionsSummary("x".repeat(400));
+    expect(long).toHaveLength(160);
+    expect(long.endsWith("…")).toBe(true);
   });
 });
 
@@ -52,16 +65,21 @@ describe("the turns' output schemas (EO-847)", () => {
     expect((participantTurnSchema([]) as { properties: { outcome: { anyOf: { required?: string[] }[] } } }).properties.outcome.anyOf[1]?.required).toEqual(["report"]);
   });
 
-  it("offers a leader assignments to the permitted roles alone, or the step's own answer, placed so its references still resolve", () => {
+  it("offers a leader assignments to its team's members alone, by name, each described, or the step's own answer, placed so its references still resolve (EO-882)", () => {
     const answer = { $schema: "https://json-schema.org/draft/2020-12/schema", type: "object", properties: { result: { enum: ["ok"] }, summary: { type: "string" } }, required: ["result", "summary"] };
-    const schema = leaderTurnSchema({ roles: ["sec", "tester"] }, answer) as { properties: { outcome: { anyOf: Record<string, unknown>[] } } };
-    const branches = schema.properties.outcome.anyOf[1] as { anyOf: { properties: Record<string, { items?: { properties: { role: { enum: string[] } } } } | Record<string, unknown>> }[] };
+    const schema = leaderTurnSchema([SASHA, TESS], answer) as { properties: { outcome: { anyOf: Record<string, unknown>[] } } };
+    const branches = schema.properties.outcome.anyOf[1] as { anyOf: { properties: Record<string, { items?: { properties: { member: { enum: string[] } } } } | Record<string, unknown>> }[] };
     const [assignBranch, finalBranch] = branches.anyOf;
-    expect((assignBranch!.properties["assignments"] as { items: { properties: { role: { enum: string[] } } } }).items.properties.role.enum).toEqual(["sec", "tester"]);
+    const member = (assignBranch!.properties["assignments"] as { items: { properties: { member: { enum: string[]; description: string } }; required: string[] } }).items;
+    expect(member.properties.member.enum).toEqual(["Sasha", "Tess"]);
+    expect(member.required).toEqual(["key", "member", "instructions", "required"]);
+    expect(member.properties.member.description).toBe(
+      "Which member of your team does it, by name:\n- Sasha — a sec agent on claude, model claude-opus-4-5, reasoning high: You find ways in.\n- Tess — a tester agent on codex, model gpt-5: You read tests.",
+    );
     expect(finalBranch!.properties["answer"]).toEqual({ type: "object", properties: answer.properties, required: answer.required });
 
     const referring = { $schema: "https://json-schema.org/draft/2020-12/schema", $defs: { r: { enum: ["ok"] } }, type: "object", properties: { result: { $ref: "#/$defs/r" } } };
-    const embedded = leaderTurnSchema({ roles: ["sec"] }, referring) as { $defs?: Record<string, { $defs?: Record<string, { $id?: string }> }> };
+    const embedded = leaderTurnSchema([SASHA], referring) as { $defs?: Record<string, { $defs?: Record<string, { $id?: string }> }> };
     // The leader's document carries the answer as a resource of its own, so `#/$defs/r` still means the answer's own definition.
     const leaderDoc = Object.values(embedded.$defs ?? {})[0];
     expect(leaderDoc?.$defs?.["answer"]?.$id).toBe("urn:eo:output-schema:answer");
@@ -71,12 +89,12 @@ describe("the turns' output schemas (EO-847)", () => {
     const answer = { $schema: "https://json-schema.org/draft/2020-12/schema", type: "object", properties: { result: { enum: ["ok"] }, summary: { type: "string" } }, required: ["result", "summary"], additionalProperties: false };
     const referring = { $schema: "https://json-schema.org/draft/2020-12/schema", $defs: { r: { enum: ["ok"] } }, type: "object", properties: { result: { $ref: "#/$defs/r" } }, required: ["result"] };
     for (const document of [answer, referring]) {
-      const schema = jsonSchemaOutputSchema(leaderTurnSchema({ roles: ["sec"] }, document));
+      const schema = jsonSchemaOutputSchema(leaderTurnSchema([SASHA], document));
       const final = (inner: unknown) => ({ outcome: { decision: "final", answer: inner, contributions: [], disagreements: "None.", limitations: "None." } });
       expect(schema.parse(final({ result: "ok", summary: "Fine." })).ok).toBe(true);
       expect(schema.parse(final({ result: "nope", summary: "Fine." })).ok).toBe(false);
-      expect(schema.parse({ outcome: { decision: "assign", assignments: [{ key: "a", role: "sec", instructions: "Look.", required: true }], note: "" } }).ok).toBe(true);
-      expect(schema.parse({ outcome: { decision: "assign", assignments: [{ key: "a", role: "admin", instructions: "Look.", required: true }], note: "" } }).ok).toBe(false);
+      expect(schema.parse({ outcome: { decision: "assign", assignments: [{ key: "a", member: "Sasha", instructions: "Look.", required: true }], note: "" } }).ok).toBe(true);
+      expect(schema.parse({ outcome: { decision: "assign", assignments: [{ key: "a", member: "Ada", instructions: "Look.", required: true }], note: "" } }).ok).toBe(false);
       expect(schema.parse({ outcome: { status: "clarification_required", questions: [{ id: "q", question: "Which?", why: "Blocks." }] } }).ok).toBe(true);
     }
   });

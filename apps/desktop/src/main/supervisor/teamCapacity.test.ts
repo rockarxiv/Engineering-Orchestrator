@@ -63,7 +63,7 @@ function reportIds(context: string): string[] {
 function leaderTurn(opts: AgentProviderStartOptions): AsyncIterable<AgentEvent> {
   const first = !opts.context.includes("Report (comment");
   const data = first
-    ? { outcome: { decision: "assign", assignments: PASSES.map((key) => ({ key, role: "checker", instructions: `Look at ${key}.`, required: true })), note: "Four passes." } }
+    ? { outcome: { decision: "assign", assignments: PASSES.map((key) => ({ key, member: "Rhea", instructions: `Look at ${key}.`, required: true })), note: "Four passes." } }
     : { outcome: { decision: "final", answer: { result: "aligned", summary: "Every pass is clean." }, contributions: reportIds(opts.context), disagreements: "None.", limitations: "None." } };
   return (async function* () {
     yield { type: "thread_started", threadId: `thread-${uuidv7()}` } as AgentEvent;

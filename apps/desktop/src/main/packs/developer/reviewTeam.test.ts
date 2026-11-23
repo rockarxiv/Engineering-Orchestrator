@@ -94,7 +94,7 @@ const DIFF = "diff --git a/src/limit.ts b/src/limit.ts\n+export function limit(k
 type Backend = "claude" | "codex";
 interface Roster {
   name: string;
-  /** The backends of the project's reviewer agents, in staffing order: the leader is the first. */
+  /** The backends of the Review team's reviewer agents, in the team's order: the leader is the first. */
   reviewers: Backend[];
 }
 const ROSTERS: Roster[] = [
@@ -134,7 +134,7 @@ async function* says(data: unknown, afterMs = 0): AsyncGenerator<AgentEvent> {
 }
 
 /** One Claude turn through the real adapter, over an SDK `query` that answers `data` as structured output. */
-function claudeTurn(agent: Agent, opts: AgentProviderStartOptions, data: unknown, afterMs: number): ReturnType<AgentProvider["start"]> {
+function claudeTurn(agent: Agent, opts: AgentProviderStartOptions, data: unknown, afterMs: number, reportOnly = false): ReturnType<AgentProvider["start"]> {
   const calls: { prompt: unknown; options: Record<string, unknown> }[] = [];
   const session = `sess-${uuidv7()}`;
   const runQuery = ((params: { prompt: unknown; options?: Record<string, unknown> }) => {
@@ -157,11 +157,12 @@ function claudeTurn(agent: Agent, opts: AgentProviderStartOptions, data: unknown
     },
     schema: () => (calls[0]?.options["outputFormat"] as { schema?: unknown } | undefined)?.schema,
   });
-  return createClaudeProvider({ runQuery, enableCommentTool: false }).start(opts);
+  // A report-only participant's adapter is the one `reportOnlyProviderForAgent` builds: locked to the evidence tools (EO-845).
+  return createClaudeProvider({ runQuery, enableCommentTool: false, ...(reportOnly ? { reportOnly: true, eoMcp: PARTICIPANT_EO_MCP } : {}) }).start(opts);
 }
 
 /** One Codex turn through the real adapter and client, over an app-server child process that answers `data` as the turn's final message. */
-function codexTurn(agent: Agent, opts: AgentProviderStartOptions, data: unknown, afterMs: number): ReturnType<AgentProvider["start"]> {
+function codexTurn(agent: Agent, opts: AgentProviderStartOptions, data: unknown, afterMs: number, reportOnly = false): ReturnType<AgentProvider["start"]> {
   const fake: FakeAppServer = fakeAppServer({
     after: {
       "turn/start": [
@@ -179,7 +180,10 @@ function codexTurn(agent: Agent, opts: AgentProviderStartOptions, data: unknown,
     said: () => Promise.resolve(((fake.paramsOf("turn/start")?.["input"] as { text: string }[] | undefined) ?? []).map((part) => part.text).join("")),
     schema: () => fake.paramsOf("turn/start")?.["outputSchema"],
   });
-  return createCodexProvider({ executablePath: CODEX_EXECUTABLE, createCodex: () => new CodexClient({ executablePath: CODEX_EXECUTABLE, spawn: fake.spawn, shutdownGraceMs: 200 }) }).start(opts);
+  const locked = reportOnly
+    ? { reportOnly: true, eoMcp: PARTICIPANT_EO_MCP, searchHookCommandPath: "/opt/eo/hook.mjs", searchHookTrust: async () => ({ key: "/<session-flags>/config.toml:pre_tool_use:0:0", hash: "sha256:abc123" }), codexHome: () => mkdtempSync(join(scratch, "codex-home-")), config: { model: agent.model ?? "gpt-reviewer" } }
+    : {};
+  return createCodexProvider({ executablePath: CODEX_EXECUTABLE, ...locked, createCodex: () => new CodexClient({ executablePath: CODEX_EXECUTABLE, spawn: fake.spawn, shutdownGraceMs: 200 }) }).start(opts);
 }
 
 /**
@@ -188,7 +192,10 @@ function codexTurn(agent: Agent, opts: AgentProviderStartOptions, data: unknown,
  * for this turn. The seeded `fake` agent, which no real backend serves,
  * answers in memory.
  */
-function providerFor(agent: Agent): AgentProvider {
+/** What a report-only participant's `eo` server is started with, as `reportOnlyProviderForAgent` starts it. */
+const PARTICIPANT_EO_MCP = { serverPath: "/app/eoServer.mjs", enableCommentTool: false, enableConfigTools: false, enableFullThread: false, enableMemoryNote: false };
+
+function providerFor(agent: Agent, reportOnly = false): AgentProvider {
   return {
     start: (opts) => {
       started.push({ agent, opts });
@@ -197,8 +204,8 @@ function providerFor(agent: Agent): AgentProvider {
       const data = script({ agent, opts, leader, assignment });
       // A member's turn takes a moment, so the passes overlap as they do on a real backend.
       const afterMs = assignment === null ? 0 : 30;
-      if (agent.provider === "claude") return claudeTurn(agent, opts, data, afterMs);
-      if (agent.provider === "codex") return codexTurn(agent, opts, data, afterMs);
+      if (agent.provider === "claude") return claudeTurn(agent, opts, data, afterMs, reportOnly);
+      if (agent.provider === "codex") return codexTurn(agent, opts, data, afterMs, reportOnly);
       return says(data, afterMs)[Symbol.asyncIterator]() as unknown as ReturnType<AgentProvider["start"]>;
     },
     resume: () => {
@@ -251,7 +258,15 @@ function freshInstallation(roster?: Roster, history: TemplateHistory = loadTempl
   roster.reviewers.forEach((backend, index) => {
     const config = backend === "codex" ? { provider: "codex", model: "gpt-reviewer" } : { provider: "claude" };
     if (index === 0) updateAgent(handle.db, seeded.id, config);
-    else createAgent(handle.db, { name: `Reviewer ${index + 1}`, role: "reviewer", instructions: seeded.instructions, ...config });
+    else {
+      // A member of the declared Review team in its own right (EO-882): a
+      // second reviewer of the kind runs only because the team names it.
+      const added = createAgent(handle.db, { name: `Reviewer ${index + 1}`, role: "reviewer", instructions: seeded.instructions, ...config });
+      const declared = getTeam(handle.db, listStepsForPipeline(handle.db, "default").find((step) => step.id === "review")!.teamId!)!;
+      if (declared.definition?.coordination !== "leader") throw new Error("Review is not a leader-led declared team.");
+      const changed = changeTeam(handle.db, declared.id, { definition: { ...declared.definition, members: [...declared.definition.members, { agentId: added.id }] }, author: { kind: "person", personId: null } });
+      if (!changed.ok) throw new Error(changed.reason);
+    }
   });
 }
 
@@ -296,6 +311,14 @@ function passesIn(context: string): { every: string[]; calledFor: string[] } {
   };
 }
 
+/** The team's reviewers, by the names the leader is told to assign them work under (EO-882), in the team's order. */
+function reviewersIn(context: string): string[] {
+  const told = context.slice(context.indexOf("Your team's members"));
+  const named = [...told.matchAll(/^- (.+?) — a reviewer agent on /gm)].map((match) => match[1]!);
+  if (named.length === 0) throw new Error("The leader was told of no reviewer to assign work to.");
+  return named;
+}
+
 /**
  * A leader's first round, as the instructions it was given say: every pass
  * they list for every review, and those of the passes they list for when
@@ -308,7 +331,8 @@ function assignAsTold(context: string, calledFor: readonly Pass[]): unknown {
   return {
     outcome: {
       decision: "assign",
-      assignments: passes.map((key) => ({ key, role: "reviewer", instructions: `Your focus is ${key}, and only ${key}.`, required: true })),
+      // Shared out across the team's reviewers, so a team of both backends has each do some.
+      assignments: passes.map((key, index) => ({ key, member: reviewersIn(context)[index % reviewersIn(context).length]!, instructions: `Your focus is ${key}, and only ${key}.`, required: true })),
       note: listed.calledFor.map((key) => `${key} ${calledFor.includes(key as Pass) ? "assigned" : "not assigned"}: ${calledFor.includes(key as Pass) ? "the change calls for it" : "nothing in the change calls for it"}.`).join(" "),
     },
   };
@@ -546,6 +570,82 @@ describe("the template's Review team, on either backend (EO-868)", () => {
  * its own session — the leader's first turn, and siblings that have
  * finished. None of them is the agent having looked.
  */
+/**
+ * The Review team made report-only (EO-882): its leader the seeded
+ * reviewer on Claude, its members that reviewer and a second one on
+ * Codex — each run as itself, through its own backend's report-only
+ * adapter, never as another agent of its kind — through an approval and
+ * a rejection. The isolated mode is the scenarios above, on the same
+ * mixed roster.
+ */
+describe("the Review team with report-only members, its leader on Claude and its members on Claude and Codex (EO-882)", () => {
+  const mixed = ROSTERS.find((roster) => roster.reviewers.length === 2)!;
+  let reportOnlyTurns: string[];
+
+  beforeEach(() => {
+    freshInstallation(mixed);
+    const declared = getTeam(handle.db, listStepsForPipeline(handle.db, "default").find((step) => step.id === "review")!.teamId!)!;
+    const changed = changeTeam(handle.db, declared.id, { definition: { ...declared.definition!, memberMode: "report_only" }, author: { kind: "person", personId: null } });
+    if (!changed.ok) throw new Error(changed.reason);
+    reportOnlyTurns = [];
+  });
+
+  function reportOnlySupervisor(): RunSupervisor {
+    return supervisor({
+      // Members and leader alike are built as report-only participants, each through its own backend's adapter.
+      provider: () => {
+        throw new Error("A member of a report-only team was dispatched through its ordinary provider.");
+      },
+      reportOnlyProvider: (agent, attemptId) => {
+        reportOnlyTurns.push(agent.id);
+        return { ok: true, cwd: join(scratch, attemptId), provider: providerFor(agent, true) };
+      },
+    });
+  }
+
+  async function settledAs(item: Item, resultKey: string): Promise<void> {
+    expect(listTeamSessionsForItem(handle.db, item.id).map((record) => record.session.status)).toEqual(["finalized"]);
+    const agents = listAgents(handle.db).filter((agent) => agent.role === "reviewer");
+    const [leader, second] = [agents.find((agent) => agent.provider === "claude")!, agents.find((agent) => agent.provider === "codex")!];
+    // The leader on Claude; the members' passes shared between the Claude and the Codex reviewer, each as itself.
+    expect(new Set(leaderTurns().map((one) => one.agent.id))).toEqual(new Set([leader.id]));
+    expect(new Set(memberTurns().map((one) => one.agent.provider))).toEqual(new Set(["claude", "codex"]));
+    expect(new Set(memberTurns().map((one) => one.agent.id))).toEqual(new Set([leader.id, second.id]));
+    expect(reportOnlyTurns).toEqual(started.map((one) => one.agent.id));
+    expect(crossed.map((one) => [one.agent.id, one.backend])).toEqual(started.map((one) => [one.agent.id, one.agent.provider]));
+    for (const [index, one] of crossed.entries()) {
+      const heading = /## Your assignment: \w+|## What you lead/.exec(started[index]!.opts.context)![0];
+      expect(await one.said(), `${one.backend} turn ${index}`).toContain(heading);
+      expect(one.schema(), `${one.backend} turn ${index}`).toBeTypeOf("object");
+    }
+    expect(listRunsForItem(handle.db, item.id).filter((run) => run.status === "failed")).toEqual([]);
+    expect(listTransitionsForItem(handle.db, item.id)).toHaveLength(1);
+    expect(getItem(handle.db, item.id)?.stepId).toBe(routeOf(resultKey));
+  }
+
+  it("approves on clean reports", async () => {
+    const item = story();
+    const lead = leading([], () => ({ answer: { verdict: "approve", feedback: "Every pass came back clean.", pull_request_body: "Rate limits the API per key." } }));
+    script = (turn) => (turn.leader ? lead(turn) : { outcome: { outcome: "clear", report: `Checked ${turn.assignment}: nothing blocks.` } });
+    await reportOnlySupervisor().runOnce();
+    await settledAs(item, "approved");
+    expect(assigned().sort()).toEqual([...EVERY_REVIEW].sort());
+  });
+
+  it("rejects once, carrying every blocking issue from every pass", async () => {
+    const item = story();
+    const lead = leading(["security", "user_facing"], (reports) => ({
+      answer: { verdict: "reject", feedback: "Six passes, six faults.", blocking_issues: blockingIn(reports), criteria_coverage: coverage() },
+    }));
+    script = (turn) => (turn.leader ? lead(turn) : memberFinding(turn.assignment!));
+    await reportOnlySupervisor().runOnce();
+    await settledAs(item, "changes_requested");
+    const verdicts = listReviewVerdicts(handle.db, item.id);
+    expect(verdicts).toHaveLength(1);
+    expect(verdicts[0]).toMatchObject({ verdict: "reject", blockingIssues: 6 });
+  });
+});
+
 describe.each(ROSTERS.filter((roster) => roster.reviewers.length === 1))("a Review team staffed by one agent, $name", (roster) => {
   beforeEach(() => freshInstallation(roster));
 

@@ -1,14 +1,14 @@
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import {
   LEADER_ASSIGNMENT_KEY,
-  storedTeam,
+  storedSessionTeam,
   TEAM_RETRY_REQUESTED,
   TeamEvidenceBaselineSchema,
   uuidv7,
   type Comment,
   type RecordCursor,
   type RecordTeamSessionCommand,
-  type StepTeam,
+  type SessionTeam,
   type TeamAttemptRow,
   type TeamAttemptStatus,
   type TeamEvidenceBaseline,
@@ -56,7 +56,7 @@ function sessionOf(row: typeof teamSessions.$inferSelect): TeamSessionRow {
     runId: row.runId,
     // Written only from a parsed team; a row this build cannot read is a
     // programmer's error, not something to show as an empty team.
-    team: storedTeam(row.team) ?? (() => {
+    team: storedSessionTeam(row.team) ?? (() => {
       throw new Error(`Team session ${row.id} holds a team this version of EO cannot read.`);
     })(),
     status: row.status as TeamSessionStatus,
@@ -199,8 +199,8 @@ function staleProblem(session: TeamSessionRow): string | null {
 export interface OpenTeamSessionInput {
   itemId: Uuid;
   stepId: string;
-  /** The team as configured now. Copied, so a later edit does not rewrite the session. */
-  team: StepTeam;
+  /** The team as configured now, with the agent behind each part of it (EO-882). Copied, so a later edit does not rewrite the session. */
+  team: SessionTeam;
   /** The orchestration's own run, where there is one. */
   runId?: Uuid | null;
   /** The move that put the item on the step. Defaults to the item's latest move, or null for an item never moved. */

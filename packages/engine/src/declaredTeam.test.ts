@@ -100,4 +100,21 @@ describe("declaredTeamProblems (EO-881)", () => {
       '"Review" runs as the team "Review leads", but only a step an agent does can run as a team.',
     );
   });
+
+  it("judges each agent it names as itself: one retired or disabled, and on a report-only team one EO cannot hold to report-only, never stood in for by another of its kind (EO-882)", () => {
+    const retired = agents.map((agent) => (agent.id === "sec" ? { ...agent, archivedAt: 1 } : agent.id === "lead" ? { ...agent, enabled: false } : agent));
+    expect(declaredTeamProblems([step], { projectId: "p1", registry, teams: facts(leader()), agents: retired }).map((problem) => problem.message)).toEqual([
+      '"Review" runs as the team "Review leads": Its leader "Lead reviewer" is disabled, so it cannot run.',
+      '"Review" runs as the team "Review leads": Its member "Security reviewer" has been retired, so it cannot run.',
+    ]);
+    // "Lead reviewer" is a reviewer as "Security reviewer" is: the one that cannot be held is named, and only it.
+    const reportOnly = { tests: "its backend cannot be locked down." };
+    expect(declaredTeamProblems([step], { projectId: "p1", registry, teams: facts(leader()), agents, reportOnly }).map((problem) => problem.message)).toEqual([
+      '"Review" runs as the team "Review leads": Its member "Test reviewer" cannot be held to report-only: its backend cannot be locked down.',
+    ]);
+    // An isolated team's members run as themselves on an ordinary dispatch: report-only is not asked of them.
+    expect(declaredTeamProblems([step], { projectId: "p1", registry, teams: facts(leader({ memberMode: "isolated" })), agents, reportOnly })).toEqual([]);
+    // A team judged on its own, as a draft's team is, is not held to whether its agents run now.
+    expect(validateTeam(leader(), { agents: retired })).toEqual([]);
+  });
 });

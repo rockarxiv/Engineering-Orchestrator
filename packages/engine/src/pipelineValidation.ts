@@ -132,10 +132,17 @@ export interface ValidatePipelineInput {
    */
   reportOnlyRoleProblems?: Readonly<Record<string, string>>;
   /**
-   * The roles a team on this pipeline may be staffed with (EO-843): a
-   * team still staffs its members by role, by the rule the scheduler
-   * staffs with, which the caller reads from the agents. Absent, it is
-   * the kinds of the enabled, live agents this pipeline's steps may name.
+   * Why an agent cannot be held to report-only, by agent id (EO-882): what
+   * a step's declared report-only team is judged by, member by member,
+   * since each runs as itself. Absent is "every agent can be".
+   */
+  reportOnlyAgentProblems?: Readonly<Record<string, string>>;
+  /**
+   * The roles a team that names no agents yet may be bound to (EO-843) —
+   * one carried inline, as an imported document carries it — by the rule
+   * that binds a kind to an agent, which the caller reads from the agents.
+   * Absent, it is the kinds of the enabled, live agents this pipeline's
+   * steps may name. A declared team's agents are judged as themselves.
    */
   staffedRoles?: readonly string[];
   /**
@@ -289,6 +296,7 @@ export function validatePipeline(input: ValidatePipelineInput): WorkflowProblem[
     entryRules = [],
     itemTypes = registry.itemTypes,
     reportOnlyRoleProblems = {},
+    reportOnlyAgentProblems,
     isolatedCopyProblems = {},
     staffedRoles,
     teams,
@@ -315,7 +323,7 @@ export function validatePipeline(input: ValidatePipelineInput): WorkflowProblem[
   // The declared team a step names (EO-881): that it exists, is this
   // project's and can answer the step, and `validateTeam` on it.
   if (teams !== undefined) {
-    for (const { stepId, message } of declaredTeamProblems(steps, { projectId, registry, teams, agents, ...(teamAgentSurfaces === undefined ? {} : { surfaces: teamAgentSurfaces }) })) {
+    for (const { stepId, message } of declaredTeamProblems(steps, { projectId, registry, teams, agents, ...(teamAgentSurfaces === undefined ? {} : { surfaces: teamAgentSurfaces }), ...(reportOnlyAgentProblems === undefined ? {} : { reportOnly: reportOnlyAgentProblems }) })) {
       problems.push({ severity: "error", stateId: stepId, message });
     }
   }
