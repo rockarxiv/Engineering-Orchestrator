@@ -16,7 +16,9 @@ import { dropWarmCodexThread,
   type ThreadEvent,
   type ThreadItem,
   type Usage,
+  type CodexSample,
   TOO_FEW_COMPLETED_TURNS,
+  TURNS_NOT_COUNTED,
 } from "./codexClient.js";
 import {
   ADMIN_MCP_SERVER_NAME,
@@ -46,6 +48,7 @@ import {
   type ServerStatusEvent,
   type Skill,
   type SuggestionOutcome,
+  type SuggestionSpend,
   type UsageEvent,
   type ForkCopy,
   liveMessageOf,
@@ -322,7 +325,7 @@ export interface CodexProviderOptions {
     skillSlugs?: readonly string[],
     /** The item the turn works on, whose Codex home it runs in (EO-829). Handed only on a turn on one. */
     itemId?: string,
-  ) => Pick<CodexClient, "startThread" | "resumeThread"> & Partial<Pick<CodexClient, "prewarm" | "forkThread">>;
+  ) => Pick<CodexClient, "startThread" | "resumeThread"> & Partial<Pick<CodexClient, "prewarm" | "forkThread" | "sampleThread">>;
   /**
    * Seam for tests — the client a side call runs on (EO-477), built from
    * `codexSideCallClientOptions` in production. Its own seam because a
@@ -2494,7 +2497,10 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
             return;
           }
         }
-        if (event.type === "turn.completed" && facts && event.lastRequest) facts.lastRequest = event.lastRequest;
+        if (event.type === "turn.completed" && facts) {
+          if (event.lastRequest) facts.lastRequest = event.lastRequest;
+          if (event.turnId) facts.turnId = event.turnId;
+        }
         const { mapped: all, recognised } = mapThreadEvent(event);
         if (!recognised) options.onUnmappedEvent?.(event);
         const mapped = streamDeltas ? all : all.filter((agentEvent) => agentEvent.type !== "output_delta");
@@ -2584,6 +2590,20 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
     return { slugs: restored.delivered.map((skill) => skill.slug), section: worktreeSkillsPromptSection(restored.delivered) };
   }
 
+  /** What a thread is resumed with: the turn's options, as `threadOptionsFrom` reads them. */
+  function resumedThreadOptions(resumeOpts: AgentProviderResumeOptions | undefined): CodexThreadOptions {
+    return threadOptionsFrom(
+      {
+        ...(resumeOpts?.cwd ? { cwd: resumeOpts.cwd } : {}),
+        ...(resumeOpts?.model ? { model: resumeOpts.model } : {}),
+        ...(resumeOpts?.reasoningEffort ? { reasoningEffort: resumeOpts.reasoningEffort } : {}),
+        ...(resumeOpts?.showReasoning === undefined ? {} : { showReasoning: resumeOpts.showReasoning }),
+        ...(resumeOpts?.processScope ? { processScope: resumeOpts.processScope } : {}),
+      },
+      options.config,
+    );
+  }
+
   async function* resumedTurn(
     threadId: string,
     message: string,
@@ -2645,16 +2665,7 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
       const openThread = fork ? client.forkThread?.bind(client) : client.resumeThread.bind(client);
       if (!openThread) throw new Error("This Codex client cannot fork a thread.");
       const thread = openThread(threadId, {
-        ...threadOptionsFrom(
-          {
-            ...(resumeOpts?.cwd ? { cwd: resumeOpts.cwd } : {}),
-            ...(resumeOpts?.model ? { model: resumeOpts.model } : {}),
-            ...(resumeOpts?.reasoningEffort ? { reasoningEffort: resumeOpts.reasoningEffort } : {}),
-            ...(resumeOpts?.showReasoning === undefined ? {} : { showReasoning: resumeOpts.showReasoning }),
-            ...(resumeOpts?.processScope ? { processScope: resumeOpts.processScope } : {}),
-          },
-          options.config,
-        ),
+        ...resumedThreadOptions(resumeOpts),
         ...(forkAfterCompletedTurns === undefined ? {} : { forkAfterCompletedTurns }),
       });
       const prompt = withAttachmentNote(withSkillsSection(message, skills.section), resumeOpts?.attachments);
@@ -2748,7 +2759,7 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
       const facts: TurnFacts = {};
       const stream = refusingCalls(
         resumeOpts,
-        reachableTurn((reach) => suggestingAfter(lostThreadTranslated(threadId, message, resumeOpts, reach, false, skills, facts), threadId, resumeOpts, facts, stop)),
+        reachableTurn((reach) => suggestingAfter(lostThreadTranslated(threadId, message, resumeOpts, reach, false, skills, facts), threadId, resumeOpts, facts, stop, skills.slugs)),
       );
       // Cancelling the turn cancels the suggestion after it too, which by
       // then has no turn of the thread's own left to interrupt (EO-808).
@@ -2916,13 +2927,16 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
    * The turn, and after it a suggested next message where one was asked
    * for and is worth making (EO-808).
    *
-   * Codex makes none of its own, so this makes it the way the learning
-   * review reads a run (EO-716, EO-732): on a fork of the thread just
-   * finished, in prediction mode where the app-server allows it, so the
-   * fork's request reads the thread from the prompt cache. The fork is
-   * sent EO's prompt with every call refused, and its answer is cleaned
-   * up and filtered (`promptSuggestion.ts`) before it is passed on as a
-   * `prompt_suggestion` event — the one Claude's adapter passes on.
+   * Codex makes none of its own, so this makes it: with one
+   * `thread/sample` on the thread just finished (EO-893), a single model
+   * response on a hidden copy that reads the thread from the prompt
+   * cache and runs no tool. Where the app-server refuses or does not
+   * know it, the way the learning review reads a run (EO-716, EO-732):
+   * on a fork of the thread, in prediction mode where the app-server
+   * allows it, sent EO's prompt with every call refused. Either answer
+   * is cleaned up and filtered (`promptSuggestion.ts`) before it is
+   * passed on as a `prompt_suggestion` event — the one Claude's adapter
+   * passes on.
    *
    * After the turn's `result`, never before: the turn is over there, and
    * its process ended, whether or not the caller reads on. One that stops
@@ -2949,6 +2963,8 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
     resumeOpts: AgentProviderResumeOptions | undefined,
     facts: TurnFacts,
     stop: AbortController,
+    /** The skills the turn was given, by slug: what a sample's process is launched with, as the turn's was. */
+    skillSlugs: readonly string[] = [],
   ): AsyncIterable<AgentEvent> {
     const asked = resumeOpts?.suggestNextMessage === true;
     let answered = false;
@@ -3001,7 +3017,7 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
         stop.abort();
       }, options.suggestionTimeoutMs ?? SUGGESTION_TIMEOUT_MS);
       try {
-        const outcome = await suggestionOn(threadId, resumeOpts, stop.signal);
+        const outcome = await suggestionOn(threadId, resumeOpts, facts.turnId, skillSlugs, stop.signal);
         // An answer that came once the suggestion was stopped is too late to show.
         if (outcome.kind === "stopped" || (outcome.kind === "emitted" && stop.signal.aborted)) {
           told({ kind: "stopped", by: timedOut ? "time_limit" : "stopped" });
@@ -3025,12 +3041,97 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
   }
 
   /**
-   * What one fork of the thread made of the suggestion (EO-810): not
-   * opened, failed, stopped, or answered — and then dropped by the
-   * filters or kept. Never a throw. What the fork spent is reported
-   * (`onSuggestionSpend`) however it ended, where its turn said.
+   * What became of the suggestion (EO-810), made with one `thread/sample`
+   * on the thread (EO-893) — or, where the app-server refuses or does not
+   * know it, on a fork of the thread as before, which records why
+   * (`forkedSuggestion`). Never a throw.
    */
-  async function suggestionOn(threadId: string, resumeOpts: AgentProviderResumeOptions, signal: AbortSignal): Promise<SuggestionOutcome> {
+  async function suggestionOn(threadId: string, resumeOpts: AgentProviderResumeOptions, turnId: string | undefined, skillSlugs: readonly string[], signal: AbortSignal): Promise<SuggestionOutcome> {
+    const sampled = turnId === undefined ? { fallback: "The turn's id was not reported, so the thread could not be sampled after it." } : await sampledSuggestion(threadId, resumeOpts, turnId, skillSlugs, signal);
+    if ("outcome" in sampled) return sampled.outcome;
+    if (signal.aborted) return { kind: "stopped", by: "stopped" };
+    return forkedSuggestion(threadId, resumeOpts, signal, sampled.fallback);
+  }
+
+  /**
+   * The suggestion from one `thread/sample` of the thread (EO-893): one
+   * model response on a hidden copy, after `turnId` and only if that is
+   * still the thread's latest turn, with MCP off and no tool ever run —
+   * a response that tried one has no text, and is no suggestion. Its
+   * process is launched as the turn's was, so the thread it loads, and
+   * the request on the copy, read as the turn's did from the prompt
+   * cache.
+   *
+   * Counted first, as a fork is (`SUGGESTION_MIN_COMPLETED_TURNS`): a
+   * thread too short, or whose turns cannot be counted, is not sampled
+   * and not forked either. Anything else refused is a `fallback`, in the
+   * app-server's words. What the response spent is reported however
+   * the suggestion then fares, with `{ mode: "sample" }`.
+   */
+  async function sampledSuggestion(
+    threadId: string,
+    resumeOpts: AgentProviderResumeOptions,
+    turnId: string,
+    skillSlugs: readonly string[],
+    signal: AbortSignal,
+  ): Promise<{ outcome: SuggestionOutcome } | { fallback: string }> {
+    const startedAt = Date.now();
+    const client = clientFor(
+      resumeOpts.repositoryMcp,
+      null,
+      resumeOpts.attachFrom,
+      resumeOpts.memoryScopes,
+      resumeOpts.environmentVariables,
+      resumeOpts.writeBridge,
+      resumeOpts.withheldEnvironmentVariables,
+      resumeOpts.cwd,
+      skillSlugs,
+      resumeOpts.itemId,
+    );
+    if (!client.sampleThread) return { fallback: "This Codex client cannot sample a thread." };
+    let sample: CodexSample;
+    try {
+      sample = await client.sampleThread(threadId, resumedThreadOptions(resumeOpts), {
+        expectedTurnId: turnId,
+        prompt: PROMPT_SUGGESTION_PROMPT,
+        threadSource: SUGGESTION_THREAD_SOURCE,
+        afterCompletedTurns: SUGGESTION_MIN_COMPLETED_TURNS,
+        signal,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (signal.aborted || (error instanceof Error && error.name === "AbortError")) return { outcome: { kind: "stopped", by: "stopped" } };
+      if (message.includes(TOO_FEW_COMPLETED_TURNS)) return { outcome: { kind: "skipped", rule: "too_few_turns" } };
+      if (message.includes(TURNS_NOT_COUNTED)) return { outcome: { kind: "fork_not_opened", message } };
+      return { fallback: message };
+    }
+    if (sample.usage) {
+      const usage = usageEvent(
+        { input_tokens: sample.usage.inputTokens, cached_input_tokens: sample.usage.cachedInputTokens, cache_write_input_tokens: 0, output_tokens: sample.usage.outputTokens ?? 0, reasoning_output_tokens: 0 },
+        sample.model ?? undefined,
+      );
+      // The sample says nothing of what it wrote to the cache.
+      delete usage.cacheWriteTokens;
+      reportSuggestionSpend(resumeOpts, { usage, fork: { mode: "sample" }, startedAt, durationMs: Math.max(0, Date.now() - startedAt), completed: !signal.aborted });
+    }
+    if (signal.aborted) return { outcome: { kind: "stopped", by: "stopped" } };
+    // A tool call tried, or nothing said: no suggestion, and no failure either.
+    if (sample.text === null) return { outcome: { kind: "no_suggestion" } };
+    // The sample is sent no answer schema, but a thread whose turns had
+    // one may still answer in it (`PROMPT_SUGGESTION_PROMPT`).
+    const answer = resumeOpts.outputSchema !== undefined && sample.text.trimStart().startsWith("{") ? suggestionIn(sample.text, true) : sample.text;
+    return { outcome: judged(answer) };
+  }
+
+  /**
+   * What one fork of the thread made of the suggestion (EO-810), where it
+   * could not be sampled (EO-893): not opened, failed, stopped, or
+   * answered — and then dropped by the filters or kept. Never a throw.
+   * What the fork spent is reported (`onSuggestionSpend`) however it
+   * ended, where its turn said, with how the thread was copied and why
+   * it was not sampled (`sampleRefused`, the app-server's words).
+   */
+  async function forkedSuggestion(threadId: string, resumeOpts: AgentProviderResumeOptions, signal: AbortSignal, sampleRefused: string): Promise<SuggestionOutcome> {
     const startedAt = Date.now();
     let spent: UsageEvent | undefined;
     /** How the thread was copied (EO-811): kept, so a plain fork's fallback and its reason are recorded with what it spent. */
@@ -3054,24 +3155,30 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
       failure = error instanceof Error ? error.message : String(error);
     } finally {
       if (spent) {
-        try {
-          resumeOpts.onSuggestionSpend?.({
-            usage: spent,
-            ...(fork ? { fork } : {}),
-            startedAt,
-            durationMs: Math.max(0, Date.now() - startedAt),
-            completed: failure === null && !signal.aborted && answer !== null,
-          });
-        } catch (error) {
-          console.warn(`[codex] what a suggested reply spent could not be reported: ${error instanceof Error ? error.message : String(error)}`);
-        }
+        // Why the thread was not sampled, before why the fork was plain where it was.
+        const copied = fork ? { fork: { mode: fork.mode, fallbackReason: fork.fallbackReason ? `${sampleRefused}; ${fork.fallbackReason}` : sampleRefused } } : {};
+        reportSuggestionSpend(resumeOpts, {
+          usage: spent,
+          ...copied,
+          startedAt,
+          durationMs: Math.max(0, Date.now() - startedAt),
+          completed: failure === null && !signal.aborted && answer !== null,
+        });
       }
     }
     if (signal.aborted) return { kind: "stopped", by: "stopped" };
     if (failure !== null) return { kind: "fork_failed", message: failure };
     if (answer === null) return { kind: "fork_failed", message: "The fork's turn ended without an answer." };
-    const verdict = judgeSuggestion(answer);
-    return verdict.kept ? { kind: "emitted", text: verdict.text, answer } : { kind: "dropped", answer, rule: verdict.rule };
+    return judged(answer);
+  }
+
+  /** A suggestion's spend, told to the turn's caller (`onSuggestionSpend`). Never throws. */
+  function reportSuggestionSpend(resumeOpts: AgentProviderResumeOptions, spend: SuggestionSpend): void {
+    try {
+      resumeOpts.onSuggestionSpend?.(spend);
+    } catch (error) {
+      console.warn(`[codex] what a suggested reply spent could not be reported: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   async function* startedTurn(opts: AgentProviderStartOptions, skillsSection: string, reach: (turn: CodexTurn) => void, skillSlugs: readonly string[]): AsyncIterable<AgentEvent> {
@@ -3214,9 +3321,11 @@ function withInterceptions(mapped: AgentEvent[], pending: SearchInterceptionEven
  * `interrupt` does nothing and `steer` answers false, which is the
  * contract's "the turn had already ended".
  */
-/** What a turn says of itself that is read after it (EO-808): its last model response's own usage. */
+/** What a turn says of itself that is read after it (EO-808): its last model response's own usage, and its id (EO-893). */
 interface TurnFacts {
   lastRequest?: Usage;
+  /** The app-server's id for the turn, which a suggestion's `thread/sample` names as the one it follows. */
+  turnId?: string;
 }
 
 /** Tokens a request spent outside the prompt cache: its uncached input, and its output. */
@@ -3252,6 +3361,15 @@ function suggestionSkipped(
   }
   return null;
 }
+
+/** An answer the filters kept, or the rule that dropped it (`judgeSuggestion`). */
+function judged(answer: string): SuggestionOutcome {
+  const verdict = judgeSuggestion(answer);
+  return verdict.kept ? { kind: "emitted", text: verdict.text, answer } : { kind: "dropped", answer, rule: verdict.rule };
+}
+
+/** What a suggestion's `thread/sample` is for, as the app-server records it (EO-893). */
+export const SUGGESTION_THREAD_SOURCE = "prompt_suggestion";
 
 /**
  * What a suggestion's fork answered, as the text its filters judge

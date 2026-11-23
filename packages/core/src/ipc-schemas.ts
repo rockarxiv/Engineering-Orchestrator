@@ -784,11 +784,13 @@ export const RunRecordSchema = z.object({
    * On a fork-based side call — `side_call:learning_review`,
    * `side_call:prompt_suggestion` — how the backend copied the thread
    * (EO-811): `prediction`, the fork that keeps the prompt cache, or
-   * `plain`, with `forkFallbackReason` saying why the other was not used.
+   * `plain`, with `forkFallbackReason` saying why the other was not used;
+   * on a suggested reply, `sample` — one `thread/sample`, no fork's turn —
+   * and on its fork, `forkFallbackReason` saying why it was not sampled (EO-893).
    * Null on a run, on a side call that is no fork, and where the backend
    * did not say.
    */
-  forkMode: z.enum(["prediction", "plain"]).nullable(),
+  forkMode: z.enum(["sample", "prediction", "plain"]).nullable(),
   forkFallbackReason: z.string().nullable(),
 });
 export type RunRecord = z.infer<typeof RunRecordSchema>;
