@@ -34,7 +34,7 @@ let handle: DbHandle;
 let scratch: string;
 let secrets: ModuleSecretsOptions;
 let shop: Uuid;
-let pipelineId: string;
+let pipelineId: Uuid;
 let reviewer: Uuid;
 let checker: Uuid;
 
@@ -52,7 +52,7 @@ beforeEach(() => {
   checker = createAgent(handle.db, { name: "Checker", role: "reviewer", provider: "claude", instructions: "Check every criterion." }).id;
   const prober = createAgent(handle.db, { name: "Prober", role: "reviewer", provider: "claude", instructions: "Probe the edges.", projectId: shop }).id;
 
-  pipelineId = createPipeline(handle.db, { projectId: shop, name: "Checks" }).id;
+  pipelineId = createPipeline(handle.db, { projectId: shop, name: "Checks" }).id as Uuid;
   const team = createTeam(handle.db, {
     projectId: shop,
     author: { kind: "person", personId: null },
@@ -185,7 +185,7 @@ describe("importing a step's declared team (EO-885)", () => {
     registerHandler("pipelines:importPreflight", () => ({ preflight: { ...preflight, collisions: [], missingBinaries: [], missingSecrets: [], moduleCount: 0 }, document: "{}", problem: null }), { exposeErrorDetails: true });
     const check = TOOLS.find((tool) => tool.name === "pipeline_import_check")!;
     const outcome = await check.run(dispatch, { document: "{}" });
-    if (!outcome.ok) throw new Error(outcome.text);
+    if (!outcome.ok) throw new Error(outcome.message);
     expect(outcome.text).toContain('Team "Shop reviewers" (the step "Review"):');
     expect(outcome.text).toContain("- Checker (reviewer): bound to Checker, which has the same instructions, copied for the team");
     expect(outcome.text).toContain(`- Prober (reviewer): created with the document's instructions, on the runtime, model and tools of ${reviewerName}`);

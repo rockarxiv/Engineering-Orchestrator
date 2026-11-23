@@ -1256,6 +1256,7 @@ describe("the bundled Review team of a reviewer per pass, installed fresh (EO-88
     const lead = leadingByMember(["security", "user_facing"], () => ({ verdict: "approve", feedback: "Clean.", pull_request_body: "Body." }));
     script = (turn) => (turn.leader ? lead(turn) : { outcome: { outcome: "clear", report: "Nothing blocks." } });
     await supervisor().runOnce();
+    expect(getItem(handle.db, item.id)?.stepId).toBe(routeOf("approved"));
     expect(memberTurns()).toHaveLength(6);
     const largestMember = Math.max(...memberTurns().map((one) => one.opts.instructions.length + one.opts.context.length));
 
