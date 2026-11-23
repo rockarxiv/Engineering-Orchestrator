@@ -55,7 +55,7 @@ import {
   itemTypesFor,
 } from "../db/repos/index.js";
 import { sideEffectingServersByStep } from "../connectors/sideEffects.js";
-import { changeTeam, claimTrialTeam, createTeam, getTeam, listAllTeams, stepsNamingTeam, teamReader, teamsForValidation } from "../db/repos/teamsRepo.js";
+import { changeTeam, changesTeam, claimTrialTeam, createTeam, getTeam, listAllTeams, listTeams, stepsNamingTeam, teamNameKey, teamReader, teamsForValidation } from "../db/repos/teamsRepo.js";
 import { isolatedCopyProblems, reportOnlyRoleProblems, teamReadings } from "./teamReadings.js";
 import { readPolicy } from "../policy/policy.js";
 import { activeProjectId } from "./repositoryCommands.js";
@@ -980,17 +980,51 @@ function forWriting(steps: PipelineStep[]): CreateStepInput[] {
 }
 
 /**
- * The declared teams a save would change that a person locked (EO-881),
- * each a sentence naming the team. A team the save leaves as it is, or one
- * it creates, is no change to a locked team.
+ * What Publish's writing of a save's declared teams would refuse (EO-881),
+ * each a sentence naming the team, asked before anything is written by
+ * `pipeline:save`, `pipeline:validate` and the assistant's draft alike, so
+ * a draft card is never offered for a change Publish then refuses:
+ *
+ * - a change to a team a person locked: a locked team refuses every change
+ *   but unlocking. A team the save leaves as it is is no change to it;
+ * - two teams of the save with one name, as `teamNameKey` reads names
+ *   (trimmed and case-folded): a draft names teams by name, so the second
+ *   could never be told apart from the first;
+ * - a team named as another team of the project already is, which
+ *   `createTeam` and `changeTeam` refuse.
+ *
+ * Publish keeps its own refusal of a locked team in the repository, for a
+ * team a person locks after a draft was judged.
  */
-function lockedTeamProblems(db: Db, declared: readonly TeamSave[]): WorkflowProblem[] {
-  return declared.flatMap((team): WorkflowProblem[] => {
+export function teamSaveProblems(db: Db, pipelineId: string, declared: readonly TeamSave[]): WorkflowProblem[] {
+  if (declared.length === 0) return [];
+  const { projectId } = stepAgentsForPipeline(db, pipelineId);
+  // Who holds each name, as the save's writes leave it after each team:
+  // Publish writes them one by one, in this order.
+  const holder = new Map(listTeams(db, projectId).map((team) => [teamNameKey(team.name), team.id]));
+  const drafted = new Set<string>();
+  const problems: WorkflowProblem[] = [];
+  for (const team of declared) {
+    const name = team.definition.name;
+    const key = teamNameKey(name);
     const stored = getTeam(db, team.id);
-    if (stored === undefined || !stored.locked) return [];
-    if (stored.definition !== null && JSON.stringify(stored.definition) === JSON.stringify(team.definition)) return [];
-    return [{ severity: "error", stateId: null, message: `The team "${stored.name}" is locked: a person must unlock it before this draft can change it.` }];
-  });
+    if (drafted.has(key)) {
+      problems.push({ severity: "error", stateId: null, message: `Two teams are called "${name}": each of a project's teams needs a name of its own.` });
+      continue;
+    }
+    drafted.add(key);
+    const other = holder.get(key);
+    if (other !== undefined && other !== team.id) {
+      problems.push({ severity: "error", stateId: null, message: `This project already has a team called "${name}": give the team another name.` });
+      continue;
+    }
+    if (stored !== undefined) holder.delete(teamNameKey(stored.name));
+    holder.set(key, team.id);
+    if (stored === undefined || !stored.locked) continue;
+    if (!changesTeam(stored, team.definition)) continue;
+    problems.push({ severity: "error", stateId: null, message: `The team "${stored.name}" is locked: a person must unlock it before this draft can change it.` });
+  }
+  return problems;
 }
 
 /**
@@ -1509,7 +1543,9 @@ export function validatePipelineCommand(db: Db, input: IpcPayload<"pipeline:vali
     problems: [
       ...proposed.refused,
       ...validatePipeline(judged),
-      // Every team it writes, used here or not, as Publish judges it (EO-881).
+      // What writing its teams would refuse, and every team it writes, used
+      // here or not, as Publish judges them (EO-881).
+      ...teamSaveProblems(db, input.pipelineId, input.teams ?? []),
       ...declaredTeamReachProblems(db, input.pipelineId, steps, input.teams ?? [], proposed.registry),
       ...foreignWorkspaceProblems(db, input.pipelineId, steps),
     ],
@@ -1633,8 +1669,9 @@ export function savePipeline(
   const problems = [
     ...proposed.refused,
     ...validatePipeline(validationInput(db, input.pipelineId, steps, routes, input.entryStepId, proposed.registry, undefined, entryRules, declaredTeams)),
-    // A team a person locked refuses every change but unlocking (EO-881).
-    ...lockedTeamProblems(db, declaredTeams),
+    // What writing its teams would refuse (EO-881): a change to a locked
+    // team, and two teams of one name.
+    ...teamSaveProblems(db, input.pipelineId, declaredTeams),
     // And every team it writes is judged, used here or not, with the
     // steps of other pipelines naming it (EO-881).
     ...declaredTeamReachProblems(db, input.pipelineId, steps, declaredTeams, proposed.registry),

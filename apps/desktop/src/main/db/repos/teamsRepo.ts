@@ -176,6 +176,16 @@ function sameDefinition(a: TeamDefinition | null, b: TeamDefinition): boolean {
 }
 
 /**
+ * Whether writing `definition` would change `team`, as `changeTeam` reads
+ * it: the definition as the schema reads it, against the one stored. One
+ * the schema refuses is a change (and refused as one).
+ */
+export function changesTeam(team: Pick<StoredTeam, "definition">, definition: TeamDefinition): boolean {
+  const parsed = TeamDefinitionSchema.safeParse(definition);
+  return !parsed.success || !sameDefinition(team.definition, parsed.data);
+}
+
+/**
  * Changes a team: a new version, made by `author`. Refused for a locked
  * team, and for a name another team of its project has. A definition
  * identical to the current one writes nothing.
@@ -183,9 +193,10 @@ function sameDefinition(a: TeamDefinition | null, b: TeamDefinition): boolean {
 export function changeTeam(db: Db, id: string, input: { definition: TeamDefinition; author: TeamAuthor; now?: number; restoredFrom?: number }): TeamWrite {
   const team = getTeam(db, id);
   if (team === undefined) return { ok: false, reason: "That team no longer exists." };
-  if (team.locked) return { ok: false, reason: `The team "${team.name}" is locked: a person must unlock it before it can change.` };
   const definition = TeamDefinitionSchema.parse(input.definition);
+  // Writing what it already is changes nothing, so a locked team allows it.
   if (input.restoredFrom === undefined && sameDefinition(team.definition, definition)) return { ok: true, team, changed: false };
+  if (team.locked) return { ok: false, reason: `The team "${team.name}" is locked: a person must unlock it before it can change.` };
   if (nameTaken(db, team.projectId, definition.name, id)) return { ok: false, reason: `This project already has a team called "${definition.name}".` };
   const now = input.now ?? Date.now();
   return db.transaction((tx) => {

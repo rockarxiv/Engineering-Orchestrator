@@ -87,6 +87,8 @@ describe("a declared team's versions (EO-881)", () => {
     expect(changeTeam(handle.db, made.team.id, { definition: rounds(first, 3), author: { kind: "assistant" } })).toEqual({ ok: false, reason: locked });
     expect(changeTeam(handle.db, made.team.id, { definition: rounds(first, 3), author: { kind: "leader", agentId: "a", itemId: "i" } })).toEqual({ ok: false, reason: locked });
     expect(restoreTeamVersion(handle.db, made.team.id, 1, { personId: "anna" })).toEqual({ ok: false, reason: locked });
+    // Writing what it already is changes nothing, so the lock lets it be.
+    expect(changeTeam(handle.db, made.team.id, { definition: rounds(first, 2), author: { kind: "assistant" } })).toMatchObject({ ok: true, changed: false });
     expect(getTeam(handle.db, made.team.id)).toMatchObject({ version: 2, definition: rounds(first, 2) });
     expect(listTeamVersions(handle.db, made.team.id)).toHaveLength(2);
 

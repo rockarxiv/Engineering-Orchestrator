@@ -58,8 +58,8 @@ import {
 } from "../db/repos/index.js";
 import { sideEffectingServersByStep } from "../connectors/sideEffects.js";
 import { agentNamed, UNKNOWN_AGENT_ID } from "../stepAgents.js";
-import { listTeams, teamByName, teamNameKey, teamReader, teamsForValidation } from "../db/repos/teamsRepo.js";
-import { declaredTeamReachProblems, isolatedCopyProblemsForPipeline, itemTypesJudged, readGuards, reportOnlyRoleProblemsForPipeline, staffedRolesForPipeline, stepAgentsForPipeline } from "../ipc/configCommands.js";
+import { changesTeam, listTeams, teamByName, teamNameKey, teamReader, teamsForValidation } from "../db/repos/teamsRepo.js";
+import { declaredTeamReachProblems, isolatedCopyProblemsForPipeline, teamSaveProblems, itemTypesJudged, readGuards, reportOnlyRoleProblemsForPipeline, staffedRolesForPipeline, stepAgentsForPipeline } from "../ipc/configCommands.js";
 import { actionUsedBy, describeActionUse } from "../ipc/roleActionCommands.js";
 import { activeProjectId } from "../ipc/repositoryCommands.js";
 
@@ -125,7 +125,9 @@ export function validateDraft(
   return [
     ...refusedActions,
     // Every team the draft writes, used by its graph or not, and the steps
-    // of other pipelines naming one it changes, as Publish judges them (EO-881).
+    // of other pipelines naming one it changes, as Publish judges them — a
+    // change to a locked team and two teams of one name included (EO-881).
+    ...teamSaveProblems(db, pipelineId, teams.saves),
     ...declaredTeamReachProblems(db, pipelineId, domainSteps, teams.saves, proposed.ok ? proposed.registry : installed),
     ...validatePipeline({
     // With the actions roles define for themselves (EO-423), which are
@@ -747,10 +749,10 @@ export function renderDraft(
   // Publish writes as a new team, or as the team's next version.
   const teamChanges = teams.saves.flatMap((save) => {
     const stored = listTeams(db, stepAgentsForPipeline(db, pipelineId).projectId).find((team) => team.id === save.id);
-    if (stored !== undefined && stored.definition !== null && JSON.stringify(stored.definition) === JSON.stringify(save.definition)) return [];
+    if (stored !== undefined && !changesTeam(stored, save.definition)) return [];
     const runs = teams.teamOf(save.id);
     return [
-      `- ${stored === undefined ? "New" : "Changed"}: ${declaredTeamLine(save.definition)}${stored?.locked === true ? " — locked, so Publish will be refused until a person unlocks it" : ""}`,
+      `- ${stored === undefined ? "New" : "Changed"}: ${declaredTeamLine(save.definition)}`,
       ...declaredTeamMemberLines(save.definition, agents).map((line) => `  - ${line}`),
       ...(runs === null ? [] : teamLines(runs, "  ").filter((line) => !line.includes("Member: "))),
       `  - Tool pool: ${poolWords(save.definition)}`,

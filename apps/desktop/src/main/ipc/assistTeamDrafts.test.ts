@@ -1,4 +1,4 @@
-import { ADMIN_MCP_SERVER_NAME, AssistOutputSchema, pageDescriptorFor, StepTeamSchema, type IpcChannel, type Item, type StepTeam, type Uuid } from "@eo/core";
+import { ADMIN_MCP_SERVER_NAME, AssistOutputSchema, pageDescriptorFor, StepTeamSchema, TeamDefinitionSchema, uuidv7, type IpcChannel, type Item, type StepTeam, type Uuid } from "@eo/core";
 import { getTeam, listTeamVersions, listTeams, setTeamLocked } from "../db/repos/teamsRepo.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DbHandle } from "../db/client.js";
@@ -30,7 +30,7 @@ import { assistAgent, postAssistReply } from "../roles/assist.js";
 import { ASSIST_ACTION } from "../roles/conversationSteps.js";
 import { PROPOSAL_KIND } from "../roles/proposal.js";
 import { readAssistDraftForPublish, sendToAssist } from "./assistCommands.js";
-import { savePipeline } from "./configCommands.js";
+import { savePipeline, validatePipelineCommand } from "./configCommands.js";
 import { handleIpcRequest } from "./handleRequest.js";
 import { clearHandlerRegistry } from "./registry.js";
 
@@ -317,18 +317,77 @@ describe("a team drafted by the assistant (EO-848)", () => {
     expect(teamOnCheck()?.coordination === "leader" && teamOnCheck()).toMatchObject({ limits: { maxRounds: 3 } });
   });
 
-  it("refuses Publish of a change to a team a person locked, and writes nothing (EO-881)", async () => {
+  it("refuses a change to a team a person locked before any card is offered, as Publish and the editor's check do (EO-881)", async () => {
     const on = await conversation();
     expect(await publish(on, turn(on, { message: "Led.", draft: draft("Review leads", [LEADER()]) }).cardIds[0]!)).toMatchObject({ ok: true, data: { saved: true } });
     const team = listTeams(handle.db, projectId)[0]!;
     expect(setTeamLocked(handle.db, team.id, true).ok).toBe(true);
+    const locked = 'The team "Review leads" is locked: a person must unlock it before this draft can change it.';
 
     const changed = turn(on, { message: "Three rounds.", draft: draft(undefined, [{ ...LEADER(), limits: { maxParticipants: 3, maxRounds: 3 } }]) });
-    expect(cardBody(on, changed.cardIds[0]!)).toContain("locked, so Publish will be refused until a person unlocks it");
-    const answer = await publish(on, changed.cardIds[0]!);
-    expect(answer).toMatchObject({ ok: true, data: { saved: false } });
-    expect(JSON.stringify(answer)).toContain('The team \\"Review leads\\" is locked: a person must unlock it before this draft can change it.');
+    expect(changed.cardIds).toEqual([]);
+    expect(changed.rejections.join(" ")).toContain(locked);
+
+    // The editor's check says the same of what Publish would send.
+    const changedTeam = { ...getTeam(handle.db, team.id)!.definition!, limits: { ...getTeam(handle.db, team.id)!.definition!.limits, maxRounds: 3 } };
+    const checked = await handleIpcRequest("pipeline:validate", { ...graphNow(), teams: [{ id: team.id, definition: changedTeam }] }, (payload) => validatePipelineCommand(handle.db, payload), opts);
+    expect(JSON.stringify(checked)).toContain(locked.replaceAll('"', '\\"'));
+
+    // Naming the locked team unchanged is no change to it.
+    expect(turn(on, { message: "Again.", draft: draft("Review leads", [LEADER()]) }).rejections.join(" ")).not.toContain("is locked");
     expect(getTeam(handle.db, team.id)?.version).toBe(1);
+  });
+
+  it("refuses Publish of a card whose team a person locked after it was offered, and writes nothing (EO-881)", async () => {
+    const on = await conversation();
+    expect(await publish(on, turn(on, { message: "Led.", draft: draft("Review leads", [LEADER()]) }).cardIds[0]!)).toMatchObject({ ok: true, data: { saved: true } });
+    const team = listTeams(handle.db, projectId)[0]!;
+
+    const changed = turn(on, { message: "Three rounds.", draft: draft(undefined, [{ ...LEADER(), limits: { maxParticipants: 3, maxRounds: 3 } }]) });
+    expect(changed.cardIds).toHaveLength(1);
+    // What the card's Publish sends, read while it still applied.
+    const read = readAssistDraftForPublish(handle.db, { conversationId: on.id, messageId: changed.cardIds[0]! });
+    expect(read.problem).toBeNull();
+    expect(setTeamLocked(handle.db, team.id, true).ok).toBe(true);
+    const locked = 'The team "Review leads" is locked: a person must unlock it before this draft can change it.';
+
+    // Read again, the card no longer applies; and what it sent is refused by the save.
+    expect(readAssistDraftForPublish(handle.db, { conversationId: on.id, messageId: changed.cardIds[0]! }).problem).toContain(locked);
+    const answer = await handleIpcRequest(
+      "pipeline:save",
+      { pipelineId: read.pipelineId, steps: read.steps, routes: read.routes, entryStepId: read.entryStepId, teams: read.teams },
+      (payload) => savePipeline(handle.db, undefined, payload),
+      opts,
+    );
+    expect(answer).toMatchObject({ ok: true, data: { saved: false } });
+    expect(JSON.stringify(answer)).toContain(locked.replaceAll('"', '\\"'));
+    expect(getTeam(handle.db, team.id)?.version).toBe(1);
+  });
+
+  it("refuses two draft teams of one name, as names are read, before any card is offered — and Publish refuses them alike (EO-881)", async () => {
+    const on = await conversation();
+    const twice = turn(on, { message: "Two teams.", draft: draft("Review leads", [LEADER(), { ...INDEPENDENT(), name: "  review LEADS " }]) });
+    expect(twice.cardIds).toEqual([]);
+    expect(twice.rejections.join(" ")).toContain('Two teams are called "review LEADS": each of a project\'s teams needs a name of its own.');
+
+    // What Publish would be sent for the same two teams is refused, and nothing is written.
+    const definition = (name: string) =>
+      TeamDefinitionSchema.parse({
+        name,
+        coordination: "leader",
+        leader: { agentId: agentOfKind(handle.db, "reviewer"), instructions: "Split the review by risk." },
+        members: [{ agentId: agentOfKind(handle.db, "implementer") }],
+        limits: { maxParticipants: 3, maxRounds: 2 },
+      });
+    const saved = await handleIpcRequest(
+      "pipeline:save",
+      { ...graphNow(), teams: [{ id: uuidv7(), definition: definition("Review leads") }, { id: uuidv7(), definition: definition("review leads") }] },
+      (payload) => savePipeline(handle.db, undefined, payload),
+      opts,
+    );
+    expect(saved).toMatchObject({ ok: true, data: { saved: false } });
+    expect(JSON.stringify(saved)).toContain("Two teams are called");
+    expect(listTeams(handle.db, projectId)).toEqual([]);
   });
 
   it("carries a report-compatible custom action for an independent team, and Publish writes the definition with the graph", async () => {
