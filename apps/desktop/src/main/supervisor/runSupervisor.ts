@@ -270,6 +270,7 @@ import {
 import type { AgentCliTool, CliTool, CliToolDetection, RuntimeId } from "@eo/core";
 import { invalidateRuntimeAuth, type RuntimeAuthCheck } from "../runtimes/auth.js";
 import { resolveMessagesAbout, reviseMessage, sendMessageHere } from "../messages/messages.js";
+import { planUsage } from "../planUsage/store.js";
 import {
   heldByBlockedRuntimes,
   RUNTIME_BLOCK_RECHECK_MS,
@@ -6442,6 +6443,9 @@ export function createRunSupervisor(
           },
           onQuota: (quota) => {
             refusals.record(quota);
+            // And the rail's Usage block (EO-896): the newest reading
+            // per backend and window, whoever's run it arrived in.
+            planUsage.record(quota);
           },
           pushEvent,
         });

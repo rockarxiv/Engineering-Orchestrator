@@ -29,7 +29,12 @@ import { createPolicySync } from "./policy/sync.js";
 import { persistEnginePause } from "./engineActivity.js";
 import { settleDailyBudgetNotice } from "./guardDefaultNotice.js";
 import { emitPush, registerAllHandlers, type Platform } from "./ipc/index.js";
-import { startManagedRuntimeReconciliation } from "./ipc/runtimeCommands.js";
+import { runtimeStatusWithAuth, startManagedRuntimeReconciliation } from "./ipc/runtimeCommands.js";
+import { startPlanUsageReads } from "./planUsage/poller.js";
+import { loadClaudeSdk } from "./providers/claudeSdk.js";
+import { planUsageReaders } from "./providers/planUsageReaders.js";
+import { readApiKey } from "./runtimes/apiKey.js";
+import { CLAUDE_SDK, resolvePackageSet } from "./runtimes/packages.js";
 import { announceAddedFieldCollisions } from "./ipc/itemTypeCommands.js";
 import { createInstallRequest, quitOrInstall } from "./ipc/updateCommands.js";
 import { assistDeltaView } from "./ipc/assistCommands.js";
@@ -707,6 +712,22 @@ export function startMain(platform: Platform): RunningMain {
       })
     : () => {};
 
+  // EO-896: each signed-in backend's plan windows, read at start and
+  // every five minutes so the rail's Usage bars move while nothing runs.
+  // On a machine only — the CLIs are this desktop's — and with the
+  // keychain's loops, since a Claude read on a key EO holds reads it.
+  const startPlanUsage = (): (() => void) => {
+    if (!platform.hasMachine) return () => {};
+    const apiKeys = { directory: join(userDataPath, "credentials"), store: platform.keychain };
+    return startPlanUsageReads({
+      readers: planUsageReaders({
+        claudeQuery: async () => (await loadClaudeSdk(resolvePackageSet(managedRuntimeRoot, CLAUDE_SDK))).query,
+        claudeApiKey: () => readApiKey(apiKeys, "claude"),
+      }),
+      status: async (provider) => (await runtimeStatusWithAuth({ root: managedRuntimeRoot, fetchImpl: (url, init) => fetch(url, init), db, apiKeys }, { provider })).runtime,
+    });
+  };
+
   // Jira, the other way round: comments and edits written there reach
   // the project without anyone asking. Reads only — status stays EO's.
   const startJiraPullLoop = (): (() => void) => startJiraPull(db, jiraContext, {
@@ -977,7 +998,7 @@ export function startMain(platform: Platform): RunningMain {
     engine.start();
     console.log("[eo] engine started");
     pushes = startPushes();
-    keychainLoops.push(startOutbox(), startJiraPullLoop(), startWatches());
+    keychainLoops.push(startOutbox(), startJiraPullLoop(), startWatches(), startPlanUsage());
     mcpReconciled = reconcileMcpHost();
   };
   void interfaceLoaded.then(startWhatReadsTheKeychain).catch((error: unknown) => {

@@ -245,6 +245,7 @@ import { getItemBrief } from "./itemBrief.js";
 import type { JiraContext } from "../packs/developer/jira/connection.js";
 import { capabilitiesFor, fetchClaudeModels } from "../providers/capabilities.js";
 import { fetchCodexModels } from "../providers/codexModels.js";
+import { planUsage } from "../planUsage/store.js";
 import { chooseSmallModel, describeSmallModels, smallModelSources } from "../providers/smallModels.js";
 import { connectJira, disconnectJira, jiraFields, listJiraConnectionsCommand, removeJiraConnection, saveJiraConnection, jiraOutboxView, jiraStatuses, saveJiraConfig, saveJiraStatusMap, saveJiraTransitionFields, testJira } from "./jiraCommands.js";
 import { importJiraIssue, previewJiraIssue, searchJira } from "./jiraImportCommands.js";
@@ -1743,6 +1744,9 @@ export function registerAllHandlers(db: Db, engine: EngineHandle | undefined, re
   // The one caller that asks the binary whether it is signed in (EO-82):
   // this is the channel every surface showing a runtime renders from.
   registerHandler("runtime:status", (payload) => runtimeStatusWithAuth(runtimes, payload), opts);
+  // EO-896: the latest plan usage reading per backend and window, from
+  // this process's memory — asking spawns nothing.
+  registerHandler("planUsage:get", () => planUsage.view(), opts);
   registerHandler("runtime:describe", (payload) => describeRuntime(runtimes, payload), opts);
   // EO-477: the small model each backend's side calls run on, with its
   // default — Codex's is the smallest its runtime reports, which asks

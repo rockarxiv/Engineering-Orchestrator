@@ -755,6 +755,10 @@ const NOT_CATALOGUED_MACHINE: Partial<Record<MachineChannel, string>> = {
   // model EO's own calls about it run on would be an agent reaching
   // into how it is itself served (invariant 11).
   "sideCalls:smallModels": "spawns a CLI",
+  // The rail's glance at this machine's plan windows (EO-896). When a
+  // window fills, EO holds the work itself (EO-172, EO-798); an agent
+  // pacing itself on the share left would be second-guessing that.
+  "planUsage:get": "a glance for the person at the rail; when a window fills EO holds the work itself, and no agent paces itself on the share left",
   "sideCalls:setSmallModel": "a person choosing a model on the Runtimes card in front of them; an agent must not choose what EO's own calls about it run on",
 };
 

@@ -161,6 +161,9 @@ describe("the two halves of the contract", () => {
         // work is handed to an organisation, which is a question about
         // the machine the work is on and one a server has no standing
         // to answer.
+        // This machine's backends' plan usage (EO-896): read from the
+        // CLIs signed in here, and held in this process's memory.
+        "planUsage:get",
         "projects:keepLocal",
         "projects:moveToRecord",
         "projects:undecided",

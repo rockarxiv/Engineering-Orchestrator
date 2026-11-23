@@ -1775,7 +1775,7 @@ function windowOf(value: unknown): RateLimitWindow | null {
  * account — a null window "does not clear a previously observed value" —
  * so a snapshot with neither window says nothing.
  */
-function rateLimitSnapshotOf(value: unknown): RateLimitSnapshot | null {
+export function rateLimitSnapshotOf(value: unknown): RateLimitSnapshot | null {
   if (!value || typeof value !== "object") return null;
   const snapshot = value as { limitId?: unknown; limitName?: unknown; primary?: unknown; secondary?: unknown };
   const primary = windowOf(snapshot.primary);

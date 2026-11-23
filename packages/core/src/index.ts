@@ -53,6 +53,7 @@ export * from "./portability.js";
 export * from "./machineSpecific.js";
 export * from "./moduleReadiness.js";
 export * from "./quota.js";
+export * from "./planUsage.js";
 export * from "./skillFrontmatter.js";
 export * from "./skillSlugs.js";
 export * from "./stepHolds.js";

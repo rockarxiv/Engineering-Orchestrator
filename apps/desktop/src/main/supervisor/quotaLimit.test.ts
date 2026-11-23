@@ -13,6 +13,8 @@ import { mapSdkMessage } from "../providers/claude.js";
 import { mapThreadEvent } from "../providers/codex.js";
 import { validImplementResult } from "../providers/fixtures.js";
 import { createRunSupervisor } from "./runSupervisor.js";
+import { onPush } from "../ipc/push.js";
+import { planUsage } from "../planUsage/store.js";
 
 const LIMITS = { globalConcurrency: 5, perAgentConcurrency: 5, perRepositoryConcurrency: 10 };
 
@@ -435,5 +437,26 @@ describe("a run stopped by the provider's token limit (EO-172)", () => {
       const bodies = listCommentsForItem(handle.db, item.id).map((comment) => comment.body);
       expect(bodies.some((body) => body.includes("refused this run"))).toBe(false);
     });
+  });
+
+  it("keeps a run's reading as the rail's latest for that backend and window, and rings planUsage:changed (EO-896)", async () => {
+    const rang: unknown[] = [];
+    const stop = onPush("planUsage:changed", (payload) => rang.push(payload));
+    try {
+      // The store reads the process's clock, not the supervisor's.
+      const resetsAt = Math.floor((Date.now() + 50 * HOUR) / 1000);
+      const reading: QuotaEvent = { type: "quota", provider: "claude", window: "seven_day", utilization: 64, status: "allowed", resetsAt };
+      const { provider } = providerEmitting([reading, { type: "result", data: validImplementResult }]);
+
+      await supervisorFor(provider).runOnce();
+
+      const claude = planUsage.view().backends.find((backend) => backend.provider === "claude");
+      expect(claude?.windows.find((window) => window.window === "seven_day")).toMatchObject({ utilization: 64, status: "allowed", resetsAt: resetsAt * 1000 });
+      expect(rang.length).toBeGreaterThan(0);
+      // Kept in memory only: nothing on the item says so.
+      expect(listCommentsForItem(handle.db, item.id).some((comment) => comment.body.includes("64%"))).toBe(false);
+    } finally {
+      stop();
+    }
   });
 });

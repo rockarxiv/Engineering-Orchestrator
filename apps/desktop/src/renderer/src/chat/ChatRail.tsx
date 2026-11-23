@@ -18,6 +18,7 @@ import { useInvalidateOnPush } from "../query/useInvalidateOnPush";
 import { useProjects } from "../query/useRepositories";
 import { ConfirmDialog, ContextMenu, contextMenuAt, isContextMenuKey, StatusDot, type ContextMenuAt } from "./kit";
 import { DEEP, GroupLabel, WaitingCount, useWaitingOnYou, withArticle } from "./parts";
+import { UsageBlock } from "./UsageBlock";
 import { CONTROLS_START, useTitleBar } from "./windowChrome";
 
 /** One row of the rail: a glyph, a name, and whatever trails it. */
@@ -220,6 +221,8 @@ export function ChatRail({ onNewPipeline }: { onNewPipeline: () => void }) {
       </button>
 
       <div className="flex-1" />
+      {/* Each signed-in backend's plan windows, in the space above the footer (EO-896). */}
+      <UsageBlock />
       {problem ? <p className="px-2.5 pb-2 text-xs text-danger">{problem}</p> : null}
       <Footer name={me?.name ?? "you"} />
     </nav>
