@@ -344,7 +344,7 @@ describe("a leader-led team (EO-847)", () => {
    */
   it("shows a member what its assignment covers, has it read for that, and leaves out what its instructions say only to an agent answering alone (EO-888)", async () => {
     updateAgent(handle.db, agentNamed("Sasha"), { instructions: "You find ways in.\n<!-- alone -->\nRead every file in the change before you answer.\n<!-- /alone -->\nName the file and the case." });
-    updateAgent(handle.db, lee.id, { instructions: "You lead reviews.\n<!-- alone -->\nRead the whole change yourself.\n<!-- /alone -->" });
+    updateAgent(handle.db, agentNamed("Lee"), { instructions: "You lead reviews.\n<!-- alone -->\nRead the whole change yourself.\n<!-- /alone -->" });
     leaderTurns = [
       says(assign([{ key: "auth", member: "Sasha", scope: "src/login.ts and the token refresh it calls", instructions: "Look at the login." }])),
       sayingThen(({ opts }) => {

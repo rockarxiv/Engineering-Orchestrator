@@ -65,6 +65,8 @@ function beforeTheMigration(): DbHandle {
  */
 function migrate(handle: DbHandle): void {
   runMigrations(handle.db, migrationsBefore("0187_"));
+  // The column 0188 adds, which today's team reads select: no team is archived.
+  handle.db.run(sql`ALTER TABLE teams ADD archived_at integer`);
 }
 
 /**

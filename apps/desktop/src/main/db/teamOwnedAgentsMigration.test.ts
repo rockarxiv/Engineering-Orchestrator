@@ -117,7 +117,7 @@ describe("migration 0187: a team's members are the team's own agents (EO-897)", 
     const stepsBefore = handle.db.all(sql`SELECT id, agent_id, team_id FROM pipeline_steps WHERE pipeline_id = ${pipeline.id} ORDER BY id`);
     const reviewId = (stepsBefore as { id: string; team_id: string | null }[]).find((step) => step.id === "t-review")!.team_id!;
     const checkId = (stepsBefore as { id: string; team_id: string | null }[]).find((step) => step.id === "t-check")!.team_id!;
-    expect(getTeam(handle.db, reviewId)?.version).toBe(1);
+    expect(handle.db.get(sql`SELECT version FROM teams WHERE id = ${reviewId}`)).toEqual({ version: 1 });
 
     runMigrations(handle.db, MIGRATIONS);
 
