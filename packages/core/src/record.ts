@@ -1322,6 +1322,13 @@ export const RecordAgentSchema = PublishedAgentSchema.extend({
    * Absent from a sender that predates it, when the comment names the id.
    */
   toolNames: z.record(z.string(), z.string()).optional(),
+  /**
+   * The declared team that owns it, or null for an ordinary agent
+   * (EO-897), so a team's own agent stays its team's — off every picker
+   * and staffing — wherever the project goes. Absent from a sender that
+   * predates it, read as an ordinary agent.
+   */
+  teamId: z.string().nullable().optional(),
 });
 export type RecordAgent = z.infer<typeof RecordAgentSchema>;
 

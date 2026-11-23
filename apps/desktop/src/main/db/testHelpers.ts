@@ -174,7 +174,8 @@ export function giveSeededDelivery(db: Db, projectId: string): void {
  * to name nobody says `agentId: null`.
  */
 export function agentOfKind(db: Db, kind: string): Uuid {
-  const agent = listAgents(db).find((candidate) => candidate.role === kind && candidate.archivedAt === null);
+  // Never a team's own agent (EO-897), which no step may name.
+  const agent = listAgents(db).find((candidate) => candidate.role === kind && candidate.archivedAt === null && (candidate.teamId ?? null) === null);
   if (agent === undefined) throw new Error(`No agent of the "${kind}" kind to name on a step — create it before the step.`);
   return agent.id;
 }

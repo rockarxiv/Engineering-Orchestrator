@@ -2232,6 +2232,8 @@ export function listAgentViews(db: Db): IpcResponse<"agents:list"> {
       deletedAt: agent.deletedAt,
       // So a step whose agent moved to another project says nothing runs there (EO-876).
       projectId: agent.projectId,
+      // So the Agents screen and every step picker leave a team's own agents out (EO-897).
+      teamId: agent.teamId ?? null,
     })),
   };
 }

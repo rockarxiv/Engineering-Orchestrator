@@ -1,4 +1,4 @@
-import { backendAllowed, bindingRefusal, DEFAULT_MEMORY_DELIVERY_CHARS, DEFAULT_MEMORY_SCOPE_MAX_CHARS, DEFAULT_MEMORY_SCOPE_MAX_ENTRIES, DEFAULT_SKILL_ARCHIVE_AFTER_RUNS, DEFAULT_SKILL_MAX_BODY_CHARS, DEFAULT_SKILL_STALE_AFTER_RUNS, isBuiltinRole, rolesStaffedFor, isDispatchable, isPreviewAgent, settledWatch, stepAgentOf, stepAgentProblem, stepHoldsItemsMessage, stepWorkspaceChoice, timeLimitBoundProblem, withMemoryNoteGrant } from "@eo/core";
+import { backendAllowed, bindingRefusal, DEFAULT_MEMORY_DELIVERY_CHARS, DEFAULT_MEMORY_SCOPE_MAX_CHARS, DEFAULT_MEMORY_SCOPE_MAX_ENTRIES, DEFAULT_SKILL_ARCHIVE_AFTER_RUNS, DEFAULT_SKILL_MAX_BODY_CHARS, DEFAULT_SKILL_STALE_AFTER_RUNS, isBuiltinRole, rolesStaffedFor, isDispatchable, isPreviewAgent, isTeamOwned, settledWatch, stepAgentOf, stepAgentProblem, stepHoldsItemsMessage, stepWorkspaceChoice, timeLimitBoundProblem, withMemoryNoteGrant } from "@eo/core";
 import type { ActionDefinitionDraft, Agent, AgentRemovalImpact, StepNamingAgent, RegistryFacts, TeamReading, EntryRule, GuardConfigView, IpcPayload, IpcResponse, ItemTypeEntry, Registry, Uuid, PipelineStep, StepBrief, StepRoute, StepWatch, TeamSave } from "@eo/core";
 import { hasBlockingProblem, outsideReachByStep, validatePipeline, validateTeam, type IsolatedCopyProblem, type WorkflowProblem } from "@eo/engine";
 import type { Db } from "../db/client.js";
@@ -294,7 +294,9 @@ export function listAgentDetails(db: Db): IpcResponse<"agents:listDetailed"> {
     // A deleted agent is a tombstone kept for the names on its runs and
     // comments (EO-350), and appears nowhere on the Agents screen — not
     // even under "Show archived", where an archived one still does.
-    agents: listAgents(db).filter((agent) => agent.deletedAt === null).map((agent) => ({
+    // Nor a team's own agent (EO-897): it is the team's, shown in the
+    // Teams tab, and nothing outside its team runs it.
+    agents: listAgents(db).filter((agent) => agent.deletedAt === null && !isTeamOwned(agent)).map((agent) => ({
       id: agent.id,
       name: agent.name,
       role: agent.role,
@@ -350,11 +352,24 @@ export function listAgentDetails(db: Db): IpcResponse<"agents:listDetailed"> {
  * Refused for an agent that is not here rather than creating one:
  * creating an agent is the agents section itself.
  */
+/**
+ * Why an agent cannot be changed, archived or deleted on its own, or null
+ * (EO-897): a team's own agent changes only with its team — its runtime,
+ * model and reasoning in the Teams tab, the rest through the assistant's
+ * draft — and goes only with it.
+ */
+function teamOwnedRefusal(agent: Agent): string | null {
+  if (agent.teamId === null || agent.teamId === undefined) return null;
+  return `${agent.name} is a team's own agent, so it changes only with its team: its runtime, model and reasoning in the Teams tab, the rest through the assistant.`;
+}
+
 export function setAgentBinding(db: Db, input: IpcPayload<"agents:setBinding">): IpcResponse<"agents:setBinding"> {
   const agent = getAgent(db, input.agentId as Uuid);
   if (agent === undefined) {
     return { bound: false, problem: "EO has no agent with that id on this machine." };
   }
+  const owned = teamOwnedRefusal(agent);
+  if (owned !== null) return { bound: false, problem: owned };
   if (agent.archivedAt !== null) {
     return { bound: false, problem: "That agent is archived. It is dispatched to nothing, so there is no backend for it to run on." };
   }
@@ -399,6 +414,8 @@ export function saveAgent(db: Db, input: IpcPayload<"agents:save">): IpcResponse
   // A tombstone is not an agent to edit (EO-350): writing instructions
   // back into it would be restoring a deleted agent by the side door.
   if (existing !== undefined && existing.deletedAt !== null) return { saved: false, agent: null, problem: "That agent has been deleted." };
+  const owned = existing === undefined ? null : teamOwnedRefusal(existing);
+  if (owned !== null) return { saved: false, agent: null, problem: owned };
   const wasOn = existing?.provider ?? null;
   if (input.provider !== wasOn && !backendAllowed(policy, input.provider)) {
     return { saved: false, agent: null, problem: bindingRefusal({ provider: input.provider, policy }) };
@@ -538,6 +555,8 @@ export function customiseAgent(db: Db, input: IpcPayload<"agents:customise">): I
   if (source.archivedAt !== null) {
     return { saved: false, agent: null, problem: `${source.name} is archived. Copy an agent that is still in use, or create a new one for the project.`, changedSteps: [], locked: null };
   }
+  const owned = teamOwnedRefusal(source);
+  if (owned !== null) return { saved: false, agent: null, problem: owned, changedSteps: [], locked: null };
   if (source.projectId !== null) {
     return {
       saved: false,
@@ -752,6 +771,8 @@ export function archiveAgentCommand(
   const agent = getAgent(db, input.id as Uuid);
   if (agent === undefined || agent.deletedAt !== null) return { archived: false, problem: "That agent no longer exists.", impact: null };
   if (agent.archivedAt !== null) return { archived: true, problem: null, impact: null };
+  const owned = teamOwnedRefusal(agent);
+  if (owned !== null) return { archived: false, problem: owned, impact: null };
 
   const impact = agentRemovalImpact(db, agent);
   // Refused while a step names it (EO-876), confirmed or not: a step runs
@@ -807,6 +828,8 @@ export function deleteAgentCommand(
 ): IpcResponse<"agents:delete"> {
   const agent = getAgent(db, input.id as Uuid);
   if (agent === undefined || agent.deletedAt !== null) return { deleted: false, problem: "That agent no longer exists.", impact: null };
+  const owned = teamOwnedRefusal(agent);
+  if (owned !== null) return { deleted: false, problem: owned, impact: null };
 
   const impact = agentRemovalImpact(db, agent);
   const named = stepsStillNaming(impact, "delete");

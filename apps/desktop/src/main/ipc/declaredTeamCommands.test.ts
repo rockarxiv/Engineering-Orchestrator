@@ -4,7 +4,7 @@ import type { DbHandle } from "../db/client.js";
 import { agentOfKind, createTestItem, giveSeededDelivery, openMigratedTestDb } from "../db/testHelpers.js";
 import { archiveAgent, createAgent, getAgent, updateAgent } from "../db/repos/agentsRepo.js";
 import { createPerson } from "../db/repos/peopleRepo.js";
-import { createPipeline, createStep } from "../db/repos/pipelineStepsRepo.js";
+import { createPipeline, createStep, listStepsForPipeline } from "../db/repos/pipelineStepsRepo.js";
 import { createProject } from "../db/repos/projectsRepo.js";
 import { changeTeam, claimTrialTeam, createTeam, getTeam, listTeamVersions } from "../db/repos/teamsRepo.js";
 import { writePolicy } from "../policy/policy.js";
@@ -23,8 +23,12 @@ import { listTeamsCommand, restoreTeamCommand, setTeamLockedCommand, setTeamMemb
  */
 let handle: DbHandle;
 let projectId: Uuid;
+/** The team's leader and member: after `made()`, the team's own agents (EO-897), copied from the ordinary agents of those kinds. */
 let reviewer: Uuid;
 let implementer: Uuid;
+/** The ordinary agents of those kinds, which steps name. */
+let ordinaryReviewer: Uuid;
+let ordinaryImplementer: Uuid;
 let definition: TeamDefinition;
 
 beforeEach(() => {
@@ -33,6 +37,8 @@ beforeEach(() => {
   reviewer = agentOfKind(handle.db, "reviewer");
   implementer = agentOfKind(handle.db, "implementer");
   updateAgent(handle.db, reviewer, { provider: "codex", model: "gpt-5", config: { reasoningEffort: "high" } });
+  ordinaryReviewer = reviewer;
+  ordinaryImplementer = implementer;
   definition = TeamDefinitionSchema.parse({
     name: "Review leads",
     coordination: "leader",
@@ -48,9 +54,19 @@ beforeEach(() => {
 
 afterEach(() => handle.close());
 
+/**
+ * Declares the team. Its leader and member are made its own agents
+ * (EO-897), so `reviewer`, `implementer` and `definition` name those from
+ * here on.
+ */
 function made(): string {
   const result = createTeam(handle.db, { projectId, definition, author: { kind: "eo" } });
   if (!result.ok) throw new Error(result.reason);
+  const stored = result.team.definition;
+  if (stored === null || stored.coordination !== "leader") throw new Error("The team did not read back.");
+  definition = stored;
+  reviewer = stored.leader.agentId as Uuid;
+  implementer = stored.members[0]!.agentId as Uuid;
   return result.team.id;
 }
 
@@ -58,7 +74,7 @@ describe("teams:list (EO-884)", () => {
   it("reads a team whole: its leader and members as the agents they are, its pool, range, limits, cap, steps and versions", () => {
     const teamId = made();
     const pipeline = createPipeline(handle.db, { projectId, name: "Delivery" });
-    createStep(handle.db, { id: "team-review", pipelineId: pipeline.id, position: 0, name: "Review", type: "agent", agentId: reviewer, entryAction: "review", teamId });
+    createStep(handle.db, { id: "team-review", pipelineId: pipeline.id, position: 0, name: "Review", type: "agent", agentId: ordinaryReviewer, entryAction: "review", teamId });
 
     const [team] = listTeamsCommand(handle.db).teams;
     expect(team).toMatchObject({
@@ -200,6 +216,43 @@ describe("teams:setMemberSettings (EO-884)", () => {
     expect(refused.problem).toContain(`The "${other}" backend is`);
     expect(settingsOf(implementer)).toEqual(before);
     expect(getTeam(handle.db, teamId)?.version).toBe(1);
+  });
+});
+
+describe("a member is the team's own agent (EO-897)", () => {
+  it("changes only that member: no ordinary agent and no step outside the team changes", () => {
+    const pipeline = createPipeline(handle.db, { projectId, name: "Delivery" });
+    createStep(handle.db, { id: "solo-review", pipelineId: pipeline.id, position: 0, name: "Solo review", type: "agent", agentId: ordinaryReviewer, entryAction: "review" });
+    createStep(handle.db, { id: "build", pipelineId: pipeline.id, position: 1, name: "Build", type: "agent", agentId: ordinaryImplementer, entryAction: "implement" });
+    const teamId = made();
+    createStep(handle.db, { id: "team-review", pipelineId: pipeline.id, position: 2, name: "Team review", type: "agent", agentId: ordinaryReviewer, entryAction: "review", teamId });
+    // Its agents are its own: copies, owned by the team, of the ordinary ones.
+    expect([reviewer, implementer]).not.toContain(ordinaryReviewer);
+    expect([reviewer, implementer]).not.toContain(ordinaryImplementer);
+    expect([getAgent(handle.db, reviewer)?.teamId, getAgent(handle.db, implementer)?.teamId]).toEqual([teamId, teamId]);
+    const ordinaryBefore = [getAgent(handle.db, ordinaryReviewer), getAgent(handle.db, ordinaryImplementer)];
+    const stepsBefore = listStepsForPipeline(handle.db, pipeline.id);
+
+    expect(setTeamMemberSettingsCommand(handle.db, { teamId, agentId: reviewer, provider: "claude", model: "claude-opus-5", reasoning: "low" })).toEqual({ saved: true, problem: null });
+    expect(setTeamMemberSettingsCommand(handle.db, { teamId, agentId: implementer, provider: "codex", model: "gpt-5.1-codex", reasoning: "xhigh" })).toEqual({ saved: true, problem: null });
+
+    expect(getAgent(handle.db, reviewer)).toMatchObject({ provider: "claude", model: "claude-opus-5", config: { effort: "low" } });
+    expect(getAgent(handle.db, implementer)).toMatchObject({ provider: "codex", model: "gpt-5.1-codex", config: { reasoningEffort: "xhigh" } });
+    expect([getAgent(handle.db, ordinaryReviewer), getAgent(handle.db, ordinaryImplementer)]).toEqual(ordinaryBefore);
+    expect(listStepsForPipeline(handle.db, pipeline.id)).toEqual(stepsBefore);
+  });
+
+  it("refuses an ordinary agent named by its id, which no team owns", () => {
+    const teamId = made();
+    // Written past the save, which would have made it the team's own.
+    const stored = getTeam(handle.db, teamId)?.definition;
+    if (stored?.coordination !== "leader") throw new Error("The team did not read back.");
+    handle.db.update(teams).set({ definition: { ...stored, members: [{ agentId: ordinaryImplementer }] } }).where(eq(teams.id, teamId)).run();
+    const before = getAgent(handle.db, ordinaryImplementer);
+    const refused = setTeamMemberSettingsCommand(handle.db, { teamId, agentId: ordinaryImplementer, provider: "codex", model: null, reasoning: null });
+    expect(refused.saved).toBe(false);
+    expect(refused.problem).toContain("is not the team");
+    expect(getAgent(handle.db, ordinaryImplementer)).toEqual(before);
   });
 });
 

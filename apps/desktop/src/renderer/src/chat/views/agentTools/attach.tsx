@@ -97,7 +97,8 @@ function AgentTicks({
   // tick against it would file a row nothing will ever deliver. A
   // disabled one is still tickable — configuring one you switched off is
   // ordinary.
-  const rows = (agents.data?.agents ?? []).filter((agent) => agent.archivedAt === null);
+  // Nor a team's own agent (EO-897): its tools come from its team's pool.
+  const rows = (agents.data?.agents ?? []).filter((agent) => agent.archivedAt === null && (agent.teamId ?? null) === null);
   if (rows.length === 0) return <p className="text-[12px] text-ink-subtle">No agents to give this to yet.</p>;
 
   return (

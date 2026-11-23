@@ -65,6 +65,18 @@ export const agents = sqliteTable("agents", {
    * wrote the row. Never read on the record itself.
    */
   recordStamp: integer("record_stamp"),
+  /**
+   * The declared team that owns this agent, or null for an ordinary one
+   * (EO-897, migration 0187). A team's leader and members are its own:
+   * nothing outside the team runs them, and changing one changes the
+   * team alone (`Agent.teamId`).
+   *
+   * No foreign key, deliberately: a deleted team's members stay as
+   * tombstones (`deleteAgent`) that its runs and comments still name, and
+   * they keep saying which team they were — a key would have to either
+   * block the team's delete or forget that.
+   */
+  teamId: text("team_id"),
 });
 
 /**

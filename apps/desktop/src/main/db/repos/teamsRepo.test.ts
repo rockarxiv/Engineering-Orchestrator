@@ -41,12 +41,20 @@ function saveCopies(trialId: string, round: ReturnType<typeof trialTeams>): void
   }
 }
 
+/** A team's stored definition, naming the team's own agents (EO-897). */
+function ownDefinition(team: { definition: TeamDefinition | null }): TeamDefinition {
+  if (team.definition === null) throw new Error("The team did not read back.");
+  return team.definition;
+}
+
 const rounds = (definition: TeamDefinition, maxRounds: number): TeamDefinition => (definition.coordination === "leader" ? { ...definition, limits: { ...definition.limits, maxRounds } } : definition);
 
 describe("a declared team's versions (EO-881)", () => {
   it("records every change as a new version with who made it, and writes none for a change to nothing", () => {
     const made = createTeam(handle.db, { projectId, definition: first, author: { kind: "assistant" } });
     if (!made.ok) throw new Error(made.reason);
+    // Its agents are its own (EO-897): from here on `first` names them.
+    first = ownDefinition(made.team);
     expect(made.team).toMatchObject({ projectId, name: "Review leads", version: 1, locked: false, definition: first });
 
     expect(changeTeam(handle.db, made.team.id, { definition: rounds(first, 2), author: { kind: "person", personId: "anna" } })).toMatchObject({ ok: true, changed: true });
@@ -66,6 +74,8 @@ describe("a declared team's versions (EO-881)", () => {
   it("restores any earlier version as a person, the restore itself a new version", () => {
     const made = createTeam(handle.db, { projectId, definition: first, author: { kind: "assistant" } });
     if (!made.ok) throw new Error(made.reason);
+    // Its agents are its own (EO-897): from here on `first` names them.
+    first = ownDefinition(made.team);
     changeTeam(handle.db, made.team.id, { definition: rounds(first, 2), author: { kind: "assistant" } });
     changeTeam(handle.db, made.team.id, { definition: { ...rounds(first, 3), name: "Renamed leads" }, author: { kind: "assistant" } });
 
@@ -80,6 +90,8 @@ describe("a declared team's versions (EO-881)", () => {
   it("refuses every change to a locked team, a restore and a leader's included, until a person unlocks it", () => {
     const made = createTeam(handle.db, { projectId, definition: first, author: { kind: "assistant" } });
     if (!made.ok) throw new Error(made.reason);
+    // Its agents are its own (EO-897): from here on `first` names them.
+    first = ownDefinition(made.team);
     changeTeam(handle.db, made.team.id, { definition: rounds(first, 2), author: { kind: "assistant" } });
     expect(setTeamLocked(handle.db, made.team.id, true)).toMatchObject({ ok: true, team: { locked: true, version: 2 } });
 
@@ -116,6 +128,8 @@ describe("a declared team's versions (EO-881)", () => {
   it("goes with its project, the steps naming it let go of first", () => {
     const made = createTeam(handle.db, { projectId, definition: first, author: { kind: "assistant" } });
     if (!made.ok) throw new Error(made.reason);
+    // Its agents are its own (EO-897): from here on `first` names them.
+    first = ownDefinition(made.team);
     const pipeline = createPipeline(handle.db, { projectId, name: "Delivery" });
     createStep(handle.db, { id: "named", pipelineId: pipeline.id, position: 0, name: "Review", type: "agent", agentId: agentOfKind(handle.db, "reviewer"), entryAction: "review", teamId: made.team.id });
     deleteProject(handle.db, projectId);
@@ -127,6 +141,8 @@ describe("a declared team's versions (EO-881)", () => {
   it("gives a trial its own copy of each team a draft writes, the same one every round, and leaves the live team alone", () => {
     const made = createTeam(handle.db, { projectId, definition: first, author: { kind: "assistant" } });
     if (!made.ok) throw new Error(made.reason);
+    // Its agents are its own (EO-897): from here on `first` names them.
+    first = ownDefinition(made.team);
     const trial = createPipeline(handle.db, { projectId, name: "Delivery (trial)" });
     const draft = [{ id: made.team.id, definition: rounds(first, 3) }];
     const round1 = trialTeams(handle.db, trial, draft);

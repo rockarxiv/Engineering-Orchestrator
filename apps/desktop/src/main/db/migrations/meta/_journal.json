@@ -1310,6 +1310,13 @@
       "when": 1799769600000,
       "tag": "0186_team_member_settings",
       "breakpoints": true
+    },
+    {
+      "idx": 187,
+      "version": "6",
+      "when": 1799856000000,
+      "tag": "0187_team_owned_agents",
+      "breakpoints": true
     }
   ]
 }

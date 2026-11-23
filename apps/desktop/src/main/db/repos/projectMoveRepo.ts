@@ -569,6 +569,7 @@ function toRecordAgent(db: Db, row: typeof agents.$inferSelect & { projectId: st
     toolNames: toolNames(db, attached),
     revision: row.revision,
     updatedAt: row.updatedAt,
+    teamId: row.teamId,
   };
 }
 
@@ -676,7 +677,7 @@ export function upsertReplicaProjectAgent(db: Db, agent: RecordAgent): "written"
   const published = publishedSectionRow(db, "agents") !== undefined;
   if (here !== undefined && !published) return "kept";
   db.transaction(() => {
-    upsertReplicaAgent(db, agent, { projectId: agent.projectId as Uuid, stamp: agent.revision });
+    upsertReplicaAgent(db, agent, { projectId: agent.projectId as Uuid, stamp: agent.revision, teamId: agent.teamId ?? null });
     // A tombstone has no tool surface, and `upsertReplicaAgent` has
     // just removed what it had.
     if (agent.deletedAt === null) replaceReplicaAttachments(db, agent.id, agent.mcpServerIds, agent.skillIds);
@@ -2057,6 +2058,8 @@ export function writeAdoptedPage(db: Db, project: RecordProject, page: RecordAdo
         archivedAt: agent.archivedAt,
         deletedAt: agent.deletedAt,
         projectId: project.id,
+        // A team's own agent stays its team's (EO-897).
+        teamId: agent.teamId ?? null,
         updatedAt: agent.updatedAt,
         // The sender's count, so the record's next change to it is one
         // more than anything the sender's own desktop could hold.

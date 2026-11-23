@@ -266,6 +266,32 @@ describe("a team drafted by the assistant (EO-848)", () => {
     expect(listTeamVersions(handle.db, declared[0]!.id).map((version) => version.author)).toEqual([{ kind: "assistant" }]);
   });
 
+  it("makes the agents a draft team names the team's own on Publish, leaving the ordinary agents as they were, and refuses a step naming one (EO-897)", async () => {
+    const on = await conversation();
+    const ordinary = [agentOfKind(handle.db, "reviewer"), agentOfKind(handle.db, "implementer")];
+    const before = listAgents(handle.db).filter((agent) => ordinary.includes(agent.id));
+    const { cardIds } = turn(on, { message: "Check runs as a team now.", draft: draft("Change review", [INDEPENDENT()]) });
+    expect(await publish(on, cardIds[0]!)).toMatchObject({ ok: true, data: { saved: true } });
+
+    const team = listTeams(handle.db, projectId)[0]!;
+    const members = team.definition?.members.map((member) => member.agentId) ?? [];
+    expect(members).toHaveLength(2);
+    for (const id of members) expect(ordinary).not.toContain(id);
+    expect(listAgents(handle.db).filter((agent) => members.includes(agent.id)).map((agent) => [agent.name, agent.teamId])).toEqual([
+      [nameOf("reviewer"), team.id],
+      [nameOf("implementer"), team.id],
+    ]);
+    expect(listAgents(handle.db).filter((agent) => ordinary.includes(agent.id))).toEqual(before);
+    // The ordinary agent still runs the step itself.
+    expect(listStepsForPipeline(handle.db, pipelineId).find((step) => step.id === checkId)?.agentId).toBe(ordinary[0]);
+
+    // A step naming the team's own agent, by a name only it has, is refused before any card.
+    updateAgent(handle.db, members[0]! as Uuid, { name: "Change review's security pass" });
+    const refused = turn(on, { message: "The pass runs Check.", draft: draft(undefined, [], { agent: "Change review's security pass" }) });
+    expect(refused.cardIds).toEqual([]);
+    expect(refused.rejections.join(" ")).toContain("Change review's security pass, which belongs to a team and runs only as part of it");
+  });
+
   it("drafts a leader-led team, changes one team into another on the card, and \"none\" back to one agent", async () => {
     const on = await conversation();
     const led = turn(on, { message: "Led.", draft: draft("Review leads", [LEADER()]) });

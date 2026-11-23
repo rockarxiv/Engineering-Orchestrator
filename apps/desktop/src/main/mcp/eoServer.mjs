@@ -1898,7 +1898,9 @@ function renderAgents(db) {
   // staffs no role, and a step owned by its role would park every item
   // that reached it. The row is kept so its runs and comments still
   // resolve, not so it can be given work again.
-  const agents = queryAll(db, "SELECT * FROM agents WHERE archived_at IS NULL ORDER BY name");
+  // Nor a team's own agent (EO-897): it runs only in its team, so it can
+  // own no step.
+  const agents = queryAll(db, "SELECT * FROM agents WHERE archived_at IS NULL AND team_id IS NULL ORDER BY name");
   if (agents.length === 0) return "There are no agents configured, so no step can be owned by a role.";
 
   const steps = queryAll(db, "SELECT s.*, p.name AS pipeline_name FROM pipeline_steps s JOIN pipelines p ON p.id = s.pipeline_id WHERE s.off_board = 0");
@@ -1931,7 +1933,8 @@ function renderAgents(db) {
 
 function renderAgent(db, name) {
   const wanted = name.trim().toLowerCase();
-  const agent = queryAll(db, "SELECT * FROM agents").find((candidate) => candidate.name.toLowerCase() === wanted);
+  // An ordinary agent before a team's own of the same name (EO-897).
+  const agent = queryAll(db, "SELECT * FROM agents ORDER BY team_id IS NOT NULL").find((candidate) => candidate.name.toLowerCase() === wanted);
   if (!agent) return null;
 
   return [

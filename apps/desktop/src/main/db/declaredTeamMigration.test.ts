@@ -38,30 +38,54 @@ afterEach(() => {
   tempDirs = [];
 });
 
+/** The migrations before the one whose tag starts with `prefix`, in a directory of their own. */
+function migrationsBefore(prefix: string): string {
+  const dir = mkdtempSync(join(tmpdir(), "eo-declared-team-"));
+  tempDirs.push(dir);
+  const journal = JSON.parse(readFileSync(join(MIGRATIONS, "meta", "_journal.json"), "utf8")) as { entries: { tag: string }[] };
+  const kept = journal.entries.slice(0, journal.entries.findIndex((entry) => entry.tag.startsWith(prefix)));
+  mkdirSync(join(dir, "meta"), { recursive: true });
+  writeFileSync(join(dir, "meta", "_journal.json"), JSON.stringify({ ...journal, entries: kept }));
+  for (const entry of kept) writeFileSync(join(dir, `${entry.tag}.sql`), readFileSync(join(MIGRATIONS, `${entry.tag}.sql`), "utf8"));
+  return dir;
+}
+
 /** A database as it stood on the launch before 0185. */
 function beforeTheMigration(): DbHandle {
   const handle = openDb(":memory:");
   handles.push(handle);
-  const dir = mkdtempSync(join(tmpdir(), "eo-declared-team-"));
-  tempDirs.push(dir);
-  const journal = JSON.parse(readFileSync(join(MIGRATIONS, "meta", "_journal.json"), "utf8")) as { entries: { tag: string }[] };
-  const kept = journal.entries.slice(0, journal.entries.findIndex((entry) => entry.tag.startsWith("0185_")));
-  mkdirSync(join(dir, "meta"), { recursive: true });
-  writeFileSync(join(dir, "meta", "_journal.json"), JSON.stringify({ ...journal, entries: kept }));
-  for (const entry of kept) writeFileSync(join(dir, `${entry.tag}.sql`), readFileSync(join(MIGRATIONS, `${entry.tag}.sql`), "utf8"));
-  runMigrations(handle.db, dir);
+  runMigrations(handle.db, migrationsBefore("0185_"));
   return handle;
 }
 
-/** The rest of the migrations, as the next launch runs them. */
+/**
+ * The migrations up to 0187, as the next launch after 0185 ran them:
+ * 0187 makes every team's agents its own (EO-897), and has a test of its
+ * own (teamOwnedAgentsMigration.test.ts).
+ */
 function migrate(handle: DbHandle): void {
-  runMigrations(handle.db, MIGRATIONS);
+  runMigrations(handle.db, migrationsBefore("0187_"));
+}
+
+/**
+ * Today's `createAgent` and `updateAgent` on a database from before
+ * 0187, which write the column it adds: added for the call, then dropped.
+ */
+function withTeamColumn<T>(handle: DbHandle, write: () => T): T {
+  handle.db.run(sql`ALTER TABLE agents ADD team_id text`);
+  try {
+    return write();
+  } finally {
+    handle.db.run(sql`ALTER TABLE agents DROP COLUMN team_id`);
+  }
 }
 
 function agent(handle: DbHandle, name: string, role: string, extra: { projectId?: Uuid | null; provider?: string; model?: string | null; config?: Record<string, unknown> } = {}): Agent {
-  const made = createAgent(handle.db, { name, role, provider: extra.provider ?? "claude", instructions: `Be ${name}.`, projectId: extra.projectId ?? null, config: extra.config ?? {} });
-  if (extra.model !== undefined) updateAgent(handle.db, made.id, { model: extra.model });
-  return made;
+  return withTeamColumn(handle, () => {
+    const made = createAgent(handle.db, { name, role, provider: extra.provider ?? "claude", instructions: `Be ${name}.`, projectId: extra.projectId ?? null, config: extra.config ?? {} });
+    if (extra.model !== undefined) updateAgent(handle.db, made.id, { model: extra.model });
+    return made;
+  });
 }
 
 /** An agent step as a launch before 0185 wrote it: its team inline, staffed by role. */

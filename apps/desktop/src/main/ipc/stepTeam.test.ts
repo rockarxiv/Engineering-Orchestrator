@@ -8,6 +8,7 @@ import { createPipeline, createProject, createRoute, createStep, currentVersion,
 import { TOOLS, type Dispatch } from "../mcpHost/catalog.js";
 import { exportPipeline, importPipeline } from "../modules/pipelineTransfer.js";
 import { getTeam, listTeams } from "../db/repos/teamsRepo.js";
+import { getAgent } from "../db/repos/agentsRepo.js";
 import { savePipeline, validatePipelineCommand } from "./configCommands.js";
 import { listPipelineStepViews } from "./domainQueries.js";
 import { pipelineVersionsCommand } from "./pipelineCommands.js";
@@ -103,6 +104,19 @@ function graph(team: Naming, declared: TeamSave[] = team === "team" ? [{ id: TEA
 const save = (team: Naming, declared?: TeamSave[]) => savePipeline(handle.db, { notifyStateChange: () => {} }, graph(team, declared));
 const teamOf = (id: string = check.id, pipeline: string = pipelineId) => listStepsForPipeline(handle.db, pipeline as Uuid).find((step) => step.id === id)?.team;
 
+
+/**
+ * `definition` as a team stores it (EO-897): each agent it names as the
+ * team's own agent of that name, which the team was given as a copy.
+ */
+function ownedBy(teamId: string, definition: TeamDefinition): TeamDefinition {
+  const own = listAgents(handle.db).filter((agent) => agent.teamId === teamId);
+  const mine = (agentId: string): string => own.find((agent) => agent.name === getAgent(handle.db, agentId as Uuid)?.name)?.id ?? agentId;
+  return definition.coordination === "leader"
+    ? { ...definition, leader: { ...definition.leader, agentId: mine(definition.leader.agentId) }, members: definition.members.map((member) => ({ agentId: mine(member.agentId) })) }
+    : { ...definition, members: definition.members.map((member) => ({ ...member, agentId: mine(member.agentId) })) };
+}
+
 describe("a step's team, as part of the graph (EO-843)", () => {
   it("leaves every step of a pipeline without one as one agent, read and exported as before", () => {
     expect(listStepsForPipeline(handle.db, "default").every((step) => step.team === null)).toBe(true);
@@ -120,7 +134,7 @@ describe("a step's team, as part of the graph (EO-843)", () => {
     expect(teamOf()).toEqual(TEAM);
     expect(listPipelineStepViews(handle.db, { pipelineId }).steps.find((step) => step.id === check.id)).toMatchObject({ team: TEAM, teamId: TEAM_ID });
     // Declared by the same save, as the assistant's (EO-881), on the pipeline's project.
-    expect(getTeam(handle.db, TEAM_ID)).toMatchObject({ projectId, name: "Security pass", version: 1, definition: DEFINITION });
+    expect(getTeam(handle.db, TEAM_ID)).toMatchObject({ projectId, name: "Security pass", version: 1, definition: ownedBy(TEAM_ID, DEFINITION) });
 
     expect(save(undefined).saved).toBe(true);
     expect(teamOf()).toEqual(TEAM);
@@ -228,13 +242,13 @@ describe("a step's team, as part of the graph (EO-843)", () => {
         message: 'In the pipeline "Checks", which names the same team: "Check" runs as the team "Security pass", whose leader "Implementer" is a implementer agent, and that kind has no "check" action to answer.',
       }),
     );
-    expect(getTeam(handle.db, TEAM_ID)).toMatchObject({ version: 1, definition: DEFINITION });
+    expect(getTeam(handle.db, TEAM_ID)).toMatchObject({ version: 1, definition: ownedBy(TEAM_ID, DEFINITION) });
     expect(teamOf()).toEqual(TEAM);
 
     // A change Check can still run is published, as the team's next version.
     const kept = TeamDefinitionSchema.parse({ ...DEFINITION, limits: { ...DEFINITION.limits, maxParallel: 2 } });
     expect(savePipeline(handle.db, { notifyStateChange: () => {} }, gatesGraph([{ id: TEAM_ID, definition: kept }])).saved).toBe(true);
-    expect(getTeam(handle.db, TEAM_ID)).toMatchObject({ version: 2, definition: kept });
+    expect(getTeam(handle.db, TEAM_ID)).toMatchObject({ version: 2, definition: ownedBy(TEAM_ID, kept) });
   });
 
   it("is frozen in the version a save files, reported by the diff, and comes back with a restore", () => {
@@ -276,7 +290,7 @@ describe("a step's team, as part of the graph (EO-843)", () => {
     const movedStep = listStepsForPipeline(handle.db, moved.pipelineId).find((step) => step.id === moved.stepIds.get(check.id));
     expect(movedStep?.team).toEqual(TEAM);
     expect(movedStep?.teamId).not.toBe(TEAM_ID);
-    expect(getTeam(handle.db, movedStep!.teamId!)).toMatchObject({ projectId: other, name: "Security pass", definition: DEFINITION });
+    expect(getTeam(handle.db, movedStep!.teamId!)).toMatchObject({ projectId: other, name: "Security pass", definition: ownedBy(movedStep!.teamId!, DEFINITION) });
   });
 
   it("travels in an export, written only where configured, and comes back on import on the step's new id", () => {
@@ -295,7 +309,7 @@ describe("a step's team, as part of the graph (EO-843)", () => {
     expect(teamOf(newCheck, imported.pipelineId)).toEqual(TEAM);
     // Declared on import (EO-881), its roles bound to this project's agents, under a name of its own.
     const importedTeam = getTeam(handle.db, listStepsForPipeline(handle.db, imported.pipelineId as Uuid).find((step) => step.id === newCheck)!.teamId!);
-    expect(importedTeam).toMatchObject({ projectId, definition: expect.objectContaining({ members: DEFINITION.members }) });
+    expect(importedTeam).toMatchObject({ projectId, definition: expect.objectContaining({ members: ownedBy(importedTeam!.id, DEFINITION).members }) });
     expect(listTeams(handle.db, projectId)).toHaveLength(2);
     expect(teamOf(imported.stepIds[done.id]!, imported.pipelineId)).toBeNull();
   });

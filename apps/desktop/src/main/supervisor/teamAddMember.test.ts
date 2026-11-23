@@ -234,6 +234,8 @@ function setup(leaderOn: Backend = "claude"): void {
     author: { kind: "person", personId: null },
   });
   if (!changed.ok) throw new Error(changed.reason);
+  // The team's leader is its own agent (EO-897): a copy of Lee, which the team owns.
+  lee = getAgent(handle.db, team().leader.agentId as Agent["id"])!;
   item = createTestItem(handle.db, { type: "story", title: "Check the export", stepId: "check" });
 }
 
@@ -257,6 +259,8 @@ const reportIds = (): string[] =>
   (listTeamSessionsForItem(handle.db, item.id).at(-1)?.attempts ?? []).flatMap((attempt) => (attempt.assignmentKey !== "leader" && attempt.status === "completed" && attempt.supersededBy === null && attempt.reportCommentId !== null ? [attempt.reportCommentId] : []));
 const bodies = () => listCommentsForItem(handle.db, item.id).map((comment) => comment.body);
 const agentNamed = (name: string) => listAgents(handle.db).find((agent) => agent.name === name);
+/** Sasha as the team has her: the team's own copy (EO-897). */
+const teamsSasha = () => listAgents(handle.db).find((agent) => agent.name === "Sasha" && agent.teamId === teamId)!.id;
 const leaderTurnsStarted = () => started.filter((one) => one.agent.id === lee.id);
 
 describe("a leader adds a member to its team (EO-883)", () => {
@@ -270,7 +274,8 @@ describe("a leader adds a member to its team (EO-883)", () => {
 
     expect(getItem(handle.db, item.id)?.stepId).toBe("accepted");
     const nell = agentNamed("Nell")!;
-    expect(nell).toMatchObject({ role: "sec", provider: "codex", model: "gpt-5", instructions: "You read the export's CSV escaping.\nNothing else.", enabled: true, projectId: null });
+    // Owned by the team (EO-897): nothing outside it runs Nell.
+    expect(nell).toMatchObject({ role: "sec", provider: "codex", model: "gpt-5", instructions: "You read the export's CSV escaping.\nNothing else.", enabled: true, projectId: null, teamId });
     expect(nell.config).toEqual({ reasoningEffort: "high" });
     expect(agentToolSurfaces(handle.db, [nell.id])[nell.id]).toEqual({ cliTools: ["gh"], mcpServers: ["docs"], skills: ["triage"] });
     // The assignment ran as Nell, in the same session.
@@ -278,7 +283,7 @@ describe("a leader adds a member to its team (EO-883)", () => {
     expect(started.find((one) => one.agent.id === nell.id)?.opts.context).toContain("Look at csv.");
 
     // The team: Nell for good, in one new version recorded as Lee's on this item.
-    expect(team().members.map((member) => member.agentId)).toEqual([agentOfKind(handle.db, "sec"), nell.id]);
+    expect(team().members.map((member) => member.agentId)).toEqual([teamsSasha(), nell.id]);
     const versions = listTeamVersions(handle.db, teamId);
     expect(versions).toHaveLength(versionsBefore + 1);
     expect(versions.at(-1)?.author).toEqual({ kind: "leader", agentId: lee.id, itemId: item.id });
@@ -309,7 +314,7 @@ describe("a leader adds a member to its team (EO-883)", () => {
     members = { Nell: () => report("Fine.") };
     await supervisor().runOnce();
     const nell = agentNamed("Nell")!;
-    expect(sessionTeamFor(handle.db, teamId)).toMatchObject({ memberAgentIds: [agentOfKind(handle.db, "sec"), nell.id] });
+    expect(sessionTeamFor(handle.db, teamId)).toMatchObject({ memberAgentIds: [teamsSasha(), nell.id] });
 
     // A later session, on another item, offers it and runs an assignment to it.
     item = createTestItem(handle.db, { type: "story", title: "Check the import", stepId: "check" });

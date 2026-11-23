@@ -1,5 +1,6 @@
 import type { IpcPayload, IpcResponse } from "@eo/core";
 import type { Db } from "../db/client.js";
+import { teamOwnedToolsRefusal } from "./agentAttachmentCommands.js";
 import { archiveCliTool, assignCliTools, getAgentCliTools, listAgentCliTools, listCliTools, restoreCliTool, saveCliTool, setAgentCliTool } from "../db/repos/index.js";
 import { detectCliTool, draftCliToolDescription, type CliToolProbeOptions } from "../agentAttachments/cliTools.js";
 
@@ -46,6 +47,8 @@ export function listAgentCliToolsCommand(db: Db, input: IpcPayload<"agentCliTool
 }
 
 export function setAgentCliToolCommand(db: Db, input: IpcPayload<"agentCliTools:set">): IpcResponse<"agentCliTools:set"> {
+  const owned = teamOwnedToolsRefusal(db, input.agentId);
+  if (owned !== null) return { attachments: null, problem: owned };
   const result = setAgentCliTool(db, input);
   if (!result.ok) return { attachments: null, problem: result.problem };
   return { attachments: result.attachments, problem: null };
@@ -57,6 +60,10 @@ export function setAgentCliToolCommand(db: Db, input: IpcPayload<"agentCliTools:
  * row that was refused, and nothing is written.
  */
 export function assignAgentCliToolsCommand(db: Db, input: IpcPayload<"agentCliTools:assign">): IpcResponse<"agentCliTools:assign"> {
+  for (const one of input.agents) {
+    const owned = teamOwnedToolsRefusal(db, one.agentId);
+    if (owned !== null) return { applied: false, problem: owned, added: [], ticks: [] };
+  }
   const result = assignCliTools(db, input);
   if (!result.ok) return { applied: false, problem: result.problem, added: [], ticks: [] };
   return { applied: true, problem: null, added: result.added, ticks: result.ticks };

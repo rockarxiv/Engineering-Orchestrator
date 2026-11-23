@@ -753,6 +753,21 @@ describe("the configuration tools", () => {
     expect(text).not.toContain("## Architect");
   });
 
+  it("offers no team's own agent, which can own no step, and reads the ordinary agent of a name a team's agent shares (EO-897)", async () => {
+    const reviewer = listAgents(handle.db).find((agent) => agent.role === "reviewer")!;
+    handle.db.run(sql`INSERT INTO agents (id, name, role, provider, model, instructions, config, enabled, team_id, updated_at)
+      VALUES ('team-only-agent', 'Team-only pass', 'reviewer', 'claude', NULL, 'Only the team runs me.', '{}', 1, 'some-team', 0),
+             ('team-copy-agent', ${reviewer.name}, 'reviewer', 'claude', NULL, 'The team copy.', '{}', 1, 'some-team', 0)`);
+    const responses = await callServer(dbPath, [INITIALIZE, INITIALIZED,
+      { jsonrpc: "2.0", id: 7, method: "tools/call", params: { name: "agents_list", arguments: {} } },
+      { jsonrpc: "2.0", id: 8, method: "tools/call", params: { name: "agent_read", arguments: { name: reviewer.name } } },
+    ], false, CONFIG_ON);
+
+    expect(textOf(responses, 7)).not.toContain("Team-only pass");
+    expect(textOf(responses, 7).match(new RegExp(`## ${reviewer.name}\n`, "g"))).toHaveLength(1);
+    expect(textOf(responses, 8)).not.toContain("The team copy.");
+  });
+
   it("reads one agent's full instructions", async () => {
     const responses = await callServer(dbPath, [INITIALIZE, INITIALIZED,
       { jsonrpc: "2.0", id: 8, method: "tools/call", params: { name: "agent_read", arguments: { name: "reviewer" } } },

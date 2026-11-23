@@ -71,6 +71,26 @@ export interface Agent {
    * `agents:save` refuses the pair.
    */
   projectId: Uuid | null;
+  /**
+   * The declared team that owns this agent, or null (absent) for an
+   * ordinary agent (EO-897, ARCHITECTURE.md §4.2a).
+   *
+   * A team's leader and members are the team's own agents: they exist only
+   * in their team, nothing outside it runs them, and changing one changes
+   * the team alone. So a team-owned agent is never listed on the Agents
+   * screen, never offered as a step's agent, never bound to a kind
+   * (`staffingAgents`), and `validatePipeline` refuses a step naming one.
+   * Optional, so an agent read from before it is an ordinary one.
+   */
+  teamId?: Uuid | null | undefined;
+}
+
+/**
+ * Whether a declared team owns this agent (EO-897) — a team's own leader
+ * or member, which only its team runs. See `Agent.teamId`.
+ */
+export function isTeamOwned(agent: { readonly teamId?: string | null | undefined }): boolean {
+  return agent.teamId !== null && agent.teamId !== undefined;
 }
 
 /**
@@ -198,7 +218,7 @@ export function staffsItem(agent: Pick<Agent, "config" | "projectId">, item: Pic
 }
 
 /** What `staffingAgents` reads of an agent. */
-export type StaffingAgent = Pick<Agent, "role" | "enabled" | "archivedAt" | "config" | "projectId">;
+export type StaffingAgent = Pick<Agent, "role" | "enabled" | "archivedAt" | "config" | "projectId" | "teamId">;
 
 /**
  * Whether the item's project has a dispatchable agent of its own in
@@ -211,7 +231,7 @@ export type StaffingAgent = Pick<Agent, "role" | "enabled" | "archivedAt" | "con
  * the project falls back to the global agents as if it had none.
  */
 export function projectHasOwnAgent(agents: readonly StaffingAgent[], role: string, item: Pick<Item, "previewAt" | "projectId">): boolean {
-  return agents.some((agent) => agent.projectId !== null && isDispatchable(agent) && agent.role === role && staffsItem(agent, item));
+  return agents.some((agent) => agent.projectId !== null && isDispatchable(agent) && !isTeamOwned(agent) && agent.role === role && staffsItem(agent, item));
 }
 
 /**
@@ -234,7 +254,8 @@ export function projectHasOwnAgent(agents: readonly StaffingAgent[], role: strin
  */
 export function staffingAgents<A extends StaffingAgent>(agents: readonly A[], role: string | null, item: Pick<Item, "previewAt" | "projectId">): A[] {
   if (role === null) return [];
-  const eligible = agents.filter((agent) => isDispatchable(agent) && agent.role === role && staffsItem(agent, item));
+  // A team's own agent is never bound to a kind (EO-897): only its team runs it.
+  const eligible = agents.filter((agent) => isDispatchable(agent) && !isTeamOwned(agent) && agent.role === role && staffsItem(agent, item));
   const own = eligible.filter((agent) => agent.projectId !== null);
   return own.length > 0 ? own : eligible;
 }
@@ -251,7 +272,7 @@ export function rolesStaffedFor(agents: readonly StaffingAgent[], item: Pick<Ite
 }
 
 /** What a step reads of the agent it names (EO-875). */
-export type StepAgentFacts = Pick<Agent, "id" | "name" | "role" | "enabled" | "archivedAt" | "deletedAt" | "config" | "projectId">;
+export type StepAgentFacts = Pick<Agent, "id" | "name" | "role" | "enabled" | "archivedAt" | "deletedAt" | "config" | "projectId" | "teamId">;
 
 /**
  * The agent row an `agent` step names, whatever state it is in, or
@@ -288,12 +309,14 @@ export function stepAgentKind(agents: readonly { readonly id: string; readonly r
  * run is never handed to another agent of the same kind: the step says
  * who runs it, and only a person changing the step changes that.
  */
-export type StepAgentRefusal = "deleted" | "archived" | "disabled" | "other_project" | "preview_only";
+export type StepAgentRefusal = "deleted" | "archived" | "disabled" | "team_member" | "other_project" | "preview_only";
 
 export function stepAgentRefusal(agent: StepAgentFacts, item: Pick<Item, "previewAt" | "projectId">): StepAgentRefusal | null {
   if (agent.deletedAt !== null) return "deleted";
   if (agent.archivedAt !== null) return "archived";
   if (!agent.enabled) return "disabled";
+  // A team's own agent runs only in its team (EO-897), never as a step's agent.
+  if (isTeamOwned(agent)) return "team_member";
   if (!servesProject(agent, item)) return "other_project";
   if (!staffsItem(agent, item)) return "preview_only";
   return null;
@@ -329,7 +352,7 @@ export function stepAgentFactsLine(agent: ShownStepAgent, backendLabel: (provide
  * names global agents only, as `validatePipeline` holds.
  */
 export function stepAgentProblem(
-  agents: readonly (ShownStepAgent & { readonly projectId?: string | null | undefined })[],
+  agents: readonly (ShownStepAgent & { readonly projectId?: string | null | undefined; readonly teamId?: string | null | undefined })[],
   step: { readonly type: string; readonly agentId: string | null },
   pipelineProjectId: string | null,
 ): string | null {
@@ -340,6 +363,7 @@ export function stepAgentProblem(
   if (agent.deletedAt != null) return `${agent.name} has been deleted, so nothing runs here until the step names another agent.`;
   if (agent.archivedAt !== null) return `${agent.name} is archived, so nothing runs here until the step names another agent.`;
   if (!agent.enabled) return `${agent.name} is disabled, so nothing runs here until it is enabled or the step names another agent.`;
+  if (isTeamOwned(agent)) return `${agent.name} belongs to a team and runs only as part of it, so nothing runs here until the step names an ordinary agent.`;
   // Absent is a listing from before agents had projects: global.
   const agentProjectId = agent.projectId ?? null;
   if (agentProjectId !== null && agentProjectId !== pipelineProjectId) {
