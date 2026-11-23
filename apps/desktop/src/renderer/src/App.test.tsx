@@ -147,3 +147,22 @@ describe("a notification opening its item", () => {
     expect(await screen.findByRole("region", { name: "Canvas" })).toBeInTheDocument();
   });
 });
+
+/**
+ * A runtime EO changed on its own (EO-903) — the automatic update at
+ * launch — is asked about again in whatever screen draws it, because the
+ * window itself listens rather than only the Runtimes screen.
+ */
+describe("a runtime the main process changed", () => {
+  it("is listened for by the window, whatever it shows", async () => {
+    const listeners = new Map<string, (payload: unknown) => void>();
+    window.eo.ipc.subscribe = vi.fn((channel: string, callback: (payload: unknown) => void) => {
+      listeners.set(channel, callback);
+      return () => listeners.delete(channel);
+    }) as never;
+    window.location.hash = "#/";
+    render(<App />);
+
+    await waitFor(() => expect(listeners.has("runtime:changed")).toBe(true));
+  });
+});

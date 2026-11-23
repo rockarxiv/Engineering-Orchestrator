@@ -4,6 +4,7 @@ import { HashRouter } from "react-router-dom";
 import { ThemeProvider } from "@eo/ui";
 import { createQueryClient } from "./query/client";
 import { RefetchOnReconnect } from "./query/RefetchOnReconnect";
+import { RuntimeStatusPushes } from "./shared/agents/runtimeStatus";
 import { FirstRunGate } from "./chat/firstRun/FirstRunGate";
 import { KeepOrMoveSheet } from "./chat/firstRun/KeepOrMoveSheet";
 import { InvitationGate } from "./chat/invitations/AcceptInvitation";
@@ -31,6 +32,10 @@ export function App() {
             reconnection is about the whole cache, not about whatever
             happens to be mounted. Renders nothing. */}
         <RefetchOnReconnect />
+        {/* A runtime EO installed, updated or signed in on its own
+            (EO-903) is asked about again wherever it is drawn. Renders
+            nothing. */}
+        <RuntimeStatusPushes />
         {/* F12, while debug mode is on (EO-392). Above everything that
             can be on screen, so the key works from the first-run flow
             to Settings; it renders nothing and, with debug mode off,

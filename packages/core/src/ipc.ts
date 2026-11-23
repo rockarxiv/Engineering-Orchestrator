@@ -8608,6 +8608,18 @@ export const ipcPushContract = {
    */
   "planUsage:changed": z.object({}),
   /**
+   * A managed runtime was installed, updated, removed, enabled or
+   * disabled, or what EO knows of its sign-in moved (EO-903): ask
+   * `runtime:status` for `provider` again. Says which runtime, as
+   * `items:changed` says which item.
+   *
+   * Sent whatever caused it — the person on the Runtimes screen, or EO
+   * on its own, such as the automatic update to a newly pinned version
+   * at launch — so a screen that read the status before the change does
+   * not keep the old answer until the window is reloaded.
+   */
+  "runtime:changed": z.object({ provider: z.string().min(1) }),
+  /**
    * The update status changed (EO-201) — a plain "ask again", carrying
    * nothing, exactly as the rule at the top of this contract says.
    *

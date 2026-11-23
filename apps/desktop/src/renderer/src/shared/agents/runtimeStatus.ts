@@ -1,7 +1,8 @@
-import { useQuery } from "@tanstack/react-query";
+import { useEffect } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { RuntimeStatusView } from "@eo/core";
 import type { StatusTone } from "@eo/ui";
-import { machineAvailable } from "../../ipc/bridge";
+import { bridge, machineAvailable } from "../../ipc/bridge";
 import { ipcQuery } from "../../query/client";
 
 /**
@@ -85,4 +86,31 @@ export function useRuntimeStatus(provider: string, executablePath: string | null
     // already treats "no answer" as "nothing to say about a runtime".
     enabled: machineAvailable(),
   });
+}
+
+/**
+ * Asks a runtime's status again whenever the main process says it moved
+ * (EO-903): `runtime:changed`, sent when EO installs, updates, removes,
+ * enables or disables a managed runtime, or what it knows of its sign-in
+ * changes — whether the person did it on the Runtimes screen or EO did it
+ * on its own, as the automatic update at launch does.
+ *
+ * `runtimeKey(provider)` is a prefix of every per-agent key, so one
+ * invalidation reaches every screen showing that runtime: the rail's
+ * Usage block, the Runtimes cards, the chip beside a provider picker.
+ *
+ * Mounted once, under the `QueryClientProvider` beside
+ * `RefetchOnReconnect`, because the status is read all over the window
+ * and one subscription refetches it once per push. Renders nothing.
+ */
+export function RuntimeStatusPushes(): null {
+  const queryClient = useQueryClient();
+  useEffect(
+    () =>
+      bridge().subscribe("runtime:changed", ({ provider }) => {
+        void queryClient.invalidateQueries({ queryKey: runtimeKey(provider) });
+      }),
+    [queryClient],
+  );
+  return null;
 }

@@ -4,6 +4,7 @@ import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PlanUsageBackend, PlanUsageView, RuntimeStatusView } from "@eo/core";
 import { createQueryClient } from "../query/client";
+import { RuntimeStatusPushes } from "../shared/agents/runtimeStatus";
 import { clockTime, UsageBlock } from "./UsageBlock";
 
 /**
@@ -57,9 +58,9 @@ interface Setup {
 const pushes = new Map<string, (payload: unknown) => void>();
 
 function setup({ runtimes = { claude: runtime("claude"), codex: runtime("codex") }, usage = { backends: [] } }: Setup) {
-  const state = { usage };
+  const state = { usage, runtimes };
   window.eo.ipc.invoke = vi.fn(async (channel: string, payload?: unknown) => {
-    if (channel === "runtime:status") return { ok: true, data: { runtime: runtimes[(payload as { provider: string }).provider] ?? null } };
+    if (channel === "runtime:status") return { ok: true, data: { runtime: state.runtimes[(payload as { provider: string }).provider] ?? null } };
     if (channel === "planUsage:get") return { ok: true, data: state.usage };
     return { ok: true, data: {} };
   }) as never;
@@ -69,6 +70,8 @@ function setup({ runtimes = { claude: runtime("claude"), codex: runtime("codex")
   }) as never;
   render(
     <QueryClientProvider client={createQueryClient()}>
+      {/* As the window mounts it, beside every screen (App.tsx). */}
+      <RuntimeStatusPushes />
       <MemoryRouter>
         <UsageBlock />
       </MemoryRouter>
@@ -235,6 +238,32 @@ describe("the rail's Usage block", () => {
 
     expect(meter("Codex", "5h")).toHaveTextContent("17%");
     expect(meter("Codex", "Week")).toHaveTextContent("44%");
+  });
+
+  it("shows a runtime that becomes installed and signed in while the window is open, on runtime:changed (EO-903)", async () => {
+    // The window read Codex's status before the automatic update at
+    // launch had installed it; the five-minute read has since stored its
+    // readings.
+    const state = await rendered({
+      runtimes: { claude: runtime("claude"), codex: runtime("codex", { source: "absent", path: null, state: "needs_consent" }) },
+      usage: { backends: [backend("codex", { "5_hour": { utilization: 0 }, "7_day": { utilization: 100 } })] },
+    });
+    expect(screen.queryByRole("group", { name: "Codex" })).not.toBeInTheDocument();
+    const asked = (provider: string) =>
+      vi.mocked(window.eo.ipc.invoke).mock.calls.filter(([channel, payload]) => channel === "runtime:status" && (payload as { provider: string }).provider === provider).length;
+    const claudeAsked = asked("claude");
+    const codexAsked = asked("codex");
+
+    // The update finishes and Codex is signed in: the main process says so.
+    state.runtimes = { ...state.runtimes, codex: runtime("codex") };
+    act(() => pushes.get("runtime:changed")?.({ provider: "codex" }));
+    await settle();
+
+    expect(meter("Codex", "5h")).toHaveTextContent("0%");
+    expect(meter("Codex", "Week")).toHaveTextContent("100%");
+    // That runtime's status, and not every runtime's.
+    expect(asked("codex")).toBe(codexAsked + 1);
+    expect(asked("claude")).toBe(claudeAsked);
   });
 
   it("shows a window as reset, and its refusal gone, at its reset time with no new reading", async () => {

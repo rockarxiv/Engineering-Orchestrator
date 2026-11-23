@@ -557,7 +557,13 @@ export function registerAllHandlers(db: Db, engine: EngineHandle | undefined, re
     root: runtimeRoot(platform.userDataPath),
     fetchImpl: (url, init) => fetch(url, init),
     db,
-    onChanged: () => emitPush("config:changed", {}),
+    // Both: `config:changed` for the screens that already listen on it,
+    // and `runtime:changed` naming the runtime, which every window
+    // answers by asking that runtime's status again (EO-903).
+    onChanged: (provider) => {
+      emitPush("config:changed", {});
+      emitPush("runtime:changed", { provider });
+    },
     // EO-83: a sign-in opens the CLI's own OAuth URL in the person's
     // real browser. The platform's browser, not Electron's directly —
     // `runtimes/signIn.ts` must stay importable under plain Node, and

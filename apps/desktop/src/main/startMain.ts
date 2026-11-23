@@ -62,6 +62,7 @@ import { preflightPackPrompts, promptReader } from "./packs/promptPreflight.js";
 import { syncRolePrompts, usePromptsDir } from "./roles/prompts.js";
 import { resolveSearchPath } from "./process/searchPath.js";
 import { runtimeRoot } from "./runtimes/install.js";
+import { onRuntimeAuthInvalidated } from "./runtimes/auth.js";
 import { createShutdownCoordinator, type ShutdownChoice } from "./shutdownCoordinator.js";
 import { startDeferredAutoUpdate } from "./updater.js";
 
@@ -256,12 +257,24 @@ export function startMain(platform: Platform): RunningMain {
   // hear it.
   onPush("messages:changed", () => notifier.scheduleRefresh());
 
+  // EO-903: whatever moves a runtime's sign-in — a sign-in finished or
+  // abandoned, a key stored or removed, an install, a run refused for
+  // being signed out — forgets the cached answer, and every window is
+  // told to ask that runtime's status again.
+  const stopRuntimeAuthPushes = onRuntimeAuthInvalidated((provider) => emitPush("runtime:changed", { provider }));
+
   const managedRuntimeRoot = runtimeRoot(userDataPath);
+  // The automatic update at launch: nobody pressed anything, so without
+  // `runtime:changed` a window that read the status before the update
+  // finished would keep the old answer until reloaded (EO-903).
   startManagedRuntimeReconciliation({
     root: managedRuntimeRoot,
     fetchImpl: (url, init) => fetch(url, init),
     db,
-    onChanged: () => emitPush("config:changed", {}),
+    onChanged: (provider) => {
+      emitPush("config:changed", {});
+      emitPush("runtime:changed", { provider });
+    },
   });
 
   // Staging areas for module changes (EO-813), in this profile. Every one
@@ -1075,6 +1088,7 @@ export function startMain(platform: Platform): RunningMain {
       record.stop();
       pushes?.stop();
       stopAssistDeltas();
+      stopRuntimeAuthPushes();
       await Promise.allSettled([mcpHost.stop(), adminMcpHost.stop(), agentWriteBridge?.close() ?? Promise.resolve()]);
       await engine.shutdown();
     },
