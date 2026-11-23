@@ -8,7 +8,7 @@ import { StepInputsSchema } from "./schemas/modules.js";
 import { StepResultSchema } from "./schemas/pipelines.js";
 import { StepBriefSchema } from "./stepBrief.js";
 import { StepTeamSchema } from "./team.js";
-import { TeamDefinitionSchema } from "./declaredTeam.js";
+import { NewTeamAgentSchema, TEAM_MEMBER_CAP_CEILING, TeamDefinitionSchema } from "./declaredTeam.js";
 import { ProposalSummarySchema } from "./schemas/proposalSummary.js";
 import { WaitingOnSchema } from "./people.js";
 import { SpecShapeSchema } from "./schemas/specShape.js";
@@ -1176,7 +1176,16 @@ export const PipelineStepSaveSchema = PipelineStepViewSchema.omit({ team: true }
  * the project has no team of that id, and otherwise a new version of it.
  * Only the assistant's draft, published by a person, sends one.
  */
-export const TeamSaveSchema = z.object({ id: z.string().min(1), definition: TeamDefinitionSchema });
+export const TeamSaveSchema = z.object({
+  id: z.string().min(1),
+  definition: TeamDefinitionSchema,
+  /**
+   * The members it declares that do not exist yet (EO-898), which its
+   * definition names by their stand-in ids: created as agents the team
+   * owns when the save writes it, and never before.
+   */
+  newMembers: z.array(NewTeamAgentSchema).max(TEAM_MEMBER_CAP_CEILING + 1).optional(),
+});
 export type TeamSave = z.infer<typeof TeamSaveSchema>;
 
 /** Where one declared result of a step sends the item. */

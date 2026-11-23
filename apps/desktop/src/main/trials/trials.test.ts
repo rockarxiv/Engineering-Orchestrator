@@ -336,7 +336,19 @@ describe("creating a trial from a draft", () => {
     const conversation = await conversationOn(`/pipelines/${target}`);
     const draft = {
       ...hotfixWithCheck({ pipelineId: target }),
-      teams: [{ name: "Fix team", coordination: "leader", leader: { agent: "Implementer", instructions: "Plan the fix." }, members: [{ agent: "Reviewer" }] }],
+      teams: [
+        {
+          name: "Fix team",
+          coordination: "leader",
+          leader: { agent: "Fix lead", instructions: "Plan the fix." },
+          members: [{ agent: "Fix checker" }],
+          // Its agents declared new (EO-898): a team never has an ordinary agent.
+          newMembers: [
+            { name: "Fix lead", kind: "implementer", instructions: "Lead the fix.", from: "Implementer" },
+            { name: "Fix checker", kind: "reviewer", instructions: "Check the fix.", from: "Reviewer" },
+          ],
+        },
+      ],
     };
     draft.steps[0] = { ...draft.steps[0]!, team: "Fix team" } as (typeof draft.steps)[number];
     const [messageId] = turn(conversation, { message: "Here.", draft }, target);

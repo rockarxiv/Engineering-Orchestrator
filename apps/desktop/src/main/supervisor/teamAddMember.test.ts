@@ -447,3 +447,67 @@ describe("a leader and the member it adds on different backends (EO-883, invaria
     });
   }
 });
+
+describe("members a draft declares new, on different backends (EO-898, invariant 12)", () => {
+  it("are created by Publish as the team's own agents, one on Codex and one on Claude, and each runs through its own backend's adapter", async () => {
+    setup("claude");
+    realAdapters = true;
+    // What the card's Publish sends: the team, naming two members it declares new under stand-in ids.
+    const onCodex = uuidv7();
+    const onClaude = uuidv7();
+    const declared = team();
+    const agentsBefore = listAgents(handle.db).length;
+    const saved = savePipeline(handle.db, undefined, {
+      pipelineId: "default",
+      steps: listStepsForPipeline(handle.db, "default").filter((step) => !step.offBoard),
+      routes: listRoutesForPipeline(handle.db, "default"),
+      entryStepId: getPipeline(handle.db, "default")!.entryStepId,
+      teams: [
+        {
+          id: teamId,
+          definition: { ...declared, members: [...declared.members, { agentId: onCodex }, { agentId: onClaude }] },
+          newMembers: [
+            { id: onCodex, name: "Nora", kind: "sec", instructions: "You read the export's CSV escaping.", runtime: "codex", model: "gpt-5", reasoning: "medium" },
+            { id: onClaude, name: "Cleo", kind: "sec", instructions: "You read the export's login checks.", runtime: "claude", model: "claude-sonnet-4-5", reasoning: "high" },
+          ],
+        },
+      ],
+    });
+    expect(saved.problems.filter((problem) => problem.severity === "error")).toEqual([]);
+    expect(saved.saved).toBe(true);
+    expect(listAgents(handle.db)).toHaveLength(agentsBefore + 2);
+    const nora = agentNamed("Nora")!;
+    const cleo = agentNamed("Cleo")!;
+    expect(nora).toMatchObject({ provider: "codex", model: "gpt-5", role: "sec", teamId });
+    expect(nora.config).toMatchObject({ reasoningEffort: "medium" });
+    expect(cleo).toMatchObject({ provider: "claude", model: "claude-sonnet-4-5", role: "sec", teamId });
+    expect(cleo.config).toMatchObject({ effort: "high" });
+    expect(team().members.map((member) => member.agentId)).toEqual(expect.arrayContaining([nora.id, cleo.id]));
+
+    leaderTurns = [
+      () =>
+        assignWith([], [
+          { key: "csv", member: "Nora" },
+          { key: "auth", member: "Cleo" },
+        ]),
+      () => final(reportIds()),
+    ];
+    members = { Nora: () => report("The CSV escaping holds."), Cleo: () => report("The login checks hold.") };
+    await supervisor().runOnce();
+
+    await vi.waitFor(() => expect(getItem(handle.db, item.id)?.stepId).toBe("accepted"), WAIT);
+    // Each member's turn reached its own backend, carrying its assignment and an answer schema.
+    const memberTurns = crossed.filter((one) => one.agent.id !== lee.id);
+    expect(memberTurns.map((one) => [one.agent.name, one.backend]).sort()).toEqual([
+      ["Cleo", "claude"],
+      ["Nora", "codex"],
+    ]);
+    for (const one of memberTurns) {
+      const opts = started.find((turn) => turn.agent.id === one.agent.id)!.opts;
+      const heading = /## Your assignment: \w+/.exec(opts.context)![0];
+      expect(await one.said(), one.backend).toContain(heading);
+      expect(one.schema(), one.backend).toBeTypeOf("object");
+    }
+    expect(listRunsForItem(handle.db, item.id).filter((run) => run.status === "failed")).toEqual([]);
+  });
+});

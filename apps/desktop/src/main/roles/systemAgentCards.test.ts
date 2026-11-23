@@ -446,3 +446,24 @@ describe("what the system agent's prompt says about declared teams (EO-881)", ()
     expect(Number(/prompt-version:\s*(\d+)/.exec(prompt)![1])).toBeGreaterThanOrEqual(66);
   });
 });
+
+describe("what the system agent's prompt says about a team's new members (EO-898)", () => {
+  const teams = () => section("### A declared team on an agent step");
+  const held = () => section("### A held template update");
+
+  it("says a team's agents are its own, declared new in `newMembers`, created only by Publish, and never an ordinary agent", () => {
+    expect(teams()).toContain("**declares every agent it does not have yet in `newMembers`**");
+    expect(teams()).toContain("Nothing is created until the person presses Publish, which creates each as an agent of the team's own, with the team; so never create agents for a team with `agent_save` first.");
+    expect(teams()).toContain("A draft naming an ordinary agent as a leader or member is refused: declare a new member instead, with `from` naming that agent.");
+    expect(teams()).toContain('"newMembers": [');
+  });
+
+  it("says a held update lists the template's team ready for a draft, taken on one card with no agents made first", () => {
+    expect(held()).toContain("To take the template's team, put that entry in the draft's `teams` as it is and set the step's `team` to its `name` — one card, like any other change.");
+    expect(held()).toContain("Never create agents for it yourself: Publish creates them, as the team's own.");
+  });
+
+  it("is a newer version than the one before a team's new members", () => {
+    expect(Number(/prompt-version:\s*(\d+)/.exec(prompt)![1])).toBeGreaterThanOrEqual(67);
+  });
+});

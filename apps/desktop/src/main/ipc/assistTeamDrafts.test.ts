@@ -1,4 +1,4 @@
-import { ADMIN_MCP_SERVER_NAME, AssistOutputSchema, pageDescriptorFor, StepTeamSchema, TeamDefinitionSchema, uuidv7, type IpcChannel, type Item, type StepTeam, type Uuid } from "@eo/core";
+import { ADMIN_MCP_SERVER_NAME, AssistDraftTeamSchema, AssistOutputSchema, pageDescriptorFor, StepTeamSchema, TeamDefinitionSchema, uuidv7, type IpcChannel, type Item, type StepTeam, type Uuid } from "@eo/core";
 import { getTeam, listTeamVersions, listTeams, setTeamLocked } from "../db/repos/teamsRepo.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DbHandle } from "../db/client.js";
@@ -25,7 +25,9 @@ import {
 } from "../db/repos/index.js";
 import { getTeamSession, openTeamSession } from "../db/repos/teamSessionsRepo.js";
 import { createTestItem, openMigratedTestDb, agentOfKind } from "../db/testHelpers.js";
+import { sql } from "drizzle-orm";
 import { sectionLockFor } from "../managed/locks.js";
+import { draftTeamsFor } from "../roles/architect.js";
 import { assistAgent, postAssistReply } from "../roles/assist.js";
 import { ASSIST_ACTION } from "../roles/conversationSteps.js";
 import { PROPOSAL_KIND } from "../roles/proposal.js";
@@ -61,13 +63,22 @@ function nameOf(kind: string): string {
   return listAgents(handle.db).find((agent) => agent.id === id)!.name;
 }
 
-/** An independent team answering `reviewer / check`, whose answer is a result and a summary, as a draft declares it. */
+/**
+ * An independent team answering `reviewer / check`, whose answer is a
+ * result and a summary, as a draft declares it: its members declared new
+ * (EO-898), each taking its runtime, model and tools from the ordinary
+ * agent of its kind.
+ */
 const INDEPENDENT = () => ({
   name: "Change review",
   coordination: "independent",
   members: [
-    { key: "security", agent: nameOf("reviewer"), instructions: "Look for ways around authentication." },
-    { key: "tests", agent: nameOf("implementer"), instructions: "Check the tests cover the change.", required: false },
+    { key: "security", agent: "Security pass", instructions: "Look for ways around authentication." },
+    { key: "tests", agent: "Tests pass", instructions: "Check the tests cover the change.", required: false },
+  ],
+  newMembers: [
+    { name: "Security pass", kind: "reviewer", instructions: "Review for security.\nTrace every input.", from: nameOf("reviewer") },
+    { name: "Tests pass", kind: "implementer", instructions: "Review the tests.", from: nameOf("implementer") },
   ],
   outcomes: [
     { key: "clear", label: "Clear", meaning: "Nothing here should stop it." },
@@ -92,14 +103,25 @@ const INDEPENDENT_RUNS = StepTeamSchema.parse({
   limits: { maxParallel: 1, budgetCents: 300 },
 });
 
-/** A leader-led team for the same step. */
+/** A leader-led team for the same step, its leader and member declared new (EO-898). */
 const LEADER = () => ({
   name: "Review leads",
   coordination: "leader",
-  leader: { agent: nameOf("reviewer"), instructions: "Split the review by risk, and weigh what comes back." },
-  members: [{ agent: nameOf("implementer") }],
+  leader: { agent: "Review lead", instructions: "Split the review by risk, and weigh what comes back." },
+  members: [{ agent: "Implementation pass" }],
   limits: { maxParticipants: 3, maxRounds: 2 },
+  newMembers: [
+    { name: "Review lead", kind: "reviewer", instructions: "Lead the review." },
+    { name: "Implementation pass", kind: "implementer", instructions: "Review the implementation." },
+  ],
 });
+
+/** A team as a draft restates it once it exists: its agents, now the team's own, named by name, and nothing declared new. */
+function restated<T extends { newMembers?: unknown }>(team: T): Omit<T, "newMembers"> {
+  const rest: Partial<T> = { ...team };
+  delete rest.newMembers;
+  return rest as Omit<T, "newMembers">;
+}
 
 const LEADER_RUNS = StepTeamSchema.parse({
   coordination: "leader",
@@ -240,8 +262,12 @@ describe("a team drafted by the assistant (EO-848)", () => {
     expect(body).toContain("**Teams**");
     expect(body).toContain('- New: "Change review", an independent team of report-only members');
     expect(body).toContain("Coordination: Independent — 2 participants each report on their own");
-    expect(body).toContain(`Member security: ${nameOf("reviewer")}, required — Look for ways around authentication.`);
-    expect(body).toContain(`Member tests: ${nameOf("implementer")}, optional — Check the tests cover the change.`);
+    expect(body).toContain("Member security: Security pass, required — Look for ways around authentication.");
+    expect(body).toContain("Member tests: Tests pass, optional — Check the tests cover the change.");
+    // Each member Publish creates, said to be new, with its kind, runtime, model and the first line of its instructions (EO-898).
+    expect(body).toContain("New member: Security pass (new), a reviewer agent on claude, its default model — Review for security.");
+    expect(body).not.toContain("Trace every input.");
+    expect(body).toContain("New member: Tests pass (new), a implementer agent on claude, its default model — Review the tests.");
     expect(body).toContain("Tool pool: nothing");
     expect(body).toContain("Member cap: 8");
     expect(body).toContain("Outcomes a member may report: Clear (clear) — Nothing here should stop it.; Concerns (concerns) — Something should change first.");
@@ -250,10 +276,18 @@ describe("a team drafted by the assistant (EO-848)", () => {
     expect(body).toContain("Limits: 1 participant at a time, 4 participants in all, 1 retry for a participant whose run fails, time: the run timeout, spending: $3 for the whole team");
     expect(body).toContain("None of them can edit the work");
 
-    // What Publish would send declares the team, its agents bound to ids, and names it on the step.
+    // What Publish would send declares the team, its new members under stand-in ids, and names it on the step.
     const read = readAssistDraftForPublish(handle.db, { conversationId: on.id, messageId: cardIds[0]! });
     expect(read.teams).toHaveLength(1);
-    expect(read.teams[0]!.definition).toMatchObject({ name: "Change review", members: [{ agentId: agentOfKind(handle.db, "reviewer") }, { agentId: agentOfKind(handle.db, "implementer") }] });
+    const standIns = read.teams[0]!.newMembers!.map((member) => member.id);
+    expect(read.teams[0]!.newMembers!.map((member) => [member.name, member.kind, member.fromAgentId])).toEqual([
+      ["Security pass", "reviewer", agentOfKind(handle.db, "reviewer")],
+      ["Tests pass", "implementer", agentOfKind(handle.db, "implementer")],
+    ]);
+    expect(read.teams[0]!.definition).toMatchObject({ name: "Change review", members: [{ agentId: standIns[0] }, { agentId: standIns[1] }] });
+    // Nothing is created before Publish.
+    const agentsBefore = listAgents(handle.db).length;
+    expect(listAgents(handle.db).some((agent) => standIns.includes(agent.id))).toBe(false);
     expect(read.steps.find((step) => step.id === checkId)?.teamId).toBe(read.teams[0]!.id);
 
     const before = currentVersion(handle.db, pipelineId)!.number;
@@ -264,9 +298,29 @@ describe("a team drafted by the assistant (EO-848)", () => {
     const declared = listTeams(handle.db, projectId);
     expect(declared.map((team) => team.name)).toEqual(["Change review"]);
     expect(listTeamVersions(handle.db, declared[0]!.id).map((version) => version.author)).toEqual([{ kind: "assistant" }]);
+    // Each new member created as the team's own agent, as declared, and no other agent.
+    expect(listAgents(handle.db)).toHaveLength(agentsBefore + 2);
+    const members = declared[0]!.definition!.members.map((member) => listAgents(handle.db).find((agent) => agent.id === member.agentId)!);
+    expect(members.map((agent) => [agent.name, agent.role, agent.teamId, agent.provider, agent.instructions])).toEqual([
+      ["Security pass", "reviewer", declared[0]!.id, "claude", "Review for security.\nTrace every input."],
+      ["Tests pass", "implementer", declared[0]!.id, "claude", "Review the tests."],
+    ]);
   });
 
-  it("makes the agents a draft team names the team's own on Publish, leaving the ordinary agents as they were, and refuses a step naming one (EO-897)", async () => {
+  it("refuses a draft naming an ordinary agent as a member, saying to declare a new member instead, and leaves the ordinary agents as they were (EO-898)", async () => {
+    const on = await conversation();
+    const before = listAgents(handle.db);
+    const borrowing = { ...restated(INDEPENDENT()), members: [{ key: "security", agent: nameOf("reviewer"), instructions: "Look for ways around authentication." }] };
+    const refused = turn(on, { message: "Check runs as a team now.", draft: draft("Change review", [borrowing]) });
+    expect(refused.cardIds).toEqual([]);
+    expect(refused.rejections.join(" ")).toContain(
+      `The team "Change review": "${nameOf("reviewer")}" is an ordinary agent, and a team's leader and members are agents of its own. Declare a new member in the team's \`newMembers\` instead`,
+    );
+    expect(listAgents(handle.db)).toEqual(before);
+    expect(listTeams(handle.db, projectId)).toEqual([]);
+  });
+
+  it("creates the members a draft declares as the team's own on Publish, leaving the ordinary agents as they were, and refuses a step naming one (EO-897, EO-898)", async () => {
     const on = await conversation();
     const ordinary = [agentOfKind(handle.db, "reviewer"), agentOfKind(handle.db, "implementer")];
     const before = listAgents(handle.db).filter((agent) => ordinary.includes(agent.id));
@@ -278,18 +332,24 @@ describe("a team drafted by the assistant (EO-848)", () => {
     expect(members).toHaveLength(2);
     for (const id of members) expect(ordinary).not.toContain(id);
     expect(listAgents(handle.db).filter((agent) => members.includes(agent.id)).map((agent) => [agent.name, agent.teamId])).toEqual([
-      [nameOf("reviewer"), team.id],
-      [nameOf("implementer"), team.id],
+      ["Security pass", team.id],
+      ["Tests pass", team.id],
     ]);
     expect(listAgents(handle.db).filter((agent) => ordinary.includes(agent.id))).toEqual(before);
     // The ordinary agent still runs the step itself.
     expect(listStepsForPipeline(handle.db, pipelineId).find((step) => step.id === checkId)?.agentId).toBe(ordinary[0]);
 
+    // A member that already belongs to the team is shown as it is, by name, and not as new.
+    const again = turn(on, { message: "Three participants.", draft: draft(undefined, [{ ...restated(INDEPENDENT()), limits: { maxParallel: 1, maxParticipants: 3, budgetCents: 300 } }]) });
+    expect(again.rejections).toEqual([]);
+    const againBody = cardBody(on, again.cardIds[0]!);
+    expect(againBody).toContain("Member security: Security pass, required");
+    expect(againBody).not.toContain("New member:");
+
     // A step naming the team's own agent, by a name only it has, is refused before any card.
-    updateAgent(handle.db, members[0]! as Uuid, { name: "Change review's security pass" });
-    const refused = turn(on, { message: "The pass runs Check.", draft: draft(undefined, [], { agent: "Change review's security pass" }) });
+    const refused = turn(on, { message: "The pass runs Check.", draft: draft(undefined, [], { agent: "Security pass" }) });
     expect(refused.cardIds).toEqual([]);
-    expect(refused.rejections.join(" ")).toContain("Change review's security pass, which belongs to a team and runs only as part of it");
+    expect(refused.rejections.join(" ")).toContain("Security pass, which belongs to a team and runs only as part of it");
   });
 
   it("drafts a leader-led team, changes one team into another on the card, and \"none\" back to one agent", async () => {
@@ -298,8 +358,9 @@ describe("a team drafted by the assistant (EO-848)", () => {
     expect(led.rejections).toEqual([]);
     const ledBody = cardBody(on, led.cardIds[0]!);
     expect(ledBody).toContain('Team: one agent → "Review leads"');
-    expect(ledBody).toContain(`Leader: ${nameOf("reviewer")} — Split the review by risk, and weigh what comes back.`);
-    expect(ledBody).toContain(`Members: ${nameOf("implementer")}`);
+    expect(ledBody).toContain("Leader: Review lead — Split the review by risk, and weigh what comes back.");
+    expect(ledBody).toContain("Members: Implementation pass");
+    expect(ledBody).toContain("New member: Review lead (new), a reviewer agent on claude, its default model — Lead the review.");
     expect(ledBody).toContain("2 rounds of assignments");
     expect(await publish(on, led.cardIds[0]!)).toMatchObject({ ok: true, data: { saved: true } });
     expect(teamOnCheck()).toEqual(LEADER_RUNS);
@@ -334,7 +395,7 @@ describe("a team drafted by the assistant (EO-848)", () => {
     expect(listStepsForPipeline(handle.db, pipelineId).find((step) => step.id === checkId)?.teamId).toBe(team.id);
 
     // Changed, under its own name: the team's next version, the step's team unchanged.
-    const changed = turn(on, { message: "Three rounds.", draft: draft(undefined, [{ ...LEADER(), limits: { maxParticipants: 3, maxRounds: 3 } }]) });
+    const changed = turn(on, { message: "Three rounds.", draft: draft(undefined, [{ ...restated(LEADER()), limits: { maxParticipants: 3, maxRounds: 3 } }]) });
     expect(changed.rejections).toEqual([]);
     expect(cardBody(on, changed.cardIds[0]!)).toContain('- Changed: "Review leads", a leader-led team of report-only members');
     expect(await publish(on, changed.cardIds[0]!)).toMatchObject({ ok: true, data: { saved: true } });
@@ -350,7 +411,7 @@ describe("a team drafted by the assistant (EO-848)", () => {
     expect(setTeamLocked(handle.db, team.id, true).ok).toBe(true);
     const locked = 'The team "Review leads" is locked: a person must unlock it before this draft can change it.';
 
-    const changed = turn(on, { message: "Three rounds.", draft: draft(undefined, [{ ...LEADER(), limits: { maxParticipants: 3, maxRounds: 3 } }]) });
+    const changed = turn(on, { message: "Three rounds.", draft: draft(undefined, [{ ...restated(LEADER()), limits: { maxParticipants: 3, maxRounds: 3 } }]) });
     expect(changed.cardIds).toEqual([]);
     expect(changed.rejections.join(" ")).toContain(locked);
 
@@ -360,7 +421,7 @@ describe("a team drafted by the assistant (EO-848)", () => {
     expect(JSON.stringify(checked)).toContain(locked.replaceAll('"', '\\"'));
 
     // Naming the locked team unchanged is no change to it.
-    expect(turn(on, { message: "Again.", draft: draft("Review leads", [LEADER()]) }).rejections.join(" ")).not.toContain("is locked");
+    expect(turn(on, { message: "Again.", draft: draft("Review leads", [restated(LEADER())]) }).rejections.join(" ")).not.toContain("is locked");
     expect(getTeam(handle.db, team.id)?.version).toBe(1);
   });
 
@@ -369,7 +430,7 @@ describe("a team drafted by the assistant (EO-848)", () => {
     expect(await publish(on, turn(on, { message: "Led.", draft: draft("Review leads", [LEADER()]) }).cardIds[0]!)).toMatchObject({ ok: true, data: { saved: true } });
     const team = listTeams(handle.db, projectId)[0]!;
 
-    const changed = turn(on, { message: "Three rounds.", draft: draft(undefined, [{ ...LEADER(), limits: { maxParticipants: 3, maxRounds: 3 } }]) });
+    const changed = turn(on, { message: "Three rounds.", draft: draft(undefined, [{ ...restated(LEADER()), limits: { maxParticipants: 3, maxRounds: 3 } }]) });
     expect(changed.cardIds).toHaveLength(1);
     // What the card's Publish sends, read while it still applied.
     const read = readAssistDraftForPublish(handle.db, { conversationId: on.id, messageId: changed.cardIds[0]! });
@@ -484,28 +545,29 @@ describe("a team drafted by the assistant (EO-848)", () => {
     });
 
     it("a member nobody here is", async () => {
-      expect(await refused({ ...LEADER(), members: [{ agent: "Auditor" }] })).toContain(`"Check" runs as the team "Review leads": A member is an agent EO does not have (Auditor).`);
+      expect(await refused({ ...restated(LEADER()), newMembers: [LEADER().newMembers[0]!], members: [{ agent: "Auditor" }] })).toContain(`"Check" runs as the team "Review leads": A member is an agent EO does not have (Auditor).`);
     });
 
     it("EO's system agent as a member (EO-881)", async () => {
-      expect(await refused({ ...LEADER(), members: [{ agent: nameOf("system") }] })).toContain(`is EO's system agent, which administers EO and can never be a team member.`);
+      expect(await refused({ ...restated(LEADER()), newMembers: [LEADER().newMembers[0]!], members: [{ agent: nameOf("system") }] })).toContain(`is EO's system agent, which administers EO and can never be a team member.`);
     });
 
     it("a leader whose kind lacks the step's action (EO-881)", async () => {
-      const reason = await refused({ ...LEADER(), leader: { agent: nameOf("implementer"), instructions: "Lead." }, members: [{ agent: nameOf("reviewer") }] });
-      expect(reason).toContain(`"Check" runs as the team "Review leads", whose leader "${nameOf("implementer")}" is a implementer agent, and that kind has no "check" action to answer.`);
+      const reason = await refused({ ...LEADER(), leader: { agent: "Implementation pass", instructions: "Lead." }, members: [{ agent: "Review lead" }] });
+      expect(reason).toContain(`"Check" runs as the team "Review leads", whose leader "Implementation pass" is a implementer agent, and that kind has no "check" action to answer.`);
     });
 
     it("a member EO could not hold to report-only (EO-882)", async () => {
       const implementer = listAgents(handle.db).find((agent) => agent.role === "implementer")!;
       updateAgent(handle.db, implementer.id, { config: { inheritAmbientConfig: true } });
-      expect(await refused(INDEPENDENT())).toContain(`Its member "${implementer.name}" cannot be held to report-only: ${implementer.name} uses the person's own setup`);
+      // The new member takes its config from the implementer, and is judged as it would be.
+      expect(await refused(INDEPENDENT())).toContain(`Its member "Tests pass" cannot be held to report-only: Tests pass uses the person's own setup`);
     });
 
     it("a role an agent of which runs its own executable, whose version EO cannot vouch for (EO-850)", async () => {
       const implementer = listAgents(handle.db).find((agent) => agent.role === "implementer")!;
       updateAgent(handle.db, implementer.id, { config: { executablePath: "/opt/claude/bin/claude" } });
-      expect(await refused(INDEPENDENT())).toContain(`${implementer.name} runs its own Claude executable, whose version EO cannot vouch for`);
+      expect(await refused(INDEPENDENT())).toContain("Tests pass runs its own Claude executable, whose version EO cannot vouch for");
     });
 
     it("a team on a step that is not an agent's", async () => {
@@ -515,7 +577,7 @@ describe("a team drafted by the assistant (EO-848)", () => {
 
     it("a team no step names, with EO's system agent in it, judged as Publish judges it (EO-881)", async () => {
       const on = await conversation();
-      const posted = turn(on, { message: "A team.", draft: draft(undefined, [{ ...LEADER(), members: [{ agent: nameOf("system") }] }]) });
+      const posted = turn(on, { message: "A team.", draft: draft(undefined, [{ ...restated(LEADER()), newMembers: [LEADER().newMembers[0]!], members: [{ agent: nameOf("system") }] }]) });
       expect(posted.cardIds).toEqual([]);
       expect(posted.rejections).toHaveLength(1);
       expect(posted.rejections[0]).toContain(`The team "Review leads": "${nameOf("system")}" is EO's system agent, which administers EO and can never be a team member.`);
@@ -531,11 +593,11 @@ describe("a team drafted by the assistant (EO-848)", () => {
       setEntryStep(handle.db, gates, gate.id);
 
       // Check stops being a team, so only Gate is left naming it — and Gate could not run a leader without `check`.
-      const changed = { ...LEADER(), leader: { agent: nameOf("implementer"), instructions: "Lead." }, members: [{ agent: nameOf("reviewer") }] };
+      const changed = { ...restated(LEADER()), leader: { agent: "Implementation pass", instructions: "Lead." }, members: [{ agent: "Review lead" }] };
       const posted = turn(on, { message: "Led by the implementer.", draft: draft("none", [changed]) });
       expect(posted.cardIds).toEqual([]);
       expect(posted.rejections[0]).toContain(
-        `In the pipeline "Gates", which names the same team: "Gate" runs as the team "Review leads", whose leader "${nameOf("implementer")}" is a implementer agent, and that kind has no "check" action to answer.`,
+        `In the pipeline "Gates", which names the same team: "Gate" runs as the team "Review leads", whose leader "Implementation pass" is a implementer agent, and that kind has no "check" action to answer.`,
       );
       expect(getTeam(handle.db, team.id)?.version).toBe(1);
     });
@@ -545,6 +607,98 @@ describe("a team drafted by the assistant (EO-848)", () => {
       // The schema refuses it in the turn, before anything is drawn.
       expect(() => turn(on, { message: "Big.", draft: draft("Change review", [{ ...INDEPENDENT(), limits: { maxParallel: 9 } }]) })).toThrow();
     });
+  });
+
+  /**
+   * A member a draft declares new (EO-898) is refused by the draft, the
+   * editor's check and Publish in the same words, and nothing is created.
+   */
+  describe("refuses a new member as Publish would, in the same words, at the card, the check and the save (EO-898)", () => {
+    const quoted = (sentence: string) => JSON.stringify(sentence).slice(1, -1);
+    async function refusedEverywhere(team: { name: string } & Record<string, unknown>, sentence: string) {
+      const on = await conversation();
+      const posted = turn(on, { message: "A team.", draft: draft(team.name, [team]) });
+      expect(posted.cardIds).toEqual([]);
+      expect(posted.rejections.join(" ")).toContain(sentence);
+
+      // What the card's Publish would send for it, to the check and to the save.
+      const saves = draftTeamsFor(handle.db, pipelineId, { teams: [AssistDraftTeamSchema.parse(team)] }).saves;
+      const graph = { ...graphNow(), steps: graphNow().steps.map((step) => (step.id === checkId ? { ...step, teamId: saves[0]!.id } : step)) };
+      const checked = await handleIpcRequest("pipeline:validate", { ...graph, teams: saves }, (payload) => validatePipelineCommand(handle.db, payload), opts);
+      expect(JSON.stringify(checked)).toContain(quoted(sentence));
+      const agentsBefore = listAgents(handle.db);
+      const saved = await handleIpcRequest("pipeline:save", { ...graph, teams: saves }, (payload) => savePipeline(handle.db, undefined, payload), opts);
+      expect(JSON.stringify(saved)).toContain(quoted(sentence));
+      expect(saved).not.toMatchObject({ ok: true, data: { saved: true } });
+      expect(listAgents(handle.db)).toEqual(agentsBefore);
+      expect(listTeams(handle.db, projectId)).toEqual([]);
+    }
+
+    it("a kind EO does not have", async () => {
+      const team = LEADER();
+      await refusedEverywhere(
+        { ...team, newMembers: [team.newMembers[0]!, { ...team.newMembers[1]!, kind: "auditor" }] },
+        'The team "Review leads": its new member "Implementation pass" is of the kind "auditor", which EO does not have.',
+      );
+    });
+
+    it("two members of the team with one name", async () => {
+      const team = LEADER();
+      await refusedEverywhere(
+        { ...team, members: [{ agent: "Implementation pass" }], newMembers: [...team.newMembers, { ...team.newMembers[1]!, name: " implementation PASS" }] },
+        'The team "Review leads" has two members called "Implementation pass": each of a team\'s members needs a name of its own.',
+      );
+    });
+
+    it("a leader whose kind lacks the step's action", async () => {
+      await refusedEverywhere(
+        { ...LEADER(), leader: { agent: "Implementation pass", instructions: "Lead." }, members: [{ agent: "Review lead" }] },
+        '"Check" runs as the team "Review leads", whose leader "Implementation pass" is a implementer agent, and that kind has no "check" action to answer.',
+      );
+    });
+
+    it("more members than the team's cap", async () => {
+      const team = LEADER();
+      await refusedEverywhere(
+        { ...team, memberCap: 1, members: [{ agent: "Implementation pass" }, { agent: "Second pass" }], newMembers: [...team.newMembers, { name: "Second pass", kind: "implementer", instructions: "Again." }] },
+        "The team has 2 members, over its cap of 1.",
+      );
+    });
+
+    it("an agent to take settings from that EO does not have", async () => {
+      const team = LEADER();
+      await refusedEverywhere(
+        { ...team, newMembers: [team.newMembers[0]!, { ...team.newMembers[1]!, from: "Nobody" }] },
+        'The team "Review leads": its new member "Implementation pass" takes its settings from an agent EO does not have (Nobody).',
+      );
+    });
+  });
+
+  it("creates a declared member with its own runtime, model and reasoning; and a Publish that fails part-way leaves no agent behind (EO-898)", async () => {
+    const on = await conversation();
+    const team = LEADER();
+    const own = { ...team, newMembers: [{ ...team.newMembers[0]!, runtime: "codex", model: "gpt-5.5", reasoning: "high" }, team.newMembers[1]!] };
+    const { cardIds, rejections } = turn(on, { message: "Led.", draft: draft("Review leads", [own]) });
+    expect(rejections).toEqual([]);
+    expect(cardBody(on, cardIds[0]!)).toContain("New member: Review lead (new), a reviewer agent on codex, model gpt-5.5 — Lead the review.");
+
+    // The graph's write fails after the team and its members are written: all of it is undone.
+    const before = listAgents(handle.db);
+    handle.db.run(sql`CREATE TRIGGER eo_898_fail BEFORE INSERT ON pipeline_versions BEGIN SELECT RAISE(ABORT, 'the disk is full'); END`);
+    const failed = await publish(on, cardIds[0]!).catch((error: unknown) => ({ ok: false as const, error }));
+    expect(failed.ok).toBe(false);
+    expect(listAgents(handle.db)).toEqual(before);
+    expect(listTeams(handle.db, projectId)).toEqual([]);
+    expect(teamOnCheck()).toBeNull();
+
+    handle.db.run(sql`DROP TRIGGER eo_898_fail`);
+    expect(await publish(on, cardIds[0]!)).toMatchObject({ ok: true, data: { saved: true } });
+    const saved = listTeams(handle.db, projectId)[0]!;
+    if (saved.definition?.coordination !== "leader") throw new Error("not leader-led");
+    const leaderId = saved.definition.leader.agentId;
+    const lead = listAgents(handle.db).find((agent) => agent.id === leaderId)!;
+    expect(lead).toMatchObject({ name: "Review lead", role: "reviewer", provider: "codex", model: "gpt-5.5", teamId: saved.id, config: expect.objectContaining({ reasoningEffort: "high" }) });
+    expect(listAgents(handle.db)).toHaveLength(before.length + 2);
   });
 
   describe("managed sections", () => {
@@ -586,6 +740,8 @@ describe("a team drafted by the assistant (EO-848)", () => {
       expect(getActionDefinition(handle.db, "reviewer", "team_verdict")).toBeUndefined();
       expect(teamOnCheck()).toBeNull();
       expect(listTeams(handle.db, projectId)).toEqual([]);
+      // Nor any member it declared (EO-898).
+      expect(listAgents(handle.db).filter((agent) => agent.teamId !== null && agent.teamId !== undefined)).toEqual([]);
     });
   });
 

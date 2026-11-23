@@ -36,7 +36,9 @@ import {
   type AssistDraftTeam,
   type TeamDefinition,
   type TeamSave,
+  type NewTeamAgent,
   declaredTeamLine,
+  isTeamOwned,
   uuidv7,
 } from "@eo/core";
 import { hasBlockingProblem, validatePipeline, type WorkflowProblem } from "@eo/engine";
@@ -58,7 +60,7 @@ import {
 } from "../db/repos/index.js";
 import { sideEffectingServersByStep } from "../connectors/sideEffects.js";
 import { agentNamed, UNKNOWN_AGENT_ID } from "../stepAgents.js";
-import { changesTeam, listTeams, teamByName, teamNameKey, teamReader, teamsForValidation } from "../db/repos/teamsRepo.js";
+import { changesTeam, getTeam, listTeams, teamByName, teamNameKey, teamReader, teamsForValidation } from "../db/repos/teamsRepo.js";
 import { declaredTeamReachProblems, isolatedCopyProblemsForPipeline, teamSaveProblems, itemTypesJudged, readGuards, reportOnlyAgentProblemsForAgents, reportOnlyRoleProblemsForPipeline, staffedRolesForPipeline, stepAgentsForPipeline } from "../ipc/configCommands.js";
 import { actionUsedBy, describeActionUse } from "../ipc/roleActionCommands.js";
 import { activeProjectId } from "../ipc/repositoryCommands.js";
@@ -127,6 +129,7 @@ export function validateDraft(
     // Every team the draft writes, used by its graph or not, and the steps
     // of other pipelines naming one it changes, as Publish judges them — a
     // change to a locked team and two teams of one name included (EO-881).
+    ...teams.problems.map((message) => ({ severity: "error" as const, stateId: null, message })),
     ...teamSaveProblems(db, pipelineId, teams.saves),
     ...declaredTeamReachProblems(db, pipelineId, domainSteps, teams.saves, proposed.ok ? proposed.registry : installed),
     ...validatePipeline({
@@ -181,13 +184,15 @@ export function validateDraft(
     // The publish path's own answer (EO-875): the agents a step may name,
     // and the pipeline's project — the two must not disagree about a draft.
     ...stepAgentsForPipeline(db, pipelineId),
+    // With the agents the members its teams declare new would be (EO-898), as the publish path asks it.
+    agents: [...stepAgentsForPipeline(db, pipelineId).agents, ...declared.newAgents],
     // The roles a team may be staffed with (EO-843), and whether they could
     // be staffed with an agent EO cannot hold to report-only (EO-848), as
     // the publish path asks it.
     staffedRoles: staffedRolesForPipeline(db, pipelineId),
     reportOnlyRoleProblems: reportOnlyRoleProblemsForPipeline(db, pipelineId),
     // A declared team's agents run as themselves (EO-882), each judged so, as the publish path asks it.
-    reportOnlyAgentProblems: reportOnlyAgentProblemsForAgents(db),
+    reportOnlyAgentProblems: reportOnlyAgentProblemsForAgents(db, declared.newAgents),
     // And whether each isolated team's members could have copies of their
     // own (EO-867), as the publish path asks it.
     isolatedCopyProblems: isolatedCopyProblemsForPipeline(db, pipelineId, domainSteps),
@@ -337,6 +342,13 @@ export interface SettledStepSettings {
 export interface DraftTeams {
   /** Each team the draft writes, as `pipeline:save` takes it: the project's team of that name's id, or a new one. */
   saves: TeamSave[];
+  /**
+   * What only a draft can get wrong about its teams (EO-898): a leader or
+   * member named by an agent that is not the team's own — an ordinary
+   * agent, or another team's — which no team may have. Each a sentence
+   * saying to declare a new member instead.
+   */
+  problems: string[];
   /** The id a step's team name names: a team the draft writes, or the project's — or the name itself, which no team has, so the validator refuses it as missing. */
   idOf: (name: string) => string;
   /** A team, by id, as it runs, the draft's as Publish would write it. */
@@ -345,43 +357,81 @@ export interface DraftTeams {
   nameOf: (teamId: string | null) => string | null;
 }
 
+/** Two sets of instructions, read as the same where only line endings and the whitespace around them differ. */
+function sameText(a: string, b: string): boolean {
+  return a.replace(/\r\n/g, "\n").trim() === b.replace(/\r\n/g, "\n").trim();
+}
+
+/** A team's name, for a sentence: its id where EO has no such team. */
+function teamNamed(db: Db, teamId: string | null | undefined): string {
+  return teamId === null || teamId === undefined ? "another" : (getTeam(db, teamId)?.name ?? teamId);
+}
+
 /** For a caller with no teams to resolve: every name names nothing. */
-export const NO_DRAFT_TEAMS: DraftTeams = { saves: [], idOf: (name) => name, teamOf: () => null, nameOf: () => null };
+export const NO_DRAFT_TEAMS: DraftTeams = { saves: [], problems: [], idOf: (name) => name, teamOf: () => null, nameOf: () => null };
 
 /**
  * A draft's teams against the project's (EO-881). A draft team whose name
  * the project has changes that team (same id); any other is created under
  * a new id. Its agents are named by name: the team's own agent of that
- * name (EO-897), else bound as a step's are (`agentNamed`) and made the
- * team's own on Publish; a name nobody has is kept as written, so
- * `validateTeam` refuses it as an agent EO does not have.
+ * name (EO-897), else a member the team declares new (EO-898), which is
+ * given a stand-in id Publish replaces with the agent it creates. A name
+ * that binds to any other agent (`agentNamed`) — an ordinary one, or
+ * another team's — is refused, saying to declare a new member instead; a
+ * name nobody has is kept as written, so `validateTeam` refuses it as an
+ * agent EO does not have.
  */
 export function draftTeamsFor(db: Db, pipelineId: string, draft: Pick<DraftWithLimits, "teams">): DraftTeams {
   const { agents, projectId } = stepAgentsForPipeline(db, pipelineId);
+  const problems: string[] = [];
   const saves: TeamSave[] = (draft.teams ?? []).map((team) => {
+    const { newMembers: declared = [], ...rest } = team;
     const id = teamByName(db, projectId, team.name)?.id ?? uuidv7();
-    // A member is the team's own agent (EO-897): a name the team's own
-    // agent has names it; any other agent named is made the team's own
-    // when Publish saves the team (`ownedTeamDefinition`). A name nobody
-    // here has is kept as written, so the refusal names it.
     const own = agents.filter((agent) => agent.teamId === id && agent.deletedAt === null);
+    // Each member it declares new, under a stand-in id, taking its
+    // settings from the agent it names by name — kept as written where no
+    // agent has the name, so the refusal names it. One the team already
+    // has as its own — the same name, kind and instructions — is that
+    // agent, so a card read again once it is published changes nothing.
+    const already = (member: (typeof declared)[number]) =>
+      own.some((agent) => agent.archivedAt === null && agent.role === member.kind && agent.name.trim() === member.name.trim() && sameText(agent.instructions, member.instructions));
+    const newMembers: NewTeamAgent[] = declared.filter((member) => !already(member)).map(({ from, ...member }) => {
+      const base = from === undefined ? null : agentNamed(agents, from, projectId);
+      return { id: uuidv7(), ...member, ...(from === undefined ? {} : { fromAgentId: base === null || base === UNKNOWN_AGENT_ID ? from : base }) };
+    });
+    const refused = new Set<string>();
     const agentId = (name: string): string => {
       const mine = own.find((agent) => agent.name.trim() === name.trim());
       if (mine !== undefined) return mine.id;
+      const added = newMembers.find((member) => member.name.trim() === name.trim());
+      if (added !== undefined) return added.id;
       const bound = agentNamed(agents, name, projectId);
-      return bound === null || bound === UNKNOWN_AGENT_ID ? name : bound;
+      if (bound === null || bound === UNKNOWN_AGENT_ID) return name;
+      // A team's leader and members are its own agents (EO-897): an
+      // ordinary agent, or another team's, is never made one by a draft.
+      const agent = agents.find((one) => one.id === bound);
+      if (agent !== undefined && !refused.has(agent.id)) {
+        refused.add(agent.id);
+        const whose = isTeamOwned(agent) ? `the team "${teamNamed(db, agent.teamId)}"'s own agent` : "an ordinary agent";
+        problems.push(
+          `The team "${team.name}": "${agent.name.trim()}" is ${whose}, and a team's leader and members are agents of its own. ` +
+            `Declare a new member in the team's \`newMembers\` instead — its \`from\` may name "${agent.name.trim()}" to take its runtime, model and tools.`,
+        );
+      }
+      return bound;
     };
     const definition: TeamDefinition =
-      team.coordination === "leader"
-        ? { ...team, leader: { agentId: agentId(team.leader.agent), instructions: team.leader.instructions }, members: team.members.map((member) => ({ agentId: agentId(member.agent) })) }
-        : { ...team, members: team.members.map(({ agent, ...member }) => ({ ...member, agentId: agentId(agent) })) };
-    return { id, definition };
+      rest.coordination === "leader"
+        ? { ...rest, leader: { agentId: agentId(rest.leader.agent), instructions: rest.leader.instructions }, members: rest.members.map((member) => ({ agentId: agentId(member.agent) })) }
+        : { ...rest, members: rest.members.map(({ agent, ...member }) => ({ ...member, agentId: agentId(agent) })) };
+    return newMembers.length === 0 ? { id, definition } : { id, definition, newMembers };
   });
   const stored = listTeams(db, projectId);
   const read = teamReader(db, saves);
   const fold = teamNameKey;
   return {
     saves,
+    problems,
     idOf: (name) => saves.find((team) => fold(team.definition.name) === fold(name))?.id ?? stored.find((team) => fold(team.name) === fold(name))?.id ?? name,
     teamOf: read,
     nameOf: (teamId) => (teamId === null ? null : (saves.find((team) => team.id === teamId)?.definition.name ?? stored.find((team) => team.id === teamId)?.name ?? null)),
@@ -756,13 +806,16 @@ export function renderDraft(
 
   // Each declared team the draft creates or changes (EO-881), whole: what
   // Publish writes as a new team, or as the team's next version.
+  const newAgents = teamsForValidation(db, stepAgentsForPipeline(db, pipelineId).projectId, teams.saves).newAgents;
   const teamChanges = teams.saves.flatMap((save) => {
     const stored = listTeams(db, stepAgentsForPipeline(db, pipelineId).projectId).find((team) => team.id === save.id);
     if (stored !== undefined && !changesTeam(stored, save.definition)) return [];
     const runs = teams.teamOf(save.id);
     return [
       `- ${stored === undefined ? "New" : "Changed"}: ${declaredTeamLine(save.definition)}`,
-      ...declaredTeamMemberLines(save.definition, agents).map((line) => `  - ${line}`),
+      ...declaredTeamMemberLines(save.definition, [...agents, ...newAgents]).map((line) => `  - ${line}`),
+      // Each member Publish creates for the team (EO-898), said to be new.
+      ...newAgents.filter((agent) => agent.teamId === save.id).map((agent) => `  - ${newMemberLine(agent)}`),
       ...(runs === null ? [] : teamLines(runs, "  ").filter((line) => !line.includes("Member: "))),
       `  - Tool pool: ${poolWords(save.definition)}`,
       `  - Model range: ${rangeWords(save.definition)}`,
@@ -1057,6 +1110,18 @@ function declaredTeamMemberLines(team: TeamDefinition, agents: readonly Agent[])
     return [`Leader: ${name(team.leader.agentId)} — ${team.leader.instructions}`, `Members: ${team.members.map((member) => name(member.agentId)).join(", ")}`];
   }
   return team.members.map((member) => `Member ${member.key}: ${name(member.agentId)}, ${member.required ? "required" : "optional"} — ${member.instructions}`);
+}
+
+/**
+ * A member a draft declares that does not exist yet (EO-898), as Publish
+ * would create it: its name, said to be new, its kind, its runtime and
+ * model, and the first line of its instructions.
+ */
+function newMemberLine(agent: Agent): string {
+  const firstLine = agent.instructions.trim().split(/\r?\n/).find((line) => line.trim() !== "")?.trim() ?? "";
+  const runtime = agent.provider === "" ? "no runtime" : agent.provider;
+  const model = agent.model === null ? "its default model" : `model ${agent.model}`;
+  return `New member: ${agent.name} (new), a ${agent.role} agent on ${runtime}, ${model} — ${firstLine}`;
 }
 
 /** A team's tool pool in a line: "nothing" where it offers none. */

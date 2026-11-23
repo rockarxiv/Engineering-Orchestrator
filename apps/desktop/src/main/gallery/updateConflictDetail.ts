@@ -1,4 +1,8 @@
 import {
+  type AssistDraftTeam,
+  exportedTeamAgents,
+  isExportedTeam,
+  type ExportedTeam,
   documentStepTeam,
   boardDocument,
   documentSteps,
@@ -40,6 +44,9 @@ import {
 } from "../db/repos/index.js";
 import { isTemplateDocument, templateBoardHolders, type TemplateDocument } from "../db/repos/pipelineOriginsRepo.js";
 import { savePipeline } from "../ipc/configCommands.js";
+import { listAgents } from "../db/repos/agentsRepo.js";
+import { agentToolSurfaces, freeTeamName } from "../db/repos/teamsRepo.js";
+import { agentNamedForKind, kindCandidates } from "../stepAgents.js";
 import type { TemplateVersion } from "./history.js";
 import { compareWithTemplate, conflictStepNames, describeConflicts, FIELD_WORDS, heldByTheRecord, pointRoutesWaitingOn, type KindedStep, type PipelineComparison } from "./templateUpdates.js";
 
@@ -138,6 +145,7 @@ export function describeUpdateConflict(db: Db, pipelineId: string, place: Confli
       problems: conflict.problems,
       takenStepIds,
       linkedSteps: linkedSteps(db, pipelineId, compared),
+      templateTeams: templateTeamsOf(db, pipelineId, compared, stepName),
       chatId: conflict.chatId,
       edits: editsSinceBase(db, pipelineId, conflict),
     },
@@ -171,6 +179,64 @@ function linkedSteps(db: Db, pipelineId: string, compared: PipelineComparison): 
     }
   }
   return linked;
+}
+
+/**
+ * Each declared team the held version gives a step that the pipeline does
+ * not run as (EO-898), as a draft takes it (`UpdateConflictDetail.templateTeams`).
+ */
+function templateTeamsOf(db: Db, pipelineId: string, compared: PipelineComparison, stepName: (id: string) => string): UpdateConflictDetail["templateTeams"] {
+  return compared.merge.comparison.changes.flatMap((change) => {
+    const { key } = change;
+    if (key.kind !== "setting" || key.field !== "team") return [];
+    const template = change.template as ExportedTeam | null | undefined;
+    if (template === null || template === undefined || !isExportedTeam(template)) return [];
+    return [{ stepId: key.stepId, stepName: stepName(key.stepId), team: draftTeamOfTemplate(db, pipelineId, template) }];
+  });
+}
+
+/**
+ * A template's declared team as a draft declares it, every agent new
+ * (EO-898): each takes its runtime, model and tools from the agent of its
+ * kind this pipeline's steps name — else the project's agent of the kind —
+ * and the pool is those agents' tools, the installation's, as an update
+ * keeps it (EO-885). Named as the template names it, numbered where the
+ * project has a team of that name.
+ */
+function draftTeamOfTemplate(db: Db, pipelineId: string, team: ExportedTeam): AssistDraftTeam {
+  const projectId = getPipeline(db, pipelineId)?.projectId ?? null;
+  const roster = listAgents(db);
+  const steps = listStepsForPipeline(db, pipelineId);
+  const baseOf = (kind: string) => agentNamedForKind(roster, steps, kind) ?? kindCandidates(roster, kind, projectId)[0];
+  const parts = exportedTeamAgents(team).map((part) => ({ part, base: baseOf(part.kind) }));
+  const bases = [...new Set(parts.flatMap(({ base }) => (base === undefined ? [] : [base.id])))];
+  const surfaces = Object.values(agentToolSurfaces(db, bases));
+  const union = (pick: (surface: (typeof surfaces)[number]) => readonly string[]) => [...new Set(surfaces.flatMap(pick))].sort();
+  const shared = {
+    name: freeTeamName(db, projectId, team.name),
+    memberMode: team.memberMode,
+    toolPool: { cliTools: union((surface) => surface.cliTools), mcpServers: union((surface) => surface.mcpServers), skills: union((surface) => surface.skills) },
+    modelRange: team.modelRange,
+    memberCap: team.memberCap,
+    newMembers: parts.map(({ part, base }) => ({ name: part.name.trim(), kind: part.kind, instructions: part.instructions, ...(base === undefined ? {} : { from: base.name.trim() }) })),
+  };
+  return team.coordination === "leader"
+    ? {
+        coordination: "leader",
+        ...shared,
+        leader: { agent: team.leader.name.trim(), instructions: team.leader.teamInstructions },
+        members: team.members.map((member) => ({ agent: member.name.trim() })),
+        outcomes: team.outcomes,
+        limits: team.limits,
+      }
+    : {
+        coordination: "independent",
+        ...shared,
+        members: team.members.map((member) => ({ key: member.key, agent: member.name.trim(), instructions: member.teamInstructions, required: member.required })),
+        outcomes: team.outcomes,
+        completion: team.completion,
+        limits: team.limits,
+      };
 }
 
 /** The held template version, as the comparison takes it, or null where its snapshot can no longer be read. */

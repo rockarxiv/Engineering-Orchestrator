@@ -700,6 +700,50 @@ exports[`the JSON Schema each provider receives > is unchanged for assist (undef
                               ],
                               "additionalProperties": false
                             }
+                          },
+                          "newMembers": {
+                            "maxItems": 17,
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "name": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 120
+                                },
+                                "kind": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "instructions": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "runtime": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "model": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "reasoning": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "from": {
+                                  "type": "string",
+                                  "minLength": 1
+                                }
+                              },
+                              "required": [
+                                "name",
+                                "kind",
+                                "instructions"
+                              ],
+                              "additionalProperties": false
+                            }
                           }
                         },
                         "required": [
@@ -906,6 +950,50 @@ exports[`the JSON Schema each provider receives > is unchanged for assist (undef
                               },
                               "required": [
                                 "agent"
+                              ],
+                              "additionalProperties": false
+                            }
+                          },
+                          "newMembers": {
+                            "maxItems": 17,
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "name": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 120
+                                },
+                                "kind": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "instructions": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "runtime": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "model": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "reasoning": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "from": {
+                                  "type": "string",
+                                  "minLength": 1
+                                }
+                              },
+                              "required": [
+                                "name",
+                                "kind",
+                                "instructions"
                               ],
                               "additionalProperties": false
                             }
@@ -1531,6 +1619,50 @@ exports[`the JSON Schema each provider receives > is unchanged for assist (undef
                                 ],
                                 "additionalProperties": false
                               }
+                            },
+                            "newMembers": {
+                              "maxItems": 17,
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "name": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 120
+                                  },
+                                  "kind": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  },
+                                  "instructions": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  },
+                                  "runtime": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  },
+                                  "model": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  },
+                                  "reasoning": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  },
+                                  "from": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  }
+                                },
+                                "required": [
+                                  "name",
+                                  "kind",
+                                  "instructions"
+                                ],
+                                "additionalProperties": false
+                              }
                             }
                           },
                           "required": [
@@ -1737,6 +1869,50 @@ exports[`the JSON Schema each provider receives > is unchanged for assist (undef
                                 },
                                 "required": [
                                   "agent"
+                                ],
+                                "additionalProperties": false
+                              }
+                            },
+                            "newMembers": {
+                              "maxItems": 17,
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "name": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 120
+                                  },
+                                  "kind": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  },
+                                  "instructions": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  },
+                                  "runtime": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  },
+                                  "model": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  },
+                                  "reasoning": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  },
+                                  "from": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  }
+                                },
+                                "required": [
+                                  "name",
+                                  "kind",
+                                  "instructions"
                                 ],
                                 "additionalProperties": false
                               }
