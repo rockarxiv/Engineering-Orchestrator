@@ -31,6 +31,7 @@ import {
   type SessionTeam,
   type TeamAttemptRow,
   type TeamEvidenceBaseline,
+  type MemberAdditionOffer,
   type TeamMemberFacts,
   type TeamOutcome,
   type TeamSessionRow,
@@ -58,6 +59,7 @@ import type { Db } from "../db/client.js";
 import { getAgent } from "../db/repos/agentsRepo.js";
 import { getComment, listCommentsForItem, postComment } from "../db/repos/commentsRepo.js";
 import { getItem } from "../db/repos/itemsRepo.js";
+import { getTeam } from "../db/repos/teamsRepo.js";
 import { createRunEventBuffer } from "../db/repos/runEventBuffer.js";
 import { createRun, getRun, listActiveParticipantRuns, listRunsForItem, updateRun } from "../db/repos/runsRepo.js";
 import {
@@ -86,6 +88,7 @@ import { captureTeamEvidence, type MemberCopy, type TeamEvidence } from "./teamE
 import { reportOnlyCredential, type TeamParticipantScopes, type ThreadBoundary } from "./teamParticipants.js";
 import type { TurnDrive, TurnOutcome } from "./turnOutcome.js";
 import { createUsageTally } from "./usageTally.js";
+import { addLeaderMembers, memberAddedNote, memberAdditionOffer, type AddedMember } from "./teamAdditions.js";
 import type { PreparedWorkspace, WorkspaceKind } from "./workspaceKind.js";
 
 /**
@@ -333,6 +336,13 @@ interface LiveParticipant {
   done: Promise<void>;
 }
 
+/** Thrown to roll back a leader's answer whose members were being added (EO-883), carrying what the turn comes to instead. */
+class LeaderTurnNotKept extends Error {
+  constructor(readonly outcome: TakeResult) {
+    super("The leader's answer was not kept.");
+  }
+}
+
 /** What EO makes of a turn's answer once the turn has ended. */
 type TakeResult =
   /** Taken: the run keeps `result`. */
@@ -430,6 +440,8 @@ interface LeaderTurnRecord {
   value?: unknown;
   /** On an accepted final answer: the declared result it is (EO-868), which a pack's action may name otherwise than `result`. */
   resultKey?: string;
+  /** On a request for work: the agents EO added to the team for it (EO-883), which the session's later turns offer as members too. */
+  added?: string[];
 }
 
 function leaderRecordOf(db: Db, attempt: TeamAttemptRow): LeaderTurnRecord | null {
@@ -590,11 +602,12 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
    * that is gone altogether is left out; one that cannot run now is still
    * named, and refused, saying why, when it is assigned.
    */
-  function membersOf(team: SessionLeaderTeam, item: Item): { facts: TeamMemberFacts[]; members: LeaderTeamMember[] } {
+  function membersOf(team: SessionLeaderTeam, item: Item, added: readonly string[] = []): { facts: TeamMemberFacts[]; members: LeaderTeamMember[] } {
     // Only those who could take an assignment on this item: a member
     // disabled, archived or deleted since the team was published, or a
-    // preview's agent on a real item, is not offered to the leader.
-    const agents = (team.memberAgentIds ?? []).flatMap((agentId) => {
+    // preview's agent on a real item, is not offered to the leader. The
+    // members its leader added in this session (EO-883) are members too.
+    const agents = [...new Set([...(team.memberAgentIds ?? []), ...added])].flatMap((agentId) => {
       const agent = getAgent(db, agentId as Uuid);
       return agent === undefined || agent.deletedAt !== null || !isDispatchable(agent) || !staffsItem(agent, item) ? [] : [agent];
     });
@@ -617,6 +630,11 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
   function agentWords(agentId: string | undefined, kind: string): string {
     const agent = agentId === undefined ? undefined : getAgent(db, agentId as Uuid);
     return agent === undefined ? `a ${kind} agent` : `${agent.name}, a ${agent.role} agent`;
+  }
+
+  /** The agents a session's leader added to its team (EO-883), from what EO kept of its turns. */
+  function addedInSession(attempts: readonly TeamAttemptRow[]): string[] {
+    return attempts.flatMap((attempt) => (attempt.assignmentKey === LEADER_ASSIGNMENT_KEY && attempt.status === "completed" ? (leaderRecordOf(db, attempt)?.added ?? []) : []));
   }
 
   /** Ends what a participant's run left running, as EO stopping it — not a failure and not a finding. */
@@ -1532,7 +1550,9 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
         const exchange = exchangeOf(item.id, attempts, previous);
         const reportIds = ledger.contributions.flatMap((one) => (one.reportId === null ? [] : [one.reportId]));
         const leaderIds = attempts.flatMap((attempt) => (attempt.assignmentKey === LEADER_ASSIGNMENT_KEY && attempt.reportCommentId !== null ? [attempt.reportCommentId] : []));
-        const roster = membersOf(teamNow, getItem(db, item.id) ?? item);
+        const roster = membersOf(teamNow, getItem(db, item.id) ?? item, addedInSession(attempts));
+        // What the leader may add a member from (EO-883): the team as a person declared it now.
+        const offer = memberAdditionOffer(db, step.teamId);
         return startTurn({
           key: LEADER_ASSIGNMENT_KEY,
           agentId: teamNow.leader.agentId,
@@ -1546,8 +1566,8 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
           boundary: () => ({ visibleThrough, exposedCommentIds: [...reportIds, ...leaderIds, ...exchange.ids] }),
           turn: (attempt, agent) => ({
             instructions: leaderInstructions(agent, step, teamNow),
-            context: leaderContext(teamNow, roster.facts, start, previous, attempts, states, ledger, exchange.lines),
-            outputSchema: leaderTurnSchema(roster.facts, input.answer!.document!),
+            context: leaderContext(teamNow, roster.facts, offer, start, previous, attempts, states, ledger, exchange.lines),
+            outputSchema: leaderTurnSchema(roster.facts, input.answer!.document!, offer),
             accepts: (raw) => readLeaderAnswer(raw).kind !== "invalid",
             take: takeLeader(teamNow, attempt, roster.members),
           }),
@@ -1567,87 +1587,139 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
           const read = readLeaderAnswer(answer);
           if (read.kind === "invalid") return { kind: "failed", error: read.error };
           if (read.kind === "asked") return { kind: "asked", asked: read.asked };
-          const states: LeaderAttemptState[] = listTeamAttempts(db, sessionId).map((one) => ({
-            id: one.id,
-            key: one.assignmentKey,
-            status: one.status,
-            supersededBy: one.supersededBy,
-            outcome: one.outcome,
-            report: null,
-            error: one.error,
-            baseline: evidenceContentKey(one.evidenceBaseline),
-            live: false,
-            round: one.round,
-            reportId: one.reportCommentId,
-            verdict: one.assignmentKey === LEADER_ASSIGNMENT_KEY && one.status === "completed" ? (leaderRecordOf(db, one)?.verdict ?? null) : null,
-          }));
-          const ledger = leaderLedger(states, currentKey);
-          let record: LeaderTurnRecord;
-          let words: string;
-          let refusal: string | null = null;
-          if (read.kind === "assign") {
-            const verdict = checkLeaderAssignments(teamNow, ledger, read.request.assignments, members);
-            record = { leader: true, answer, verdict };
-            const known = new Set(ledger.keys);
-            words = [
-              verdict.accepted.length === 0 ? `Asked for round ${attempt.round} of work; EO accepted none of it.` : `Assigns round ${attempt.round}:`,
-              ...verdict.accepted.map((one) => `- **${one.key}** (${one.member}, ${one.role}${one.required ? "" : ", optional"}${known.has(one.key) ? ", follow-up" : ""}): ${one.instructions}`),
-              ...(read.request.note.trim() === "" ? [] : ["", read.request.note.trim()]),
-            ].join("\n");
-            if (verdict.refused.length > 0) {
-              refusal = `EO refused ${verdict.refused.length === 1 ? "an assignment" : `${verdict.refused.length} assignments`} the leader asked for:\n\n${verdict.refused.map((one) => `- **${one.key}**: ${one.reason}`).join("\n")}`;
+          // Members it adds (EO-883) are created with what keeps its answer,
+          // in one transaction: an answer that turns out late, or was already
+          // taken, creates nothing.
+          if (read.kind === "assign" && read.request.newMembers.length > 0) {
+            let taken: ReturnType<TurnSpec["take"]> | null = null;
+            let announced: AddedMember[] = [];
+            try {
+              db.transaction(() => {
+                const additions = addLeaderMembers(db, { teamId: step.teamId, leaderAgentId: teamNow.leader.agentId ?? "", itemId: item.id, additions: read.request.newMembers, now: at });
+                const roster = [...members, ...additions.added.map(({ agent }) => ({ agentId: agent.id, name: agent.name, role: agent.role }))];
+                const result = keepLeader(teamNow, attempt, roster, read, answer, runId, at, appendix, additions);
+                // Late, or taken already before a restart: what it kept then stands, and nothing is added twice.
+                if (result.kind !== "accepted" || result.duplicate) throw new LeaderTurnNotKept(result.duplicate ? { kind: "accepted", result: getRun(db, runId)?.result ?? null } : result.outcome);
+                taken = result.outcome;
+                announced = additions.added;
+              });
+            } catch (error) {
+              if (!(error instanceof LeaderTurnNotKept)) throw error;
+              return error.outcome;
             }
-          } else {
-            const problems = leaderFinalProblems(ledger, states, read.final.contributions);
-            // The result key first, said as such: a key the action does
-            // not declare would route nowhere, whatever else is right.
-            const declared = input.answer!.results;
-            const resultOf = input.answer!.resultOf ?? reportedResult;
-            const undeclared = (result: string | null): string | null => {
-              if (result === null) return null;
-              return declared.includes(result) ? null : `Its result "${result}" is not one "${step.entryAction ?? ""}" declares (${declared.join(", ")}).`;
-            };
-            let value: unknown = undefined;
-            let resultKey: string | null = null;
-            const raw = undeclared(reportedResult(read.final.answer));
-            if (raw !== null) problems.push(raw);
+            const teamName = (step.teamId === null ? undefined : getTeam(db, step.teamId)?.name) ?? step.name;
+            const leaderName = getAgent(db, (teamNow.leader.agentId ?? "") as Uuid)?.name ?? "The team's leader";
+            for (const member of announced) note(item, parentRunId, memberAddedNote(teamName, leaderName, member));
+            return taken!;
+          }
+          return keepLeader(teamNow, attempt, members, read, answer, runId, at, appendix, null).outcome;
+        };
+      }
+
+      /**
+       * Keeps what EO made of a leader's answer: on its run, then as its
+       * comment, with a note of what EO refused — the members it asked to
+       * add among them (EO-883).
+       */
+      function keepLeader(
+        teamNow: SessionLeaderTeam,
+        attempt: TeamAttemptRow,
+        members: readonly LeaderTeamMember[],
+        read: Extract<ReturnType<typeof readLeaderAnswer>, { kind: "assign" | "final" }>,
+        answer: unknown,
+        runId: Uuid,
+        at: number,
+        appendix: string | null,
+        additions: { added: AddedMember[]; refused: { key: string; reason: string }[] } | null,
+      ): { kind: "accepted" | "late"; duplicate: boolean; outcome: ReturnType<TurnSpec["take"]> } {
+        const states: LeaderAttemptState[] = listTeamAttempts(db, sessionId).map((one) => ({
+          id: one.id,
+          key: one.assignmentKey,
+          status: one.status,
+          supersededBy: one.supersededBy,
+          outcome: one.outcome,
+          report: null,
+          error: one.error,
+          baseline: evidenceContentKey(one.evidenceBaseline),
+          live: false,
+          round: one.round,
+          reportId: one.reportCommentId,
+          verdict: one.assignmentKey === LEADER_ASSIGNMENT_KEY && one.status === "completed" ? (leaderRecordOf(db, one)?.verdict ?? null) : null,
+        }));
+        const ledger = leaderLedger(states, currentKey);
+        let record: LeaderTurnRecord;
+        let words: string;
+        let refusal: string | null = null;
+        if (read.kind === "assign") {
+          const checked = checkLeaderAssignments(teamNow, ledger, read.request.assignments, members);
+          // A member EO would not add is said with the assignments it refused, and the leader's next turn is told why.
+          const verdict = { ...checked, refused: [...(additions?.refused ?? []), ...checked.refused] };
+          record = { leader: true, answer, verdict, ...(additions === null || additions.added.length === 0 ? {} : { added: additions.added.map(({ agent }) => agent.id) }) };
+          const known = new Set(ledger.keys);
+          words = [
+            verdict.accepted.length === 0 ? `Asked for round ${attempt.round} of work; EO accepted none of it.` : `Assigns round ${attempt.round}:`,
+            ...verdict.accepted.map((one) => `- **${one.key}** (${one.member}, ${one.role}${one.required ? "" : ", optional"}${known.has(one.key) ? ", follow-up" : ""}): ${one.instructions}`),
+            ...(read.request.note.trim() === "" ? [] : ["", read.request.note.trim()]),
+          ].join("\n");
+          if (verdict.refused.length > 0) {
+            const what =
+              (additions?.refused.length ?? 0) === 0
+                ? `${verdict.refused.length === 1 ? "an assignment" : `${verdict.refused.length} assignments`} the leader asked for`
+                : `${verdict.refused.length === 1 ? "something" : `${verdict.refused.length} things`} the leader asked for`;
+            refusal = `EO refused ${what}:\n\n${verdict.refused.map((one) => `- **${one.key}**: ${one.reason}`).join("\n")}`;
+          }
+        } else {
+          const problems = leaderFinalProblems(ledger, states, read.final.contributions);
+          // The result key first, said as such: a key the action does
+          // not declare would route nowhere, whatever else is right.
+          const declared = input.answer!.results;
+          const resultOf = input.answer!.resultOf ?? reportedResult;
+          const undeclared = (result: string | null): string | null => {
+            if (result === null) return null;
+            return declared.includes(result) ? null : `Its result "${result}" is not one "${step.entryAction ?? ""}" declares (${declared.join(", ")}).`;
+          };
+          let value: unknown = undefined;
+          let resultKey: string | null = null;
+          const raw = undeclared(reportedResult(read.final.answer));
+          if (raw !== null) problems.push(raw);
+          else {
+            const checked = input.answer!.validate(read.final.answer);
+            const key = checked.ok ? resultOf(checked.value) : null;
+            if (!checked.ok) problems.push(`Its answer is not a valid "${step.entryAction ?? ""}" answer: ${checked.error}`);
+            else if (key === null) problems.push(`Its answer names no result, and "${step.entryAction ?? ""}" needs one of ${declared.join(", ")}.`);
             else {
-              const checked = input.answer!.validate(read.final.answer);
-              const key = checked.ok ? resultOf(checked.value) : null;
-              if (!checked.ok) problems.push(`Its answer is not a valid "${step.entryAction ?? ""}" answer: ${checked.error}`);
-              else if (key === null) problems.push(`Its answer names no result, and "${step.entryAction ?? ""}" needs one of ${declared.join(", ")}.`);
+              const after = undeclared(key);
+              if (after !== null) problems.push(after);
               else {
-                const after = undeclared(key);
-                if (after !== null) problems.push(after);
-                else {
-                  value = checked.value;
-                  resultKey = key;
-                }
+                value = checked.value;
+                resultKey = key;
               }
             }
-            // A result its own reports rule out (EO-873), by what the
-            // team declares, unless the leader says which it overruled.
-            if (resultKey !== null) problems.push(...ruledOutProblems(teamNow.outcomes, ledger.contributions, resultKey, read.final.disagreements));
-            const verdict: LeaderVerdict = { decision: "final", accepted: problems.length === 0, problems, contributions: read.final.contributions };
-            record = { leader: true, answer, verdict, ...(verdict.accepted ? { value, ...(resultKey === null ? {} : { resultKey }) } : {}) };
-            const summary = (read.final.answer as { summary?: unknown } | null)?.summary;
-            words = [
-              `Answers the step${(resultKey ?? reportedResult(read.final.answer)) === null ? "" : ` — ${resultKey ?? reportedResult(read.final.answer)}`}`,
-              "",
-              typeof summary === "string" ? summary : JSON.stringify(read.final.answer),
-              "",
-              `**Relies on:** ${read.final.contributions.length === 0 ? "nothing named" : read.final.contributions.join(", ")}`,
-              `**Disagreements:** ${read.final.disagreements}`,
-              `**Limitations:** ${read.final.limitations}`,
-            ].join("\n");
-            if (!verdict.accepted) refusal = `EO did not accept the leader's final answer:\n\n${problems.map((problem) => `- ${problem}`).join("\n")}`;
           }
-          updateRun(db, runId, { result: record as unknown as Record<string, unknown> });
-          const accepted = acceptTeamReport(db, { attemptId: attempt.id, outcome: null, report: appendix === null ? words : `${words}\n\n${appendix}`, now: at });
-          if (!accepted.ok) return { kind: "late", problem: accepted.problem };
-          if (refusal !== null) note(item, parentRunId, refusal);
-          return { kind: "accepted", result: record };
-        };
+          // A result its own reports rule out (EO-873), by what the
+          // team declares, unless the leader says which it overruled.
+          if (resultKey !== null) problems.push(...ruledOutProblems(teamNow.outcomes, ledger.contributions, resultKey, read.final.disagreements));
+          const verdict: LeaderVerdict = { decision: "final", accepted: problems.length === 0, problems, contributions: read.final.contributions };
+          record = { leader: true, answer, verdict, ...(verdict.accepted ? { value, ...(resultKey === null ? {} : { resultKey }) } : {}) };
+          const summary = (read.final.answer as { summary?: unknown } | null)?.summary;
+          words = [
+            `Answers the step${(resultKey ?? reportedResult(read.final.answer)) === null ? "" : ` — ${resultKey ?? reportedResult(read.final.answer)}`}`,
+            "",
+            typeof summary === "string" ? summary : JSON.stringify(read.final.answer),
+            "",
+            `**Relies on:** ${read.final.contributions.length === 0 ? "nothing named" : read.final.contributions.join(", ")}`,
+            `**Disagreements:** ${read.final.disagreements}`,
+            `**Limitations:** ${read.final.limitations}`,
+          ].join("\n");
+          if (!verdict.accepted) refusal = `EO did not accept the leader's final answer:\n\n${problems.map((problem) => `- ${problem}`).join("\n")}`;
+        }
+        updateRun(db, runId, { result: record as unknown as Record<string, unknown> });
+        const accepted = acceptTeamReport(db, { attemptId: attempt.id, outcome: null, report: appendix === null ? words : `${words}\n\n${appendix}`, now: at });
+        if (!accepted.ok) return { kind: "late", duplicate: false, outcome: { kind: "late", problem: accepted.problem } };
+        // Taken already, before a restart: said then, not again.
+        if (accepted.duplicate) return { kind: "accepted", duplicate: true, outcome: { kind: "accepted", result: record } };
+        if (refusal !== null) note(item, parentRunId, refusal);
+        return { kind: "accepted", duplicate: false, outcome: { kind: "accepted", result: record } };
       }
     } finally {
       parents.delete(parentRunId);
@@ -1693,6 +1765,7 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
     function leaderContext(
       teamNow: SessionLeaderTeam,
       members: readonly TeamMemberFacts[],
+      offer: MemberAdditionOffer | null,
       start: TeamStart,
       previous: TeamAttemptRow | undefined,
       attempts: readonly TeamAttemptRow[],
@@ -1725,6 +1798,7 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
         "",
         ...(members.length === 0 ? ["- none EO can run"] : members.map((member) => `- ${teamMemberLine(member)}`)),
         "",
+        ...additionLines(offer),
         `Rounds used: ${ledger.roundsUsed} of ${teamNow.limits.maxRounds}. Participants: ${ledger.keys.length} of ${teamNow.limits.maxParticipants}.`,
         ...(teamNow.outcomes.length === 0 ? [] : ["", "Each participant reports one of these outcomes:", "", ...outcomeLines(teamNow.outcomes), ...rulesOutLines(teamNow.outcomes)]),
         "",
@@ -1735,7 +1809,7 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
       const lastRecord = previous === undefined || previous.status !== "completed" ? null : leaderRecordOf(db, previous);
       if (lastRecord?.verdict.decision === "final" && !lastRecord.verdict.accepted) lines.push("", "Why EO refused your final answer:", "", ...lastRecord.verdict.problems.map((problem) => `- ${problem}`));
       if (lastRecord?.verdict.decision === "assign" && lastRecord.verdict.refused.length > 0) {
-        lines.push("", "Assignments EO refused:", "", ...lastRecord.verdict.refused.map((one) => `- **${one.key}**: ${one.reason}`));
+        lines.push("", "What EO refused of your last request:", "", ...lastRecord.verdict.refused.map((one) => `- **${one.key}**: ${one.reason}`));
       }
       if (previous?.status === "failed" && previous.error !== null) lines.push("", `What went wrong: ${previous.error}`);
       lines.push("", "## The assignments and their reports", "");
@@ -1847,6 +1921,19 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
 }
 
 /** Why an assignment waits for room: the team's own limit, the only one its turns answer to (EO-871). */
+/**
+ * What a leader is told of adding a member (EO-883): when it may, from
+ * what; or that it may not, so it never asks for what EO would refuse.
+ */
+function additionLines(offer: MemberAdditionOffer | null): string[] {
+  if (offer === null) return ["Your team cannot take a member you add: it is locked, at its member cap, or declares no runtime, model or reasoning a new member could run on.", ""];
+  const names = (list: readonly string[]) => (list.length === 0 ? "none" : list.map((one) => `\`${one}\``).join(", "));
+  return [
+    `When none of your members fits a piece of work, you may add one in \`newMembers\` and assign to it by name in the same answer — at most ${offer.room} more. EO creates it as a real agent and adds it to your team for good, so add one only when you need to. Its kind is one of ${names(offer.kinds)}. Its tools come only from your team's pool — CLI tools ${names(offer.pool.cliTools)}; MCP servers ${names(offer.pool.mcpServers)}; skills ${names(offer.pool.skills)} — and it runs on a runtime of ${names(offer.range.runtimes)}, a model of ${names(offer.range.models)} and reasoning of ${names(offer.range.reasoning)}. EO refuses anything else, and a name another agent already has.`,
+    "",
+  ];
+}
+
 function waitWords(_reason: TeamWaitReason, team: SessionTeam): string {
   return `the team runs ${team.limits.maxParallel} participant${team.limits.maxParallel === 1 ? "" : "s"} at a time, and that many are working. It starts as one finishes.`;
 }
