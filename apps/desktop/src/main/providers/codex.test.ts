@@ -1658,6 +1658,7 @@ describe("createCodexProvider", () => {
         toolPool: { cliTools: null, mcpServers: ["github"], skills: null },
         modelRange: null,
         memberCap: null,
+        newMembers: null,
       };
       const codex = structuredClone(ASSIST_ANSWER_WITH_MAPS.codex) as unknown as { outcome: { draft: { teams: unknown; steps: { team: unknown }[] } } };
       codex.outcome.draft.teams = [strictTeam];
@@ -1713,6 +1714,7 @@ describe("createCodexProvider", () => {
         toolPool: null,
         modelRange: { runtimes: ["claude", "codex"], models: null, reasoning: null },
         memberCap: 3,
+        newMembers: null,
       };
       const codex = structuredClone(ASSIST_ANSWER_WITH_MAPS.codex) as unknown as { outcome: { draft: { teams: unknown } } };
       codex.outcome.draft.teams = [strictTeam];
@@ -1743,6 +1745,53 @@ describe("createCodexProvider", () => {
       expect(team?.outcomes).toEqual([
         { key: "clear", label: "Clear", meaning: "" },
         { key: "blocking", label: "Blocking", meaning: "", rulesOut: ["approved"] },
+      ]);
+    });
+
+    it("gives the same new members a draft's team declares as a Claude answer, a member's settings left out where Codex says null (EO-898)", async () => {
+      const strictTeam = {
+        name: "Review leads",
+        coordination: "leader",
+        memberMode: null,
+        leader: { agent: "Lead reviewer", instructions: "Split the review." },
+        members: [{ agent: "Security reviewer" }],
+        outcomes: [],
+        limits: { maxParticipants: null, maxParallel: null, maxRetries: null, maxRounds: null, timeoutMs: null, budgetCents: null },
+        toolPool: null,
+        modelRange: null,
+        memberCap: null,
+        newMembers: [
+          { name: "Lead reviewer", kind: "reviewer", instructions: "You lead the review.", runtime: null, model: null, reasoning: null, from: "Reviewer" },
+          { name: "Security reviewer", kind: "reviewer", instructions: "You look for auth gaps.", runtime: "codex", model: "gpt-5.5", reasoning: "high", from: null },
+        ],
+      };
+      const codex = structuredClone(ASSIST_ANSWER_WITH_MAPS.codex) as unknown as { outcome: { draft: { teams: unknown } } };
+      codex.outcome.draft.teams = [strictTeam];
+      const strict = jsonSchemaOutputSchema(strictCodexOutputSchema(assistSchema())).parse(codex);
+      expect(strict.ok ? [] : strict.issues).toEqual([]);
+
+      const claude = structuredClone(ASSIST_ANSWER_WITH_MAPS.claude) as unknown as { outcome: { draft: { teams?: unknown } } };
+      claude.outcome.draft.teams = [
+        {
+          name: "Review leads",
+          coordination: "leader",
+          leader: { agent: "Lead reviewer", instructions: "Split the review." },
+          members: [{ agent: "Security reviewer" }],
+          newMembers: [
+            { name: "Lead reviewer", kind: "reviewer", instructions: "You lead the review.", from: "Reviewer" },
+            { name: "Security reviewer", kind: "reviewer", instructions: "You look for auth gaps.", runtime: "codex", model: "gpt-5.5", reasoning: "high" },
+          ],
+        },
+      ];
+
+      const fromCodex = validateActionResult(registry, "assist", await answerFromCodex(codex));
+      const fromClaude = validateActionResult(registry, "assist", claude);
+      expect(fromClaude.ok).toBe(true);
+      expect(fromCodex).toEqual(fromClaude);
+      const team = fromCodex.ok ? (fromCodex.value as { draft: { teams?: { newMembers?: unknown[] }[] } }).draft.teams?.[0] : undefined;
+      expect(team?.newMembers).toEqual([
+        { name: "Lead reviewer", kind: "reviewer", instructions: "You lead the review.", from: "Reviewer" },
+        { name: "Security reviewer", kind: "reviewer", instructions: "You look for auth gaps.", runtime: "codex", model: "gpt-5.5", reasoning: "high" },
       ]);
     });
 
