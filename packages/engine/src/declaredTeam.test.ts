@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { developerRegistry, TeamDefinitionSchema, type ActionFacts, type RegistryFacts, type TeamDefinition } from "@eo/core";
-import { declaredTeamProblems, validateTeam, type TeamAgentFacts } from "./declaredTeam.js";
+import { developerRegistry, NewTeamMemberSchema, TeamDefinitionSchema, type ActionFacts, type RegistryFacts, type TeamDefinition } from "@eo/core";
+import { checkMemberAdditions, declaredTeamProblems, validateTeam, type TeamAgentFacts } from "./declaredTeam.js";
 
 const agents: TeamAgentFacts[] = [
   { id: "lead", name: "Lead reviewer", role: "reviewer" },
@@ -116,5 +116,59 @@ describe("declaredTeamProblems (EO-881)", () => {
     expect(declaredTeamProblems([step], { projectId: "p1", registry, teams: facts(leader({ memberMode: "isolated" })), agents, reportOnly })).toEqual([]);
     // A team judged on its own, as a draft's team is, is not held to whether its agents run now.
     expect(validateTeam(leader(), { agents: retired })).toEqual([]);
+  });
+});
+
+describe("checkMemberAdditions (EO-883)", () => {
+  const ranged = (overrides: Partial<Record<string, unknown>> = {}) =>
+    leader({ modelRange: { runtimes: ["claude", "codex"], models: ["gpt-5"], reasoning: ["high"] }, memberCap: 3, ...overrides });
+  const ask = (overrides: Record<string, unknown> = {}) =>
+    NewTeamMemberSchema.parse({ name: "Nell", kind: "tester", instructions: "Read CSV.", tools: { cliTools: ["gh"], mcpServers: ["github"], skills: ["triage"] }, runtime: "codex", model: "gpt-5", reasoning: "high", ...overrides });
+  const context = { locked: false, memberKinds: ["reviewer", "tester"], nameTaken: (name: string) => name.toLowerCase() === "lead reviewer" };
+
+  it("accepts an addition wholly within the pool, the range and the cap", () => {
+    const checked = checkMemberAdditions(ranged(), context, [ask()]);
+    expect(checked.refused).toEqual([]);
+    expect(checked.accepted).toMatchObject([{ name: "Nell", kind: "tester", runtime: "codex" }]);
+  });
+
+  it("takes the one kind the members share where the leader names none, and refuses to guess between several", () => {
+    const unkinded = { ...ask(), kind: undefined };
+    expect(checkMemberAdditions(ranged(), { ...context, memberKinds: ["reviewer"] }, [unkinded]).accepted[0]?.kind).toBe("reviewer");
+    expect(checkMemberAdditions(ranged(), context, [unkinded]).refused[0]?.reason).toContain("its kind is left out");
+  });
+
+  const refusals: [string, Parameters<typeof checkMemberAdditions>, string][] = [
+    ["a CLI tool outside the pool", [ranged(), context, [ask({ tools: { cliTools: ["kubectl"] } })]], 'the CLI tool "kubectl" is not in the team\'s tool pool'],
+    ["an MCP server outside the pool", [ranged(), context, [ask({ tools: { mcpServers: ["billing"] } })]], 'the MCP server "billing" is not in the team\'s tool pool'],
+    ["a skill outside the pool", [ranged(), context, [ask({ tools: { skills: ["deploy"] } })]], 'the skill "deploy" is not in the team\'s tool pool'],
+    ["eo_admin", [ranged(), context, [ask({ tools: { mcpServers: ["eo_admin"] } })]], 'the MCP server "eo_admin" is not in the team\'s tool pool'],
+    ["a runtime outside the range", [ranged(), context, [ask({ runtime: "gemini" })]], 'its runtime "gemini" is not in the team\'s model range ("claude", "codex")'],
+    ["a model outside the range", [ranged(), context, [ask({ model: "gpt-4o" })]], 'its model "gpt-4o" is not in the team\'s model range ("gpt-5")'],
+    ["a reasoning level outside the range", [ranged(), context, [ask({ reasoning: "low" })]], 'its reasoning "low" is not in the team\'s model range ("high")'],
+    ["anything, where the range is empty", [leader(), context, [ask()]], "it allows no runtimes"],
+    ["a name another agent has", [ranged(), context, [ask({ name: "Lead Reviewer" })]], 'another agent is already called "Lead Reviewer"'],
+    ["one name twice", [ranged(), context, [ask(), ask()]], "the same name is asked for twice"],
+    ["a kind none of the members is", [ranged(), context, [ask({ kind: "deployer" })]], 'its kind "deployer" is none of the team\'s members\' kinds'],
+    ["the system kind", [ranged(), context, [ask({ kind: "system" })]], "EO's system agent can never be a team member"],
+    ["a member over the cap", [ranged({ memberCap: 2 }), context, [ask()]], "the team has 2 members, and its cap is 2"],
+    ["a locked team", [ranged(), { ...context, locked: true }, [ask()]], 'the team "Review leads" is locked'],
+    ["an independent team", [independent(), context, [ask()]], "is not led by a leader"],
+  ];
+  for (const [name, args, why] of refusals) {
+    it(`refuses ${name}, saying why`, () => {
+      const checked = checkMemberAdditions(...args);
+      expect(checked.accepted.length).toBeLessThan(args[2].length);
+      const reason = checked.refused.map((one) => one.reason).join(" ");
+      expect(reason).toContain("EO did not add it, and created nothing");
+      expect(reason).toContain(why);
+      expect(checked.refused[0]?.key).toBe(`new member "${args[2][0]!.name}"`);
+    });
+  }
+
+  it("counts what it accepts in one answer against the cap", () => {
+    const checked = checkMemberAdditions(ranged(), context, [ask(), ask({ name: "Oz" })]);
+    expect(checked.accepted.map((one) => one.name)).toEqual(["Nell"]);
+    expect(checked.refused).toEqual([{ key: 'new member "Oz"', reason: "EO did not add it, and created nothing: the team has 3 members, and its cap is 3." }]);
   });
 });

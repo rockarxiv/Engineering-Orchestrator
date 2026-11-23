@@ -425,7 +425,7 @@ describe("a leader-led team (EO-847)", () => {
     expect(refusals[0]).toContain("**more**: The team allows 2 participants in all");
     expect(refusals[1]).toContain("1 round of assignments and all of them are used");
     // The leader's next turn is told what was refused.
-    expect(turnsOf("Lee")[2]?.opts.context).toContain("Assignments EO refused:");
+    expect(turnsOf("Lee")[2]?.opts.context).toContain("What EO refused of your last request:");
     expect(turnsOf("Sasha")).toHaveLength(1);
   });
 

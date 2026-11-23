@@ -107,6 +107,27 @@ describe("the turns' output schemas (EO-847)", () => {
     }
   });
 
+  it("offers a leader whose team takes additions new members from its pool and range alone, and lets an assignment name one (EO-883)", () => {
+    const answer = { $schema: "https://json-schema.org/draft/2020-12/schema", type: "object", properties: { result: { enum: ["ok"] } }, required: ["result"] };
+    const offer = { kinds: ["sec"], pool: { cliTools: ["gh"], mcpServers: [], skills: ["triage"] }, range: { runtimes: ["claude", "codex"], models: ["gpt-5"], reasoning: ["high"] }, room: 2 };
+    const schema = jsonSchemaOutputSchema(leaderTurnSchema([SASHA], answer, offer));
+    const nell = { name: "Nell", kind: "sec", instructions: "Read CSV.", tools: { cliTools: ["gh"], mcpServers: [], skills: [] }, runtime: "codex", model: "gpt-5", reasoning: "high" };
+    const assign = (newMembers: unknown[], member = "Nell") => ({ outcome: { decision: "assign", newMembers, assignments: [{ key: "a", member, instructions: "Look.", required: true }], note: "" } });
+    expect(schema.parse(assign([nell])).ok).toBe(true);
+    expect(schema.parse(assign([], "Sasha")).ok).toBe(true);
+    expect(schema.parse(assign([{ ...nell, tools: { ...nell.tools, cliTools: ["kubectl"] } }])).ok).toBe(false);
+    expect(schema.parse(assign([{ ...nell, tools: { ...nell.tools, mcpServers: ["eo_admin"] } }])).ok).toBe(false);
+    expect(schema.parse(assign([{ ...nell, model: "gpt-4o" }])).ok).toBe(false);
+    expect(schema.parse(assign([nell, { ...nell, name: "Oz" }, { ...nell, name: "Pip" }])).ok).toBe(false);
+    // An empty pool list is no empty `enum`.
+    expect(JSON.stringify(leaderTurnSchema([SASHA], answer, offer))).not.toContain('"enum":[]');
+    // Read back, an answer that adds nobody adds nobody, whatever the schema offered.
+    const read = readLeaderAnswer({ outcome: { decision: "assign", assignments: [{ key: "a", member: "Sasha", instructions: "Look.", required: true }], note: "" } });
+    expect(read.kind === "assign" && read.request.newMembers).toEqual([]);
+    const added = readLeaderAnswer(assign([nell]));
+    expect(added.kind === "assign" && added.request.newMembers[0]?.name).toBe("Nell");
+  });
+
   it("is something the ordinary clarification reader still recognises", () => {
     expect(asClarification({ outcome: { status: "clarification_required", questions: [{ id: "q", question: "Which?", why: "Blocks." }] } })).not.toBeNull();
   });

@@ -1,5 +1,5 @@
-import { actionFactsFor, SYSTEM_ROLE, teamDefinitionProblems } from "@eo/core";
-import type { PipelineStep, RegistryFacts, TeamDefinition } from "@eo/core";
+import { ADMIN_MCP_SERVER_NAME, actionFactsFor, SYSTEM_ROLE, teamDefinitionProblems } from "@eo/core";
+import type { NewTeamMember, PipelineStep, RegistryFacts, TeamDefinition } from "@eo/core";
 
 /**
  * What an agent may use, as a team's tool pool names it (EO-881): its CLI
@@ -184,4 +184,67 @@ export function declaredTeamProblems(
     }
   }
   return problems;
+}
+
+/** A member a leader asked to add, accepted: what EO creates, its kind settled. */
+export interface AcceptedMemberAddition extends NewTeamMember {
+  kind: string;
+}
+
+/**
+ * What EO accepts of the members a leader asks to add to its team
+ * (EO-883), each refusal a sentence keyed by the name asked for. Refused:
+ * a team that is not leader-led, or is locked; a name another agent
+ * already has (`nameTaken`), or one named twice; a kind none of the
+ * team's members is (`memberKinds`), or EO's system kind; a tool outside
+ * the team's tool pool, and `eo_admin` whatever the pool says; a runtime,
+ * model or reasoning outside the team's model range; and a member past
+ * the team's cap. An addition refused for any reason creates nothing.
+ *
+ * Data in, data out (invariant 2): the caller creates what is accepted.
+ */
+export function checkMemberAdditions(
+  team: TeamDefinition,
+  context: { locked: boolean; memberKinds: readonly string[]; nameTaken: (name: string) => boolean },
+  additions: readonly NewTeamMember[],
+): { accepted: AcceptedMemberAddition[]; refused: { key: string; reason: string }[] } {
+  const accepted: AcceptedMemberAddition[] = [];
+  const refused: { key: string; reason: string }[] = [];
+  const keyOf = (addition: NewTeamMember) => `new member "${addition.name}"`;
+  const refuseAll = (reason: string) => ({ accepted, refused: additions.map((addition) => ({ key: keyOf(addition), reason })) });
+  if (team.coordination !== "leader") return refuseAll(`EO did not add it, and created nothing: "${team.name}" is not led by a leader, so no leader may add a member to it.`);
+  if (context.locked) return refuseAll(`EO did not add it, and created nothing: the team "${team.name}" is locked: a person must unlock it before a member can be added.`);
+  const kinds = [...new Set(context.memberKinds)];
+  const seen = new Set<string>();
+  const range = team.modelRange;
+  const pool = team.toolPool;
+  const outside = (value: string, allowed: readonly string[], what: string, plural: string) =>
+    allowed.includes(value) ? [] : [`its ${what} "${value}" is not in the team's model range (${allowed.length === 0 ? `it allows no ${plural}` : allowed.map((one) => `"${one}"`).join(", ")})`];
+  for (const addition of additions) {
+    const problems: string[] = [];
+    const folded = addition.name.trim().toLocaleLowerCase();
+    if (seen.has(folded)) problems.push("the same name is asked for twice in one answer");
+    else if (context.nameTaken(addition.name)) problems.push(`another agent is already called "${addition.name.trim()}"`);
+    seen.add(folded);
+    const kind = addition.kind ?? (kinds.length === 1 ? kinds[0] : undefined);
+    if (kind === undefined) problems.push(`its kind is left out, and the team's members are of several kinds (${kinds.join(", ")}), so it must name one`);
+    else if (kind === SYSTEM_ROLE) problems.push("EO's system agent can never be a team member");
+    else if (!kinds.includes(kind)) problems.push(`its kind "${kind}" is none of the team's members' kinds (${kinds.join(", ")})`);
+    const beyond = [
+      ...addition.tools.mcpServers.filter((name) => name === ADMIN_MCP_SERVER_NAME || !pool.mcpServers.includes(name)).map((name) => `the MCP server "${name}"`),
+      ...addition.tools.skills.filter((slug) => !pool.skills.includes(slug)).map((slug) => `the skill "${slug}"`),
+      ...addition.tools.cliTools.filter((command) => !pool.cliTools.includes(command)).map((command) => `the CLI tool "${command}"`),
+    ];
+    if (beyond.length > 0) problems.push(`${beyond.join(", ")} ${beyond.length === 1 ? "is" : "are"} not in the team's tool pool`);
+    problems.push(...outside(addition.runtime, range.runtimes, "runtime", "runtimes"), ...outside(addition.model, range.models, "model", "models"), ...outside(addition.reasoning, range.reasoning, "reasoning", "reasoning levels"));
+    if (problems.length === 0 && team.members.length + accepted.length >= team.memberCap) {
+      problems.push(`the team has ${team.members.length + accepted.length} members, and its cap is ${team.memberCap}`);
+    }
+    if (problems.length > 0) {
+      refused.push({ key: keyOf(addition), reason: `EO did not add it, and created nothing: ${problems.join("; ")}.` });
+      continue;
+    }
+    accepted.push({ ...addition, kind: kind as string });
+  }
+  return { accepted, refused };
 }
