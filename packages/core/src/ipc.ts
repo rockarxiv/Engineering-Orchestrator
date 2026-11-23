@@ -2276,11 +2276,6 @@ export const recordContract = {
     z.object({ restored: z.boolean(), problem: z.string().nullable() }),
   ),
   /**
-   * A person locking a team against every change, the leader's additions
-   * included, or unlocking it (EO-881, EO-884). A guard, not a change to
-   * what the team is: it writes no version.
-   */
-  /**
    * A person changing one member's runtime, model and reasoning effort from
    * the Teams tab (EO-884), the leader's included: written on the member's
    * agent, which is the team's own, and recorded as a new version of the
@@ -2302,6 +2297,11 @@ export const recordContract = {
     }),
     z.object({ saved: z.boolean(), problem: z.string().nullable() }),
   ),
+  /**
+   * A person locking a team against every change, the leader's additions
+   * included, or unlocking it (EO-881, EO-884). A guard, not a change to
+   * what the team is: it writes no version.
+   */
   "teams:setLocked": channel(z.object({ teamId: z.string(), locked: z.boolean() }), z.object({ changed: z.boolean(), problem: z.string().nullable() })),
   "engine:pause": channel(z.object({ cancelRunning: z.boolean().default(false) }), EngineStatusSchema),
   "engine:resume": channel(z.void(), EngineStatusSchema),

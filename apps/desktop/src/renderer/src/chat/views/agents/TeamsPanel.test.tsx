@@ -183,7 +183,7 @@ describe("the Teams tab (EO-884)", () => {
     expect(tests).toHaveTextContent("Reasoning effortxhigh");
     expect(tests).toHaveTextContent("Find the tests that are missing.");
     expect(tests).toHaveTextContent("Added by the team's leader, on EO-42");
-    expect(within(members).getByRole("listitem", { name: "Member Criteria expert" })).toHaveTextContent("Added by a person, on the step the team was declared from");
+    expect(within(members).getByRole("listitem", { name: "Member Criteria expert" })).toHaveTextContent("Added when EO declared a team that already existed (from a step, an import or the record)");
 
     const pool = screen.getByRole("region", { name: "What it may use" });
     for (const text of ["CLI toolsgh", "MCP serversrepo", "Skillswrite-tests", "RuntimesClaude Code, Codex", "Modelsclaude-opus-5, gpt-5.1-codex", "Reasoninglow, high", "Member cap6", "Rounds2", "At once2"]) {
@@ -269,6 +269,28 @@ describe("the Teams tab (EO-884)", () => {
     expect(askAssistant).toHaveBeenCalledTimes(1);
   });
 
+  it("shows each member's whole instructions, read-only, not only their first line", async () => {
+    const instructions = "# Criteria pass\n\nHold the change to every acceptance criterion.\n\nThen check the edge cases the story names, one by one.";
+    mockIpc(() => [team({ members: [member({ instructions })] })]);
+    mount();
+    await openTeams();
+    const card = within(screen.getByRole("region", { name: "Members" })).getByRole("listitem", { name: "Member Criteria expert" });
+    expect(within(card).getByText("Hold the change to every acceptance criterion.", { exact: false, selector: "summary" })).toBeInTheDocument();
+    const whole = within(card).getByLabelText("Criteria expert's instructions");
+    expect(whole).toHaveTextContent("Then check the edge cases the story names, one by one.");
+    expect(whole.tagName).toBe("P");
+    expect(within(card).queryAllByRole("textbox")).toHaveLength(0);
+  });
+
+  it("says in a whole sentence that EO declared a team that already existed, on its version and its members", async () => {
+    mockIpc(() => [team({ versions: [{ number: 1, author: { kind: "eo" }, authorName: null, itemKey: null, restoredFrom: null, createdAt: 1_000 }] })]);
+    mount();
+    await openTeams();
+    expect(within(screen.getByRole("list", { name: "Versions" })).getByText("EO, declaring a team that already existed (from a step, an import or the record)")).toBeInTheDocument();
+    const card = within(screen.getByRole("region", { name: "Members" })).getByRole("listitem", { name: "Member Criteria expert" });
+    expect(within(card).getByText("Added when EO declared a team that already existed (from a step, an import or the record)")).toBeInTheDocument();
+  });
+
   it("says where a member's runtime is shown that this machine is not signed in to its backend", async () => {
     mockIpc(() => [team()], {}, (provider) => (provider === "codex" ? SIGNED_OUT_CODEX : null));
     mount();
@@ -325,7 +347,7 @@ describe("the Teams tab (EO-884)", () => {
     );
     await waitFor(() => expect(screen.getByRole("region", { name: "EO reviewers" })).toHaveTextContent("version 4"));
     const after = within(screen.getByRole("region", { name: "Leader" })).getByRole("listitem", { name: "Leader Review lead" });
-    expect(within(after).queryByRole("group")).toBeNull();
+    expect(within(after).queryByRole("group", { name: "Review lead's runtime, model and reasoning" })).toBeNull();
     expect(after).toHaveTextContent("RuntimeCodex");
     expect(after).toHaveTextContent("Reasoning effortxhigh");
   });
@@ -362,6 +384,10 @@ describe("the Teams tab (EO-884)", () => {
     await openTeams();
     await waitFor(() => expect(screen.getByRole("region", { name: "Versions" })).toHaveTextContent("Your organisation manages the pipelines"));
     expect(within(screen.getByRole("list", { name: "Versions" })).queryAllByRole("button", { name: "Restore" })).toHaveLength(0);
+    // Unlocking would let the team change by another door, so the lock is held too.
+    const head = screen.getByRole("region", { name: "EO reviewers" });
+    expect(within(head).queryByRole("button", { name: /^(Lock|Unlock)$/ })).toBeNull();
+    expect(head).toHaveTextContent("the team can't be locked or unlocked here");
     // A member's runtime stays the person's.
     expect(screen.getAllByRole("button", { name: "Change runtime, model or reasoning" }).length).toBeGreaterThan(0);
   });

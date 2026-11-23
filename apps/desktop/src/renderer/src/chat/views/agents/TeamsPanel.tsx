@@ -84,7 +84,7 @@ function AddedBy({ member }: { member: TeamMemberView }) {
   }
   if (origin.kind === "person") return <span>Added by {origin.personName ?? "a person"}</span>;
   if (origin.kind === "assistant") return <span>Added by a person, through the assistant</span>;
-  return <span>Added by a person, on the step the team was declared from</span>;
+  return <span>Added when EO declared a team that already existed (from a step, an import or the record)</span>;
 }
 
 /**
@@ -222,7 +222,19 @@ function MemberCard({ teamId, member, role, editable }: { teamId: string; member
       ) : null}
       <div className="flex min-w-0 flex-col gap-0.5">
         <span className="text-[11.5px] text-ink-subtle">Its own instructions</span>
-        <p className="text-[12.5px] text-ink-muted">{summary ?? "None."}</p>
+        {member.instructions.trim() === "" ? (
+          <p className="text-[12.5px] text-ink-muted">None.</p>
+        ) : (
+          // Read-only: instructions change only through the assistant's draft (EO-884).
+          <details className="group min-w-0">
+            <summary className="cursor-pointer text-[12.5px] text-ink-muted">
+              {summary ?? "Show all"} <span className="text-ink-subtle group-open:hidden">· Show all</span>
+            </summary>
+            <p aria-label={`${label}'s instructions`} className="mt-1 whitespace-pre-wrap break-words text-[12.5px] text-ink">
+              {member.instructions}
+            </p>
+          </details>
+        )}
       </div>
     </li>
   );
@@ -242,7 +254,7 @@ function VersionAuthor({ version }: { version: TeamVersionView }) {
   }
   if (author.kind === "person") return <span>{version.authorName ?? "A person"}</span>;
   if (author.kind === "assistant") return <span>The assistant, in a draft a person published</span>;
-  return <span>EO, declaring the team from a step's</span>;
+  return <span>EO, declaring a team that already existed (from a step, an import or the record)</span>;
 }
 
 /** The link to the one place a team's instructions and members change. */
@@ -258,7 +270,7 @@ function ChangeWithAssistant() {
 
 function TeamDetail({ team }: { team: TeamView }) {
   const queryClient = useQueryClient();
-  // Restoring writes the graph a step runs, so an organisation's published pipelines hold it (EO-884).
+  // Restoring or unlocking changes what the graph's steps run as, so an organisation's published pipelines hold both (EO-884).
   const graphManaged = useLockedSections().isLocked("pipelines");
   const refresh = () => void queryClient.invalidateQueries({ queryKey: teamsKey });
   const restore = useMutation({
@@ -283,17 +295,18 @@ function TeamDetail({ team }: { team: TeamView }) {
             : `${team.coordination === "leader" ? "Leader-led" : "Independent"}, with ${memberModeWords(team.memberMode ?? "report_only")} members${team.projectName === null ? "" : ` · ${team.projectName}`} · version ${String(team.version)}`
         }
         actions={
-          <>
+          graphManaged ? null : (
             <Button icon={team.locked ? <LockOpen size={13} /> : <Lock size={13} />} disabled={lock.isPending} onClick={() => lock.mutate(!team.locked)}>
               {team.locked ? "Unlock" : "Lock"}
             </Button>
-          </>
+          )
         }
       >
         <p className="text-[12.5px] text-ink-subtle">
           {team.locked
             ? "Locked: nothing changes this team — not the assistant's draft, not a restore, not its leader adding a member — until a person unlocks it."
             : "Unlocked: a draft a person publishes, a restore, or its leader adding a member can change it, each as a new version."}
+          {graphManaged ? " Your organisation manages the pipelines, so the team can't be locked or unlocked here." : null}
         </p>
         <div className="flex flex-wrap items-center gap-2">
           <ChangeWithAssistant />

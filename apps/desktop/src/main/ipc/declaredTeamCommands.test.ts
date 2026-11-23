@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { NO_POLICY, TeamDefinitionSchema, type TeamDefinition, type Uuid } from "@eo/core";
 import type { DbHandle } from "../db/client.js";
 import { agentOfKind, createTestItem, giveSeededDelivery, openMigratedTestDb } from "../db/testHelpers.js";
-import { createAgent, getAgent, updateAgent } from "../db/repos/agentsRepo.js";
+import { archiveAgent, createAgent, getAgent, updateAgent } from "../db/repos/agentsRepo.js";
 import { createPerson } from "../db/repos/peopleRepo.js";
 import { createPipeline, createStep } from "../db/repos/pipelineStepsRepo.js";
 import { createProject } from "../db/repos/projectsRepo.js";
@@ -10,6 +10,8 @@ import { changeTeam, claimTrialTeam, createTeam, getTeam, listTeamVersions } fro
 import { writePolicy } from "../policy/policy.js";
 import { publishSection } from "../db/repos/index.js";
 import { markReplica } from "../db/recordRole.js";
+import { teams } from "../db/schema.js";
+import { eq } from "drizzle-orm";
 import { sectionLockFor } from "../managed/locks.js";
 import { listTeamsCommand, restoreTeamCommand, setTeamLockedCommand, setTeamMemberSettingsCommand } from "./declaredTeamCommands.js";
 
@@ -201,12 +203,40 @@ describe("teams:setMemberSettings (EO-884)", () => {
   });
 });
 
+describe("teams:setMemberSettings refusals that leave the agent as it was (EO-884)", () => {
+  it("refuses an archived member's agent, as agents:setBinding does", () => {
+    const teamId = made();
+    archiveAgent(handle.db, implementer);
+    const before = getAgent(handle.db, implementer);
+    const refused = setTeamMemberSettingsCommand(handle.db, { teamId, agentId: implementer, provider: "codex", model: null, reasoning: null });
+    expect(refused.saved).toBe(false);
+    expect(refused.problem).toContain("is archived");
+    expect(getAgent(handle.db, implementer)).toEqual(before);
+    expect(getTeam(handle.db, teamId)?.version).toBe(1);
+  });
+
+  it("rolls the member's new settings back when its version is refused", () => {
+    // Another team of the project, older, ends up with the same name by a
+    // write that bypassed the check: the version is refused for the name.
+    const other = createTeam(handle.db, { projectId, definition: { ...definition, name: "Other" }, author: { kind: "eo" } });
+    if (!other.ok) throw new Error(other.reason);
+    const teamId = made();
+    handle.db.update(teams).set({ name: definition.name }).where(eq(teams.id, other.team.id)).run();
+    const before = getAgent(handle.db, implementer);
+    const refused = setTeamMemberSettingsCommand(handle.db, { teamId, agentId: implementer, provider: "codex", model: "gpt-5.1-codex", reasoning: "low" });
+    expect(refused).toEqual({ saved: false, problem: 'This project already has a team called "Review leads".' });
+    expect(getAgent(handle.db, implementer)).toEqual(before);
+    expect(listTeamVersions(handle.db, teamId)).toHaveLength(1);
+  });
+});
+
 describe("the section lock on a team (EO-884)", () => {
-  it("holds a restore to the published pipelines, as any write of the graph is, and leaves a member's runtime the person's", () => {
+  it("holds a restore and a lock to the published pipelines, as any write of the graph is, and leaves a member's runtime the person's", () => {
     publishSection(handle.db, { section: "pipelines", publishedAt: Date.now(), publishedBy: null, publishedByName: "Dana" });
     const stop = markReplica(handle.db, () => true);
     try {
       expect(sectionLockFor(handle.db, "teams:restore", { teamId: "t", version: 1 })).toMatchObject({ locked: true, section: "pipelines" });
+      expect(sectionLockFor(handle.db, "teams:setLocked", { teamId: "t", locked: false })).toMatchObject({ locked: true, section: "pipelines" });
       expect(sectionLockFor(handle.db, "teams:setMemberSettings", { teamId: "t", agentId: "a", provider: "claude" })).toBeNull();
     } finally {
       stop();

@@ -364,6 +364,10 @@ export const SECTION_LOCKED_CHANNELS: Record<PublishedSection, readonly IpcChann
     // runs as is part of the graph, written otherwise only by a published
     // draft.
     "teams:restore",
+    // And locking or unlocking one (EO-884): an unlocked team takes a
+    // leader's additions, so unlocking a published team would let it
+    // change by another door.
+    "teams:setLocked",
     // And so is applying a change card, from either chat that draws one
     // (EO-418): the card's code and manifest written onto a module.
     "scenario:apply",

@@ -302,8 +302,8 @@ export function restoreTeamVersion(db: Db, id: string, number: number, person: {
  * (EO-884), the leader's included: written on the member's agent — the
  * team's own — and recorded as a new version of the team made by that
  * person. Refused for a locked team, a team EO cannot read, and an agent
- * that is not on the team or no longer exists. Settings it already has
- * write nothing.
+ * that is not on the team, is archived or no longer exists. Settings it
+ * already has write nothing, and a version refused writes nothing either.
  */
 export function setTeamMemberSettings(db: Db, id: string, agentId: string, settings: TeamMemberSettings, person: { personId: string | null; now?: number }): TeamWrite {
   const team = getTeam(db, id);
@@ -315,14 +315,30 @@ export function setTeamMemberSettings(db: Db, id: string, agentId: string, setti
   if (!ids.includes(agentId)) return { ok: false, reason: `That agent is not on the team "${team.name}".` };
   const agent = getAgent(db, agentId as Uuid);
   if (agent === undefined || agent.deletedAt !== null) return { ok: false, reason: "That member's agent no longer exists." };
+  if (agent.archivedAt !== null) return { ok: false, reason: `${agent.name} is archived: restore it before changing its runtime, model or reasoning.` };
   const wanted: TeamMemberSettings = { provider: settings.provider, model: settings.model === null || settings.model.trim() === "" ? null : settings.model.trim(), reasoning: settings.reasoning === null || settings.reasoning.trim() === "" ? null : settings.reasoning.trim() };
   const before = memberSettingsOf(db, [agentId])[agentId];
   if (before !== undefined && JSON.stringify(before) === JSON.stringify(wanted)) return { ok: true, team, changed: false };
-  return db.transaction((tx) => {
-    const inTx = tx as unknown as Db;
-    applyMemberSettings(inTx, agentId, wanted);
-    return changeTeam(inTx, id, { definition, author: { kind: "person", personId: person.personId }, memberSettings: memberSettingsOf(inTx, ids), ...(person.now === undefined ? {} : { now: person.now }) });
-  });
+  try {
+    return db.transaction((tx) => {
+      const inTx = tx as unknown as Db;
+      applyMemberSettings(inTx, agentId, wanted);
+      const written = changeTeam(inTx, id, { definition, author: { kind: "person", personId: person.personId }, memberSettings: memberSettingsOf(inTx, ids), ...(person.now === undefined ? {} : { now: person.now }) });
+      // No version, no change: a refusal undoes the agent's new settings with it.
+      if (!written.ok) throw new VersionRefused(written.reason);
+      return written;
+    });
+  } catch (error) {
+    if (error instanceof VersionRefused) return { ok: false, reason: error.reason };
+    throw error;
+  }
+}
+
+/** Thrown inside a transaction to roll back a member's settings whose version `changeTeam` refused. */
+class VersionRefused extends Error {
+  constructor(readonly reason: string) {
+    super(reason);
+  }
 }
 
 /**
