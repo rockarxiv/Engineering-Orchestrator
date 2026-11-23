@@ -795,7 +795,7 @@ describe("the team examples (EO-850)", () => {
     for (const { name, document } of documents) {
       for (const step of [...document.steps, ...(document.boards ?? []).flatMap((board) => board.steps)]) if (step.team !== undefined) withTeams.push(`${name}:${step.id}`);
     }
-    expect(withTeams.sort()).toEqual(["history/software-feature-to-merge/1.5.json:review", "history/software-feature-to-merge/1.6.json:review", "history/software-feature-to-merge/1.7.json:review", "software-feature-to-merge.json:review"]);
+    expect(withTeams.sort()).toEqual(["history/software-feature-to-merge/1.5.json:review", "history/software-feature-to-merge/1.6.json:review", "history/software-feature-to-merge/1.7.json:review", "history/software-feature-to-merge/1.8.json:review", "software-feature-to-merge.json:review"]);
     importExample("publication-review", ROSTERS[0]!);
     expect(listPipelineSteps(handle.db).filter((step) => step.team !== null).map((step) => step.name)).toEqual(["Specialist review"]);
   });
