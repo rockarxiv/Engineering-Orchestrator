@@ -14,6 +14,7 @@ import {
   staffingAgents,
   storedTeamDefinition,
   teamAgentIds,
+  namesAdminServer,
   uuidv7,
   withMemoryNoteGrant,
 } from "@eo/core";
@@ -330,6 +331,10 @@ export function declaredNewMembers(db: Db, declared: readonly TeamSave[], projec
       // only where it runs on the base's runtime, since each backend keeps
       // its own under its own key.
       const config: Record<string, unknown> = { ...(base?.config ?? withMemoryNoteGrant({})) };
+      // Never EO's administration grant (invariant 11): `newMemberProblems`
+      // refuses a base that holds it, and this keeps a save sent past that
+      // check from creating a team's member served `eo_admin`.
+      if (Array.isArray(config.allowedTools)) config.allowedTools = config.allowedTools.filter((entry: unknown) => typeof entry !== "string" || !namesAdminServer([entry]));
       if (base !== undefined && base.provider !== provider) {
         for (const one of [base.provider, provider]) {
           const key = reasoningEffortKey(one);

@@ -1,4 +1,4 @@
-import { backendAllowed, bindingRefusal, DEFAULT_MEMORY_DELIVERY_CHARS, DEFAULT_MEMORY_SCOPE_MAX_CHARS, DEFAULT_MEMORY_SCOPE_MAX_ENTRIES, DEFAULT_SKILL_ARCHIVE_AFTER_RUNS, DEFAULT_SKILL_MAX_BODY_CHARS, DEFAULT_SKILL_STALE_AFTER_RUNS, isBuiltinRole, rolesStaffedFor, isDispatchable, isPreviewAgent, isTeamOwned, settledWatch, SYSTEM_ROLE, teamAgentIds, stepAgentOf, stepAgentProblem, stepHoldsItemsMessage, stepWorkspaceChoice, timeLimitBoundProblem, withMemoryNoteGrant } from "@eo/core";
+import { adminToolsEnabled, backendAllowed, bindingRefusal, DEFAULT_MEMORY_DELIVERY_CHARS, DEFAULT_MEMORY_SCOPE_MAX_CHARS, DEFAULT_MEMORY_SCOPE_MAX_ENTRIES, DEFAULT_SKILL_ARCHIVE_AFTER_RUNS, DEFAULT_SKILL_MAX_BODY_CHARS, DEFAULT_SKILL_STALE_AFTER_RUNS, isBuiltinRole, rolesStaffedFor, isDispatchable, isPreviewAgent, isTeamOwned, settledWatch, SYSTEM_ROLE, teamAgentIds, stepAgentOf, stepAgentProblem, stepHoldsItemsMessage, stepWorkspaceChoice, timeLimitBoundProblem, withMemoryNoteGrant } from "@eo/core";
 import type { ActionDefinitionDraft, Agent, AgentRemovalImpact, StepNamingAgent, RegistryFacts, TeamReading, EntryRule, GuardConfigView, IpcPayload, IpcResponse, ItemTypeEntry, Registry, Uuid, PipelineStep, StepBrief, StepRoute, StepWatch, TeamSave } from "@eo/core";
 import { hasBlockingProblem, outsideReachByStep, validatePipeline, validateTeam, type IsolatedCopyProblem, type WorkflowProblem } from "@eo/engine";
 import type { Db } from "../db/client.js";
@@ -1080,7 +1080,8 @@ export function teamSaveProblems(db: Db, pipelineId: string, declared: readonly 
  * a kind EO does not have — none a pack or an action definition declares,
  * and no agent here has — or EO's system agent; two members of the team
  * with one name; an agent to take settings from that EO does not have;
- * no runtime given and none to take; a reasoning effort its runtime has
+ * an agent to take settings from that is EO's system agent or holds its
+ * administration tools (invariant 11); no runtime given and none to take; a reasoning effort its runtime has
  * no setting for, or a runtime the organisation does not allow; a member
  * declared but neither leading nor a member; and a stand-in id an agent
  * already has. A leader whose kind lacks the step's action, and more
@@ -1116,6 +1117,7 @@ export function newMemberProblems(db: Db, projectId: string | null, declared: re
         problems.push(`${team} has two members called "${agent.name}": each of a team's members needs a name of its own.`);
       }
       if (fromMissing) problems.push(`${who} takes its settings from an agent EO does not have (${member.fromAgentId ?? ""}).`);
+      else if (base !== undefined && (base.role === SYSTEM_ROLE || adminToolsEnabled(base))) problems.push(`${who} would take its settings from "${base.name}", which administers EO: a team's member can never hold EO's administration tools, so name another agent in \`from\`.`);
       else if (agent.provider === "") problems.push(`${who} gives no runtime, and EO has no agent of the kind "${member.kind}" to take one from: give it a runtime.`);
       if (reasoningRefused) problems.push(`${who} cannot be given the reasoning "${member.reasoning ?? ""}": EO sets no reasoning effort on the runtime "${agent.provider}".`);
       if (agent.provider !== "" && agent.provider !== base?.provider && !backendAllowed(policy, agent.provider)) problems.push(`${who} runs on "${agent.provider}", which your organisation does not allow.`);

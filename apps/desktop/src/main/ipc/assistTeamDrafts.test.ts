@@ -1,5 +1,5 @@
-import { ADMIN_MCP_SERVER_NAME, AssistDraftTeamSchema, AssistOutputSchema, pageDescriptorFor, StepTeamSchema, TeamDefinitionSchema, uuidv7, type IpcChannel, type Item, type StepTeam, type Uuid } from "@eo/core";
-import { getTeam, listTeamVersions, listTeams, setTeamLocked } from "../db/repos/teamsRepo.js";
+import { ADMIN_MCP_SERVER_NAME, adminToolsEnabled, AssistDraftTeamSchema, AssistOutputSchema, pageDescriptorFor, StepTeamSchema, TeamDefinitionSchema, uuidv7, type IpcChannel, type Item, type StepTeam, type Uuid } from "@eo/core";
+import { createTeam, getTeam, listTeamVersions, listTeams, setTeamLocked } from "../db/repos/teamsRepo.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DbHandle } from "../db/client.js";
 import { markReplica } from "../db/recordRole.js";
@@ -672,6 +672,45 @@ describe("a team drafted by the assistant (EO-848)", () => {
         'The team "Review leads": its new member "Implementation pass" takes its settings from an agent EO does not have (Nobody).',
       );
     });
+
+    it("an agent to take settings from that is EO's system agent, which holds the eo_admin grant (invariant 11)", async () => {
+      const system = listAgents(handle.db).find((agent) => agent.role === "system" && agent.deletedAt === null)!;
+      expect(adminToolsEnabled(system)).toBe(true);
+      const team = LEADER();
+      await refusedEverywhere(
+        { ...team, newMembers: [team.newMembers[0]!, { ...team.newMembers[1]!, kind: "reviewer", from: system.name }] },
+        `The team "Review leads": its new member "Implementation pass" would take its settings from "${system.name}", which administers EO: a team's member can never hold EO's administration tools, so name another agent in \`from\`.`,
+      );
+    });
+
+    it("an ordinary agent holding the eo_admin grant to take settings from", async () => {
+      const reviewerId = agentOfKind(handle.db, "reviewer");
+      const reviewer = listAgents(handle.db).find((agent) => agent.id === reviewerId)!;
+      updateAgent(handle.db, reviewerId, { config: { ...reviewer.config, allowedTools: ["Read", `mcp__${ADMIN_MCP_SERVER_NAME}`] } });
+      const team = LEADER();
+      await refusedEverywhere(
+        { ...team, newMembers: [team.newMembers[0]!, { ...team.newMembers[1]!, kind: "reviewer", from: reviewer.name }] },
+        `The team "Review leads": its new member "Implementation pass" would take its settings from "${reviewer.name}", which administers EO: a team's member can never hold EO's administration tools, so name another agent in \`from\`.`,
+      );
+    });
+  });
+
+  it("never creates a declared member holding the eo_admin grant, even from a save sent past the check (invariant 11)", async () => {
+    const system = listAgents(handle.db).find((agent) => agent.role === "system" && agent.deletedAt === null)!;
+    const saves = draftTeamsFor(handle.db, pipelineId, { teams: [AssistDraftTeamSchema.parse(LEADER())] }).saves;
+    const save = { ...saves[0]!, newMembers: saves[0]!.newMembers!.map((member, index) => (index === 1 ? { ...member, kind: "reviewer", fromAgentId: system.id } : member)) };
+    const graph = { ...graphNow(), steps: graphNow().steps.map((step) => (step.id === checkId ? { ...step, teamId: save.id } : step)) };
+    const before = listAgents(handle.db).length;
+    const saved = await handleIpcRequest("pipeline:save", { ...graph, teams: [save] }, (payload) => savePipeline(handle.db, undefined, payload), opts);
+    expect(JSON.stringify(saved)).toContain("which administers EO");
+    expect(listAgents(handle.db)).toHaveLength(before);
+
+    // Written past every check, the member is still created without the grant.
+    const written = createTeam(handle.db, { id: save.id, projectId, definition: save.definition, author: { kind: "eo" }, newMembers: save.newMembers });
+    expect(written.ok).toBe(true);
+    const helper = listAgents(handle.db).find((agent) => agent.teamId === save.id && agent.name === "Implementation pass")!;
+    expect(helper.role).toBe("reviewer");
+    expect(adminToolsEnabled(helper)).toBe(false);
   });
 
   it("creates a declared member with its own runtime, model and reasoning; and a Publish that fails part-way leaves no agent behind (EO-898)", async () => {
