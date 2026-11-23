@@ -32,7 +32,7 @@ describe("readParticipantAnswer (EO-847)", () => {
 
 describe("readLeaderAnswer (EO-847)", () => {
   it("reads a request for work, a final answer and a question", () => {
-    expect(readLeaderAnswer({ outcome: { decision: "assign", assignments: [{ key: "auth", member: "Sasha", instructions: "Look.", required: true }], note: "" } })).toMatchObject({ kind: "assign" });
+    expect(readLeaderAnswer({ outcome: { decision: "assign", assignments: [{ key: "auth", member: "Sasha", scope: "src/auth/", instructions: "Look.", required: true }], note: "" } })).toMatchObject({ kind: "assign" });
     expect(readLeaderAnswer({ outcome: { decision: "final", answer: { result: "ok" }, contributions: [], disagreements: "None.", limitations: "None." } })).toMatchObject({ kind: "final", final: { answer: { result: "ok" } } });
     expect(readLeaderAnswer({ outcome: { status: "clarification_required", questions: [{ id: "q", question: "May I?", why: "Blocks." }] } })).toMatchObject({ kind: "asked" });
   });
@@ -40,7 +40,15 @@ describe("readLeaderAnswer (EO-847)", () => {
   it("refuses what is neither, saying where", () => {
     expect(readLeaderAnswer({ outcome: { decision: "assign", assignments: [], note: "" } })).toMatchObject({ kind: "invalid", error: expect.stringContaining("assignments") });
     expect(readLeaderAnswer({ outcome: { decision: "final", answer: {}, contributions: [], disagreements: "", limitations: "x" } })).toMatchObject({ kind: "invalid" });
-    expect(readLeaderAnswer({ outcome: { decision: "assign", assignments: [{ key: "auth", member: "Sasha", instructions: "Look.", required: true, agentId: "x" }], note: "" } })).toMatchObject({ kind: "invalid" });
+    expect(readLeaderAnswer({ outcome: { decision: "assign", assignments: [{ key: "auth", member: "Sasha", scope: "src/auth/", instructions: "Look.", required: true, agentId: "x" }], note: "" } })).toMatchObject({ kind: "invalid" });
+  });
+
+  it("refuses an assignment that does not say what it covers (EO-888)", () => {
+    expect(readLeaderAnswer({ outcome: { decision: "assign", assignments: [{ key: "auth", member: "Sasha", instructions: "Look.", required: true }], note: "" } })).toMatchObject({
+      kind: "invalid",
+      error: expect.stringContaining("assignments.0.scope"),
+    });
+    expect(readLeaderAnswer({ outcome: { decision: "assign", assignments: [{ key: "auth", member: "Sasha", scope: "  ", instructions: "Look.", required: true }], note: "" } })).toMatchObject({ kind: "invalid" });
   });
 });
 
@@ -72,7 +80,7 @@ describe("the turns' output schemas (EO-847)", () => {
     const [assignBranch, finalBranch] = branches.anyOf;
     const member = (assignBranch!.properties["assignments"] as { items: { properties: { member: { enum: string[]; description: string } }; required: string[] } }).items;
     expect(member.properties.member.enum).toEqual(["Sasha", "Tess"]);
-    expect(member.required).toEqual(["key", "member", "instructions", "required"]);
+    expect(member.required).toEqual(["key", "member", "scope", "instructions", "required"]);
     expect(member.properties.member.description).toBe(
       "Which member of your team does it, by name:\n- Sasha — a sec agent on claude, model claude-opus-4-5, reasoning high: You find ways in.\n- Tess — a tester agent on codex, model gpt-5: You read tests.",
     );
@@ -90,7 +98,7 @@ describe("the turns' output schemas (EO-847)", () => {
     expect(JSON.stringify(leaderTurnSchema([], answer))).not.toContain('"enum":[]');
     const schema = jsonSchemaOutputSchema(leaderTurnSchema([], answer));
     expect(schema.parse({ outcome: { decision: "final", answer: { result: "ok" }, contributions: [], disagreements: "None.", limitations: "None." } }).ok).toBe(true);
-    expect(schema.parse({ outcome: { decision: "assign", assignments: [{ key: "a", member: "Sasha", instructions: "Look.", required: true }], note: "" } }).ok).toBe(false);
+    expect(schema.parse({ outcome: { decision: "assign", assignments: [{ key: "a", member: "Sasha", scope: "src/auth/", instructions: "Look.", required: true }], note: "" } }).ok).toBe(false);
   });
 
   it("compiles, and accepts each kind of answer a leader may give and nothing else", () => {
@@ -101,8 +109,10 @@ describe("the turns' output schemas (EO-847)", () => {
       const final = (inner: unknown) => ({ outcome: { decision: "final", answer: inner, contributions: [], disagreements: "None.", limitations: "None." } });
       expect(schema.parse(final({ result: "ok", summary: "Fine." })).ok).toBe(true);
       expect(schema.parse(final({ result: "nope", summary: "Fine." })).ok).toBe(false);
-      expect(schema.parse({ outcome: { decision: "assign", assignments: [{ key: "a", member: "Sasha", instructions: "Look.", required: true }], note: "" } }).ok).toBe(true);
-      expect(schema.parse({ outcome: { decision: "assign", assignments: [{ key: "a", member: "Ada", instructions: "Look.", required: true }], note: "" } }).ok).toBe(false);
+      expect(schema.parse({ outcome: { decision: "assign", assignments: [{ key: "a", member: "Sasha", scope: "src/auth/", instructions: "Look.", required: true }], note: "" } }).ok).toBe(true);
+      expect(schema.parse({ outcome: { decision: "assign", assignments: [{ key: "a", member: "Ada", scope: "src/auth/", instructions: "Look.", required: true }], note: "" } }).ok).toBe(false);
+      // What it covers is asked for (EO-888): an assignment without it is not one the schema offers.
+      expect(schema.parse({ outcome: { decision: "assign", assignments: [{ key: "a", member: "Sasha", instructions: "Look.", required: true }], note: "" } }).ok).toBe(false);
       expect(schema.parse({ outcome: { status: "clarification_required", questions: [{ id: "q", question: "Which?", why: "Blocks." }] } }).ok).toBe(true);
     }
   });
@@ -112,7 +122,7 @@ describe("the turns' output schemas (EO-847)", () => {
     const offer = { kinds: ["sec"], pool: { cliTools: ["gh"], mcpServers: [], skills: ["triage"] }, range: { runtimes: ["claude", "codex"], models: ["gpt-5"], reasoning: ["high"] }, room: 2 };
     const schema = jsonSchemaOutputSchema(leaderTurnSchema([SASHA], answer, offer));
     const nell = { name: "Nell", kind: "sec", instructions: "Read CSV.", tools: { cliTools: ["gh"], mcpServers: [], skills: [] }, runtime: "codex", model: "gpt-5", reasoning: "high" };
-    const assign = (newMembers: unknown[], member = "Nell") => ({ outcome: { decision: "assign", newMembers, assignments: [{ key: "a", member, instructions: "Look.", required: true }], note: "" } });
+    const assign = (newMembers: unknown[], member = "Nell") => ({ outcome: { decision: "assign", newMembers, assignments: [{ key: "a", member, scope: "src/csv/", instructions: "Look.", required: true }], note: "" } });
     expect(schema.parse(assign([nell])).ok).toBe(true);
     expect(schema.parse(assign([], "Sasha")).ok).toBe(true);
     expect(schema.parse(assign([{ ...nell, tools: { ...nell.tools, cliTools: ["kubectl"] } }])).ok).toBe(false);
@@ -122,7 +132,7 @@ describe("the turns' output schemas (EO-847)", () => {
     // An empty pool list is no empty `enum`.
     expect(JSON.stringify(leaderTurnSchema([SASHA], answer, offer))).not.toContain('"enum":[]');
     // Read back, an answer that adds nobody adds nobody, whatever the schema offered.
-    const read = readLeaderAnswer({ outcome: { decision: "assign", assignments: [{ key: "a", member: "Sasha", instructions: "Look.", required: true }], note: "" } });
+    const read = readLeaderAnswer({ outcome: { decision: "assign", assignments: [{ key: "a", member: "Sasha", scope: "src/auth/", instructions: "Look.", required: true }], note: "" } });
     expect(read.kind === "assign" && read.request.newMembers).toEqual([]);
     const added = readLeaderAnswer(assign([nell]));
     expect(added.kind === "assign" && added.request.newMembers[0]?.name).toBe("Nell");

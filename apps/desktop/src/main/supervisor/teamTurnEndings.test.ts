@@ -236,8 +236,8 @@ const assign = () => ({
   outcome: {
     decision: "assign",
     assignments: [
-      { key: "auth", member: "Sasha", instructions: "Look only at how the export authenticates.", required: true },
-      { key: "suite", member: "Tess", instructions: "Check the export's tests cover the CSV path.", required: true },
+      { key: "auth", member: "Sasha", scope: "the whole change", instructions: "Look only at how the export authenticates.", required: true },
+      { key: "suite", member: "Tess", scope: "the whole change", instructions: "Check the export's tests cover the CSV path.", required: true },
     ],
     note: "Split it up.",
   },

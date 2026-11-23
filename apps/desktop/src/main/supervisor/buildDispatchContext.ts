@@ -596,6 +596,8 @@ export async function buildSeedContext(
   visible: ThreadFilter = ALL,
   /** Runs that are not the agent having looked: an isolated member's own team session's (EO-870). None on an ordinary dispatch. */
   notLooked: ReadonlySet<string> = NONE,
+  /** Whom it is for (EO-888): the step's own agent, or a team member, whose seed leaves out what only the step's agent acts on. */
+  audience: "step" | "member" = "step",
 ): Promise<string> {
   const agentsById = new Map(listAgents(db).map((candidate) => [candidate.id as string, candidate]));
   const comments = listCommentsForItem(db, item.id).filter(visible);
@@ -664,6 +666,7 @@ export async function buildSeedContext(
   }
 
   return assembleSeedContext({
+    audience,
     action,
     taskAppendix: await taskAppendixFor(db, item, action, agent.role),
     planMode: stepForItem(db, item)?.planMode ?? false,
@@ -746,7 +749,14 @@ export async function buildTurnContext(
   visible: ThreadFilter = ALL,
   /** Runs that are not the agent having looked: none, but for an isolated team member's turn, its own session's (EO-870). */
   notLooked: ReadonlySet<string> = NONE,
+  /**
+   * Whom it is for (EO-888): the step's own agent, or a member of a team
+   * on the step. A member is always seeded, whatever its agent may read
+   * with a tool: its work is one assignment, never the conversation.
+   */
+  audience: "step" | "member" = "step",
 ): Promise<string> {
+  if (audience === "member") return buildSeedContext(db, item, agent, action, sectionRenderers, visible, notLooked, "member");
   if (resumingRun !== null) {
     return buildFollowUpContext(db, item, agent, action, resumingRun, {
       taskAppendix: await taskAppendixFor(db, item, action, agent.role),

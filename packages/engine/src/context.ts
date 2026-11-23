@@ -265,6 +265,14 @@ export interface SectionRenderer {
    * twice is waste or whether missing the change is worse.
    */
   volatile?: boolean;
+  /**
+   * Whether only the step's own agent can act on this section (EO-888):
+   * an instruction about answering the step, or about something only the
+   * one answering it does — attaching files to the item, say. Left out of
+   * what a team member is sent, which answers with a report and posts
+   * nothing. Default false: a section about the item is a member's too.
+   */
+  stepAgentOnly?: boolean;
   render(input: SectionRenderInput): string | null;
 }
 
@@ -1582,6 +1590,16 @@ export interface AssembleSeedContextInput {
   /** Human comments since this agent's last run here; all of them when it has never run. */
   humanComments: AttributedComment[];
   omitted: OmittedCommentCensus;
+  /**
+   * Whom the seed is for (EO-888): the step's own agent, which answers
+   * the step, or a member of a team on it, which answers its assignment
+   * with a report. A member's seed is the item, its criteria, its thread
+   * and what it is told about them, without what only the step's own
+   * agent acts on: the task and its answer instructions, plan mode, what
+   * woke the dispatch, and every section a caller marks `stepAgentOnly`.
+   * Absent, it is the step's own agent's, as every seed was before.
+   */
+  audience?: "step" | "member";
   // No `maxTokens`. The full assembly takes one because it fits a whole
   // thread into a budget; the seed is bounded by construction instead —
   // one comment per step, capped at `MAX_SEED_COMMENT_CHARS` each — and a
@@ -1791,10 +1809,11 @@ function renderTriggerSection(comment: AttributedComment | null | undefined): st
  * census is honest, so it names authors and kinds rather than a total.
  */
 export function assembleSeedContext(input: AssembleSeedContextInput): AssembledSeedContext {
+  const member = input.audience === "member";
   // The same renderers the full assembly takes, against the same three
   // anchors, so a pack writes its sections once and an agent reads the
   // same words whichever shape it was dispatched with (KAN-161).
-  const contributed = contributions(input.sectionRenderers, {
+  const contributed = contributions(member ? input.sectionRenderers.filter((renderer) => renderer.stepAgentOnly !== true) : input.sectionRenderers, {
     action: input.action,
     item: input.item,
     planMode: input.planMode ?? false,
@@ -1802,10 +1821,16 @@ export function assembleSeedContext(input: AssembleSeedContextInput): AssembledS
     currentOutput: input.currentOutput ?? null,
   });
   const sections = [
-    renderTaskSection(input.action, input.taskAppendix),
-    ...contributed.after("task"),
-    renderPlanModeSection(input.action, input.planMode ?? false, input.packAction ?? true),
-    ...contributed.after("planMode"),
+    // A member answers its assignment, not the step (EO-888): the task,
+    // its answer instructions and plan mode are the step's own agent's.
+    ...(member
+      ? []
+      : [
+          renderTaskSection(input.action, input.taskAppendix),
+          ...contributed.after("task"),
+          renderPlanModeSection(input.action, input.planMode ?? false, input.packAction ?? true),
+          ...contributed.after("planMode"),
+        ]),
     renderItemSection(input.item),
     ...contributed.after("item"),
     renderItemFilesSection(input.item),
@@ -1814,7 +1839,7 @@ export function assembleSeedContext(input: AssembleSeedContextInput): AssembledS
     renderParentKey(input.parentKey),
     renderDependencyKeys(input.dependencyKeys, input.dependencyNotes),
     renderPinned(input.pinnedComments ?? []),
-    renderTriggerSection(input.triggerComment),
+    member ? null : renderTriggerSection(input.triggerComment),
     renderHumanComments(input.humanComments),
     renderStepComments(input.stepComments),
     renderOmitted(input.omitted),

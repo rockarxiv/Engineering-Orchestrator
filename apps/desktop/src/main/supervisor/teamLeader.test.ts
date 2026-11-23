@@ -184,8 +184,8 @@ function sayingThen(make: (call: { opts: AgentProviderStartOptions; attemptId: s
     })();
 }
 
-const assign = (assignments: { key: string; member: string; instructions: string; required?: boolean }[], note = "Split it up.") => ({
-  outcome: { decision: "assign", assignments: assignments.map((one) => ({ required: true, ...one })), note },
+const assign = (assignments: { key: string; member: string; scope?: string; instructions: string; required?: boolean }[], note = "Split it up.") => ({
+  outcome: { decision: "assign", assignments: assignments.map((one) => ({ required: true, scope: "the whole change", ...one })), note },
 });
 const final = (answer: unknown, contributions: string[]) => ({
   outcome: { decision: "final", answer, contributions, disagreements: "None: they agree.", limitations: "Nothing was run, only read." },
@@ -250,8 +250,8 @@ describe("a leader-led team (EO-847)", () => {
     const release = gate();
     leaderTurns = [
       says(assign([
-        { key: "auth", member: "Sasha", instructions: "Look only at how the export authenticates." },
-        { key: "suite", member: "Tess", instructions: "Check the export's tests cover the CSV path.", required: false },
+        { key: "auth", member: "Sasha", scope: "the whole change", instructions: "Look only at how the export authenticates." },
+        { key: "suite", member: "Tess", scope: "the whole change", instructions: "Check the export's tests cover the CSV path.", required: false },
       ]), 3),
       sayingThen(({ opts }) => {
         // The reports are in this turn's context, each by its comment id.
@@ -313,7 +313,7 @@ describe("a leader-led team (EO-847)", () => {
     // A second agent of Sasha's kind, on no team: never chosen for an assignment to Sasha.
     createAgent(handle.db, { name: "Sol", role: "sec", provider: "codex", instructions: "Another security agent." });
     leaderTurns = [
-      says(assign([{ key: "auth", member: "Sasha", instructions: "Look at the login." }])),
+      says(assign([{ key: "auth", member: "Sasha", scope: "the whole change", instructions: "Look at the login." }])),
       sayingThen(() => final({ result: "aligned", summary: "Fine." }, [reportId("auth")])),
     ];
     participants = { Sasha: says(report("Login fine.")) };
@@ -329,6 +329,40 @@ describe("a leader-led team (EO-847)", () => {
     expect(first.context).toContain("- Sasha — a sec agent on claude, model claude-opus-4-5, reasoning high: Security");
     expect(started.filter((one) => one.agent !== "Lee").map((one) => one.agent)).toEqual(["Sasha"]);
     expect(attempts().find((attempt) => attempt.assignmentKey === "auth")).toMatchObject({ agentId: agentNamed("Sasha"), agentName: "Sasha", role: "sec" });
+  });
+
+  /**
+   * A report-only member reads what its assignment covers (EO-888): it is
+   * shown that under its assignment, told to read for it and to say what it
+   * did not read, and its standing instructions come without what they say
+   * only to an agent answering the step alone. The leader, which answers
+   * the step, keeps its own whole.
+   */
+  it("shows a member what its assignment covers, has it read for that, and leaves out what its instructions say only to an agent answering alone (EO-888)", async () => {
+    updateAgent(handle.db, agentNamed("Sasha"), { instructions: "You find ways in.\n<!-- alone -->\nRead every file in the change before you answer.\n<!-- /alone -->\nName the file and the case." });
+    updateAgent(handle.db, lee.id, { instructions: "You lead reviews.\n<!-- alone -->\nRead the whole change yourself.\n<!-- /alone -->" });
+    leaderTurns = [
+      says(assign([{ key: "auth", member: "Sasha", scope: "src/login.ts and the token refresh it calls", instructions: "Look at the login." }])),
+      sayingThen(({ opts }) => {
+        expect(opts.context).toContain("Covering: src/login.ts and the token refresh it calls");
+        return final({ result: "aligned", summary: "Fine." }, [reportId("auth")]);
+      }),
+    ];
+    participants = { Sasha: says(report("Login fine. Not read: the export itself.")) };
+    await supervisor().runOnce();
+
+    expect(getItem(handle.db, item.id)?.stepId).toBe("accepted");
+    const sasha = turnsOf("Sasha")[0]!.opts;
+    expect(sasha.context).toContain("## Your assignment: auth\n\n**What it covers:** src/login.ts and the token refresh it calls\n\nLook at the login.");
+    expect(sasha.instructions).toContain("Read what your assignment names and what that leads to");
+    expect(sasha.instructions).toContain("what you did not read that a reader might expect you to have");
+    expect(sasha.instructions).toContain("## Your standing instructions\n\nYou find ways in.\nName the file and the case.");
+    expect(sasha.instructions).not.toContain("Read every file in the change");
+    expect(sasha.instructions).not.toContain("<!-- alone -->");
+    const leader = turnsOf("Lee")[0]!.opts;
+    expect(leader.instructions).toContain("Read the whole change yourself.");
+    expect(leader.instructions).toContain("what it covers — the files, areas or questions it is about");
+    expect(listCommentsForItem(handle.db, item.id).some((comment) => comment.body.includes("**auth** (Sasha, sec), covering src/login.ts and the token refresh it calls: Look at the login."))).toBe(true);
   });
 
   it("does not offer the leader a member disabled since the team was published, nor any assignment once no member is left (EO-882)", async () => {
@@ -365,10 +399,10 @@ describe("a leader-led team (EO-847)", () => {
   it("follows up on an assignment, superseding its earlier report, and refuses a final answer that relies on the superseded one", async () => {
     let first = "";
     leaderTurns = [
-      says(assign([{ key: "auth", member: "Sasha", instructions: "Look at the login." }])),
+      says(assign([{ key: "auth", member: "Sasha", scope: "the whole change", instructions: "Look at the login." }])),
       sayingThen(() => {
         first = reportId("auth");
-        return assign([{ key: "auth", member: "Sasha", instructions: "You missed the token refresh: look at it." }], "Feedback: the refresh path matters most.");
+        return assign([{ key: "auth", member: "Sasha", scope: "the whole change", instructions: "You missed the token refresh: look at it." }], "Feedback: the refresh path matters most.");
       }),
       sayingThen(() => final({ result: "aligned", summary: "Fine." }, [first])),
       sayingThen(({ opts }) => {
@@ -404,14 +438,14 @@ describe("a leader-led team (EO-847)", () => {
     setTeam(leaderTeam({ limits: { maxParticipants: 2, maxRounds: 1, maxRetries: 1 } }));
     leaderTurns = [
       says(assign([
-        { key: "auth", member: "Sasha", instructions: "Look at the login." },
-        { key: "infra", member: "Ada", instructions: "Reconfigure the server." },
-        { key: LEADER_ASSIGNMENT_KEY, member: "Sasha", instructions: "Lead instead." },
-        { key: "suite", member: "Tess", instructions: "Read the tests." },
-        { key: "more", member: "Tess", instructions: "And more tests." },
+        { key: "auth", member: "Sasha", scope: "the whole change", instructions: "Look at the login." },
+        { key: "infra", member: "Ada", scope: "the whole change", instructions: "Reconfigure the server." },
+        { key: LEADER_ASSIGNMENT_KEY, member: "Sasha", scope: "the whole change", instructions: "Lead instead." },
+        { key: "suite", member: "Tess", scope: "the whole change", instructions: "Read the tests." },
+        { key: "more", member: "Tess", scope: "the whole change", instructions: "And more tests." },
       ])),
       // A second round, past the one allowed.
-      says(assign([{ key: "auth", member: "Sasha", instructions: "Again." }])),
+      says(assign([{ key: "auth", member: "Sasha", scope: "the whole change", instructions: "Again." }])),
       sayingThen(() => final({ result: "aligned", summary: "Fine." }, [reportId("auth"), reportId("suite")])),
     ];
     participants = { Sasha: says(report("Login fine.")), Tess: says(report("Tests fine.")) };
@@ -431,7 +465,7 @@ describe("a leader-led team (EO-847)", () => {
 
   it("does not let a contributor delegate: its answer is refused with the reason recorded, and retried within its limit", async () => {
     leaderTurns = [
-      says(assign([{ key: "auth", member: "Sasha", instructions: "Look at the login." }])),
+      says(assign([{ key: "auth", member: "Sasha", scope: "the whole change", instructions: "Look at the login." }])),
       sayingThen(() => final({ result: "aligned", summary: "Fine." }, [reportId("auth")])),
     ];
     let sashaTurns = 0;
@@ -454,7 +488,7 @@ describe("a leader-led team (EO-847)", () => {
   it("rejects a final answer with a missing required report, an invalid answer or an undeclared result, however the leader words it, and fails past its retries", async () => {
     setTeam(leaderTeam({ limits: { maxRetries: 2 } }));
     leaderTurns = [
-      says(assign([{ key: "auth", member: "Sasha", instructions: "Look at the login." }])),
+      says(assign([{ key: "auth", member: "Sasha", scope: "the whole change", instructions: "Look at the login." }])),
       // The required report is missing, and the leader says it is all done anyway.
       says(final({ result: "aligned", summary: "Everything was checked and is done." }, [])),
       says(final({ result: "shipped", summary: "Shipped." }, [])),
@@ -580,8 +614,8 @@ describe("a leader-led team (EO-847)", () => {
     setup("codex", { sec: "claude", tester: "codex" });
     leaderTurns = [
       says(assign([
-        { key: "auth", member: "Sasha", instructions: "Look at the login." },
-        { key: "suite", member: "Tess", instructions: "Read the tests." },
+        { key: "auth", member: "Sasha", scope: "the whole change", instructions: "Look at the login." },
+        { key: "suite", member: "Tess", scope: "the whole change", instructions: "Read the tests." },
       ])),
       sayingThen(() => final({ result: "aligned", summary: "Both agree." }, [reportId("auth"), reportId("suite")])),
     ];
@@ -626,7 +660,7 @@ describe("a leader-led team whose outcomes rule out a result (EO-873)", () => {
     );
   });
 
-  const auth = [{ key: "auth", member: "Sasha", instructions: "Look at the login." }];
+  const auth = [{ key: "auth", member: "Sasha", scope: "the whole change", instructions: "Look at the login." }];
   const finalSaying = (result: string, disagreements: string) =>
     sayingThen(() => ({ outcome: { decision: "final", answer: { result, summary: `It is ${result}.` }, contributions: [reportId("auth")], disagreements, limitations: "Only read." } }));
   const refusals = () => notes().filter((body) => body.startsWith("EO did not accept the leader's final answer"));
@@ -872,7 +906,7 @@ describe("a team member asking the person (EO-847)", () => {
         says(asks("Which release should the team check?")),
         sayingThen(({ opts }) => {
           expect(opts.context).toContain("**Answer:** Release 2.");
-          return assign([{ key: "auth", member: "Sasha", instructions: "Look at the login in release 2." }]);
+          return assign([{ key: "auth", member: "Sasha", scope: "the whole change", instructions: "Look at the login in release 2." }]);
         }),
         sayingThen(({ opts }) => {
           // Its own earlier question and answer are still in front of it on a later turn.
@@ -908,8 +942,8 @@ describe("a team member asking the person (EO-847)", () => {
     it("resumes the assignment that asked, keeps its sibling's report, and hands the leader both", async () => {
       leaderTurns = [
         says(assign([
-          { key: "auth", member: "Sasha", instructions: "Look at the login." },
-          { key: "suite", member: "Tess", instructions: "Read the tests." },
+          { key: "auth", member: "Sasha", scope: "the whole change", instructions: "Look at the login." },
+          { key: "suite", member: "Tess", scope: "the whole change", instructions: "Read the tests." },
         ])),
         sayingThen(({ opts }) => {
           expect(opts.context).toContain("Staging token leaks.");

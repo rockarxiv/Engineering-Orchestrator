@@ -65,7 +65,7 @@ describe("Software feature to merge", () => {
   const versions = () => loadTemplateHistory(GALLERY_DIRECTORY).get(SOFTWARE)!;
 
   it("has the graph from before EO-461, the one that gave up after a week, and the current one", () => {
-    expect(versions().map((version) => version.version)).toEqual(["1.0", "1.1", "1.2", "1.3", "1.4", "1.5", "1.6"]);
+    expect(versions().map((version) => version.version)).toEqual(["1.0", "1.1", "1.2", "1.3", "1.4", "1.5", "1.6", "1.7"]);
   });
 
   it("1.0 opens the pull request and waits at Done, with no step watching it", () => {
@@ -229,6 +229,34 @@ describe("Software feature to merge", () => {
     expect(strip(current!.document)).toEqual(strip(before!.document));
   });
 
+  /**
+   * 1.7 (EO-888): Review's lead says what each pass covers, and only the
+   * acceptance-criteria pass is given the whole change.
+   */
+  it("differs between 1.6 and 1.7 only in what Review's lead is told, which names what each pass covers (EO-888)", () => {
+    const all = versions();
+    const before = all.find((version) => version.version === "1.6")!;
+    const current = all.find((version) => version.version === "1.7")!;
+    const leaderOf = (document: TemplateVersion["document"]) => {
+      const team = document.steps.find((step) => step.id === "review")?.team;
+      return team?.coordination === "leader" ? team.leader.instructions : "";
+    };
+    const told = leaderOf(current.document);
+    expect(told).not.toBe(leaderOf(before.document));
+    // Every pass's line says what it covers, and only the criteria pass covers the whole change.
+    const passLines = told.split("\n").filter((line) => /^(\d+\. `\w+`:|- `\w+`, when )/.test(line));
+    expect(passLines.map((line) => /`(\w+)`/.exec(line)![1])).toEqual(["criteria", "impact", "tests", "rules", "security", "user_facing"]);
+    for (const line of passLines) expect(line, line).toContain("It covers");
+    expect(passLines.filter((line) => line.includes("the whole change")).map((line) => /`(\w+)`/.exec(line)![1])).toEqual(["criteria"]);
+    expect(current.notes).toContain("what each pass covers");
+    const strip = (document: TemplateVersion["document"]) => ({
+      ...document,
+      template: { ...document.template, version: "" },
+      steps: document.steps.map((step) => (step.team?.coordination === "leader" ? { ...step, team: { ...step.team, leader: { ...step.team.leader, instructions: "" } } } : step)),
+    });
+    expect(strip(current.document)).toEqual(strip(before.document));
+  });
+
   it("differs between 1.0 and 1.1 only in what EO-461 changed", () => {
     const [before, current] = versions();
     const strip = (document: TemplateVersion["document"]) => ({
@@ -286,7 +314,7 @@ describe("reading the history", () => {
   it("skips a damaged file and keeps the versions around it", () => {
     const directory = copyOfHistory();
     writeFileSync(join(templateHistoryDirectory(directory), SOFTWARE, "1.0.json"), "{ not json");
-    expect(loadTemplateHistory(directory).get(SOFTWARE)?.map((version) => version.version)).toEqual(["1.1", "1.2", "1.3", "1.4", "1.5", "1.6"]);
+    expect(loadTemplateHistory(directory).get(SOFTWARE)?.map((version) => version.version)).toEqual(["1.1", "1.2", "1.3", "1.4", "1.5", "1.6", "1.7"]);
   });
 
   it("skips a file whose path disagrees with the version it carries", () => {
@@ -298,7 +326,7 @@ describe("reading the history", () => {
 
     const history = loadTemplateHistory(directory);
     expect(history.has("somebody-else")).toBe(false);
-    expect(history.get(SOFTWARE)?.map((version) => version.version)).toEqual(["1.0", "1.1", "1.2", "1.3", "1.4", "1.5", "1.6"]);
+    expect(history.get(SOFTWARE)?.map((version) => version.version)).toEqual(["1.0", "1.1", "1.2", "1.3", "1.4", "1.5", "1.6", "1.7"]);
   });
 
   it("refuses a pack that asks for the admin grant, as every other door does", () => {

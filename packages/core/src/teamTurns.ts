@@ -34,12 +34,19 @@ export const LEADER_ASSIGNMENT_KEY = "leader";
 
 const KeySchema = z.string().regex(ACTION_KEY_PATTERN, "Use lowercase letters, digits and underscores.");
 
-/** One piece of work a leader asks for: a key of its choosing, a member of its team by name, and what to look at. */
+/** One piece of work a leader asks for: a key of its choosing, a member of its team by name, what it covers, and what to look at. */
 export const LeaderAssignmentSchema = z.strictObject({
   /** Stable for the assignment: a later round naming the same key is a follow-up that supersedes what it said. */
   key: KeySchema,
   /** The name of the team member who does it (EO-882). EO refuses a name that is not a member's. */
   member: z.string().trim().min(1),
+  /**
+   * What the assignment covers (EO-888): the files, areas or questions it
+   * is about. A member reads what this names and what that leads to, not
+   * the whole of the work, so only a pass that needs all of it names all
+   * of it. Shown to the member under its assignment.
+   */
+  scope: z.string().trim().min(1).max(2000),
   instructions: z.string().trim().min(1).max(4000),
   /** Whether the leader may not answer without it. EO holds the final answer to every required assignment's report. */
   required: z.boolean(),
@@ -297,10 +304,13 @@ export function leaderTurnSchema(members: readonly TeamMemberFacts[], answerDocu
                 ...members.map((member) => `- ${teamMemberLine(member)}`),
               ].join("\n"),
             },
+            scope: text(
+              "What this assignment covers: the files, areas or questions it is about. The member reads what this names and what that leads to, and no more, so name the whole change only for a pass that needs all of it.",
+            ),
             instructions: text("What to look at and report on."),
             required: { type: "boolean", description: "Whether you cannot answer without its report." },
           },
-          required: ["key", "member", "instructions", "required"],
+          required: ["key", "member", "scope", "instructions", "required"],
           additionalProperties: false,
         },
       },
