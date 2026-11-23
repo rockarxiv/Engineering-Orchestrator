@@ -169,6 +169,7 @@ import {
   answerAssistQuestions,
   forkAssistConversation,
   prewarmAssist,
+  recordSuggestedReplyUseCommand,
   readEarlierAssist,
   withdrawAssistMessage,
   stopAssistTurn,
@@ -1294,6 +1295,7 @@ export function registerAllHandlers(db: Db, engine: EngineHandle | undefined, re
   );
   // The backend started while a person types, so the turn starts sooner.
   registerHandler("assist:prewarm", (payload) => prewarmAssist(db, engine, payload), opts);
+  registerHandler("assist:suggestionUsed", (payload) => recordSuggestedReplyUseCommand(db, engine, payload), opts);
   // Older pages of a chat, read as the person scrolls back.
   registerHandler("assist:earlier", (payload) => readEarlierAssist(db, payload), opts);
   // A queued message taken back before its turn starts. Pushed, so every

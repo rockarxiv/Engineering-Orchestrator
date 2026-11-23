@@ -1200,6 +1200,8 @@ export interface RunSupervisor {
    * that comes later (EO-809): a person said something in it.
    */
   dropSuggestedReply: (conversationId: Uuid) => void;
+  /** Whether EO passed on a suggested reply for this chat after this run's turn (EO-895, `SuggestedReplies.made`). */
+  suggestedReplyMade: (conversationId: string, runId: string) => boolean;
   /** Asks for a tick soon — at once with `promptly`, for a person's own send. */
   notifyStateChange: (options?: { promptly?: boolean }) => void;
   /**
@@ -12750,6 +12752,7 @@ export function createRunSupervisor(
     notifyStateChange,
     prewarmConversation,
     dropSuggestedReply: (conversationId: Uuid) => suggestedReplies.drop(conversationId),
+    suggestedReplyMade: (conversationId: string, runId: string) => suggestedReplies.made(conversationId, runId),
     cancelRun,
     steerRun,
     shutdown,

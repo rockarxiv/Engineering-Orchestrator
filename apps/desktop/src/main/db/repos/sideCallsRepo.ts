@@ -93,21 +93,32 @@ export function mirrorReportedSideCall(db: Db, input: RecordSideCallInput & { id
 }
 
 export function listSideCalls(db: Db): SideCallRow[] {
+  return db.select().from(sideCalls).all().map(sideCallRowOf);
+}
+
+/** One run's side calls for one purpose, in the order they were recorded — the suggested reply's spend (EO-895). */
+export function listRunSideCalls(db: Db, runId: Uuid, purpose: SideCallPurpose): SideCallRow[] {
   return db
     .select()
     .from(sideCalls)
+    .where(and(eq(sideCalls.runId, runId), eq(sideCalls.purpose, purpose)))
+    .orderBy(sideCalls.startedAt, sideCalls.id)
     .all()
-    .map((row) => ({
-      ...row,
-      id: row.id as Uuid,
-      purpose: row.purpose as SideCallPurpose,
-      projectId: row.projectId as Uuid | null,
-      itemId: row.itemId as Uuid | null,
-      runId: row.runId as Uuid | null,
-      outcome: row.outcome as SideCallRow["outcome"],
-      reason: row.reason as SideCallFailureReason | null,
-      forkMode: forkModeOf(row.forkMode),
-    }));
+    .map(sideCallRowOf);
+}
+
+function sideCallRowOf(row: typeof sideCalls.$inferSelect): SideCallRow {
+  return {
+    ...row,
+    id: row.id as Uuid,
+    purpose: row.purpose as SideCallPurpose,
+    projectId: row.projectId as Uuid | null,
+    itemId: row.itemId as Uuid | null,
+    runId: row.runId as Uuid | null,
+    outcome: row.outcome as SideCallRow["outcome"],
+    reason: row.reason as SideCallFailureReason | null,
+    forkMode: forkModeOf(row.forkMode),
+  };
 }
 
 /** A stored `fork_mode` read back; anything else is null rather than a claim the row never made. */

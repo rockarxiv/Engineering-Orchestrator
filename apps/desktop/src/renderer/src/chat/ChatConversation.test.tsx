@@ -304,6 +304,128 @@ describe("a suggested reply in the conversation", () => {
   });
 });
 
+/**
+ * What the person did with a suggested reply that was shown (EO-895):
+ * reported over `assist:suggestionUsed`, each action once per suggestion.
+ */
+describe("what the person did with a suggested reply", () => {
+  function answered(extra: Record<string, unknown>[] = []) {
+    return {
+      ...running(),
+      thinking: false,
+      thinkingSince: null,
+      liveTurn: null,
+      messages: [message({ id: "h1", authorType: "human", authorName: "You", body: ASKED, createdAt: 1 }), message({ id: "a1", body: ANSWERED, runId: "run-0", createdAt: 2 }), ...extra],
+    } as unknown as ReturnType<typeof running>;
+  }
+
+  const box = () => screen.getByLabelText("Message the assistant");
+  const SUGGESTED = "approve the renewal";
+
+  /** The chat with a suggestion drawn in its box, every `assist:suggestionUsed` it reports, and what it sends. */
+  async function shown() {
+    conversation = answered();
+    const view = open();
+    await screen.findByText("Contoso renewal", { exact: false });
+    const uses: unknown[] = [];
+    const sends: unknown[] = [];
+    const fallback = window.eo.ipc.invoke as (channel: string, payload?: unknown) => Promise<unknown>;
+    window.eo.ipc.invoke = vi.fn(async (channel: string, payload?: unknown) => {
+      if (channel === "assist:suggestionUsed") {
+        uses.push(payload);
+        return { ok: true, data: { recorded: true } };
+      }
+      if (channel === "assist:send") {
+        sends.push(payload);
+        return { ok: true, data: { conversation: answered([message({ id: "h2", authorType: "human", authorName: "You", body: (payload as { body: string }).body, createdAt: 3, status: "queued" })]), delivery: null } };
+      }
+      return fallback(channel, payload);
+    }) as never;
+    push("assist:suggestion", { conversationId: CHAT, runId: "run-0", text: SUGGESTED });
+    expect(box()).toHaveAttribute("placeholder", SUGGESTED);
+    return { view, uses, sends };
+  }
+
+  const of = (action: string, extra: Record<string, unknown> = {}) => ({ conversationId: CHAT, runId: "run-0", action, ...extra });
+
+  it("reports shown once however often the box is drawn again", async () => {
+    const { view, uses } = await shown();
+    // Drawn again: a refetch, a pushed word for another run, a redraw of the whole room.
+    push("runs:changed", { runId: "run-9", itemId: "another-chat", status: "running" });
+    view.rerender(<ChatConversation narrow={false} />);
+    view.rerender(<ChatConversation narrow={false} />);
+    expect(box()).toHaveAttribute("placeholder", SUGGESTED);
+    expect(uses).toEqual([of("shown")]);
+  });
+
+  it.each(["Tab", "ArrowRight"])("reports %s as accepted, and the accepted text sent unchanged as sent from it, unedited", async (key) => {
+    const { uses, sends } = await shown();
+    act(() => {
+      fireEvent.keyDown(box(), { key });
+    });
+    expect(box()).toHaveValue(SUGGESTED);
+    act(() => {
+      fireEvent.keyDown(box(), { key: "Enter" });
+    });
+    await waitFor(() => expect(sends).toHaveLength(1));
+    expect(uses).toEqual([of("shown"), of("accepted"), of("sent", { edited: false })]);
+  });
+
+  it("reports an accepted suggestion changed before it was sent as sent from it, edited", async () => {
+    const { uses, sends } = await shown();
+    act(() => {
+      fireEvent.keyDown(box(), { key: "Tab" });
+    });
+    act(() => {
+      fireEvent.change(box(), { target: { value: `${SUGGESTED} and the invoices` } });
+    });
+    act(() => {
+      fireEvent.keyDown(box(), { key: "Enter" });
+    });
+    await waitFor(() => expect(sends).toHaveLength(1));
+    expect(uses).toEqual([of("shown"), of("accepted"), of("sent", { edited: true })]);
+  });
+
+  it("reports a suggestion typed over as dismissed, and nothing accepted or sent from it", async () => {
+    const { uses, sends } = await shown();
+    act(() => {
+      fireEvent.change(box(), { target: { value: FOLLOW_UP } });
+    });
+    act(() => {
+      fireEvent.keyDown(box(), { key: "Enter" });
+    });
+    await waitFor(() => expect(sends).toHaveLength(1));
+    expect(uses).toEqual([of("shown"), of("dismissed", { by: "typed_over" })]);
+  });
+
+  it("reports a suggestion a newer run in the chat took away as dismissed, and no accepted", async () => {
+    const { uses } = await shown();
+    push("runs:changed", { runId: "run-1", itemId: CHAT, status: "running" });
+    expect(box()).not.toHaveAttribute("placeholder", SUGGESTED);
+    act(() => {
+      fireEvent.keyDown(box(), { key: "Tab" });
+    });
+    expect(uses).toEqual([of("shown"), of("dismissed", { by: "newer_turn" })]);
+  });
+
+  it("reports a suggestion shown in a chat the person left as dismissed", async () => {
+    const { view, uses } = await shown();
+    view.unmount();
+    expect(uses).toEqual([of("shown"), of("dismissed", { by: "left" })]);
+  });
+
+  it("reports nothing of a suggestion that was never shown", async () => {
+    conversation = answered([message({ id: "q1", body: "Which board?", kind: "question", runId: "run-0", createdAt: 3, canAnswer: true, options: [] })]);
+    const view = open();
+    await screen.findByText("Which board?", { exact: false });
+    const invoke = window.eo.ipc.invoke as ReturnType<typeof vi.fn>;
+    push("assist:suggestion", { conversationId: CHAT, runId: "run-0", text: "the Delivery board" });
+    push("runs:changed", { runId: "run-1", itemId: CHAT, status: "running" });
+    view.unmount();
+    expect(invoke.mock.calls.filter(([channel]) => channel === "assist:suggestionUsed")).toEqual([]);
+  });
+});
+
 describe("a reply's work proposals in the conversation (EO-864)", () => {
   const proposal = (id: string, runId: string, createdAt: number) =>
     message({

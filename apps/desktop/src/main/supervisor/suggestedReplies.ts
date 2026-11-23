@@ -53,7 +53,18 @@ export interface SuggestedReplies {
   reading: (stream: InterruptibleStream<AgentEvent>) => { stream: AsyncIterable<AgentEvent>; afterResult: () => void };
   /** Stops reading for a chat's suggestion, and drops one that comes later. */
   drop: (conversationId: string) => void;
+  /**
+   * Whether a suggestion was passed on for this chat after this run's
+   * turn (EO-895): what the person did with one is recorded only for a
+   * suggestion EO made. Remembered for the last `MADE_REMEMBERED` made,
+   * and not across a restart — a suggestion is held nowhere, so no window
+   * can still be showing one from before.
+   */
+  made: (conversationId: string, runId: string) => boolean;
 }
+
+/** How many of the latest suggestions `made` remembers: far more than any person has open in front of them. */
+export const MADE_REMEMBERED = 1_000;
 
 interface Asked {
   conversationId: string;
@@ -67,6 +78,8 @@ export function createSuggestedReplies(options: { onSuggestion: (reply: Suggeste
   const asked = new WeakMap<object, Asked>();
   /** What is being read for each chat, once its turn's `result` is in. */
   const readers = new Map<string, Asked>();
+  /** The suggestions passed on, oldest first, as the run each followed and its chat. */
+  const made = new Map<string, string>();
 
   function drop(conversationId: string): void {
     const reader = readers.get(conversationId);
@@ -101,6 +114,9 @@ export function createSuggestedReplies(options: { onSuggestion: (reply: Suggeste
         if (step.value.type !== "prompt_suggestion") continue;
         const text = step.value.text.trim();
         if (text !== "" && readers.get(reader.conversationId) === reader && !reader.controller.signal.aborted) {
+          made.delete(reader.runId);
+          made.set(reader.runId, reader.conversationId);
+          if (made.size > MADE_REMEMBERED) made.delete(made.keys().next().value!);
           options.onSuggestion({ conversationId: reader.conversationId, runId: reader.runId, text });
         }
         return;
@@ -167,5 +183,7 @@ export function createSuggestedReplies(options: { onSuggestion: (reply: Suggeste
     },
 
     drop,
+
+    made: (conversationId, runId) => made.get(runId) === conversationId,
   };
 }
