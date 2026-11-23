@@ -85,6 +85,14 @@ describe("the turns' output schemas (EO-847)", () => {
     expect(leaderDoc?.$defs?.["answer"]?.$id).toBe("urn:eo:output-schema:answer");
   });
 
+  it("offers a leader with no member left nothing to assign, rather than an empty list of names", () => {
+    const answer = { $schema: "https://json-schema.org/draft/2020-12/schema", type: "object", properties: { result: { enum: ["ok"] } }, required: ["result"] };
+    expect(JSON.stringify(leaderTurnSchema([], answer))).not.toContain('"enum":[]');
+    const schema = jsonSchemaOutputSchema(leaderTurnSchema([], answer));
+    expect(schema.parse({ outcome: { decision: "final", answer: { result: "ok" }, contributions: [], disagreements: "None.", limitations: "None." } }).ok).toBe(true);
+    expect(schema.parse({ outcome: { decision: "assign", assignments: [{ key: "a", member: "Sasha", instructions: "Look.", required: true }], note: "" } }).ok).toBe(false);
+  });
+
   it("compiles, and accepts each kind of answer a leader may give and nothing else", () => {
     const answer = { $schema: "https://json-schema.org/draft/2020-12/schema", type: "object", properties: { result: { enum: ["ok"] }, summary: { type: "string" } }, required: ["result", "summary"], additionalProperties: false };
     const referring = { $schema: "https://json-schema.org/draft/2020-12/schema", $defs: { r: { enum: ["ok"] } }, type: "object", properties: { result: { $ref: "#/$defs/r" } }, required: ["result"] };

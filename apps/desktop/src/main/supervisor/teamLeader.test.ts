@@ -331,6 +331,25 @@ describe("a leader-led team (EO-847)", () => {
     expect(attempts().find((attempt) => attempt.assignmentKey === "auth")).toMatchObject({ agentId: agentNamed("Sasha"), agentName: "Sasha", role: "sec" });
   });
 
+  it("does not offer the leader a member disabled since the team was published, nor any assignment once no member is left (EO-882)", async () => {
+    updateAgent(handle.db, agentNamed("Tess"), { enabled: false });
+    leaderTurns = [says(final({ result: "aligned", summary: "Nothing to assign." }, []))];
+    await supervisor().runOnce();
+    const member = memberSchemaIn(turnsOf("Lee")[0]!.opts.outputSchema)!;
+    expect(member.enum).toEqual(["Sasha"]);
+    expect(member.description).not.toContain("Tess");
+
+    updateAgent(handle.db, agentNamed("Sasha"), { enabled: false });
+    started = [];
+    leaderTurns = [says(final({ result: "aligned", summary: "Nobody to assign." }, []))];
+    const next = createTestItem(handle.db, { type: "story", title: "Check the import", stepId: "check" });
+    await supervisor().runOnce();
+    const schema = started.find((one) => one.agent === "Lee")!.opts.outputSchema;
+    expect(memberSchemaIn(schema)).toBeUndefined();
+    expect(JSON.stringify(schema)).not.toContain('"enum":[]');
+    expect(getItem(handle.db, next.id)?.stepId).toBe("accepted");
+  });
+
   it("holds the leader to report-only: its turn has the four evidence tools alone, under its own attempt", async () => {
     leaderTurns = [says(final({ result: "aligned", summary: "Nothing to assign." }, []))];
     const engine = supervisor({

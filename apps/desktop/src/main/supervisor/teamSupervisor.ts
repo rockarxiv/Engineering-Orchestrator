@@ -6,8 +6,10 @@ import {
   readEvidenceBaseline,
   readLeaderAnswer,
   instructionsSummary,
+  isDispatchable,
   readParticipantAnswer,
   sessionTeamNamesAgents,
+  staffsItem,
   teamMemberLine,
   TEAM_ENFORCEMENT_UNAVAILABLE,
   TEAM_PARTICIPANT_ACTION,
@@ -588,8 +590,14 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
    * that is gone altogether is left out; one that cannot run now is still
    * named, and refused, saying why, when it is assigned.
    */
-  function membersOf(team: SessionLeaderTeam): { facts: TeamMemberFacts[]; members: LeaderTeamMember[] } {
-    const agents = (team.memberAgentIds ?? []).flatMap((agentId) => getAgent(db, agentId as Uuid) ?? []);
+  function membersOf(team: SessionLeaderTeam, item: Item): { facts: TeamMemberFacts[]; members: LeaderTeamMember[] } {
+    // Only those who could take an assignment on this item: a member
+    // disabled, archived or deleted since the team was published, or a
+    // preview's agent on a real item, is not offered to the leader.
+    const agents = (team.memberAgentIds ?? []).flatMap((agentId) => {
+      const agent = getAgent(db, agentId as Uuid);
+      return agent === undefined || agent.deletedAt !== null || !isDispatchable(agent) || !staffsItem(agent, item) ? [] : [agent];
+    });
     const counts = new Map<string, number>();
     for (const agent of agents) counts.set(agent.name, (counts.get(agent.name) ?? 0) + 1);
     const seen = new Map<string, number>();
@@ -1065,7 +1073,7 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
           parentRunId,
           team.coordination === "independent"
             ? `EO is running "${step.name}" as a team of ${team.participants.length}: ${team.participants.map((participant) => `**${participant.key}** (${agentWords(participant.agentId, participant.role)})`).join(", ")}, ${team.limits.maxParallel} at a time. Each reports here; EO decides the step's result from what they conclude.`
-            : `EO is running "${step.name}" as a team led by ${agentWords(team.leader.agentId, team.leader.role)}, who may assign work to ${membersOf(team).facts.map((member) => `${member.name} (${member.kind})`).join(", ") || "nobody"} — at most ${team.limits.maxParticipants} participants over ${team.limits.maxRounds} round${team.limits.maxRounds === 1 ? "" : "s"}, ${team.limits.maxParallel} at a time. Each assignment and report is posted here; the leader answers the step, and EO checks that answer before it is used.`,
+            : `EO is running "${step.name}" as a team led by ${agentWords(team.leader.agentId, team.leader.role)}, who may assign work to ${membersOf(team, item).facts.map((member) => `${member.name} (${member.kind})`).join(", ") || "nobody"} — at most ${team.limits.maxParticipants} participants over ${team.limits.maxRounds} round${team.limits.maxRounds === 1 ? "" : "s"}, ${team.limits.maxParallel} at a time. Each assignment and report is posted here; the leader answers the step, and EO checks that answer before it is used.`,
         );
       }
       const sessionId = session.id;
@@ -1524,7 +1532,7 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
         const exchange = exchangeOf(item.id, attempts, previous);
         const reportIds = ledger.contributions.flatMap((one) => (one.reportId === null ? [] : [one.reportId]));
         const leaderIds = attempts.flatMap((attempt) => (attempt.assignmentKey === LEADER_ASSIGNMENT_KEY && attempt.reportCommentId !== null ? [attempt.reportCommentId] : []));
-        const roster = membersOf(teamNow);
+        const roster = membersOf(teamNow, getItem(db, item.id) ?? item);
         return startTurn({
           key: LEADER_ASSIGNMENT_KEY,
           agentId: teamNow.leader.agentId,

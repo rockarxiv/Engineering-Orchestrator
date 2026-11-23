@@ -21,7 +21,7 @@ import {
   type WatchHold,
 } from "@eo/engine";
 import type { MemoryConsolidateNowResult, MemoryScope, OrganisationPolicy, PersonBudget } from "@eo/core";
-import { isDispatchable, isSystemAgent, mockedOutputBody, SYSTEM_ROLE, TEAM_PARTICIPANT_ACTION } from "@eo/core";
+import { isDispatchable, isSystemAgent, mockedOutputBody, staffsItem, SYSTEM_ROLE, TEAM_PARTICIPANT_ACTION } from "@eo/core";
 import {
   backendAllowed,
   disallowedBackendRefusal,
@@ -4438,7 +4438,11 @@ export function createRunSupervisor(
     if (!isAgentAvailable(agent)) return { kind: "wait", reason: `${agent.name} is not available on this desktop right now.` };
     const current = getAgent(db, agent.id);
     if (current === undefined || current.archivedAt !== null) return { kind: "refuse", reason: `${agent.name} has been archived.` };
+    if (!current.enabled) return { kind: "refuse", reason: `${agent.name} is disabled, so it cannot take part.` };
     if (!servesProject(current, item)) return { kind: "refuse", reason: `${agent.name} does not work on this item's project.` };
+    // A preview's agent runs previews only (`staffsItem`), as it would
+    // on any step of its own.
+    if (!staffsItem(current, item)) return { kind: "refuse", reason: `${agent.name} is a preview's agent, so it runs previews only and cannot take part in this item's team.` };
     if (!backendAllowed(readPolicy(db), current.provider)) return { kind: "refuse", reason: `Your organisation does not allow ${current.provider} agents to run, so ${agent.name} cannot take part.` };
     // The budget is the team's to share out (`allocateParticipantBudget`),
     // which stops the team when there is nothing left to share.
@@ -7771,7 +7775,20 @@ export function createRunSupervisor(
     // workspace — is the team's as it would be one agent's; what changes
     // is what answers.
     const teamStep = teamStepFor(item, action, opts.stepId);
-    if (teamStep !== null) {
+    if (teamStep !== null && teamStep.team === null) {
+      // A step that runs as a team whose team cannot be read is not run
+      // by its agent alone instead: it waits for a person, saying so.
+      refuseDispatch(
+        item,
+        agent,
+        action,
+        `"${teamStep.step.name}" runs as a team, but EO cannot read which team: the pipeline version this item is on names no declared team for the step, or the team it names is gone. EO did not run the step's agent alone in its place. Move the item to the pipeline's current version, or point the step at a team, and run it again.`,
+        initiationId,
+        nextAttempt,
+      );
+      return;
+    }
+    if (teamStep !== null && teamStep.team !== null) {
       await dispatchTeam(item, agent, action, teamStep.step, teamStep.team, workspace, initiationId, nextAttempt, opts);
       return;
     }
@@ -8128,17 +8145,24 @@ export function createRunSupervisor(
    * agent's too. A reply to a team's question is the step's entry action
    * again, so it reaches the team and adopts its session.
    */
-  function teamStepFor(item: Item, action: string, stepId: string | undefined): { step: PipelineStep; team: SessionTeam } | null {
+  /**
+   * The step this dispatch runs as a team, and the team it runs, or null
+   * where it is no team's. A step that runs as a team whose team EO
+   * cannot read comes back with a null team, for the dispatch to refuse,
+   * never as no team: running its agent alone would be a different step.
+   */
+  function teamStepFor(item: Item, action: string, stepId: string | undefined): { step: PipelineStep; team: SessionTeam | null } | null {
     if (item.previewAt !== null) return null;
     const step = stepForItem(db, getItem(db, item.id) ?? item);
     if (step === undefined || step.type !== "agent" || step.entryAction !== action) return null;
     if (stepId !== undefined && stepId !== step.id) return null;
     if (step.team === null || step.team === undefined) return null;
     // The declared team with its agents (EO-882): each part runs as the
-    // agent the team names. Read from what the step's team was read from,
-    // so the two stand or fall together.
-    const team = sessionTeamFor(db, step.teamId);
-    return team === null ? null : { step, team };
+    // agent the team names, as the team is now — on an older pipeline
+    // version too, by the `teamId` that version's step froze, since its
+    // frozen role-shaped team names kinds and running it would mean
+    // choosing agents by kind.
+    return { step, team: sessionTeamFor(db, step.teamId) };
   }
 
   /**

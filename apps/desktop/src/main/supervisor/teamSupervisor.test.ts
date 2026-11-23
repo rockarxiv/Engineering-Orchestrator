@@ -20,12 +20,13 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DbHandle } from "../db/client.js";
 import { saveActionDefinition } from "../db/repos/actionDefinitionsRepo.js";
-import { createAgent } from "../db/repos/agentsRepo.js";
+import { createAgent, listAgents, updateAgent } from "../db/repos/agentsRepo.js";
 import { insertAttachments } from "../db/repos/attachmentsRepo.js";
 import { listCommentsForItem } from "../db/repos/commentsRepo.js";
 import { createRoute } from "../db/repos/index.js";
 import { getItem } from "../db/repos/itemsRepo.js";
 import { createStep } from "../db/repos/pipelineStepsRepo.js";
+import { bindItemToVersion, createPipelineVersion } from "../db/repos/pipelineVersionsRepo.js";
 import { createRun, getRun, listRunsForItem, sumCostCentsForItem } from "../db/repos/runsRepo.js";
 import {
   acceptTeamReport,
@@ -341,6 +342,21 @@ describe("an independent team on an agent step (EO-846)", () => {
     expect(listTransitionsForItem(handle.db, item.id)).toEqual([]);
   });
 
+  it("runs no member disabled since the team was published: its attempt fails saying why, and the other member still runs (EO-882)", async () => {
+    const tess = listAgents(handle.db).find((agent) => agent.name === "Tess")!;
+    updateAgent(handle.db, tess.id, { enabled: false });
+    script = ({ agent }) => answer("clear", `${agent.name} found nothing.`);
+    await supervisor().runOnce();
+    expect(started.map((one) => one.agent)).toEqual(["Sasha"]);
+    const tests = listTeamSessionsForItem(handle.db, item.id)[0]!.attempts.filter((attempt) => attempt.assignmentKey === "tests");
+    expect(tests.length).toBeGreaterThan(0);
+    expect(tests.every((attempt) => attempt.status === "failed" && attempt.error === "Tess is disabled, so it cannot take part.")).toBe(true);
+    expect(reportsOn(item.id).map((comment) => comment.body.split("\n")[0])).toEqual(["**security** — Nothing found"]);
+    // A required member that cannot run is not read as a result.
+    expect(getItem(handle.db, item.id)?.stepId).toBe("check");
+    expect(listTransitionsForItem(handle.db, item.id)).toEqual([]);
+  });
+
   it("shares the budget between turns running at once and keeps every cent spent when it is stopped", async () => {
     const engine = supervisor({ guards: { perItemBudgetCents: 100 } });
     // Each reports 10¢ more as it winds down after the stop, and an answer EO must not take.
@@ -413,6 +429,43 @@ describe("an independent team on an agent step (EO-846)", () => {
     expect(started.slice(2).map((one) => one.opts.budgetCents)).toEqual([40, 40]);
     expect(getItem(handle.db, item.id)?.stepId).toBe("accepted");
     expect(getItem(handle.db, second.id)?.stepId).toBe("accepted");
+  });
+});
+
+describe("an independent team on an older pipeline version (EO-882)", () => {
+  /** Pins the item to a version whose "check" step froze its team inline and no team id, as 0185 left one whose live step had lost its team. */
+  function pinToVersionNamingNoTeam(): void {
+    const older = createPipelineVersion(handle.db, "default");
+    createPipelineVersion(handle.db, "default");
+    bindItemToVersion(handle.db, item.id, older.id);
+    const row = client().prepare("SELECT steps FROM pipeline_versions WHERE id = ?").get(older.id) as { steps: string };
+    const steps = (JSON.parse(row.steps) as { id: string; team: unknown; teamId?: string | null }[]).map((step) => (step.id === "check" ? { ...step, teamId: null } : step));
+    expect(steps.find((step) => step.id === "check")?.team).not.toBeNull();
+    client().prepare("UPDATE pipeline_versions SET steps = ? WHERE id = ?").run(JSON.stringify(steps), older.id);
+  }
+
+  it("refuses a step whose team it cannot read, saying so on the item, and does not run the step's agent alone", async () => {
+    pinToVersionNamingNoTeam();
+    script = ({ agent }) => answer("clear", `${agent.name} found nothing.`);
+    await supervisor().runOnce();
+    expect(started).toEqual([]);
+    expect(listTeamSessionsForItem(handle.db, item.id)).toEqual([]);
+    expect(getItem(handle.db, item.id)?.stepId).toBe("check");
+    expect(listTransitionsForItem(handle.db, item.id)).toEqual([]);
+    expect(teamRun().map((run) => run.status)).toEqual(["awaiting_input"]);
+    expect(listCommentsForItem(handle.db, item.id).some((comment) => comment.body.includes('"Alignment" runs as a team, but EO cannot read which team'))).toBe(true);
+    // The owner's provider throws if it is ever started; nothing it would have said is here.
+    expect(summary()).toBeUndefined();
+  });
+
+  it("runs the team its version's step names as that team is now, each member as its own agent", async () => {
+    const older = createPipelineVersion(handle.db, "default");
+    createPipelineVersion(handle.db, "default");
+    bindItemToVersion(handle.db, item.id, older.id);
+    script = ({ agent }) => answer("clear", `${agent.name} found nothing.`);
+    await supervisor().runOnce();
+    expect(started.map((one) => one.agent).sort()).toEqual(["Sasha", "Tess"]);
+    expect(getItem(handle.db, item.id)?.stepId).toBe("accepted");
   });
 });
 

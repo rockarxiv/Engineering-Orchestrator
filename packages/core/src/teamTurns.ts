@@ -185,38 +185,41 @@ export function leaderTurnSchema(members: readonly TeamMemberFacts[], answerDocu
   const defs: Record<string, unknown> = {};
   const answer = placeSubschema(answerDocument, "answer", defs);
   const text = (description: string) => ({ type: "string", description });
+  // With nobody left to assign to there is no round to ask for, and an
+  // empty `enum` is a schema some backends refuse outright.
+  const assign = {
+    type: "object",
+    description: "Ask for a round of work. Your turn ends here; EO runs the assignments and starts your next turn with their reports.",
+    properties: {
+      decision: { type: "string", const: "assign" },
+      assignments: {
+        type: "array",
+        minItems: 1,
+        items: {
+          type: "object",
+          properties: {
+            key: text("A short key for this assignment (lowercase letters, digits, underscores). Use an earlier key again to ask that assignment to follow up."),
+            member: {
+              type: "string",
+              enum: members.map((member) => member.name),
+              description: ["Which member of your team does it, by name:", ...members.map((member) => `- ${teamMemberLine(member)}`)].join("\n"),
+            },
+            instructions: text("What to look at and report on."),
+            required: { type: "boolean", description: "Whether you cannot answer without its report." },
+          },
+          required: ["key", "member", "instructions", "required"],
+          additionalProperties: false,
+        },
+      },
+      note: text("Why you ask for this, and any feedback on what came back."),
+    },
+    required: ["decision", "assignments", "note"],
+    additionalProperties: false,
+  };
   const document: JsonSchema = {
     $schema: dialectOf(answerDocument),
     anyOf: [
-      {
-        type: "object",
-        description: "Ask for a round of work. Your turn ends here; EO runs the assignments and starts your next turn with their reports.",
-        properties: {
-          decision: { type: "string", const: "assign" },
-          assignments: {
-            type: "array",
-            minItems: 1,
-            items: {
-              type: "object",
-              properties: {
-                key: text("A short key for this assignment (lowercase letters, digits, underscores). Use an earlier key again to ask that assignment to follow up."),
-                member: {
-                  type: "string",
-                  enum: members.map((member) => member.name),
-                  description: ["Which member of your team does it, by name:", ...members.map((member) => `- ${teamMemberLine(member)}`)].join("\n"),
-                },
-                instructions: text("What to look at and report on."),
-                required: { type: "boolean", description: "Whether you cannot answer without its report." },
-              },
-              required: ["key", "member", "instructions", "required"],
-              additionalProperties: false,
-            },
-          },
-          note: text("Why you ask for this, and any feedback on what came back."),
-        },
-        required: ["decision", "assignments", "note"],
-        additionalProperties: false,
-      },
+      ...(members.length === 0 ? [] : [assign]),
       {
         type: "object",
         description: "Answer the step. EO checks every required report is in and that this answer is valid before it is used.",
