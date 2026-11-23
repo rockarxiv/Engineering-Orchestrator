@@ -55,7 +55,7 @@ const NOT_CATALOGUED: Partial<Record<RecordChannel, string>> = {
   // assistant's draft a person publishes; restoring and locking are a
   // person's guards on a team, which an agent holding them could undo.
   "teams:restore": "restoring a team's version is a person's guard on what its leader and the assistant changed, so no agent may do it",
-  "teams:setMemberSettings": "which runtime, model and reasoning a team's member runs on is a person's choice in the Teams tab; no step-owning agent may change what it or a teammate is dispatched with",
+  "teams:setMemberSettings": "the Teams tab's one-member change, by agent id; EO's tools change members by name through teams:setMembersSettings (team_member_settings_set, EO-900), and no step-owning agent is served either",
   "teams:setLocked": "locking a team is a person's guard against agents changing it, so no agent may lift or set it",
   // The command-line tool catalogue (EO-819, EO-822). List, save and
   // archive are tools, and the ticks ride on agent_attachments_list and

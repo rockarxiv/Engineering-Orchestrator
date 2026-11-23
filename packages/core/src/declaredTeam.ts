@@ -332,12 +332,19 @@ export function sessionTeamOf(team: TeamDefinition, kindOf: (agentId: string) =>
  * EO itself declaring a team that already ran inline — the migration
  * from step teams, an imported document, a copy from the organisation's
  * record — and is never a change to a team somebody declared.
+ *
+ * `system` is EO's system agent changing members' runtime, model and
+ * reasoning on `eo_admin`, and `client` an outside client doing the same
+ * over EO's MCP server (EO-900) — each known from the door the call came
+ * through, never from what the caller said.
  */
 export const TeamAuthorSchema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("person"), personId: z.string().nullable().default(null) }),
   z.strictObject({ kind: z.literal("assistant") }),
   z.strictObject({ kind: z.literal("leader"), agentId: z.string(), itemId: z.string() }),
   z.strictObject({ kind: z.literal("eo") }),
+  z.strictObject({ kind: z.literal("system"), agentId: z.string() }),
+  z.strictObject({ kind: z.literal("client") }),
 ]);
 export type TeamAuthor = z.infer<typeof TeamAuthorSchema>;
 
@@ -407,6 +414,8 @@ export const TeamMemberOriginSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("assistant") }),
   z.object({ kind: z.literal("leader"), itemId: z.string(), itemKey: z.string().nullable() }),
   z.object({ kind: z.literal("eo") }),
+  z.object({ kind: z.literal("system") }),
+  z.object({ kind: z.literal("client") }),
 ]);
 export type TeamMemberOrigin = z.infer<typeof TeamMemberOriginSchema>;
 

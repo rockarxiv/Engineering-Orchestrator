@@ -1,10 +1,12 @@
 import { and, asc, eq, inArray, isNull } from "drizzle-orm";
 import { backendAllowed, bindingRefusal, storedTeamDefinition, teamAgentIds } from "@eo/core";
-import type { Agent, IpcPayload, IpcResponse, TeamDefinition, TeamMemberOrigin, TeamMemberView, TeamVersion, TeamVersionView, TeamView } from "@eo/core";
+import type { Agent, IpcPayload, IpcResponse, RuntimeStatusView, TeamAuthor, TeamDefinition, TeamMemberOrigin, TeamMemberView, TeamVersion, TeamVersionView, TeamView, Uuid } from "@eo/core";
 import type { Db } from "../db/client.js";
 import { items, people, projects, teams } from "../db/schema.js";
-import { listAgents } from "../db/repos/agentsRepo.js";
-import { archiveTeam, deleteTeam, getTeam, listTeamVersions, memberSettingsOf, restoreTeamVersion, setTeamLocked, setTeamMemberSettings, stepsNamingTeam, teamOwnedAgents, type StoredTeam } from "../db/repos/teamsRepo.js";
+import { getAgent, listAgents } from "../db/repos/agentsRepo.js";
+import { archiveTeam, deleteTeam, getTeam, listTeamVersions, memberSettingsOf, restoreTeamVersion, setTeamLocked, setTeamMemberSettings, setTeamMembersSettings, stepsNamingTeam, teamOwnedAgents, type StoredTeam } from "../db/repos/teamsRepo.js";
+import { foldCase } from "../db/textFold.js";
+import { RUNTIMES } from "../runtimes/catalog.js";
 import { stepsInWords, stepsNamingTeams } from "./configCommands.js";
 import { readPolicy } from "../policy/policy.js";
 import { agentReasoningEffort } from "../providers/smallModels.js";
@@ -92,7 +94,12 @@ export function listTeamViews(db: Db): TeamView[] {
         (version): TeamVersionView => ({
           number: version.number,
           author: version.author,
-          authorName: version.author.kind === "person" ? nameOf(version.author.personId) : version.author.kind === "leader" ? (agents.get(version.author.agentId)?.name ?? null) : null,
+          authorName:
+            version.author.kind === "person"
+              ? nameOf(version.author.personId)
+              : version.author.kind === "leader" || version.author.kind === "system"
+                ? (agents.get(version.author.agentId)?.name ?? null)
+                : null,
           itemKey: version.author.kind === "leader" ? keyOf(version.author.itemId) : null,
           restoredFrom: version.restoredFrom,
           note: version.note,
@@ -159,6 +166,105 @@ export function setTeamMemberSettingsCommand(db: Db, input: IpcPayload<"teams:se
   const caller = actingCaller(db, input.actingDeviceId);
   const result = setTeamMemberSettings(db, input.teamId, input.agentId, { provider: input.provider, model: input.model, reasoning: input.reasoning }, { personId: caller.person?.id ?? null });
   return result.ok ? { saved: result.changed, problem: null } : { saved: false, problem: result.reason };
+}
+
+/**
+ * What this machine says of a runtime, for a change that would put team
+ * members on it (EO-900): null for one that runs inside EO and has no CLI
+ * (`fake`). Asked of EO's managed copy, as the Teams tab asks.
+ */
+export type RuntimeReadiness = (provider: string) => Promise<RuntimeStatusView | null>;
+
+/** The runtimes a member may be put on: every one EO manages, and the one built in. */
+const KNOWN_RUNTIMES: readonly string[] = [...Object.keys(RUNTIMES), "fake"];
+
+/**
+ * What the Teams tab says under a member's runtime where this machine
+ * cannot run it, said back for a change that put `count` members on it
+ * anyway (EO-900), or null where it can. Neither the tab nor the tool
+ * refuses it: the setting is the team's, and the machine is only where it
+ * runs now. A runtime with no CLI (`fake`) is never said.
+ */
+export function runtimeReadinessNote(runtime: RuntimeStatusView | null, count: number): string | null {
+  if (runtime === null) return null;
+  const who = count === 1 ? "this member cannot" : "these members cannot";
+  if (runtime.source === "absent") return `${runtime.label} is not installed on this machine, so ${who} run here until somebody installs it on the Runtimes tab.`;
+  if (runtime.path === null) return `${runtime.label} is turned off on this machine, so ${who} run here until somebody turns it on on the Runtimes tab.`;
+  if (runtime.auth.state === "signed_out") return `This machine is not signed in to ${runtime.label}, so ${who} run here until somebody signs in on the Runtimes tab.`;
+  return null;
+}
+
+/**
+ * One or more members of a declared team set to a runtime, model and
+ * reasoning through EO's tools (EO-900): the Teams tab's change, under the
+ * Teams tab's rules, for several members at once and as one version. The
+ * members are named by their names within the team, the leader's
+ * included. Refused whole, nothing written, for a team that is not shown
+ * there, a locked team, a name that is no member, a runtime EO has none
+ * of, a backend the organisation does not allow, or whatever the write
+ * itself refuses. The team's model range is not asked: it bounds only the
+ * members a leader adds (docs/teams.md). A runtime this machine has not
+ * installed or is not signed in to is saved, and said back as `note`, as
+ * the tab says it under the picker. The version is the system agent's
+ * where the administrative host stamped one, an outside client's where
+ * the MCP tool said so, a person's otherwise.
+ */
+export async function setTeamMembersSettingsCommand(db: Db, input: IpcPayload<"teams:setMembersSettings">, readiness: RuntimeReadiness): Promise<IpcResponse<"teams:setMembersSettings">> {
+  const refuse = (problem: string, version: number | null) => ({ saved: false, changed: [], version, problem, note: null });
+  const team = shownTeam(db, input.teamId);
+  if (team === undefined) return refuse("That team no longer exists.", null);
+  if (team.locked) return refuse(`The team "${team.name}" is locked: a person must unlock it before it can change.`, team.version);
+  const definition = team.definition;
+  if (definition === null) return refuse(`EO cannot read what the team "${team.name}" declares, so it cannot change a member of it.`, team.version);
+
+  // Its members by name, the leader's included — once each, as the Teams tab lists them.
+  const named = new Map<string, { agentId: string; name: string }>();
+  for (const agentId of teamAgentIds(definition)) {
+    const agent = getAgent(db, agentId as Uuid);
+    if (agent !== undefined && agent.deletedAt === null && !named.has(foldCase(agent.name.trim()))) named.set(foldCase(agent.name.trim()), { agentId, name: agent.name });
+  }
+  const unknown = input.members.filter((name) => !named.has(foldCase(name.trim())));
+  if (unknown.length > 0) {
+    const listed = [...named.values()].map((member) => `"${member.name}"`).join(", ");
+    return refuse(`${unknown.map((name) => `"${name.trim()}"`).join(", ")} ${unknown.length === 1 ? "is" : "are"} not on the team "${team.name}", whose leader and members are ${listed || "none"}. Nothing has changed.`, team.version);
+  }
+  const targets = [...new Map(input.members.map((name) => named.get(foldCase(name.trim())) as { agentId: string; name: string }).map((member) => [member.agentId, member])).values()];
+
+  const provider = input.provider.trim();
+  if (!KNOWN_RUNTIMES.includes(provider)) return refuse(`EO has no runtime called "${provider}": a member runs on one of ${KNOWN_RUNTIMES.map((id) => `"${id}"`).join(", ")}. Nothing has changed.`, team.version);
+  const settings = { provider, model: input.model === null || input.model.trim() === "" ? null : input.model.trim(), reasoning: input.reasoning === null || input.reasoning.trim() === "" ? null : input.reasoning.trim() };
+  const disallowed = disallowedBackend(
+    db,
+    targets.map((member) => ({ agentId: member.agentId, provider })),
+  );
+  if (disallowed !== null) return refuse(disallowed, team.version);
+  const note = runtimeReadinessNote(await readiness(provider), targets.length);
+
+  const author: TeamAuthor =
+    input.actingAgentId !== undefined
+      ? { kind: "system", agentId: input.actingAgentId }
+      : input.throughClient === true
+        ? { kind: "client" }
+        : { kind: "person", personId: actingCaller(db, input.actingDeviceId).person?.id ?? null };
+  const before = memberSettingsOf(
+    db,
+    targets.map((member) => member.agentId),
+  );
+  // Asked again after the wait for the runtime: a person may have locked or changed the team meanwhile, and the write refuses what it must.
+  const result = setTeamMembersSettings(
+    db,
+    team.id,
+    targets.map((member) => member.agentId),
+    settings,
+    { author },
+  );
+  if (!result.ok) return refuse(result.reason, getTeam(db, team.id)?.version ?? null);
+  const after = memberSettingsOf(
+    db,
+    targets.map((member) => member.agentId),
+  );
+  const changed = targets.filter((member) => JSON.stringify(before[member.agentId]) !== JSON.stringify(after[member.agentId])).map((member) => member.name);
+  return { saved: true, changed, version: result.team.version, problem: null, note };
 }
 
 export function restoreTeamCommand(db: Db, input: IpcPayload<"teams:restore">): IpcResponse<"teams:restore"> {

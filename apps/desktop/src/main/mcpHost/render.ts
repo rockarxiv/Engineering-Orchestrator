@@ -19,6 +19,7 @@ import {
   WEBHOOK_UNATTENDED_CARD_KIND,
   WEBHOOK_UNATTENDED_LABEL,
   type IpcRequest,
+  type TeamMemberView,
   type IpcResponse,
   type ItemReference,
   type ItemReviewers,
@@ -872,12 +873,19 @@ export function renderAgents(data: IpcResponse<"agents:listDetailed">): string {
  * that run as it. An archived team is not listed.
  */
 export function renderTeams(data: IpcResponse<"teams:list">): string {
+  // What each member runs on (EO-900), so a reader can say what a team runs before team_member_settings_set changes it.
+  const runsOn = (member: TeamMemberView) =>
+    `${member.name ?? member.agentId}: runtime ${member.provider ?? "none"}, model ${member.model ?? "the runtime's default"}, reasoning ${member.reasoning ?? "the model's default"}${member.archived ? " (archived)" : ""}`;
+  const declared = (values: readonly string[] | undefined) => (values === undefined || values.length === 0 ? "any" : values.join(", "));
   return list(
     data.teams.map((team) => {
       const where = team.projectName === null ? "on no project" : `project ${team.projectName}`;
       const who = [...(team.leader === null ? [] : [`leader ${team.leader.name ?? team.leader.agentId}`]), `members ${team.members.map((member) => member.name ?? member.agentId).join(", ") || "none"}`].join(", ");
       const used = team.steps.length === 0 ? "no step runs as it" : `run by ${team.steps.map((step) => `"${step.stepName}" on ${step.pipelineName}`).join(", ")}`;
-      return `- ${team.name} (id: ${team.id}, ${where}, version ${String(team.version)}${team.locked ? ", locked" : ""}) — ${who}; ${used}`;
+      const range = team.modelRange === null ? [] : [`  model range: runtimes ${declared(team.modelRange.runtimes)}; models ${declared(team.modelRange.models)}; reasoning ${declared(team.modelRange.reasoning)}`];
+      const leaderIsMember = team.leader !== null && team.members.some((member) => member.agentId === team.leader?.agentId);
+      const lines = [...(team.leader === null || leaderIsMember ? [] : [`  - leader ${runsOn(team.leader)}`]), ...team.members.map((member) => `  - ${team.leader?.agentId === member.agentId ? "leader and member" : "member"} ${runsOn(member)}`)];
+      return [`- ${team.name} (id: ${team.id}, ${where}, version ${String(team.version)}${team.locked ? ", locked" : ""}) — ${who}; ${used}`, ...range, ...lines].join("\n");
     }),
     "No teams are declared.",
   );

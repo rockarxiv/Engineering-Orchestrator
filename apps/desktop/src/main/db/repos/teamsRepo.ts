@@ -113,6 +113,7 @@ export function teamByName(db: Db, projectId: string | null, name: string): Stor
 function authorColumns(author: TeamAuthor): { authorKind: string; authorId: string | null; authorItemId: string | null } {
   if (author.kind === "person") return { authorKind: "person", authorId: author.personId, authorItemId: null };
   if (author.kind === "leader") return { authorKind: "leader", authorId: author.agentId, authorItemId: author.itemId };
+  if (author.kind === "system") return { authorKind: "system", authorId: author.agentId, authorItemId: null };
   return { authorKind: author.kind, authorId: null, authorItemId: null };
 }
 
@@ -120,6 +121,8 @@ function authorOf(row: typeof teamVersions.$inferSelect): TeamAuthor {
   if (row.authorKind === "person") return { kind: "person", personId: row.authorId };
   if (row.authorKind === "leader") return { kind: "leader", agentId: row.authorId ?? "", itemId: row.authorItemId ?? "" };
   if (row.authorKind === "assistant") return { kind: "assistant" };
+  if (row.authorKind === "system") return { kind: "system", agentId: row.authorId ?? "" };
+  if (row.authorKind === "client") return { kind: "client" };
   return { kind: "eo" };
 }
 
@@ -561,6 +564,17 @@ export function restoreTeamVersion(db: Db, id: string, number: number, person: {
  * already has write nothing, and a version refused writes nothing either.
  */
 export function setTeamMemberSettings(db: Db, id: string, agentId: string, settings: TeamMemberSettings, person: { personId: string | null; now?: number }): TeamWrite {
+  return setTeamMembersSettings(db, id, [agentId], settings, { author: { kind: "person", personId: person.personId }, ...(person.now === undefined ? {} : { now: person.now }) });
+}
+
+/**
+ * Several members set to one runtime, model and reasoning effort (EO-900),
+ * as `setTeamMemberSettings` sets one, by `author`: every one checked
+ * first, and the lot written as one version of the team, so one restore
+ * puts all of them back. Refused whole where any member is refused; where
+ * every member already runs on them, nothing is written.
+ */
+export function setTeamMembersSettings(db: Db, id: string, agentIds: readonly string[], settings: TeamMemberSettings, by: { author: TeamAuthor; now?: number }): TeamWrite {
   const team = getTeam(db, id);
   if (team === undefined) return { ok: false, reason: "That team no longer exists." };
   if (team.archivedAt !== null) return { ok: false, reason: archivedReason(team) };
@@ -568,21 +582,25 @@ export function setTeamMemberSettings(db: Db, id: string, agentId: string, setti
   if (team.definition === null) return { ok: false, reason: `EO cannot read what the team "${team.name}" declares, so it cannot change a member of it.` };
   const definition = team.definition;
   const ids = teamAgentIds(definition);
-  if (!ids.includes(agentId)) return { ok: false, reason: `That agent is not on the team "${team.name}".` };
-  const agent = getAgent(db, agentId as Uuid);
-  if (agent === undefined || agent.deletedAt !== null) return { ok: false, reason: "That member's agent no longer exists." };
-  // Changing a member changes the team alone (EO-897): never an agent the team does not own.
-  if (agent.teamId !== id) return { ok: false, reason: `${agent.name} is not the team "${team.name}"'s own agent, so changing it would change more than the team.` };
-  if (agent.archivedAt !== null) return { ok: false, reason: `${agent.name} is archived: restore it before changing its runtime, model or reasoning.` };
+  const targets = [...new Set(agentIds)];
+  for (const agentId of targets) {
+    if (!ids.includes(agentId)) return { ok: false, reason: `That agent is not on the team "${team.name}".` };
+    const agent = getAgent(db, agentId as Uuid);
+    if (agent === undefined || agent.deletedAt !== null) return { ok: false, reason: "That member's agent no longer exists." };
+    // Changing a member changes the team alone (EO-897): never an agent the team does not own.
+    if (agent.teamId !== id) return { ok: false, reason: `${agent.name} is not the team "${team.name}"'s own agent, so changing it would change more than the team.` };
+    if (agent.archivedAt !== null) return { ok: false, reason: `${agent.name} is archived: restore it before changing its runtime, model or reasoning.` };
+  }
   const wanted: TeamMemberSettings = { provider: settings.provider, model: settings.model === null || settings.model.trim() === "" ? null : settings.model.trim(), reasoning: settings.reasoning === null || settings.reasoning.trim() === "" ? null : settings.reasoning.trim() };
-  const before = memberSettingsOf(db, [agentId])[agentId];
-  if (before !== undefined && JSON.stringify(before) === JSON.stringify(wanted)) return { ok: true, team, changed: false };
+  const before = memberSettingsOf(db, targets);
+  const moving = targets.filter((agentId) => before[agentId] === undefined || JSON.stringify(before[agentId]) !== JSON.stringify(wanted));
+  if (moving.length === 0) return { ok: true, team, changed: false };
   try {
     return db.transaction((tx) => {
       const inTx = tx as unknown as Db;
-      applyMemberSettings(inTx, id, agentId, wanted);
-      const written = changeTeam(inTx, id, { definition, author: { kind: "person", personId: person.personId }, memberSettings: memberSettingsOf(inTx, ids), ...(person.now === undefined ? {} : { now: person.now }) });
-      // No version, no change: a refusal undoes the agent's new settings with it.
+      for (const agentId of moving) applyMemberSettings(inTx, id, agentId, wanted);
+      const written = changeTeam(inTx, id, { definition, author: by.author, memberSettings: memberSettingsOf(inTx, ids), ...(by.now === undefined ? {} : { now: by.now }) });
+      // No version, no change: a refusal undoes the agents' new settings with it.
       if (!written.ok) throw new VersionRefused(written.reason);
       return written;
     });

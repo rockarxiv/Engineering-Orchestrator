@@ -2317,6 +2317,49 @@ export const recordContract = {
     z.object({ saved: z.boolean(), problem: z.string().nullable() }),
   ),
   /**
+   * One or more members of a declared team set to a runtime, model and
+   * reasoning effort through EO's tools (EO-900): by EO's system agent on
+   * `eo_admin`, or by an outside client over EO's MCP server. The members
+   * are named by their names within the team, the leader's included. What
+   * the Teams tab's change does, under its rules, as one version of the
+   * team made by whoever asked — the system agent (`actingAgentId`, which
+   * only EO's administrative host stamps), an outside client
+   * (`throughClient`, which only the MCP tool sets) or the person. Refused
+   * whole, as `problem`, for a locked team, a name that is no member of it,
+   * a runtime EO has none of, or a backend the organisation does not
+   * allow. The team's model range is not asked, as the tab does not ask it:
+   * it bounds only the members a leader adds. A runtime this machine has
+   * not installed or is not signed in to is saved, and said as `note`, as
+   * the tab says it. Never a member's instructions, kind, tools or the
+   * team's membership (invariant 11).
+   */
+  "teams:setMembersSettings": channel(
+    z.object({
+      teamId: z.string(),
+      /** The members' names within the team. */
+      members: z.array(z.string().trim().min(1)).min(1).max(64),
+      provider: z.string().min(1),
+      /** Null is the runtime's default model. */
+      model: z.string().nullable().default(null),
+      /** Null is the model's default reasoning effort. */
+      reasoning: z.string().nullable().default(null),
+      /** Set by the MCP tool on EO's outside listener alone: the version is the client's. */
+      throughClient: z.boolean().optional(),
+      ...ACTING_DEVICE,
+      ...ACTING_AGENT,
+    }),
+    z.object({
+      saved: z.boolean(),
+      /** The members whose settings changed, by name; empty where each already ran on them. */
+      changed: z.array(z.string()),
+      /** The team's version after the call, or null where there is no such team. */
+      version: z.number().int().positive().nullable(),
+      problem: z.string().nullable(),
+      /** Where it saved: what this machine says of the runtime, as the Teams tab says it under the picker — not installed, turned off or not signed in — or null. */
+      note: z.string().nullable(),
+    }),
+  ),
+  /**
    * A person locking a team against every change, the leader's additions
    * included, or unlocking it (EO-881, EO-884). A guard, not a change to
    * what the team is: it writes no version.
@@ -8341,6 +8384,8 @@ export const ACTOR_SCOPED_CHANNELS = [
   // EO-884. A restore or a member's new settings is a version made by whoever asked, which only the door knows.
   "teams:restore",
   "teams:setMemberSettings",
+  // EO-900. The same change through EO's tools, a version made by whoever asked.
+  "teams:setMembersSettings",
   "items:decide",
   "items:claim",
   "items:assign",
@@ -8417,6 +8462,8 @@ export const AGENT_ACTED_CHANNELS = [
   "skills:setEnabled",
   "skills:archive",
   "skills:restoreVersion",
+  // A team's version is filed with its author: the system agent setting its members' runtime, model and reasoning (EO-900).
+  "teams:setMembersSettings",
 ] as const satisfies readonly IpcChannel[];
 
 /** The field EO's administrative MCP host stamps, spelled once. */
