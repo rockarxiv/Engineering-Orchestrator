@@ -5,7 +5,7 @@ import { StepTeamSchema, TEAM_PARTICIPANT_ACTION, uuidv7, type Agent, type Agent
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DbHandle } from "../db/client.js";
 import { saveActionDefinition } from "../db/repos/actionDefinitionsRepo.js";
-import { createAgent } from "../db/repos/agentsRepo.js";
+import { createAgent, listAgents } from "../db/repos/agentsRepo.js";
 import { listCommentsForItem } from "../db/repos/commentsRepo.js";
 import { createRoute } from "../db/repos/index.js";
 import { getItem } from "../db/repos/itemsRepo.js";
@@ -166,6 +166,8 @@ afterEach(async () => {
   rmSync(scratch, { recursive: true, force: true });
 });
 
+/** The reviewer the team runs: its own copy of the step's reviewer (EO-897). */
+const teamsReviewer = () => listAgents(handle.db).find((agent) => agent.name === reviewer.name && agent.teamId !== null)!.id;
 const memberRuns = (item: Item) => listRunsForItem(handle.db, item.id).filter((run) => run.action === TEAM_PARTICIPANT_ACTION);
 const stepOf = (item: Item) => getItem(handle.db, item.id)?.stepId;
 
@@ -180,7 +182,7 @@ describe("a team session against EO's caps (EO-871)", () => {
     const done = engine.runOnce();
     await vi.waitFor(() => expect(running).toBe(4));
     // Four members of the one agent at once, inside the session's one slot.
-    expect(memberRuns(team).filter((run) => run.status === "running").map((run) => run.agentId)).toEqual(Array(4).fill(reviewer.id));
+    expect(memberRuns(team).filter((run) => run.status === "running").map((run) => run.agentId)).toEqual(Array(4).fill(teamsReviewer()));
     // The session holds the slot a single run of the step would: another tick starts nothing on the other item.
     const again = engine.runOnce();
     await new Promise((resolve) => setTimeout(resolve, 50));
@@ -233,7 +235,7 @@ describe("a team session against EO's caps (EO-871)", () => {
     const done = engine.runOnce();
     // Four members on each item at once: eight turns, past any one team's limit, and held back by nothing else.
     await vi.waitFor(() => expect(running).toBe(8));
-    for (const one of [team, second]) expect(memberRuns(one).filter((run) => run.status === "running" && run.agentId === reviewer.id)).toHaveLength(4);
+    for (const one of [team, second]) expect(memberRuns(one).filter((run) => run.status === "running" && run.agentId === teamsReviewer())).toHaveLength(4);
     expect(listCommentsForItem(handle.db, team.id).concat(listCommentsForItem(handle.db, second.id)).filter((comment) => comment.body.includes("is waiting for room to start"))).toEqual([]);
 
     release.open();

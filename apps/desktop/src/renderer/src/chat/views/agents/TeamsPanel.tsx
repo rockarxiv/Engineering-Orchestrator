@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "react-router-dom";
-import { Lock, LockOpen, SlidersHorizontal, Sparkles } from "lucide-react";
+import { Archive, Lock, LockOpen, SlidersHorizontal, Sparkles, Trash2 } from "lucide-react";
 import { backendAllowed, memberModeWords, NOT_ALLOWED_BY_YOUR_ORGANISATION, summarizeInstructions } from "@eo/core";
 import type { TeamMemberView, TeamVersionView, TeamView } from "@eo/core";
 import { cn } from "@eo/ui";
@@ -11,7 +11,7 @@ import { useInvalidateOnPush } from "../../../query/useInvalidateOnPush";
 import { PROVIDERS, runtimeLabel } from "../../../shared/agents/catalog";
 import { useRuntimeStatus } from "../../../shared/agents/runtimeStatus";
 import { useAskAssistant } from "../../askAssistant";
-import { Button, CardSection, Chip, EmptyState, ErrorLine, Facts, Field, Loading, Select } from "../../kit";
+import { Button, CardSection, Chip, Dialog, EmptyState, ErrorLine, Facts, Field, Loading, Select } from "../../kit";
 import { when } from "../item/parts";
 import { agentDetailsKey } from "../../../shared/settings/primitives";
 import { ModelField, reasoningLevelsFor } from "./AgentEditor";
@@ -30,6 +30,10 @@ import { ModelField, reasoningLevelsFor } from "./AgentEditor";
  * the assistant's draft and Publish, or by its leader adding a member
  * (EO-880) — so nothing here edits them, and the one way to is the link
  * to the assistant.
+ *
+ * And archive or delete it (EO-897), its own agents with it: asked first
+ * unconfirmed, which changes nothing and says what goes with it, or why it
+ * is refused — a lock, or the steps that still name it.
  */
 
 /** Under `agentsKey`, so whatever refreshes the agents refreshes the teams naming them. */
@@ -268,6 +272,90 @@ function ChangeWithAssistant() {
   );
 }
 
+type TeamRemoval = "archive" | "delete";
+
+/** The answer to an archive or delete, whichever was asked. */
+interface RemovalAnswer {
+  done: boolean;
+  problem: string | null;
+  members: string[];
+}
+
+function removeTeam(teamId: string, removal: TeamRemoval, confirm: boolean): Promise<RemovalAnswer> {
+  return removal === "delete"
+    ? ipcQuery("teams:delete", { teamId, confirm }).then((result) => ({ done: result.deleted, problem: result.problem, members: result.members }))
+    : ipcQuery("teams:archive", { teamId, confirm }).then((result) => ({ done: result.archived, problem: result.problem, members: result.members }));
+}
+
+/**
+ * The confirmation in front of archiving or deleting a team (EO-897). What
+ * it says is the main process's unconfirmed answer, not anything cached:
+ * nothing is offered to confirm until that answer is in, and a refusal is
+ * shown as the sentence it came back as.
+ */
+function ConfirmRemoveTeam({ team, removal, onDone, onCancel }: { team: TeamView; removal: TeamRemoval; onDone: () => void; onCancel: () => void }) {
+  const verb = removal === "delete" ? "Delete" : "Archive";
+  const asked = useQuery({ queryKey: ["teams", "removal", team.id, removal], queryFn: () => removeTeam(team.id, removal, false), gcTime: 0, staleTime: 0 });
+  const confirm = useMutation({
+    mutationFn: () => removeTeam(team.id, removal, true),
+    onSuccess: (answer) => {
+      if (answer.done) onDone();
+    },
+  });
+  const answer = asked.data ?? null;
+  const problem = confirm.error?.message ?? (confirm.data !== undefined && !confirm.data.done ? (confirm.data.problem ?? "Nothing was changed.") : null) ?? asked.error?.message ?? answer?.problem ?? null;
+  const offered = answer !== null && answer.problem === null;
+
+  return (
+    <Dialog
+      open
+      onClose={onCancel}
+      busy={confirm.isPending}
+      title={`${verb} ${team.name}?`}
+      footer={
+        <>
+          <Button variant="ghost" onClick={onCancel} disabled={confirm.isPending}>
+            {offered ? "Keep it" : "Close"}
+          </Button>
+          {offered ? (
+            <Button variant="danger" disabled={confirm.isPending} onClick={() => confirm.mutate()}>
+              {verb} {team.name}
+            </Button>
+          ) : null}
+        </>
+      }
+    >
+      <div className="flex flex-col gap-3 text-[13px] leading-relaxed text-ink-muted">
+        {asked.isLoading ? <p role="status">Checking what uses it…</p> : null}
+        {offered ? (
+          <>
+            <p>
+              {removal === "delete"
+                ? "The team and its versions go, and its own agents with it. Their past runs and comments keep their names. This cannot be undone."
+                : "It leaves this tab and no step can run as it. Its own agents are archived with it, and nothing brings it back."}
+            </p>
+            {answer.members.length > 0 ? (
+              <div aria-label="Agents that go with it" className="flex flex-col gap-1">
+                <p>Its own agents go with it:</p>
+                <ul className="list-disc pl-5">
+                  {answer.members.map((name) => (
+                    <li key={name}>{name}</li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+          </>
+        ) : null}
+        {problem !== null ? (
+          <p role="alert" className="text-danger">
+            {problem}
+          </p>
+        ) : null}
+      </div>
+    </Dialog>
+  );
+}
+
 function TeamDetail({ team }: { team: TeamView }) {
   const queryClient = useQueryClient();
   // Restoring or unlocking changes what the graph's steps run as, so an organisation's published pipelines hold both (EO-884).
@@ -283,6 +371,7 @@ function TeamDetail({ team }: { team: TeamView }) {
   });
   const lock = useMutation({ mutationFn: (locked: boolean) => ipcQuery("teams:setLocked", { teamId: team.id, locked }), onSuccess: refresh });
   const problem = restore.error?.message ?? lock.error?.message ?? (restore.data?.restored === false ? restore.data.problem : null) ?? lock.data?.problem ?? null;
+  const [removing, setRemoving] = useState<TeamRemoval | null>(null);
 
   return (
     <div className="flex min-w-0 flex-col gap-3">
@@ -295,10 +384,19 @@ function TeamDetail({ team }: { team: TeamView }) {
             : `${team.coordination === "leader" ? "Leader-led" : "Independent"}, with ${memberModeWords(team.memberMode ?? "report_only")} members${team.projectName === null ? "" : ` · ${team.projectName}`} · version ${String(team.version)}`
         }
         actions={
+          // Archiving and deleting a team are writes into the graph too, held by the same lock (EO-897).
           graphManaged ? null : (
-            <Button icon={team.locked ? <LockOpen size={13} /> : <Lock size={13} />} disabled={lock.isPending} onClick={() => lock.mutate(!team.locked)}>
-              {team.locked ? "Unlock" : "Lock"}
-            </Button>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button icon={team.locked ? <LockOpen size={13} /> : <Lock size={13} />} disabled={lock.isPending} onClick={() => lock.mutate(!team.locked)}>
+                {team.locked ? "Unlock" : "Lock"}
+              </Button>
+              <Button icon={<Archive size={13} />} onClick={() => setRemoving("archive")}>
+                Archive
+              </Button>
+              <Button icon={<Trash2 size={13} />} onClick={() => setRemoving("delete")}>
+                Delete
+              </Button>
+            </div>
           )
         }
       >
@@ -313,6 +411,17 @@ function TeamDetail({ team }: { team: TeamView }) {
           <span className="text-[12px] text-ink-subtle">A team's instructions and members change only through the assistant's draft, or by its leader adding a member.</span>
         </div>
         {problem !== null ? <ErrorLine>{problem}</ErrorLine> : null}
+        {removing !== null ? (
+          <ConfirmRemoveTeam
+            team={team}
+            removal={removing}
+            onCancel={() => setRemoving(null)}
+            onDone={() => {
+              setRemoving(null);
+              refresh();
+            }}
+          />
+        ) : null}
       </CardSection>
 
       {team.leader !== null ? (

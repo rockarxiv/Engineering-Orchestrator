@@ -80,6 +80,12 @@ describe("declaredTeamProblems (EO-881)", () => {
     expect(declaredTeamProblems([step], { projectId: "p1", registry, teams: facts(null), agents })[0]?.message).toBe('"Review" runs as the team "Review leads", which EO cannot read.');
   });
 
+  it("refuses a team a person archived (EO-897), naming the step and the team", () => {
+    expect(declaredTeamProblems([step], { projectId: "p1", registry, teams: [{ ...facts(leader())[0]!, archived: true }], agents })).toEqual([
+      { stepId: "s1", message: '"Review" runs as the team "Review leads", which is archived: an archived team runs nowhere, so have the step run as another team, or as none.' },
+    ]);
+  });
+
   it("refuses a leader whose kind lacks the step's action, naming the step, the team and the leader", () => {
     const tester = leader({ leader: { agentId: "tests", instructions: "Lead." }, members: [{ agentId: "sec" }] });
     expect(declaredTeamProblems([step], { projectId: "p1", registry, teams: facts(tester), agents })).toEqual([

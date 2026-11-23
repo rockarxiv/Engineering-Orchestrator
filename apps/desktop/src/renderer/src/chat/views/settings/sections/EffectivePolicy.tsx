@@ -17,7 +17,8 @@ export function EffectivePolicy() {
   const agents = useQuery({ queryKey: agentsKey, queryFn: () => ipcQuery("agents:list", undefined) });
   // Live ones: an archived agent is kept for the record and is not one
   // this installation has (EO-186).
-  const live = agents.data ? agents.data.agents.filter((agent) => agent.archivedAt === null).length : null;
+  // Ordinary ones: a team's own agent is counted with its team (EO-897).
+  const live = agents.data ? agents.data.agents.filter((agent) => agent.archivedAt === null && (agent.teamId ?? null) === null).length : null;
   const count = (value: number | null) => <span className="font-mono tabular-nums">{value === null ? "—" : value}</span>;
 
   return (

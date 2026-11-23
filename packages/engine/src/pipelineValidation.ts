@@ -551,6 +551,13 @@ export function validatePipeline(input: ValidatePipelineInput): WorkflowProblem[
           stateId: step.id,
           message: `"${step.name}" names an agent this installation does not have, so there is nobody to dispatch it to. Choose another agent for it.`,
         });
+      } else if (agent.teamId !== null && agent.teamId !== undefined) {
+        // A team's own agent runs in its team and nowhere else (EO-897).
+        problems.push({
+          severity: "error",
+          stateId: step.id,
+          message: `"${step.name}" names ${agent.name}, which belongs to a team and runs only as part of it — choose an ordinary agent for the step, or have the step run as that team.`,
+        });
       } else if (agent.projectId !== null && agent.projectId !== projectId) {
         problems.push({
           severity: "error",

@@ -1,10 +1,11 @@
-import { and, asc, eq, inArray, isNull } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
 import {
   DEFAULT_TEAM_MEMBER_CAP,
   generatedTeamName,
   TeamDefinitionSchema,
   sessionTeamOf,
   stepTeamOf,
+  isTeamOwned,
   staffingAgents,
   storedTeamDefinition,
   teamAgentIds,
@@ -15,7 +16,7 @@ import type { Agent, SessionTeam, StepTeam, TeamAuthor, TeamDefinition, TeamMemb
 import type { AgentToolSurface, PipelineTeamFacts } from "@eo/engine";
 import type { Db } from "../client.js";
 import { foldCase } from "../textFold.js";
-import { getAgent, listAgents, updateAgent } from "./agentsRepo.js";
+import { createAgent, deleteAgent, getAgent, listAgents, updateAgent } from "./agentsRepo.js";
 import { agentReasoningEffort, reasoningEffortKey } from "../../providers/smallModels.js";
 import { agentCliTools, agentMcpServers, agentSkills, agents, cliTools, mcpServers, pipelineSteps, pipelines, skills, teamVersions, teams } from "../schema.js";
 
@@ -38,6 +39,8 @@ export interface StoredTeam {
   locked: boolean;
   version: number;
   definition: TeamDefinition | null;
+  /** When a person archived it (EO-897), or null. */
+  archivedAt: number | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -53,6 +56,7 @@ function toTeam(row: typeof teams.$inferSelect): StoredTeam {
     locked: row.locked,
     version: row.version,
     definition: storedTeamDefinition(row.definition),
+    archivedAt: row.archivedAt,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -63,18 +67,22 @@ export function getTeam(db: Db, id: string): StoredTeam | undefined {
   return row === undefined ? undefined : toTeam(row);
 }
 
-/** A project's teams, by name; `null` for the teams of pipelines on no project. */
+/**
+ * A project's teams, by name; `null` for the teams of pipelines on no
+ * project. An archived team is left out (EO-897): nothing may name it, and
+ * its name is free for another team.
+ */
 export function listTeams(db: Db, projectId: string | null): StoredTeam[] {
   return db
     .select()
     .from(teams)
-    .where(projectId === null ? isNull(teams.projectId) : eq(teams.projectId, projectId))
+    .where(and(projectId === null ? isNull(teams.projectId) : eq(teams.projectId, projectId), isNull(teams.archivedAt)))
     .orderBy(asc(teams.name), asc(teams.id))
     .all()
     .map(toTeam);
 }
 
-/** Every team, whichever project it is on. */
+/** Every team, whichever project it is on, archived ones included. */
 export function listAllTeams(db: Db): StoredTeam[] {
   return db.select().from(teams).orderBy(asc(teams.name), asc(teams.id)).all().map(toTeam);
 }
@@ -137,9 +145,10 @@ export function memberSettingsOf(db: Db, agentIds: readonly string[]): Record<st
  * and nothing else of it: the reasoning under the backend's own key, any
  * the other backend kept dropped, since it means nothing there.
  */
-function applyMemberSettings(db: Db, agentId: string, settings: TeamMemberSettings): void {
+function applyMemberSettings(db: Db, teamId: string, agentId: string, settings: TeamMemberSettings): void {
   const agent = getAgent(db, agentId as Uuid);
-  if (agent === undefined) return;
+  // Only ever the team's own agent (EO-897): no ordinary agent changes with a team.
+  if (agent === undefined || agent.teamId !== teamId) return;
   const config: Record<string, unknown> = { ...agent.config };
   // Whichever backend's key it was kept under: it means nothing on another.
   for (const provider of [agent.provider, settings.provider]) {
@@ -186,9 +195,91 @@ function touchPipelinesNaming(db: Db, teamId: string, now: number): void {
     .run();
 }
 
+/** Why an archived team refuses a change (EO-897): archiving is one-way. */
+function archivedReason(team: Pick<StoredTeam, "name">): string {
+  return `The team "${team.name}" is archived: an archived team does not change, and is not brought back.`;
+}
+
 function nameTaken(db: Db, projectId: string | null, name: string, except: string | null): boolean {
   const other = teamByName(db, projectId, name);
   return other !== undefined && other.id !== except;
+}
+
+/**
+ * A copy of `agent` owned by the team (EO-897): the same name, kind,
+ * runtime, model, instructions, config (reasoning included), state and
+ * tool surface, on the team's project. No prompt hash, so a newer shipped
+ * role prompt never rewrites a member's instructions outside its team's
+ * versions. What migration 0187 does in SQL for the teams it found.
+ */
+function copyAgentForTeam(db: Db, agent: Agent, team: { id: string; projectId: string | null }, now: number): string {
+  const copy = createAgent(db, {
+    name: agent.name,
+    role: agent.role,
+    provider: agent.provider,
+    model: agent.model,
+    instructions: agent.instructions,
+    promptHash: null,
+    config: { ...agent.config },
+    enabled: agent.enabled,
+    projectId: team.projectId as Uuid | null,
+    teamId: team.id,
+  });
+  if (agent.archivedAt !== null || agent.deletedAt !== null) db.update(agents).set({ archivedAt: agent.archivedAt, deletedAt: agent.deletedAt }).where(eq(agents.id, copy.id)).run();
+  for (const row of db.select().from(agentCliTools).where(eq(agentCliTools.agentId, agent.id)).all()) db.insert(agentCliTools).values({ ...row, agentId: copy.id, createdAt: now }).run();
+  for (const row of db.select().from(agentMcpServers).where(eq(agentMcpServers.agentId, agent.id)).all()) db.insert(agentMcpServers).values({ ...row, agentId: copy.id, createdAt: now }).run();
+  for (const row of db.select().from(agentSkills).where(eq(agentSkills.agentId, agent.id)).all()) db.insert(agentSkills).values({ ...row, agentId: copy.id, createdAt: now }).run();
+  return copy.id;
+}
+
+/**
+ * The definition naming only the team's own agents (EO-897), and which
+ * agent each one it named became. An ordinary agent — or another team's
+ * — cannot be a member: naming one makes it a new agent the team owns.
+ * That is the team's live agent of the same name and kind where it
+ * already has one the definition does not otherwise name (so restoring a
+ * version from before the team's agents were its own, or saving a
+ * trial's copy of a team again, names what the team already has), or
+ * else a new copy (`copyAgentForTeam`). An id no agent has is kept as
+ * written, for `validateTeam` to refuse. Inside the caller's transaction.
+ *
+ * `create: false` makes nothing: an agent the team has no agent for is
+ * kept as written — what a write would come to where it makes nothing.
+ */
+export function ownedTeamDefinition(
+  db: Db,
+  team: { id: string; projectId: string | null },
+  definition: TeamDefinition,
+  now: number = Date.now(),
+  options: { create?: boolean } = {},
+): { definition: TeamDefinition; became: Map<string, string> } {
+  const named = teamAgentIds(definition);
+  const became = new Map<string, string>();
+  const taken = new Set(named);
+  let own: Agent[] | null = null;
+  for (const agentId of new Set(named)) {
+    const agent = getAgent(db, agentId as Uuid);
+    if (agent === undefined || agent.teamId === team.id) continue;
+    own ??= teamOwnedAgents(db, team.id);
+    const key = foldCase(agent.name.trim());
+    const kept = own.find((one) => !taken.has(one.id) && one.deletedAt === null && one.archivedAt === null && one.role === agent.role && foldCase(one.name.trim()) === key);
+    if (kept === undefined && options.create === false) continue;
+    const ownId = kept?.id ?? copyAgentForTeam(db, agent, team, now);
+    taken.add(ownId);
+    became.set(agentId, ownId);
+  }
+  if (became.size === 0) return { definition, became };
+  const asOwn = (agentId: string) => became.get(agentId) ?? agentId;
+  const owned: TeamDefinition =
+    definition.coordination === "leader"
+      ? { ...definition, leader: { ...definition.leader, agentId: asOwn(definition.leader.agentId) }, members: definition.members.map((member) => ({ ...member, agentId: asOwn(member.agentId) })) }
+      : { ...definition, members: definition.members.map((member) => ({ ...member, agentId: asOwn(member.agentId) })) };
+  return { definition: owned, became };
+}
+
+/** Recorded member settings, keyed by the agents they became (`ownedTeamDefinition`). */
+function settingsBecame(settings: Record<string, TeamMemberSettings>, became: ReadonlyMap<string, string>): Record<string, TeamMemberSettings> {
+  return Object.fromEntries(Object.entries(settings).map(([agentId, one]) => [became.get(agentId) ?? agentId, one]));
 }
 
 /**
@@ -225,8 +316,10 @@ export function createTeam(
   const now = input.now ?? Date.now();
   const id = input.id ?? uuidv7();
   return db.transaction((tx) => {
-    tx.insert(teams).values({ id, projectId: input.projectId, name: definition.name, definition, locked: false, version: 1, createdAt: now, updatedAt: now }).run();
-    writeVersion(tx as unknown as Db, id, 1, definition, input.author, null, now);
+    // Its members are its own agents (EO-897).
+    const owned = ownedTeamDefinition(tx as unknown as Db, { id, projectId: input.projectId }, definition, now).definition;
+    tx.insert(teams).values({ id, projectId: input.projectId, name: definition.name, definition: owned, locked: false, version: 1, createdAt: now, updatedAt: now }).run();
+    writeVersion(tx as unknown as Db, id, 1, owned, input.author, null, now);
     return { ok: true, team: getTeam(tx as unknown as Db, id) as StoredTeam, changed: true };
   });
 }
@@ -257,16 +350,25 @@ export function changeTeam(
 ): TeamWrite {
   const team = getTeam(db, id);
   if (team === undefined) return { ok: false, reason: "That team no longer exists." };
+  if (team.archivedAt !== null) return { ok: false, reason: archivedReason(team) };
   const definition = TeamDefinitionSchema.parse(input.definition);
-  // Writing what it already is changes nothing, so a locked team allows it.
-  if (input.restoredFrom === undefined && input.memberSettings === undefined && sameDefinition(team.definition, definition)) return { ok: true, team, changed: false };
+  // Writing what it already is changes nothing, so a locked team allows it —
+  // its own agents named by the agents they were copied from included (EO-897).
+  if (input.restoredFrom === undefined && input.memberSettings === undefined && sameDefinition(team.definition, ownedTeamDefinition(db, team, definition, 0, { create: false }).definition)) {
+    return { ok: true, team, changed: false };
+  }
   if (team.locked) return { ok: false, reason: `The team "${team.name}" is locked: a person must unlock it before it can change.` };
   if (nameTaken(db, team.projectId, definition.name, id)) return { ok: false, reason: `This project already has a team called "${definition.name}".` };
   const now = input.now ?? Date.now();
-  return db.transaction((tx) => {
+  return db.transaction((tx): TeamWrite => {
+    // Its members are its own agents (EO-897): an agent the change names
+    // that is not becomes one, and what was recorded for it goes with it.
+    const { definition: owned, became } = ownedTeamDefinition(tx as unknown as Db, team, definition, now);
+    if (input.restoredFrom === undefined && input.memberSettings === undefined && sameDefinition(team.definition, owned)) return { ok: true, team, changed: false };
+    const settings = input.memberSettings === undefined ? undefined : settingsBecame(input.memberSettings, became);
     const number = team.version + 1;
-    writeVersion(tx as unknown as Db, id, number, definition, input.author, input.restoredFrom ?? null, now, input.memberSettings);
-    tx.update(teams).set({ name: definition.name, definition, version: number, updatedAt: now }).where(eq(teams.id, id)).run();
+    writeVersion(tx as unknown as Db, id, number, owned, input.author, input.restoredFrom ?? null, now, settings);
+    tx.update(teams).set({ name: definition.name, definition: owned, version: number, updatedAt: now }).where(eq(teams.id, id)).run();
     touchPipelinesNaming(tx as unknown as Db, id, now);
     return { ok: true, team: getTeam(tx as unknown as Db, id) as StoredTeam, changed: true };
   });
@@ -286,15 +388,29 @@ export function restoreTeamVersion(db: Db, id: string, number: number, person: {
   const when = person.now === undefined ? {} : { now: person.now };
   const recorded = version.memberSettings;
   if (recorded === null) return changeTeam(db, id, { definition: version.definition, author, restoredFrom: number, ...when });
-  return db.transaction((tx) => {
-    const inTx = tx as unknown as Db;
-    const current = memberSettingsOf(inTx, teamAgentIds(version.definition));
-    const restored = Object.fromEntries(Object.entries(recorded).filter(([agentId]) => current[agentId] !== undefined));
-    const written = changeTeam(inTx, id, { definition: version.definition, author, restoredFrom: number, memberSettings: { ...current, ...restored }, ...when });
-    if (!written.ok) return written;
-    for (const [agentId, settings] of Object.entries(restored)) applyMemberSettings(inTx, agentId, settings);
-    return written;
-  });
+  const team = getTeam(db, id);
+  if (team === undefined) return { ok: false, reason: "That team no longer exists." };
+  if (team.archivedAt !== null) return { ok: false, reason: archivedReason(team) };
+  if (team.locked) return { ok: false, reason: `The team "${team.name}" is locked: a person must unlock it before it can change.` };
+  try {
+    return db.transaction((tx) => {
+      const inTx = tx as unknown as Db;
+      // A version from before the team's agents were its own names ordinary
+      // agents (EO-897): it is restored naming the team's own, and what it
+      // recorded for each goes on the team's agent, never the ordinary one.
+      const { definition, became } = ownedTeamDefinition(inTx, team, version.definition, person.now);
+      const current = memberSettingsOf(inTx, teamAgentIds(definition));
+      const restored = Object.fromEntries(Object.entries(settingsBecame(recorded, became)).filter(([agentId]) => current[agentId] !== undefined));
+      const written = changeTeam(inTx, id, { definition, author, restoredFrom: number, memberSettings: { ...current, ...restored }, ...when });
+      // A refusal undoes any agent made the team's own for it.
+      if (!written.ok) throw new VersionRefused(written.reason);
+      for (const [agentId, settings] of Object.entries(restored)) applyMemberSettings(inTx, id, agentId, settings);
+      return written;
+    });
+  } catch (error) {
+    if (error instanceof VersionRefused) return { ok: false, reason: error.reason };
+    throw error;
+  }
 }
 
 /**
@@ -308,6 +424,7 @@ export function restoreTeamVersion(db: Db, id: string, number: number, person: {
 export function setTeamMemberSettings(db: Db, id: string, agentId: string, settings: TeamMemberSettings, person: { personId: string | null; now?: number }): TeamWrite {
   const team = getTeam(db, id);
   if (team === undefined) return { ok: false, reason: "That team no longer exists." };
+  if (team.archivedAt !== null) return { ok: false, reason: archivedReason(team) };
   if (team.locked) return { ok: false, reason: `The team "${team.name}" is locked: a person must unlock it before it can change.` };
   if (team.definition === null) return { ok: false, reason: `EO cannot read what the team "${team.name}" declares, so it cannot change a member of it.` };
   const definition = team.definition;
@@ -315,6 +432,8 @@ export function setTeamMemberSettings(db: Db, id: string, agentId: string, setti
   if (!ids.includes(agentId)) return { ok: false, reason: `That agent is not on the team "${team.name}".` };
   const agent = getAgent(db, agentId as Uuid);
   if (agent === undefined || agent.deletedAt !== null) return { ok: false, reason: "That member's agent no longer exists." };
+  // Changing a member changes the team alone (EO-897): never an agent the team does not own.
+  if (agent.teamId !== id) return { ok: false, reason: `${agent.name} is not the team "${team.name}"'s own agent, so changing it would change more than the team.` };
   if (agent.archivedAt !== null) return { ok: false, reason: `${agent.name} is archived: restore it before changing its runtime, model or reasoning.` };
   const wanted: TeamMemberSettings = { provider: settings.provider, model: settings.model === null || settings.model.trim() === "" ? null : settings.model.trim(), reasoning: settings.reasoning === null || settings.reasoning.trim() === "" ? null : settings.reasoning.trim() };
   const before = memberSettingsOf(db, [agentId])[agentId];
@@ -322,7 +441,7 @@ export function setTeamMemberSettings(db: Db, id: string, agentId: string, setti
   try {
     return db.transaction((tx) => {
       const inTx = tx as unknown as Db;
-      applyMemberSettings(inTx, agentId, wanted);
+      applyMemberSettings(inTx, id, agentId, wanted);
       const written = changeTeam(inTx, id, { definition, author: { kind: "person", personId: person.personId }, memberSettings: memberSettingsOf(inTx, ids), ...(person.now === undefined ? {} : { now: person.now }) });
       // No version, no change: a refusal undoes the agent's new settings with it.
       if (!written.ok) throw new VersionRefused(written.reason);
@@ -349,6 +468,7 @@ class VersionRefused extends Error {
 export function setTeamLocked(db: Db, id: string, locked: boolean, now: number = Date.now()): TeamWrite {
   const team = getTeam(db, id);
   if (team === undefined) return { ok: false, reason: "That team no longer exists." };
+  if (team.archivedAt !== null) return { ok: false, reason: archivedReason(team) };
   if (team.locked === locked) return { ok: true, team, changed: false };
   db.transaction((tx) => {
     tx.update(teams).set({ locked, updatedAt: now }).where(eq(teams.id, id)).run();
@@ -357,12 +477,88 @@ export function setTeamLocked(db: Db, id: string, locked: boolean, now: number =
   return { ok: true, team: getTeam(db, id) as StoredTeam, changed: true };
 }
 
-/** Removes a project's teams, for `deleteProject`, letting go of the steps that name them first. Their versions go with them. */
+/** Removes a project's teams, for `deleteProject`, as `deleteTeam` removes one: its own agents and its versions go with it. */
 export function deleteProjectTeams(db: Db, projectId: string): void {
   const ids = db.select({ id: teams.id }).from(teams).where(eq(teams.projectId, projectId)).all().map((row) => row.id);
-  if (ids.length === 0) return;
-  db.update(pipelineSteps).set({ teamId: null }).where(inArray(pipelineSteps.teamId, ids)).run();
-  db.delete(teams).where(inArray(teams.id, ids)).run();
+  for (const id of ids) removeTeam(db, id, Date.now());
+}
+
+/**
+ * Removes a team: the steps that name it — a retired step's row included
+ * — let go of it, its own agents become tombstones (`deleteTeamMembers`)
+ * and its versions go with its row. Inside the caller's transaction.
+ */
+function removeTeam(db: Db, teamId: string, at: number): void {
+  touchPipelinesNaming(db, teamId, at);
+  db.update(pipelineSteps).set({ teamId: null }).where(eq(pipelineSteps.teamId, teamId)).run();
+  // Its own agents go with it (EO-897).
+  deleteTeamMembers(db, teamId, at);
+  db.delete(teams).where(eq(teams.id, teamId)).run();
+}
+
+/**
+ * Archives a team, as a person (EO-897): one-way, as an agent's archive
+ * is. Its own agents are archived with it, so none is left behind without
+ * its team; it leaves the Teams tab, and no step may name it after. The
+ * row and its versions stay. Whether a step still names it, or a person
+ * locked it, is the caller's question (`archiveTeamCommand`). False when
+ * there is no such team.
+ */
+export function archiveTeam(db: Db, id: string, at: number = Date.now()): boolean {
+  const team = getTeam(db, id);
+  if (team === undefined) return false;
+  if (team.archivedAt !== null) return true;
+  db.transaction((tx) => {
+    tx.update(teams).set({ archivedAt: at, updatedAt: at }).where(eq(teams.id, id)).run();
+    archiveTeamMembers(tx as unknown as Db, id, at);
+  });
+  return true;
+}
+
+/**
+ * Deletes a team, as a person (EO-897), archived or not, the way
+ * `deleteProject` deletes a project's: the row and its versions go, and
+ * its own agents stay only as tombstones its runs, reports and comments
+ * still name. The caller asks what refuses it (`deleteTeamCommand`).
+ * False when there is no such team.
+ */
+export function deleteTeam(db: Db, id: string, at: number = Date.now()): boolean {
+  if (getTeam(db, id) === undefined) return false;
+  db.transaction((tx) => removeTeam(tx as unknown as Db, id, at));
+  return true;
+}
+
+/** The agents a team owns (EO-897): every one it ever had, those removed from it, archived or deleted included. */
+export function teamOwnedAgents(db: Db, teamId: string): Agent[] {
+  return db
+    .select({ id: agents.id })
+    .from(agents)
+    .where(eq(agents.teamId, teamId))
+    .orderBy(asc(agents.id))
+    .all()
+    .flatMap((row) => getAgent(db, row.id as Uuid) ?? []);
+}
+
+/**
+ * Archives every agent a team owns (EO-897), as the team is archived, so
+ * no team's own agent is left behind without its team. Each keeps its
+ * row, so its runs, reports and comments still name it, and an archive
+ * stamp it already had, being the true one.
+ */
+export function archiveTeamMembers(db: Db, teamId: string, at: number = Date.now()): void {
+  db.update(agents)
+    .set({ archivedAt: sql`coalesce(${agents.archivedAt}, ${at})`, updatedAt: at, revision: sql`${agents.revision} + 1` })
+    .where(eq(agents.teamId, teamId))
+    .run();
+}
+
+/**
+ * Deletes every agent a team owns (EO-897), as the team is deleted: each
+ * a tombstone (`deleteAgent`) that keeps its name, kind and team, so its
+ * runs, reports and comments still say who did them.
+ */
+export function deleteTeamMembers(db: Db, teamId: string, at: number = Date.now()): void {
+  for (const agent of teamOwnedAgents(db, teamId)) if (agent.deletedAt === null) deleteAgent(db, agent.id, at);
 }
 
 /**
@@ -394,10 +590,10 @@ export function agentToolSurfaces(db: Db, agentIds: readonly string[]): Record<s
  */
 export function teamsForValidation(db: Db, projectId: string | null, declared: readonly TeamSave[] = []): { teams: PipelineTeamFacts[]; surfaces: Record<string, AgentToolSurface> } {
   const byId = new Map<string, PipelineTeamFacts>();
-  for (const team of listAllTeams(db)) byId.set(team.id, { id: team.id, name: team.name, projectId: team.projectId, definition: team.definition });
+  for (const team of listAllTeams(db)) byId.set(team.id, { id: team.id, name: team.name, projectId: team.projectId, definition: team.definition, archived: team.archivedAt !== null });
   for (const team of declared) {
     const stored = byId.get(team.id);
-    byId.set(team.id, { id: team.id, name: team.definition.name, projectId: stored?.projectId ?? projectId, definition: team.definition });
+    byId.set(team.id, { id: team.id, name: team.definition.name, projectId: stored?.projectId ?? projectId, definition: team.definition, archived: stored?.archived ?? false });
   }
   const list = [...byId.values()];
   const agentIds = list.flatMap((team) => (team.definition === null ? [] : teamAgentIds(team.definition)));
@@ -447,7 +643,7 @@ export function sessionTeamFor(db: Db, teamId: string | null): SessionTeam | nul
 function boundAgent(all: readonly Agent[], role: string, projectId: string | null): Agent | undefined {
   const staffed = staffingAgents(all, role, { projectId: projectId as Uuid | null, previewAt: null });
   if (staffed.length > 0) return staffed[0];
-  const held = all.filter((agent) => agent.role === role && (agent.projectId === null || agent.projectId === projectId));
+  const held = all.filter((agent) => !isTeamOwned(agent) && agent.role === role && (agent.projectId === null || agent.projectId === projectId));
   return held.find((agent) => agent.projectId !== null && agent.deletedAt === null) ?? held.find((agent) => agent.deletedAt === null) ?? held[0];
 }
 

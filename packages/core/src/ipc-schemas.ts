@@ -944,6 +944,14 @@ export const AgentViewSchema = z.object({
    * reads as every agent global.
    */
   projectId: z.string().nullable().optional(),
+  /**
+   * The declared team that owns this agent, or null for an ordinary agent
+   * (EO-897). On the wire so a team member's runs and comments still
+   * resolve its name, and every picker and the Agents screen leave it
+   * out. Optional, so a listing from before it reads as every agent
+   * ordinary.
+   */
+  teamId: z.string().nullable().optional(),
 });
 
 export type AgentView = z.infer<typeof AgentViewSchema>;

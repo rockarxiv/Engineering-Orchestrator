@@ -14,7 +14,7 @@ import { reasoningEffortConfig } from "../providers/smallModels.js";
  * A leader adding a member to its declared team (EO-883, ARCHITECTURE.md
  * §4.2a): checked against what a person declared on the team
  * (`checkMemberAdditions`), then created as a real agent of the team's
- * member kind with only tools from the team's pool, and added to the team
+ * member kind, owned by the team (EO-897), with only tools from the team's pool, and added to the team
  * as a new version recorded as the leader's, on the item it was added for.
  *
  * The leader's own agent is never touched (invariant 11): what it may do
@@ -126,6 +126,8 @@ export function addLeaderMembers(
       instructions: addition.instructions,
       config: config ?? {},
       projectId: team.projectId as Uuid | null,
+      // The team's own agent (EO-897): nothing outside the team runs it.
+      teamId: team.id,
     });
     for (const cliToolId of cliToolIds) setAgentCliTool(db, { agentId: agent.id, cliToolId, attached: true }, input.now);
     for (const id of serverIds) setAgentAttachment(db, { agentId: agent.id, kind: "mcpServer", id, attached: true }, input.now);

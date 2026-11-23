@@ -1,4 +1,4 @@
-import { isPreviewAgent, staffingAgents, staffsItem, stepAgentKind, stepAgentOf, type Agent, type Uuid } from "@eo/core";
+import { isPreviewAgent, isTeamOwned, staffingAgents, staffsItem, stepAgentKind, stepAgentOf, type Agent, type Uuid } from "@eo/core";
 
 /**
  * The agent a kind is bound to on a project, where something names a
@@ -27,7 +27,7 @@ export function agentForKind(agents: readonly Agent[], kind: string | null, proj
   const pick = (candidates: readonly Agent[]): Agent | undefined => candidates.find((agent) => !isPreviewAgent(agent)) ?? candidates[0];
   const live = staffingAgents(agents, kind, item);
   if (live.length > 0) return pick(live);
-  const kept = agents.filter((agent) => agent.role === kind && agent.archivedAt === null && staffsItem(agent, item));
+  const kept = agents.filter((agent) => !isTeamOwned(agent) && agent.role === kind && agent.archivedAt === null && staffsItem(agent, item));
   const own = kept.filter((agent) => agent.projectId !== null);
   return pick(own.length > 0 ? own : kept);
 }
@@ -45,7 +45,7 @@ export function agentForKind(agents: readonly Agent[], kind: string | null, proj
  */
 export function kindCandidates(agents: readonly Agent[], kind: string, projectId: string | null): Agent[] {
   const item = { previewAt: null, projectId: projectId as Uuid | null };
-  const candidates = agents.filter((agent) => agent.role === kind && agent.archivedAt === null && agent.deletedAt === null && staffsItem(agent, item));
+  const candidates = agents.filter((agent) => !isTeamOwned(agent) && agent.role === kind && agent.archivedAt === null && agent.deletedAt === null && staffsItem(agent, item));
   const first = agentForKind(candidates, kind, projectId);
   return first === undefined ? candidates : [first, ...candidates.filter((agent) => agent.id !== first.id)];
 }
@@ -119,13 +119,19 @@ export const UNKNOWN_AGENT_ID = "unknown-agent" as Uuid;
  * A deleted agent is a tombstone and is never named. Where names are
  * shared — nothing stops two agents having one — the one that can work
  * for the pipeline's project is chosen, its own before a global one, a
- * live one before a retired one; and then the first. Null for a step
+ * live one before a retired one; and then the first. A team's own agent
+ * only where no ordinary agent has the name (EO-897). Null for a step
  * that names nobody, `UNKNOWN_AGENT_ID` for a name nobody here has.
  */
 export function agentNamed(agents: readonly Agent[], name: string | null, projectId: string | null): Uuid | null {
   if (name === null) return null;
   const wanted = name.trim();
-  const named = agents.filter((agent) => agent.deletedAt === null && agent.name.trim() === wanted);
+  const called = agents.filter((agent) => agent.deletedAt === null && agent.name.trim() === wanted);
+  // An ordinary agent before a team's own (EO-897), which only its team
+  // runs: a name only a team's agent has names it, so `validatePipeline`
+  // refuses the step saying whose it is.
+  const ordinary = called.filter((agent) => !isTeamOwned(agent));
+  const named = ordinary.length > 0 ? ordinary : called;
   if (named.length === 0) return UNKNOWN_AGENT_ID;
   const rank = (agent: Agent): number =>
     (agent.projectId === null ? 1 : agent.projectId === projectId ? 0 : 3) + (agent.archivedAt === null && agent.enabled ? 0 : 0.5);

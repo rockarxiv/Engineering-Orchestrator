@@ -351,19 +351,26 @@ export const NO_DRAFT_TEAMS: DraftTeams = { saves: [], idOf: (name) => name, tea
 /**
  * A draft's teams against the project's (EO-881). A draft team whose name
  * the project has changes that team (same id); any other is created under
- * a new id. Its agents are named by name and bound as a step's are
- * (`agentNamed`); a name nobody has is kept as written, so `validateTeam`
- * refuses it as an agent EO does not have.
+ * a new id. Its agents are named by name: the team's own agent of that
+ * name (EO-897), else bound as a step's are (`agentNamed`) and made the
+ * team's own on Publish; a name nobody has is kept as written, so
+ * `validateTeam` refuses it as an agent EO does not have.
  */
 export function draftTeamsFor(db: Db, pipelineId: string, draft: Pick<DraftWithLimits, "teams">): DraftTeams {
   const { agents, projectId } = stepAgentsForPipeline(db, pipelineId);
-  // A name nobody here has is kept as written, so the refusal names it.
-  const agentId = (name: string): string => {
-    const bound = agentNamed(agents, name, projectId);
-    return bound === null || bound === UNKNOWN_AGENT_ID ? name : bound;
-  };
   const saves: TeamSave[] = (draft.teams ?? []).map((team) => {
     const id = teamByName(db, projectId, team.name)?.id ?? uuidv7();
+    // A member is the team's own agent (EO-897): a name the team's own
+    // agent has names it; any other agent named is made the team's own
+    // when Publish saves the team (`ownedTeamDefinition`). A name nobody
+    // here has is kept as written, so the refusal names it.
+    const own = agents.filter((agent) => agent.teamId === id && agent.deletedAt === null);
+    const agentId = (name: string): string => {
+      const mine = own.find((agent) => agent.name.trim() === name.trim());
+      if (mine !== undefined) return mine.id;
+      const bound = agentNamed(agents, name, projectId);
+      return bound === null || bound === UNKNOWN_AGENT_ID ? name : bound;
+    };
     const definition: TeamDefinition =
       team.coordination === "leader"
         ? { ...team, leader: { agentId: agentId(team.leader.agent), instructions: team.leader.instructions }, members: team.members.map((member) => ({ agentId: agentId(member.agent) })) }

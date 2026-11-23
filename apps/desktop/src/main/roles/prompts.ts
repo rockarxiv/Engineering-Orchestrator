@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isTeamOwned } from "@eo/core";
 import type { Db } from "../db/client.js";
 import { listAgents, updateAgent } from "../db/repos/index.js";
 import { registry } from "../registry.js";
@@ -234,6 +235,8 @@ export function syncRolePrompts(db: Db, dir = promptsDir): PromptSyncReport {
     // A deleted agent's instructions were cleared on purpose (EO-350);
     // refilling them would be bringing it back.
     if (agent.deletedAt !== null) continue;
+    // A team's own agent's instructions change only with its team (EO-897).
+    if (isTeamOwned(agent)) continue;
     const prompt = loadRolePrompt(agent.role, dir);
     if (!prompt) continue;
 

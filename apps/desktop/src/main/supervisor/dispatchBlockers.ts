@@ -355,6 +355,11 @@ function agentUnavailableWords(blocker: Extract<ItemBlocker, { kind: "agent_unav
         condition: "the agent this step names is not on this installation",
         fix: "Choose another agent on the step.",
       };
+    case "team_member":
+      return {
+        condition: `${name}, the agent this step names, belongs to a team and runs only as part of it`,
+        fix: "Choose an ordinary agent on the step, or have the step run as that team.",
+      };
     case "other_project":
       return {
         condition: `${name}, the agent this step names, works for another project than this ticket's`,

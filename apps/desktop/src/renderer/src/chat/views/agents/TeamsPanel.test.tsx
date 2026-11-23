@@ -264,7 +264,9 @@ describe("the Teams tab (EO-884)", () => {
     await openTeams();
     const panel = screen.getByRole("region", { name: "Members" }).parentElement as HTMLElement;
     expect(within(panel).queryAllByRole("textbox")).toHaveLength(0);
-    expect(within(panel).queryAllByRole("button", { name: /add|remove|delete|edit/i })).toHaveLength(0);
+    // Deleting the whole team (EO-897) is not a change to its membership.
+    const teamDelete = within(screen.getByRole("region", { name: "EO reviewers" })).getByRole("button", { name: "Delete" });
+    expect(within(panel).queryAllByRole("button", { name: /add|remove|delete|edit/i }).filter((button) => button !== teamDelete)).toHaveLength(0);
     fireEvent.click(screen.getByRole("button", { name: "Change members or instructions with the assistant" }));
     expect(askAssistant).toHaveBeenCalledTimes(1);
   });
@@ -390,5 +392,91 @@ describe("the Teams tab (EO-884)", () => {
     expect(head).toHaveTextContent("the team can't be locked or unlocked here");
     // A member's runtime stays the person's.
     expect(screen.getAllByRole("button", { name: "Change runtime, model or reasoning" }).length).toBeGreaterThan(0);
+  });
+});
+
+describe("archiving or deleting a team from the Teams tab (EO-897)", () => {
+  /** A Teams tab whose archive and delete answer as `answer` says; the team leaves the list once one is confirmed. */
+  function removable(answer: (channel: "teams:archive" | "teams:delete", confirm: boolean) => { done: boolean; problem: string | null; members: string[] }): Call[] {
+    let gone = false;
+    const calls = mockIpc(() => (gone ? [team({ id: "team-2", name: "Planners" })] : [team(), team({ id: "team-2", name: "Planners" })]));
+    const base = window.eo.ipc.invoke;
+    window.eo.ipc.invoke = vi.fn(async (channel: string, payload: unknown) => {
+      if (channel === "teams:archive" || channel === "teams:delete") {
+        calls.push({ channel, payload });
+        const { confirm } = payload as { confirm: boolean };
+        const said = answer(channel, confirm);
+        if (said.done) gone = true;
+        return { ok: true, data: channel === "teams:archive" ? { archived: said.done, problem: said.problem, members: said.members } : { deleted: said.done, problem: said.problem, members: said.members } };
+      }
+      return base(channel as never, payload as never);
+    }) as never;
+    return calls;
+  }
+
+  it("archives a team once the person confirms, naming its own agents that go with it, and the team leaves the tab", async () => {
+    const calls = removable((_channel, confirm) => ({ done: confirm, problem: null, members: ["Review lead", "Criteria expert", "Test expert"] }));
+    mount();
+    const head = await openTeams();
+    fireEvent.click(within(head).getByRole("button", { name: "Archive" }));
+    const dialog = await screen.findByRole("dialog", { name: "Archive EO reviewers?" });
+    const going = await within(dialog).findByRole("generic", { name: "Agents that go with it" });
+    expect(going).toHaveTextContent("Review lead");
+    expect(going).toHaveTextContent("Test expert");
+    // Nothing is archived until the person confirms.
+    expect(calls.filter((call) => call.channel === "teams:archive").map((call) => call.payload)).toEqual([{ teamId: "team-1", confirm: false }]);
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Archive EO reviewers" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(calls.filter((call) => call.channel === "teams:archive").map((call) => call.payload)).toEqual([
+      { teamId: "team-1", confirm: false },
+      { teamId: "team-1", confirm: true },
+    ]);
+    await waitFor(() => expect(within(screen.getByRole("list", { name: "Teams" })).queryByText("EO reviewers")).toBeNull());
+  });
+
+  it("deletes a team the same way", async () => {
+    const calls = removable((_channel, confirm) => ({ done: confirm, problem: null, members: ["Review lead"] }));
+    mount();
+    const head = await openTeams();
+    fireEvent.click(within(head).getByRole("button", { name: "Delete" }));
+    const dialog = await screen.findByRole("dialog", { name: "Delete EO reviewers?" });
+    expect(await within(dialog).findByText(/This cannot be undone/)).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete EO reviewers" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(calls.filter((call) => call.channel === "teams:delete").map((call) => call.payload)).toEqual([
+      { teamId: "team-1", confirm: false },
+      { teamId: "team-1", confirm: true },
+    ]);
+  });
+
+  it("shows a refusal as the sentence it came back as, and offers nothing to confirm", async () => {
+    const refusal = 'The team "EO reviewers" cannot be archived while "Review" on Delivery names it. Have "Review" on Delivery run as another team, or as none first, then archive it.';
+    const calls = removable(() => ({ done: false, problem: refusal, members: [] }));
+    mount();
+    const head = await openTeams();
+    fireEvent.click(within(head).getByRole("button", { name: "Archive" }));
+    const dialog = await screen.findByRole("dialog", { name: "Archive EO reviewers?" });
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent(refusal);
+    expect(within(dialog).queryByRole("button", { name: "Archive EO reviewers" })).toBeNull();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(calls.filter((call) => call.channel === "teams:archive").map((call) => call.payload)).toEqual([{ teamId: "team-1", confirm: false }]);
+  });
+
+  it("offers neither where the organisation manages the pipelines", async () => {
+    mockIpc(() => [team()], {
+      "sections:list": {
+        published: [{ section: "pipelines", subjectId: "", versionId: null, versionNumber: null, publishedAt: 1, publishedBy: "dana-id", publishedByName: "Dana", document: null }],
+        locked: ["pipelines"],
+        lockText: SECTION_LOCK_TEXT,
+      },
+    });
+    mount();
+    await openTeams();
+    await waitFor(() => expect(screen.getByRole("region", { name: "Versions" })).toHaveTextContent("Your organisation manages the pipelines"));
+    const head = screen.getByRole("region", { name: "EO reviewers" });
+    expect(within(head).queryByRole("button", { name: "Archive" })).toBeNull();
+    expect(within(head).queryByRole("button", { name: "Delete" })).toBeNull();
   });
 });

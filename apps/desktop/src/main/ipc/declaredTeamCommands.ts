@@ -1,10 +1,11 @@
-import { asc, eq, inArray, isNull } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull } from "drizzle-orm";
 import { backendAllowed, bindingRefusal, storedTeamDefinition, teamAgentIds } from "@eo/core";
 import type { Agent, IpcPayload, IpcResponse, TeamDefinition, TeamMemberOrigin, TeamMemberView, TeamVersion, TeamVersionView, TeamView } from "@eo/core";
 import type { Db } from "../db/client.js";
 import { items, people, projects, teams } from "../db/schema.js";
 import { listAgents } from "../db/repos/agentsRepo.js";
-import { getTeam, listTeamVersions, memberSettingsOf, restoreTeamVersion, setTeamLocked, setTeamMemberSettings, stepsNamingTeam, type StoredTeam } from "../db/repos/teamsRepo.js";
+import { archiveTeam, deleteTeam, getTeam, listTeamVersions, memberSettingsOf, restoreTeamVersion, setTeamLocked, setTeamMemberSettings, stepsNamingTeam, teamOwnedAgents, type StoredTeam } from "../db/repos/teamsRepo.js";
+import { stepsInWords, stepsNamingTeams } from "./configCommands.js";
 import { readPolicy } from "../policy/policy.js";
 import { agentReasoningEffort } from "../providers/smallModels.js";
 import { actingCaller } from "../identity/acting.js";
@@ -70,7 +71,8 @@ function definitionParts(definition: TeamDefinition, agentOf: (id: string) => Ag
 
 /** Every declared team but a trial's own copies, as the Teams tab draws them. */
 export function listTeamViews(db: Db): TeamView[] {
-  const rows = db.select().from(teams).where(isNull(teams.trialPipelineId)).orderBy(asc(teams.name), asc(teams.id)).all();
+  // An archived team has left the tab (EO-897), and is not brought back.
+  const rows = db.select().from(teams).where(and(isNull(teams.trialPipelineId), isNull(teams.archivedAt))).orderBy(asc(teams.name), asc(teams.id)).all();
   if (rows.length === 0) return [];
   const agents = new Map(listAgents(db).map((agent) => [agent.id as string, agent]));
   const projectNames = new Map(db.select({ id: projects.id, name: projects.name }).from(projects).all().map((row) => [row.id, row.name]));
@@ -121,10 +123,14 @@ export function listTeamsCommand(db: Db): IpcResponse<"teams:list"> {
   return { teams: listTeamViews(db) };
 }
 
-/** Whether a team exists and is one the Teams tab shows — never a trial's copy, which nobody restores or locks. */
+/**
+ * Whether a team exists and is one the Teams tab shows — never a trial's
+ * copy, which nobody restores or locks, nor an archived team (EO-897),
+ * which has left the tab.
+ */
 function shownTeam(db: Db, teamId: string): StoredTeam | undefined {
   const team = getTeam(db, teamId);
-  if (team === undefined) return undefined;
+  if (team === undefined || team.archivedAt !== null) return undefined;
   const row = db.select({ trial: teams.trialPipelineId }).from(teams).where(eq(teams.id, teamId)).get();
   return row?.trial === null || row?.trial === undefined ? team : undefined;
 }
@@ -171,4 +177,74 @@ export function setTeamLockedCommand(db: Db, input: IpcPayload<"teams:setLocked"
   if (shownTeam(db, input.teamId) === undefined) return { changed: false, problem: "That team no longer exists." };
   const result = setTeamLocked(db, input.teamId, input.locked);
   return result.ok ? { changed: result.changed, problem: null } : { changed: false, problem: result.reason };
+}
+
+/**
+ * Why a team cannot be archived or deleted yet (EO-897), or null: a lock a
+ * person set, or the steps that name it — in a pipeline's current graph or
+ * an older version items still run on — said as archiving an agent says
+ * them, with what clears each.
+ */
+function teamRemovalRefusal(db: Db, team: StoredTeam, removal: "archive" | "delete"): string | null {
+  const done = removal === "archive" ? "archived" : "deleted";
+  if (team.locked) return `The team "${team.name}" is locked: a person must unlock it before it can be ${done}.`;
+  const steps = stepsNamingTeams(db).get(team.id) ?? [];
+  if (steps.length === 0) return null;
+  const current = steps.filter((step) => step.version === null);
+  const older = steps.filter((step) => step.version !== null);
+  const remedies = [
+    ...(current.length === 0 ? [] : [`have ${stepsInWords(current)} run as another team, or as none`]),
+    ...(older.length === 0 ? [] : [`let the items still on ${older.length === 1 ? "that older version" : "those older versions"} finish, or move them to the current version`]),
+  ];
+  const first = remedies.join(", and ");
+  return (
+    `The team "${team.name}" cannot be ${done} while ${stepsInWords(steps)} ${steps.length === 1 ? "names" : "name"} it. ` +
+    `${first.charAt(0).toUpperCase()}${first.slice(1)} first, then ${removal} it.`
+  );
+}
+
+/** The names of the team's own agents that go with it: those not already archived or deleted. */
+function goingWith(db: Db, teamId: string, removal: "archive" | "delete"): string[] {
+  return teamOwnedAgents(db, teamId)
+    .filter((agent) => agent.deletedAt === null && (removal === "delete" || agent.archivedAt === null))
+    .map((agent) => agent.name);
+}
+
+/**
+ * A person archiving one team (EO-897): one-way, its own agents archived
+ * with it. Refused while it is locked or a step names it; unconfirmed, it
+ * archives nothing and answers with the agents that would go with it.
+ */
+export function archiveTeamCommand(db: Db, input: IpcPayload<"teams:archive">): IpcResponse<"teams:archive"> {
+  const team = getTeam(db, input.teamId);
+  if (team === undefined || shownOrArchived(db, team) === undefined) return { archived: false, problem: "That team no longer exists.", members: [] };
+  if (team.archivedAt !== null) return { archived: true, problem: null, members: [] };
+  const members = goingWith(db, team.id, "archive");
+  const refused = teamRemovalRefusal(db, team, "archive");
+  if (refused !== null) return { archived: false, problem: refused, members };
+  if (!input.confirm) return { archived: false, problem: null, members };
+  if (!archiveTeam(db, team.id)) return { archived: false, problem: "That team no longer exists.", members: [] };
+  return { archived: true, problem: null, members };
+}
+
+/**
+ * A person deleting one team (EO-897), archived or not: it and its
+ * versions go, its own agents left as tombstones. Refused and confirmed as
+ * `archiveTeamCommand` is.
+ */
+export function deleteTeamCommand(db: Db, input: IpcPayload<"teams:delete">): IpcResponse<"teams:delete"> {
+  const team = getTeam(db, input.teamId);
+  if (team === undefined || shownOrArchived(db, team) === undefined) return { deleted: false, problem: "That team no longer exists.", members: [] };
+  const members = goingWith(db, team.id, "delete");
+  const refused = teamRemovalRefusal(db, team, "delete");
+  if (refused !== null) return { deleted: false, problem: refused, members };
+  if (!input.confirm) return { deleted: false, problem: null, members };
+  if (!deleteTeam(db, team.id)) return { deleted: false, problem: "That team no longer exists.", members: [] };
+  return { deleted: true, problem: null, members };
+}
+
+/** A team a person may archive or delete: any but a trial's own copy, which goes with its trial. */
+function shownOrArchived(db: Db, team: StoredTeam): StoredTeam | undefined {
+  const row = db.select({ trial: teams.trialPipelineId }).from(teams).where(eq(teams.id, team.id)).get();
+  return row?.trial === null || row?.trial === undefined ? team : undefined;
 }

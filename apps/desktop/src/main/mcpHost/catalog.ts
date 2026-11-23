@@ -47,6 +47,7 @@ import {
   type AgentAttachmentsWithCliTools,
   renderAgentSaved,
   renderAgents,
+  renderTeams,
   renderArchived,
   renderCommentPinned,
   renderCommentPosted,
@@ -2224,6 +2225,19 @@ const READ_TOOLS: readonly ToolSpec[] = [
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     render: renderAgents,
   }),
+  // EO-897: what team_archive and team_delete are given a team's id from.
+  channelTool({
+    name: "teams_list",
+    channel: "teams:list",
+    description:
+      "The declared teams: each one's id, project, version and whether a person locked it, its leader and members by name, " +
+      "and the steps that run as it. An archived team is not listed. A team is created or changed only by a draft's `teams` " +
+      "entry, which a person publishes; team_archive and team_delete take one away.",
+    kind: "read",
+    list: "teams",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    render: renderTeams,
+  }),
   RUNTIME_STATUS_TOOL,
   RUNTIME_DESCRIBE_TOOL,
   channelTool({
@@ -2676,6 +2690,36 @@ const AGENT_ARCHIVE_TOOL: ToolSpec = channelTool({
   annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
   render: () => "Agent archived. Nothing dispatches it now; the row is kept, so its runs and comments still resolve and agents_list still shows it.",
   refusal: (data, tool) => (data.archived ? null : unconfirmedAgentRemoval(data, "archived", tool)),
+});
+
+/** What an unconfirmed or refused team archive or delete says (EO-897). */
+function unconfirmedTeamRemoval(data: { problem: string | null; members: readonly string[] }, verb: "archived" | "deleted", tool: string): string {
+  if (data.problem !== null) return `Nothing was ${verb}: ${data.problem} Nothing has changed.`;
+  const members = data.members.length === 0 ? "" : ` Its own agents go with it: ${data.members.join(", ")}.`;
+  return `Nothing has been ${verb} yet.${members} Tell the person, and call ${tool} again with confirm: true only once they have said to go ahead.`;
+}
+
+/**
+ * Archive a declared team (EO-897), its own agents with it.
+ *
+ * Beside `agent_archive`, and ungated for its reason: nothing is deleted,
+ * the rows stay, so the runs and comments of its agents still resolve.
+ * One-way all the same, as an agent's archive is, so `destructiveHint`.
+ */
+const TEAM_ARCHIVE_TOOL: ToolSpec = channelTool({
+  name: "team_archive",
+  channel: "teams:archive",
+  description:
+    "Archive a declared team, by its id from teams_list. Its leader and members — agents of the team's own — are archived " +
+    "with it; it leaves teams_list and no step may run as it after. Nothing brings it back. Call it without confirm first: " +
+    "nothing is archived, and the answer names the agents that go with it. Tell the person, and call again with " +
+    "confirm: true only once they have said to go ahead. A team a step runs as — in its pipeline's current version or " +
+    "an older one tickets still run on — cannot be archived: the refusal names the steps. A locked team cannot be " +
+    "archived until a person unlocks it.",
+  kind: "write",
+  annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+  render: () => "Team archived, with its own agents. No step may run as it now; the rows are kept, so its runs and comments still resolve.",
+  refusal: (data, tool) => (data.archived ? null : unconfirmedTeamRemoval(data, "archived", tool)),
 });
 
 /**
@@ -4363,6 +4407,7 @@ const UNGATED_WRITE_TOOLS: readonly ToolSpec[] = [
   GUARDRAILS_SET_TOOL,
   AGENT_SAVE_TOOL,
   AGENT_ARCHIVE_TOOL,
+  TEAM_ARCHIVE_TOOL,
   ROLE_ACTION_SAVE_TOOL,
   ...PROJECT_SETUP_TOOLS,
   PROJECT_SET_ACTIVE_TOOL,
@@ -4483,6 +4528,24 @@ const GATED_TOOLS: readonly ToolSpec[] = [
         "confirm: true only once the person has said to delete it."
       );
     },
+  }),
+  // EO-897. The same confirmation `team_archive` takes, one step further:
+  // the team and its versions go, its own agents left as tombstones.
+  // Gated like `agent_delete`.
+  channelTool({
+    name: "team_delete",
+    channel: "teams:delete",
+    description:
+      "Delete a declared team, by its id from teams_list, archived ones included. The team and its versions go; its leader " +
+      "and members — agents of the team's own — are deleted with it, keeping only their names so their past runs and " +
+      "comments still say who did them. Call it without confirm first: nothing is deleted, and the answer names the agents " +
+      "that go with it. Tell the person, and call again with confirm: true only once they have said to delete it. A team a " +
+      "step runs as — in its pipeline's current version or an older one tickets still run on — cannot be deleted: the " +
+      "refusal names the steps. A locked team cannot be deleted until a person unlocks it.",
+    kind: "dangerous",
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+    render: () => "Team deleted. Its own agents are gone with it; their past runs and comments still show their names.",
+    refusal: (data, tool) => (data.deleted ? null : unconfirmedTeamRemoval(data, "deleted", tool)),
   }),
   // EO-350. The same confirmation `agent_archive` takes, one step
   // further: the agent goes from the Agents screen altogether. Gated

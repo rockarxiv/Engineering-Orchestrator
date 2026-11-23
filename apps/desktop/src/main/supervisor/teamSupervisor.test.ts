@@ -343,7 +343,8 @@ describe("an independent team on an agent step (EO-846)", () => {
   });
 
   it("runs no member disabled since the team was published: its attempt fails saying why, and the other member still runs (EO-882)", async () => {
-    const tess = listAgents(handle.db).find((agent) => agent.name === "Tess")!;
+    // The team's own Tess (EO-897), which the team runs.
+    const tess = listAgents(handle.db).find((agent) => agent.name === "Tess" && agent.teamId !== null)!;
     updateAgent(handle.db, tess.id, { enabled: false });
     script = ({ agent }) => answer("clear", `${agent.name} found nothing.`);
     await supervisor().runOnce();
@@ -477,7 +478,8 @@ describe("an independent team across a restart (EO-846)", () => {
   function participantRun(agentName: string): Uuid {
     return createRun(handle.db, { itemId: item.id, agentId: agentId(agentName), action: TEAM_PARTICIPANT_ACTION, stepId: "check", status: "running" }).id;
   }
-  const agentId = (name: string) => (client().prepare("select id from agents where name = ?").get(name) as { id: Uuid }).id;
+  // The team's own agent of the name (EO-897), which the team runs.
+  const agentId = (name: string) => (client().prepare("select id from agents where name = ? order by team_id is null").get(name) as { id: Uuid }).id;
 
   beforeEach(() => {
     script = ({ agent }) => answer("clear", `${agent.name} looked again.`);

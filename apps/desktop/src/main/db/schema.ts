@@ -65,6 +65,18 @@ export const agents = sqliteTable("agents", {
    * wrote the row. Never read on the record itself.
    */
   recordStamp: integer("record_stamp"),
+  /**
+   * The declared team that owns this agent, or null for an ordinary one
+   * (EO-897, migration 0187). A team's leader and members are its own:
+   * nothing outside the team runs them, and changing one changes the
+   * team alone (`Agent.teamId`).
+   *
+   * No foreign key, deliberately: a deleted team's members stay as
+   * tombstones (`deleteAgent`) that its runs and comments still name, and
+   * they keep saying which team they were — a key would have to either
+   * block the team's delete or forget that.
+   */
+  teamId: text("team_id"),
 });
 
 /**
@@ -2121,6 +2133,12 @@ export const teams = sqliteTable(
      */
     trialPipelineId: text("trial_pipeline_id"),
     trialSource: text("trial_source"),
+    /**
+     * When a person archived the team (EO-897, migration 0188), or NULL.
+     * One-way, as an agent's archive is: its members are archived with it,
+     * it leaves the Teams tab and no step may name it.
+     */
+    archivedAt: integer("archived_at"),
     createdAt: integer("created_at").notNull(),
     updatedAt: integer("updated_at").notNull(),
   },

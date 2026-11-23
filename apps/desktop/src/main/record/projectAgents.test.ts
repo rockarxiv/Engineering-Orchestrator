@@ -1,6 +1,6 @@
 import { sql } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ipcContract, McpServerDraftSchema, SkillDraftSchema, type IpcChannel, type IpcPayload, type RecordAdoptCounts, type Uuid } from "@eo/core";
+import { ipcContract, McpServerDraftSchema, RecordAgentSchema, SkillDraftSchema, type IpcChannel, type IpcPayload, type RecordAdoptCounts, type Uuid } from "@eo/core";
 import { buildTickInput } from "../supervisor/buildTickInput.js";
 import type { DbHandle } from "../db/client.js";
 import { markReplica } from "../db/recordRole.js";
@@ -423,6 +423,32 @@ describe("a record-held project's agents on a replica (EO-476)", () => {
     // And a system agent is never a project's, whatever arrives.
     expect(upsertReplicaProjectAgent(recordDb.db, { ...agent, role: "system" })).toBe("refused");
     expect(getAgent(recordDb.db, agent.id as Uuid)).toBeUndefined();
+  });
+
+  it("keeps a team's own agent its team's on a replica, and reads one from a sender before it as ordinary (EO-897)", () => {
+    const support = createProject(laptopDb.db, { name: "Support", keyPrefix: "SUP" });
+    const sent = (id: string, extra: Record<string, unknown>) => ({
+      id,
+      projectId: support.id,
+      name: "Support reviewer",
+      role: "reviewer",
+      instructions: "Review.",
+      config: {},
+      enabled: true,
+      archivedAt: null,
+      deletedAt: null,
+      recommendedProvider: "claude",
+      recommendedModel: null,
+      mcpServerIds: [],
+      skillIds: [],
+      revision: 0,
+      updatedAt: 1,
+      ...extra,
+    });
+    expect(upsertReplicaProjectAgent(laptopDb.db, RecordAgentSchema.parse(sent("01a15295-0000-7000-8000-00000000a9e2", { teamId: "some-team" })))).toBe("written");
+    expect(getAgent(laptopDb.db, "01a15295-0000-7000-8000-00000000a9e2" as Uuid)?.teamId).toBe("some-team");
+    expect(upsertReplicaProjectAgent(laptopDb.db, RecordAgentSchema.parse(sent("01a15295-0000-7000-8000-00000000a9e3", {})))).toBe("written");
+    expect(getAgent(laptopDb.db, "01a15295-0000-7000-8000-00000000a9e3" as Uuid)?.teamId).toBeNull();
   });
 });
 

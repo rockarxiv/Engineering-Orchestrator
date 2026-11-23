@@ -54,7 +54,6 @@ const NOT_CATALOGUED: Partial<Record<RecordChannel, string>> = {
   // step runs as through pipeline_get, and changes a team only through the
   // assistant's draft a person publishes; restoring and locking are a
   // person's guards on a team, which an agent holding them could undo.
-  "teams:list": "the Agents section's view of declared teams; pipeline_get already names the team each step runs as, and a draft is how the assistant reads and changes one",
   "teams:restore": "restoring a team's version is a person's guard on what its leader and the assistant changed, so no agent may do it",
   "teams:setMemberSettings": "which runtime, model and reasoning a team's member runs on is a person's choice in the Teams tab; no step-owning agent may change what it or a teammate is dispatched with",
   "teams:setLocked": "locking a team is a person's guard against agents changing it, so no agent may lift or set it",
@@ -1047,6 +1046,11 @@ describe("the MCP tool catalog", () => {
     // Deleting one (EO-350): the tombstone keeps the name on its runs
     // and comments, and nothing else about the agent survives.
     "agent_delete",
+    // Archiving and deleting a declared team (EO-897), the same two acts
+    // for a team and the agents it owns: nothing un-archives it, and a
+    // delete leaves only its agents' tombstones.
+    "team_archive",
+    "team_delete",
     // Both halves of a server's secrets, which is `module_secret_set`'s
     // case rather than a new one: clearing a value destroys it, and so
     // does setting one over a value already there, because nothing can

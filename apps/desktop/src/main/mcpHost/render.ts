@@ -867,6 +867,23 @@ export function renderAgents(data: IpcResponse<"agents:listDetailed">): string {
 }
 
 /**
+ * Every declared team (EO-897), as `teams_list` says them: each one's id,
+ * project, whether it is locked, its leader and members, and the steps
+ * that run as it. An archived team is not listed.
+ */
+export function renderTeams(data: IpcResponse<"teams:list">): string {
+  return list(
+    data.teams.map((team) => {
+      const where = team.projectName === null ? "on no project" : `project ${team.projectName}`;
+      const who = [...(team.leader === null ? [] : [`leader ${team.leader.name ?? team.leader.agentId}`]), `members ${team.members.map((member) => member.name ?? member.agentId).join(", ") || "none"}`].join(", ");
+      const used = team.steps.length === 0 ? "no step runs as it" : `run by ${team.steps.map((step) => `"${step.stepName}" on ${step.pipelineName}`).join(", ")}`;
+      return `- ${team.name} (id: ${team.id}, ${where}, version ${String(team.version)}${team.locked ? ", locked" : ""}) — ${who}; ${used}`;
+    }),
+    "No teams are declared.",
+  );
+}
+
+/**
  * The registry (KAN-124): what a step may run and return, said in the
  * words a client writing a pipeline needs — a builtin step names one of
  * these functions and routes each of its results.

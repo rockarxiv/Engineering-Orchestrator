@@ -368,6 +368,10 @@ export const SECTION_LOCKED_CHANNELS: Record<PublishedSection, readonly IpcChann
     // leader's additions, so unlocking a published team would let it
     // change by another door.
     "teams:setLocked",
+    // And archiving or deleting one (EO-897): a step is pointed at a team
+    // by the graph, and a published team leaves only as the graph does.
+    "teams:archive",
+    "teams:delete",
     // And so is applying a change card, from either chat that draws one
     // (EO-418): the card's code and manifest written onto a module.
     "scenario:apply",

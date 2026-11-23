@@ -1,4 +1,4 @@
-import { SectionDocumentSchema, type PublishedAgent, type PublishedSection, type SectionDocument } from "@eo/core";
+import { isTeamOwned, SectionDocumentSchema, type PublishedAgent, type PublishedSection, type SectionDocument } from "@eo/core";
 import type { Db } from "../db/client.js";
 import { getAgentAttachments, replaceReplicaAttachments } from "../db/repos/agentAttachmentsRepo.js";
 import { listAgents, revisionOf, takesRecordCopy, updateAgent, upsertReplicaAgent } from "../db/repos/agentsRepo.js";
@@ -79,7 +79,8 @@ export function sectionDocument(db: Db, section: PublishedSection): SectionDocum
       // project's work on the desktops that applied it.
       return SectionDocumentSchema.parse({
         agents: listAgents(db)
-          .filter((agent) => agent.projectId === null)
+          // Nor a team's own agent (EO-897): it is its team's, not the organisation's to hand out.
+          .filter((agent) => agent.projectId === null && !isTeamOwned(agent))
           .map((agent) => publishedAgent(db, agent)),
       });
     case "packs":

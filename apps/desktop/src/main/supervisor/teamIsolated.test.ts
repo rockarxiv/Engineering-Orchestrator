@@ -245,8 +245,11 @@ describe("an isolated member has its role's agent's rights (EO-867)", () => {
     const member = started[1]!;
 
     // The agent's own ordinary provider — the one `providerForAgent` builds — never a report-only one.
-    expect(member.agent.id).toBe(quinn.id);
-    expect(member.provider).toBe(ordinary.provider);
+    // Quinn as the team has it: the team's own copy (EO-897), with Quinn's runtime, model and rights.
+    expect(member.agent).toMatchObject({ name: "Quinn", role: "qa", provider: quinn.provider, model: quinn.model, teamId: expect.any(String) });
+    expect(member.agent.id).not.toBe(quinn.id);
+    expect(member.provider).toBe(providers.get(member.agent.id));
+    expect(member.provider).not.toBe(ordinary.provider);
     expect(factoryAsked.every((name) => name === "Quinn")).toBe(true);
 
     // Everything else an ordinary dispatch is started with is the member's too.
@@ -568,7 +571,8 @@ describe("an isolated member's skill usage (EO-867)", () => {
     const turns = listRunsForItem(handle.db, item.id).filter((run) => run.action === TEAM_PARTICIPANT_ACTION);
     expect(turns).toHaveLength(3);
     for (const run of turns) {
-      const skillId = run.agentId === sasha.id ? memberSkill : leaderSkill;
+      // The team's own copies (EO-897) keep the skills of the agents they were copied from.
+      const skillId = started.find((one) => one.agent.id === run.agentId)?.agent.name === sasha.name ? memberSkill : leaderSkill;
       const events = listRunEvents(handle.db, run.id);
       const seqs = events.map((event) => event.seq);
       expect(new Set(seqs).size).toBe(seqs.length);

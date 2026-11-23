@@ -26,8 +26,8 @@ import {
  *
  * Where a step's team used to be a setting carried inline and staffed by
  * role, a declared team names **agents**: a leader agent (leader-led
- * only) and member agents, each an ordinary agent with its own runtime,
- * model and reasoning. Beside them it declares what its leader may do
+ * only) and member agents, each the team's own agent (EO-897,
+ * `Agent.teamId`) with its own runtime, model and reasoning. Beside them it declares what its leader may do
  * beyond its declared members — a **tool pool** (the CLI tools, MCP
  * servers and skills a member may be given), a **model range** (the
  * runtimes, models and reasoning levels a member the leader adds may run
