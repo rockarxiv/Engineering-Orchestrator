@@ -18,6 +18,7 @@ import { PipelineTemplateStatusSchema } from "./templateStatus.js";
 import { OrganisationPolicySchema, PersonBudgetSchema, PublishedMcpServerSchema, UnavailableServerSchema } from "./policy.js";
 import { PublishedSectionNameSchema, PublishedSectionSchema, SectionLockSchema, sectionLockedMessage, type SectionLock } from "./sections.js";
 import { SuggestionViewSchema } from "./suggestions.js";
+import { PlanUsageViewSchema } from "./planUsage.js";
 import { DebugAgentSchema } from "./debug.js";
 import { ModuleReadinessCheckSchema } from "./moduleReadiness.js";
 import { RuntimeIdSchema } from "./schemas/commentOptions.js";
@@ -7591,6 +7592,14 @@ export const machineContract = {
    * separate channel: nobody should pay for a network round trip just to
    * render a settings screen.
    */
+  /**
+   * Each backend's latest plan usage reading (EO-896), for the rail's
+   * Usage block: per backend and window, from runs, side calls and the
+   * reads taken every five minutes. Held in memory; asking spawns
+   * nothing. `planUsage:changed` says when to ask again.
+   */
+  "planUsage:get": channel(z.void(), PlanUsageViewSchema),
+
   "runtime:status": channel(
     z.object({
       provider: z.string(),
@@ -8592,6 +8601,12 @@ export const ipcPushContract = {
    * views that were already rendered — not just the one that made it.
    */
   "config:changed": z.object({}),
+  /**
+   * A backend's plan usage reading changed (EO-896). Ask `planUsage:get`
+   * again — a plain doorbell, as the rule at the top of this contract
+   * says.
+   */
+  "planUsage:changed": z.object({}),
   /**
    * The update status changed (EO-201) — a plain "ask again", carrying
    * nothing, exactly as the rule at the top of this contract says.
