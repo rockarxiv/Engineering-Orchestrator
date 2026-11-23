@@ -3770,7 +3770,8 @@ const CODEX: Record<CapabilityName, Proof> = {
     const chat = [note.turnStarted("turn-1", "$THREAD"), note.agentMessage("done", "m", "turn-1", "$THREAD"), note.turnCompleted("completed", null, "turn-1", "$THREAD")];
     const options = { searchHookCommandPath: "/opt/eo/hook.mjs", searchHookTrust: HOOK_TRUST };
     const turn = async (suggestNextMessage: boolean, answer: string) => {
-      const { fake, provider } = codexOver({ sample: { text: answer }, after: { "turn/start": chat } }, options);
+      // Answered in the JSON EO's prompt asks for (EO-894).
+      const { fake, provider } = codexOver({ sample: { text: JSON.stringify({ suggestion: answer }) }, after: { "turn/start": chat } }, options);
       const events = await collect(provider.resume("sess-1", "carry on", { cwd, ...(suggestNextMessage ? { suggestNextMessage } : {}) }));
       return { events, sampled: fake.sent.some((message) => message.method === "thread/sample") };
     };

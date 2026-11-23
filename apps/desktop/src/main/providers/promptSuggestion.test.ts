@@ -1,6 +1,6 @@
 import { SUGGESTION_FILTER_RULES, type SuggestionFilterRule } from "@eo/core";
 import { describe, expect, it } from "vitest";
-import { cleanSuggestion, judgeSuggestion, lastRequestMostlyUncached, PROMPT_SUGGESTION_PROMPT } from "./promptSuggestion.js";
+import { cleanSuggestion, judgeSuggestion, judgeSuggestionAnswer, lastRequestMostlyUncached, PROMPT_SUGGESTION_PROMPT } from "./promptSuggestion.js";
 
 describe("a suggested next message's clean-up and filters (EO-808)", () => {
   it.each([
@@ -93,12 +93,48 @@ describe("which filter dropped an answer (EO-810)", () => {
     expect(cleanSuggestion(answer)).toBeNull();
   });
 
-  it("has a case for every rule it can name", () => {
-    expect(new Set(dropped.map(([rule]) => rule))).toEqual(new Set(SUGGESTION_FILTER_RULES));
+  it("has a case for every rule it can name, and the answer's JSON the one rule more (EO-894)", () => {
+    expect(new Set([...dropped.map(([rule]) => rule), "malformed_output"])).toEqual(new Set(SUGGESTION_FILTER_RULES));
   });
 
   it("keeps an answer the filters pass, cleaned up", () => {
     expect(judgeSuggestion("<suggestion>Suggestion: publish the draft</suggestion>")).toEqual({ kept: true, text: "publish the draft" });
+  });
+});
+
+describe("an answer in the prompt's JSON (EO-894)", () => {
+  it("yields its suggestion", () => {
+    expect(judgeSuggestionAnswer('{"suggestion":"run the tests"}')).toEqual({ kind: "kept", text: "run the tests" });
+    expect(judgeSuggestionAnswer('  { "suggestion": "  run the tests  ", "why": "asked" }\n')).toEqual({ kind: "kept", text: "run the tests" });
+  });
+
+  it.each(['{"suggestion":null}', '{"suggestion":""}', '{"suggestion":"   "}'])("is an abstention for %s, not a filter rule", (answer) => {
+    expect(judgeSuggestionAnswer(answer)).toEqual({ kind: "abstained" });
+  });
+
+  it.each([
+    ["plain text", "run the tests"],
+    ["an empty answer", ""],
+    ["JSON cut short", '{"suggestion":"run the'],
+    ["JSON in a fence", '```json\n{"suggestion":"run the tests"}\n```'],
+    ["no suggestion field", '{"message":"run the tests"}'],
+    ["a number for the suggestion", '{"suggestion":42}'],
+    ["an array of suggestions", '{"suggestion":["run the tests"]}'],
+    ["a bare string", '"run the tests"'],
+    ["null", "null"],
+    ["an array", '[{"suggestion":"run the tests"}]'],
+  ])("is dropped as malformed output for %s", (_case, answer) => {
+    expect(judgeSuggestionAnswer(answer)).toEqual({ kind: "dropped", rule: "malformed_output" });
+  });
+
+  it.each([
+    ["agent_voice", "Let me run the tests"],
+    ["praise", "Thanks, that looks great!"],
+    ["meta_reply", "nothing to suggest"],
+    ["too_many_words", "please file it on the Delivery board today and then publish the draft too"],
+  ] as const)("drops a suggestion today's filters drop, by the same rule: %s", (rule, suggestion) => {
+    expect(judgeSuggestionAnswer(JSON.stringify({ suggestion }))).toEqual({ kind: "dropped", rule });
+    expect(judgeSuggestion(suggestion)).toEqual({ kept: false, rule });
   });
 });
 
@@ -139,14 +175,30 @@ describe("the suggestion prompt (EO-808)", () => {
       "publish the draft",
       "approve the proposal",
       "Do not call any tool",
-      // A turn with an answer schema: the suggestion in its message, the rest empty (EO-839).
-      "When your answer has a structure, put the suggested message in the answer's message field",
-      "leave every other field empty or null",
     ]) {
       expect(PROMPT_SUGGESTION_PROMPT).toContain(rule);
     }
+    // Answered as JSON, with an abstention said outright (EO-894), in place of EO-839's sentence on structured turns.
+    expect(PROMPT_SUGGESTION_PROMPT).not.toContain("When your answer has a structure");
     // Not Claude Code's: none of its prompt's sentences.
     expect(PROMPT_SUGGESTION_PROMPT).not.toMatch(/\[SUGGESTION MODE/);
     expect(PROMPT_SUGGESTION_PROMPT).not.toMatch(/Claude/);
+  });
+});
+
+describe("the suggestion prompt's JSON contract (EO-894)", () => {
+  it("asks for JSON only, ends with it, and names the suggestion field", () => {
+    expect(PROMPT_SUGGESTION_PROMPT).toContain("Return only JSON matching this schema");
+    expect(PROMPT_SUGGESTION_PROMPT).toContain('{ "suggestion": string | null }');
+    // Nothing after the contract but what it says of the field.
+    expect(PROMPT_SUGGESTION_PROMPT.slice(PROMPT_SUGGESTION_PROMPT.indexOf("Return only JSON"))).not.toMatch(/\n- /);
+  });
+
+  it("says null means nothing to suggest", () => {
+    expect(PROMPT_SUGGESTION_PROMPT).toContain('When there is nothing to suggest, "suggestion" is null.');
+  });
+
+  it("is under the 4,000 bytes the 0.167.1 CLI allows a thread/sample prompt, in UTF-8", () => {
+    expect(new TextEncoder().encode(PROMPT_SUGGESTION_PROMPT).length).toBeLessThan(4_000);
   });
 });

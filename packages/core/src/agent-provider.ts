@@ -3,6 +3,7 @@
 // whole point of building the interface before the first real provider
 // (ARCHITECTURE.md, "An agent is a row").
 
+import { z } from "zod";
 import type { AttachmentSource } from "./attachment-tool.js";
 import type { AgentWriteBridgeAddress } from "./agent-writes.js";
 import type { MemoryReadScope } from "./memory.js";
@@ -217,8 +218,20 @@ export const SUGGESTION_FILTER_RULES = [
   "multiple_sentences",
   "praise",
   "agent_voice",
+  // Not `SuggestionAnswerSchema`'s JSON (EO-894): not JSON at all, or no string-or-null `suggestion` in it.
+  "malformed_output",
 ] as const;
 export type SuggestionFilterRule = (typeof SUGGESTION_FILTER_RULES)[number];
+
+/**
+ * What EO's suggestion prompt asks the model to answer (EO-894): JSON
+ * only, the suggested message in `suggestion`, and null for nothing to
+ * suggest — an abstention said outright, rather than an empty reply the
+ * filters have to tell apart from a broken one. Extra keys are ignored;
+ * a missing `suggestion` is not an abstention but a malformed answer.
+ */
+export const SuggestionAnswerSchema = z.object({ suggestion: z.string().nullable() });
+export type SuggestionAnswer = z.infer<typeof SuggestionAnswerSchema>;
 
 /**
  * The run event that records what became of the suggested next message
@@ -241,8 +254,11 @@ export const SUGGESTED_REPLY_EVENT = "suggested_reply";
  * - `no_suggestion` — the backend's one response held no text (EO-893):
  *   Codex's `thread/sample` answered null, because the model tried a
  *   tool call, which is never run, or said nothing. Not a failure.
+ * - `abstained` — the model answered that it had nothing to suggest
+ *   (EO-894): `suggestion` null or empty in its JSON. Not a filter drop.
  * - `dropped` — the fork answered and the filters dropped it: the raw
- *   answer and the rule.
+ *   answer and the rule, `malformed_output` where the answer was not the
+ *   JSON the prompt asks for.
  * - `emitted` — passed on as a `PromptSuggestionEvent`: the text, and the
  *   raw answer it was cleaned up from.
  *
@@ -256,6 +272,7 @@ export type SuggestionOutcome =
   | { kind: "stopped"; by: "stopped" | "time_limit" }
   | { kind: "dropped"; answer: string; rule: SuggestionFilterRule }
   | { kind: "no_suggestion" }
+  | { kind: "abstained"; answer: string }
   | { kind: "emitted"; text: string; answer: string };
 
 /** What making a suggested next message spent (`AgentTurnOverrides.onSuggestionSpend`, EO-808). */
