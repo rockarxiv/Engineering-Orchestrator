@@ -122,7 +122,7 @@ describe("the turns' output schemas (EO-847)", () => {
     const offer = { kinds: ["sec"], pool: { cliTools: ["gh"], mcpServers: [], skills: ["triage"] }, range: { runtimes: ["claude", "codex"], models: ["gpt-5"], reasoning: ["high"] }, room: 2 };
     const schema = jsonSchemaOutputSchema(leaderTurnSchema([SASHA], answer, offer));
     const nell = { name: "Nell", kind: "sec", instructions: "Read CSV.", tools: { cliTools: ["gh"], mcpServers: [], skills: [] }, runtime: "codex", model: "gpt-5", reasoning: "high" };
-    const assign = (newMembers: unknown[], member = "Nell") => ({ outcome: { decision: "assign", newMembers, assignments: [{ key: "a", member, instructions: "Look.", required: true }], note: "" } });
+    const assign = (newMembers: unknown[], member = "Nell") => ({ outcome: { decision: "assign", newMembers, assignments: [{ key: "a", member, scope: "src/csv/", instructions: "Look.", required: true }], note: "" } });
     expect(schema.parse(assign([nell])).ok).toBe(true);
     expect(schema.parse(assign([], "Sasha")).ok).toBe(true);
     expect(schema.parse(assign([{ ...nell, tools: { ...nell.tools, cliTools: ["kubectl"] } }])).ok).toBe(false);
@@ -132,7 +132,7 @@ describe("the turns' output schemas (EO-847)", () => {
     // An empty pool list is no empty `enum`.
     expect(JSON.stringify(leaderTurnSchema([SASHA], answer, offer))).not.toContain('"enum":[]');
     // Read back, an answer that adds nobody adds nobody, whatever the schema offered.
-    const read = readLeaderAnswer({ outcome: { decision: "assign", assignments: [{ key: "a", member: "Sasha", instructions: "Look.", required: true }], note: "" } });
+    const read = readLeaderAnswer({ outcome: { decision: "assign", assignments: [{ key: "a", member: "Sasha", scope: "src/auth/", instructions: "Look.", required: true }], note: "" } });
     expect(read.kind === "assign" && read.request.newMembers).toEqual([]);
     const added = readLeaderAnswer(assign([nell]));
     expect(added.kind === "assign" && added.request.newMembers[0]?.name).toBe("Nell");

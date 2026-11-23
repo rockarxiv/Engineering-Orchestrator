@@ -247,7 +247,7 @@ afterEach(async () => {
 const NELL = { name: "Nell", kind: "sec", instructions: "You read the export's CSV escaping.\nNothing else.", tools: { cliTools: ["gh"], mcpServers: ["docs"], skills: ["triage"] }, runtime: "codex", model: "gpt-5", reasoning: "high" };
 
 const assignWith = (newMembers: unknown[], assignments: { key: string; member: string }[]) => ({
-  outcome: { decision: "assign", newMembers, assignments: assignments.map((one) => ({ instructions: `Look at ${one.key}.`, required: true, ...one })), note: "Nobody here reads CSV." },
+  outcome: { decision: "assign", newMembers, assignments: assignments.map((one) => ({ scope: `The ${one.key} code.`, instructions: `Look at ${one.key}.`, required: true, ...one })), note: "Nobody here reads CSV." },
 });
 const final = (contributions: string[]) => ({ outcome: { decision: "final", answer: { result: "aligned", summary: "The export does what was asked." }, contributions, disagreements: "None.", limitations: "Only read." } });
 const report = (text: string) => ({ outcome: { report: text } });
