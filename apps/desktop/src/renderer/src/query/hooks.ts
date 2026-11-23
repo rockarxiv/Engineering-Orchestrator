@@ -658,6 +658,9 @@ export function usePipelineData(pipelineId: string) {
     // none inherits.
     workspaces: steps.data?.workspaces ?? [],
     workspaceKind: steps.data?.workspaceKind ?? null,
+    // Each step that runs as a team, read as dispatch would act on it, with
+    // the declared team it names (EO-881): what the Graph view names.
+    teams: steps.data?.teams ?? [],
     agents: agents.data?.agents ?? [],
     isLoading: items.isLoading || steps.isLoading,
     error: items.error ?? steps.error ?? null,

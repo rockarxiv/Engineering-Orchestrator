@@ -744,7 +744,7 @@ export const ExportedPipelineHeadSchema = z.object({
  * which version the author pinned; it names nothing on the far side,
  * where an import pins the version it creates or matches.
  */
-export const ExportedStepSchema = PipelineStepViewSchema.omit({ pipelineId: true, inputs: true, timeoutMs: true, workspaceMode: true, workspaceId: true, agentId: true }).extend({
+export const ExportedStepSchema = PipelineStepViewSchema.omit({ pipelineId: true, inputs: true, timeoutMs: true, workspaceMode: true, workspaceId: true, agentId: true, teamId: true }).extend({
   /**
    * The kind of agent an agent step needs — never an agent's id or name,
    * which mean nothing on another installation (EO-875, ARCHITECTURE.md

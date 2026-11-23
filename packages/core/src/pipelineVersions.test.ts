@@ -30,6 +30,7 @@ function step(overrides: Partial<VersionStep> = {}): VersionStep {
     moduleVersion: null,
     brief: null,
     team: null,
+    teamId: null,
     ...overrides,
   };
 }

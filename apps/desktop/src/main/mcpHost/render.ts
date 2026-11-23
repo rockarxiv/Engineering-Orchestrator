@@ -48,7 +48,6 @@ import {
   type JobSummary,
   type JobTrigger,
   type WebhookTrigger,
-  type StepTeam,
   type TeamReading,
   memberModeWords,
   TEAM_ISOLATED,
@@ -988,6 +987,10 @@ export function renderPipeline(data: IpcResponse<"pipelineSteps:list">): string 
     if (step.type === "agent") {
       if (shown?.name != null) marks.push(`agent "${shown.name}" (agentId: ${step.agentId ?? "none"}; kind ${shown.kind ?? "?"}, ${shown.provider ?? "?"}, ${shown.model ?? "default model"})`);
       else marks.push(step.agentId === null ? "no agent" : `agentId: ${step.agentId}`);
+      // The declared team it runs as (EO-881), by name; its whole reading is under Teams.
+      const declared = data.teams.find((team) => team.stepId === step.id)?.declared ?? null;
+      if (declared !== null) marks.push(`runs as the team "${declared.name}"`);
+      else if (step.teamId !== null) marks.push(`names a team EO cannot read (teamId: ${step.teamId})`);
     }
     lines.push(`- ${step.name} (id: ${step.id}) [${marks.join("; ")}]`);
     if (shown?.problem != null) lines.push(`  ${shown.problem}`);
@@ -1040,7 +1043,7 @@ export function renderPipeline(data: IpcResponse<"pipelineSteps:list">): string 
   // Each step that runs as a report-only team (EO-848), with its team as
   // a draft's `team` takes it, so a draft can restate or change it.
   if (data.teams.length > 0) {
-    lines.push("", ...renderTeamReadings(data.teams, (stepId) => data.steps.find((step) => step.id === stepId)?.team ?? null));
+    lines.push("", ...renderTeamReadings(data.teams));
   }
   // As pipeline_save takes them, so what is shown can be sent back
   // (EO-610). Said only where there are any.
@@ -2071,7 +2074,7 @@ export function renderPipelineProblems(data: IpcResponse<"pipeline:validate">): 
     const line = outsideReachLine(reach);
     return line === null ? [] : [`- ${stepId}: ${line}`];
   });
-  const teams = data.teams.length === 0 ? [] : ["", ...renderTeamReadings(data.teams, () => null)];
+  const teams = data.teams.length === 0 ? [] : ["", ...renderTeamReadings(data.teams)];
   if (reaching.length === 0) return [...verdict, ...teams].join("\n");
   return [...verdict, "", "## Steps that act outside EO", "", ...reaching, ...teams].join("\n");
 }
@@ -2083,14 +2086,17 @@ export function renderPipelineProblems(data: IpcResponse<"pipeline:validate">): 
  * results it can end on, and what would stop it publishing. `teamOf`
  * gives the team as a draft's `team` takes it, where the caller has it.
  */
-function renderTeamReadings(teams: readonly TeamReading[], teamOf: (stepId: string) => StepTeam | null): string[] {
+function renderTeamReadings(teams: readonly TeamReading[]): string[] {
   const lines = [
     "## Teams",
     "",
-    `A team's \`members\` are \`report_only\` (the default) or \`isolated\` (EO-867). ${TEAM_REPORT_ONLY} ${TEAM_ISOLATED} A team is set only by a draft's \`team\` on its step, which a person publishes from its card; pipeline_save cannot set one.`,
+    `A step runs as a declared team (EO-881): a team of its own, beside agents, whose leader and members are agents, named by the step and shareable by several pipelines. ` +
+      `A team's members work \`report_only\` (the default) or \`isolated\` (EO-867). ${TEAM_REPORT_ONLY} ${TEAM_ISOLATED} ` +
+      "A step is pointed at a team only by a draft's `team` on it (the team's name, or `none`), and a team is created or changed only by a draft's `teams` entry, which a person publishes from its card; pipeline_save can do neither. A locked team refuses every change.",
   ];
   for (const team of teams) {
-    lines.push("", `### ${team.stepName} (id: ${team.stepId}) — ${team.coordination === "leader" ? "leader-led" : "independent"}, ${memberModeWords(team.members)} members`, "");
+    const declared = team.declared === null ? "" : ` as the team "${team.declared.name}" (teamId: ${team.declared.id}; version ${String(team.declared.version)}${team.declared.locked ? "; locked" : ""})`;
+    lines.push("", `### ${team.stepName} (id: ${team.stepId})${declared} — ${team.coordination === "leader" ? "leader-led" : "independent"}, ${memberModeWords(team.members)} members`, "");
     lines.push(`- Members: ${team.reportOnly}`);
     lines.push(`- Coordination: ${team.facts.coordination}`);
     for (const member of team.facts.members) lines.push(`- Member: ${member}`);
@@ -2106,8 +2112,8 @@ function renderTeamReadings(teams: readonly TeamReading[], teamOf: (stepId: stri
     lines.push(`- Final answer: ${action}; ${writer}${team.finalAction.problem === null ? " — compatible" : ` — **not compatible**: ${team.finalAction.problem}`}`);
     lines.push(`- Can end on: ${team.results.length === 0 ? "nothing declared" : team.results.map((key) => `\`${key}\``).join(", ")}`);
     for (const problem of team.problems) lines.push(`- Would not publish: ${problem}`);
-    const json = teamOf(team.stepId);
-    if (json !== null) lines.push(`- \`team\`: ${JSON.stringify(json)}`);
+    // The team as a draft's `teams` entry writes it, agents by name (EO-881), so a draft can restate or change it.
+    if (team.declared !== null) lines.push(`- As a draft's \`teams\` entry: ${JSON.stringify(team.declared.draft)}`);
   }
   return lines;
 }

@@ -1296,6 +1296,13 @@
       "when": 1799596800000,
       "tag": "0184_cancel_holds",
       "breakpoints": true
+    },
+    {
+      "idx": 185,
+      "version": "6",
+      "when": 1799683200000,
+      "tag": "0185_declared_teams",
+      "breakpoints": true
     }
   ]
 }

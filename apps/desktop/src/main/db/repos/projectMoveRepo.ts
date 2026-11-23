@@ -18,12 +18,11 @@ import type {
   RecordRunEvent,
   Uuid,
 } from "@eo/core";
-import type { Run } from "@eo/core";
+import type { Run, StepTeam } from "@eo/core";
 import {
   EntryRulesSchema,
   parseStoredCommentOptions,
   storedBrief,
-  storedTeam,
   TrialActionsSchema,
   TrialPlanSchema,
   TrialStepSourcesSchema,
@@ -49,6 +48,7 @@ import { isDiverged } from "./divergenceRepo.js";
 import { dropWebhookWaiversWithoutEntry } from "./webhookWaiverRepo.js";
 import { writeArrivedMemory } from "./memoriesRepo.js";
 import { writeAdoptedTeamSession } from "./teamSessionsRepo.js";
+import { teamIdForInlineTeam, teamReader } from "./teamsRepo.js";
 import { PipelineExportSchema, UNBOUND_BACKEND, VersionStepSchema } from "@eo/core";
 import { getAppliedTemplateUpdate, getPipelineOrigin, isTemplateDocument, recordAppliedTemplateUpdate, recordPipelineOrigin } from "./pipelineOriginsRepo.js";
 import {
@@ -212,6 +212,19 @@ function trialColumnsOf(trial: RecordPipeline["trial"]): {
 }
 
 /**
+ * The declared team a step arriving from elsewhere runs as here (EO-881):
+ * none where it carries no team; otherwise the team it carries, by role,
+ * declared under the sender's id — the team this copy already names where
+ * it reads the same, else written as that id's team, its roles bound to
+ * this machine's agents (`teamIdForInlineTeam`).
+ */
+function arrivingTeamId(db: Db, pipelineId: string, step: { name: string; team?: StepTeam | null; teamId?: string | null }, current: string | null): string | null {
+  const team = step.team ?? null;
+  if (team === null) return null;
+  return teamIdForInlineTeam(db, { pipelineId, stepName: step.name, team, current, ...(step.teamId === null || step.teamId === undefined ? {} : { id: step.teamId }) });
+}
+
+/**
  * One pipeline row, with its steps and routes, as it travels.
  *
  * Shared by the move going up and the mirror coming down, because they
@@ -223,6 +236,7 @@ function trialColumnsOf(trial: RecordPipeline["trial"]): {
 function toRecordPipeline(db: Db, row: typeof pipelines.$inferSelect): RecordPipeline {
   const steps = db.select().from(pipelineSteps).where(eq(pipelineSteps.pipelineId, row.id)).orderBy(asc(pipelineSteps.position)).all();
   const versions = versionsAReplicaNeeds(db, row.id, row.currentVersionId);
+  const readTeam = teamReader(db);
   return {
     // The agents the versions it carries name too (EO-877): an item bound
     // to an older version runs that version's steps, and a replica without
@@ -273,8 +287,11 @@ function toRecordPipeline(db: Db, row: typeof pipelines.$inferSelect): RecordPip
         moduleVersion: step.moduleVersion,
         // What its decision's details show (EO-827), so a replica shows what the record does.
         brief: storedBrief(step.brief),
-        // The team it runs as (EO-843), so a replica runs what the record configures.
-        team: storedTeam(step.team),
+        // The team it runs as (EO-843), so a replica runs what the record
+        // configures: read as it runs, by role, and the declared team it is
+        // (EO-881), so the copy declares it here under the same id.
+        team: readTeam(step.teamId),
+        teamId: step.teamId,
       })),
     routes: db
       .select()
@@ -817,6 +834,11 @@ export function upsertReplicaPipeline(db: Db, pipeline: RecordPipeline): "writte
       })
       .run();
     for (const step of pipeline.steps) {
+      // Its declared team (EO-881), declared here under the record's id —
+      // only where the record's graph is what this copy takes: a new step,
+      // or a managed one.
+      const held = db.select({ teamId: pipelineSteps.teamId }).from(pipelineSteps).where(eq(pipelineSteps.id, step.id)).get();
+      const arriving = held === undefined || managed ? arrivingTeamId(db, pipeline.id, step, held?.teamId ?? null) : held.teamId;
       db.insert(pipelineSteps)
         .values({
           id: step.id,
@@ -844,7 +866,7 @@ export function upsertReplicaPipeline(db: Db, pipeline: RecordPipeline): "writte
           // is this replica's too once the section's modules have applied.
           moduleVersion: step.moduleVersion,
           brief: step.brief ?? null,
-          team: step.team ?? null,
+          teamId: arriving,
         })
         .onConflictDoUpdate({
           target: pipelineSteps.id,
@@ -869,7 +891,7 @@ export function upsertReplicaPipeline(db: Db, pipeline: RecordPipeline): "writte
                 results: step.results,
                 moduleVersion: step.moduleVersion,
                 brief: step.brief ?? null,
-                team: step.team ?? null,
+                teamId: arriving,
                 // `workspaceId` is absent on purpose — see this
                 // function's header. It is the one thing on a step that
                 // belongs to the machine rather than to the graph.
@@ -1808,6 +1830,8 @@ export function writeAdoptedPage(db: Db, project: RecordProject, page: RecordAdo
       for (const step of pipeline.steps) {
         counts.steps += 1;
         const agentId = movedAgents.has(step.id) ? (movedAgents.get(step.id) ?? null) : step.agentId;
+        // Its declared team (EO-881), declared on the record under the sender's id.
+        const arriving = arrivingTeamId(db, pipeline.id, step, db.select({ teamId: pipelineSteps.teamId }).from(pipelineSteps).where(eq(pipelineSteps.id, step.id)).get()?.teamId ?? null);
         db.insert(pipelineSteps)
           .values({
             id: step.id,
@@ -1833,7 +1857,7 @@ export function writeAdoptedPage(db: Db, project: RecordProject, page: RecordAdo
             // The module version it runs (EO-772), as the sender pins it.
             moduleVersion: step.moduleVersion,
             brief: step.brief ?? null,
-            team: step.team ?? null,
+            teamId: arriving,
           })
           // Wholesale, because a step carries no timestamp of its own
           // and travels with the pipeline that does. What the sender
@@ -1859,7 +1883,7 @@ export function writeAdoptedPage(db: Db, project: RecordProject, page: RecordAdo
               results: step.results,
               moduleVersion: step.moduleVersion,
               brief: step.brief ?? null,
-              team: step.team ?? null,
+              teamId: arriving,
             },
           })
           .run();

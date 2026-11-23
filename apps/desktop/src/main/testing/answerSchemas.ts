@@ -281,6 +281,8 @@ export const ASSIST_ANSWER_WITH_MAPS = {
           { kind: "module", field: null, types: null, message: null, module: "no-reviewers", moduleVersion: 2, timeoutMs: null },
         ],
         templateStepIds: [{ name: "release_merge", value: "merge" }],
+        // Left out, which changes no team (EO-881).
+        teams: null,
       },
       modules: [
         {
@@ -488,6 +490,7 @@ export const ASSIST_ANSWER_WITH_TRIAL = {
         restoredFrom: null,
         entryRules: null,
         templateStepIds: null,
+        teams: null,
         steps: [MERGE_STEP, DONE_STEP].map((step) => ({ ...step, timeoutMs: null, inputs: null, watch: null, workspaceId: null, workspaceMode: null, team: null })),
         routes: [{ ...DRAFT_ROUTE, requiresComment: null }],
       },

@@ -50,6 +50,7 @@ export * from "./webhookUnattended.js";
 export * from "./entryRules.js";
 export * from "./stepBrief.js";
 export * from "./team.js";
+export * from "./declaredTeam.js";
 export * from "./teamSession.js";
 export * from "./teamSessionView.js";
 export * from "./teamTurns.js";

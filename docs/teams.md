@@ -1,18 +1,38 @@
-# Teams on an agent step
+# Teams
 
-An `agent` step can run as a **team**: several focused agents each contribute a report to the item's thread, and EO turns those reports into the one result the step returns. Nobody gets a separate item or column for their part. A team's members are either **report-only** (the default) or **isolated**. This page covers what a team can do, how it decides, how each kind of member is held to its mode, what it costs, how a person controls it, and what this release leaves out. The design is in [`ARCHITECTURE.md`](../ARCHITECTURE.md) §4.2a. This page is the operating manual.
+An `agent` step can run as a **team**: several focused agents each contribute a report to the item's thread, and EO turns those reports into the one result the step returns. A team is a **declared team**, a configured thing of its own beside agents, which a step names the way it names an agent. Nobody gets a separate item or column for their part. A team's members are either **report-only** (the default) or **isolated**. This page covers what a team can do, how it decides, how each kind of member is held to its mode, what it costs, how a person controls it, and what this release leaves out. The design is in [`ARCHITECTURE.md`](../ARCHITECTURE.md) §4.2a. This page is the operating manual.
 
 ## Configuration
 
-A team is a setting on an agent step (`pipeline_steps.team`, `StepTeamSchema` in `packages/core/src/team.ts`). It is versioned, exported and imported with the pipeline like the step's other settings. A step with no team is one agent, which is how every step behaves unless somebody adds a team, or a template ships one ([below](#the-software-templates-review-team)).
+A team is its own entity (`teams`, `TeamDefinitionSchema` in `packages/core/src/declaredTeam.ts`), and an agent step names one by id (`pipeline_steps.team_id`). Several pipelines of one project can name the same team. A step with no team is one agent, which is how every step behaves unless somebody gives it a team, or a template ships one ([below](#the-software-templates-review-team)).
 
-You add, change or remove a team by **describing it to the assistant**. Its draft can carry `team` on an agent step, or `"none"` to make the step one agent again, and a person's Publish on the draft card writes it. That is the only way a team is written or removed. The Graph view and the draft card show the team in words, but the Graph view has no control that removes one. The configure screen's step form does not edit teams, and the `pipeline_save` tool removes the key, so a save through it keeps the step's team as it was. A tool can never publish a team.
+A team declares:
 
-Members are staffed by **role**, never by agent id, using the project's usual staffing rule. A team names no tool, server or grant. Each member runs with what its role's agent already has: reduced to report-only, or exactly as it is in a copy of its own where the team's members are isolated (below). The `system` role is never a member.
+| | |
+|---|---|
+| `name` | What a person and a draft call it. Unique within its project. |
+| `coordination` | `independent` or `leader` ([below](#how-a-team-completes)). |
+| `memberMode` | `report_only` (the default) or `isolated` ([below](#member-mode)). |
+| `leader` | Leader-led only: an agent and what it is asked to do. Its kind must have the step's action. |
+| `members` | Agents. On an independent team each has an assignment key, focused instructions and whether it is required; on a leader-led team, the agents the leader may assign work to. |
+| `outcomes`, `completion`, `limits` | What a member may conclude, how an independent team decides, and its limits ([below](#how-a-team-completes)). |
+| `toolPool` | The CLI tools (by command), MCP servers (by name) and skills (by slug) its members may be given. No member's own tools may go beyond it, and `eo_admin` can never be in it. |
+| `modelRange` | The runtimes, models and reasoning levels a member the leader adds may run on. |
+| `memberCap` | How many members it may have (8 when left out, at most 16). |
+
+EO's system agent is never a leader or a member. A team that breaks any of this is refused at the draft and at Publish, in a sentence naming what is wrong, and so is a step naming a team that does not exist, belongs to another project, or has a leader whose kind lacks the step's action. A team the draft writes is judged whether or not any step names it, and a change to a team that another pipeline's steps name is refused where it would leave one of those steps refused, naming that pipeline.
+
+**Every change to a team is a version**, recorded with who made it: a person, the assistant, or a team's leader. A person can restore any earlier version, and the restore is itself a new version. A person can **lock** a team: a locked team refuses every change but unlocking, a draft's included.
+
+You create, change or remove a team, and point a step at one, by **describing it to the assistant**. Its draft declares each team it creates or changes in `teams`, whole, with its agents by name, and names a step's team by name in that step's `team`, or `"none"` to make the step one agent again; a person's Publish on the draft card writes it. That is the only way a team is written. The draft card and the Graph view name the team a step runs as and show it in words, and `pipeline_get` lists each team with its whole definition as a draft writes it. The configure screen's step form does not edit teams, and the `pipeline_save` tool removes `teamId` and `teams`, so a save through it keeps the step's team as it was. A tool can never publish a team.
+
+**What runs.** Until EO-882, a team runs as it always has: each member as its agent's kind, staffed by the project's usual staffing rule. A team declared from a step's old inline team (migration 0185, which named each "Pipeline · Step", a long name cut to fit a team name's 120 characters, and numbered apart from every other team of its project, whatever the case) therefore runs exactly what that step ran. Each member runs with what its kind's agent already has: reduced to report-only, or exactly as it is in a copy of its own where the team's members are isolated (below).
+
+An exported pipeline still carries a step's team inline, by kind, never an agent or team id. Importing it, a template update, and a copy from the organisation's record each declare a team from it, binding each kind to an agent there.
 
 ### Member mode
 
-A team's `members` key chooses how every member works, the leader included:
+A team's `memberMode` chooses how every member works, the leader included:
 
 | | `report_only` (the default) | `isolated` |
 |---|---|---|
@@ -28,7 +48,7 @@ There are two ways to coordinate:
 
 | | Independent | Leader-led |
 |---|---|---|
-| Who runs | A fixed list of participants, each with a key, a role, instructions and whether it is required | A leader in a named role, who assigns work to agents of the permitted roles |
+| Who runs | A fixed list of member agents, each with a key, instructions and whether it is required | A leader agent, who assigns work to the team's members |
 | Who decides | EO, from a small ordered table of rules (`all`/`any` of the reports reporting some outcomes → a result), with an explicit fallback | The leader answers the step's action itself, and EO checks that answer |
 | Coordinating turn | None. No hidden synthesiser runs | One leader turn per round. Nothing waits in a process between rounds |
 | Step action it can answer | Only one whose answer is `result` and `summary` | Any action with a defined schema |
@@ -44,7 +64,7 @@ There are two ways to coordinate:
 | The session's time limit (`timeoutMs`) | none: each turn is held to the run timeout, the session to its turns' guards and these limits | the run timeout |
 | `budgetCents` | the item/daily budgets | can only tighten them |
 
-A report-only member must be an agent EO can hold to report-only: Claude or Codex, not using the person's own setup, not naming its own executable, and, on Codex, naming a model. A draft or Publish that would staff a report-only team's role with any other agent is refused, and the refusal says why. None of this applies to an isolated team. Its draft or Publish is refused instead where no workspace the step could work in can give each member a copy, and the refusal names the kind. Where some can and some cannot (a project with a Git repository and a folder, say), it is a warning naming the kinds that cannot, and the pipeline saves.
+A report-only member must be an agent EO can hold to report-only: Claude or Codex, not using the person's own setup, not naming its own executable, and, on Codex, naming a model. A draft or Publish that would staff a report-only team's kind with any other agent is refused, and the refusal says why. None of this applies to an isolated team. Its draft or Publish is refused instead where no workspace the step could work in can give each member a copy, and the refusal names the kind. Where some can and some cannot (a project with a Git repository and a folder, say), it is a warning naming the kinds that cannot, and the pipeline saves.
 
 ### An item whose workspace cannot make copies
 
@@ -182,7 +202,7 @@ First-pass participants of an independent team all get the same view and cannot 
 | **Restart** | Reconciles first: turns nobody is running are ended as cancelled and replaced, accepted reports are kept, and a settled session is replayed only on unchanged evidence |
 | **Organisation lease handoff** | When another device takes the item, this desktop stops its team, cancels the session and moves nothing. The controls refuse a session another desktop runs |
 
-On a trial, a team step planned real runs its participants on the trial's test item. A team step planned mocked runs nobody, and its output says the team was not tested.
+On a trial, each team the draft creates or changes runs as the trial's own copy, so trying a draft never changes a live team. A team step planned real runs its participants on the trial's test item. A team step planned mocked runs nobody, and its output says the team was not tested.
 
 ## The software template's Review team
 
@@ -199,14 +219,14 @@ From version 1.6 the team's `blocking` and `needs_decision` outcomes each rule o
 
 An installation on 1.4 receives the team as any template update, and one on 1.5 receives 1.6 the same way. Where a person already gave Review a team of their own, the update keeps theirs and holds as a conflict.
 
-To remove the team, ask the assistant to make Review one agent again. Its draft carries `team: "none"` for Review, and you publish it from the draft card. The next review is the single-reviewer review: one reviewer run, the ordinary review schema, the same routes. A later template version that changes Review's team does not put it back. It is held as a conflict, as for any step a person edited. `reviewTeam.test.ts` removes it that way: the assistant's draft, then Publish on the card. `packs/developer/reviewTeam.test.ts` runs the step end to end on Claude, on Codex and on both, every turn through that backend's real adapter over a stubbed SDK `query` or `codex app-server`. Its scripted leader assigns the passes it reads in the template's own leader instructions, so a pass dropped from the template fails those runs. It also runs a leader that approves over a blocking report and is refused.
+To remove the team, ask the assistant to make Review one agent again. Its draft carries `team: "none"` for Review (the declared team stays, for any other step to name), and you publish it from the draft card. The next review is the single-reviewer review: one reviewer run, the ordinary review schema, the same routes. A later template version that changes Review's team does not put it back. It is held as a conflict, as for any step a person edited. `reviewTeam.test.ts` removes it that way: the assistant's draft, then Publish on the card. `packs/developer/reviewTeam.test.ts` runs the step end to end on Claude, on Codex and on both, every turn through that backend's real adapter over a stubbed SDK `query` or `codex app-server`. Its scripted leader assigns the passes it reads in the template's own leader instructions, so a pass dropped from the template fails those runs. It also runs a leader that approves over a blocking report and is refused.
 
 ## Examples (opt-in)
 
 Two example pipelines live in [`docs/examples/teams/`](./examples/teams/). They are ordinary pipeline export files. Nothing installs them. To try one, import it as you would any pipeline file. Both are non-code: the evidence is the item's own text and its attachments, so neither depends on the developer pack.
 
 - **`publication-review.json`.** Independent. A fact checker and counsel (required) and a copy editor (optional) read an attached draft. *Any* "must change" sends it to **Revise**. Otherwise it is **Ready to publish**.
-- **`incident-investigation.json`.** Leader-led. An incident lead assigns focused questions to a log analyst and a customer liaison, follows up where a report falls short, and answers *Explained* or *Action needed* from the reports it names.
+- **`incident-investigation.json`.** Leader-led. An incident lead assigns focused questions to a log analyst and a customer liaison, follows up where a report falls short, and answers *Explained* or *Action needed* from the reports it names. The lead's kind has the step's `investigate` action, since a leader answers it.
 
 The imported agents recommend Claude. Change any member to Codex (with a model) to get a mixed-backend team.
 
@@ -235,5 +255,6 @@ Last run for EO-850 on Linux x64, with Claude Code 0.3.322 + Claude Agent SDK 0.
 - **Writing participants.** An isolated member may change its own copy, but nothing it changes reaches the item's work: no member implements.
 - **Merging a member's copy back.** A copy is discarded when its attempt ends, and what changed in it is said on the report.
 - **A copy on a folder or scratch workspace.** Only a Git repository and no disk give isolated members copies. An isolated team on an item in a folder or scratch workspace is refused at start; a folder step's team must be report-only to run.
-- **Recursive teams.** A member cannot lead a team or assign work. Only the configured leader assigns, and only to declared roles.
+- **Recursive teams.** A member cannot lead a team or assign work. Only the configured leader assigns, and only to the team's members.
+- **A leader adding members** (EO-883), **each member running as its own agent** (EO-882) and **the Teams tab** (EO-884): a team's pool, range and cap are declared and checked now, and used by those.
 - Editing a team on the configure screen's step form. Teams are configured through the assistant's draft.

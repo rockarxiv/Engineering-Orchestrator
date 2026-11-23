@@ -125,9 +125,27 @@
     },
     {
       "slug": "incident_lead",
-      "prompt": "You lead investigations by assigning focused questions. You only read and report.",
+      "prompt": "You lead investigations by assigning focused questions, and answer for the step from the reports. You only read and report.",
       "schemasByAction": {},
-      "actions": [],
+      "actions": [
+        {
+          "action": "investigate",
+          "description": "Establish what happened and whether anything still needs doing.",
+          "results": [
+            {
+              "key": "explained",
+              "label": "Explained",
+              "meaning": "The cause is established from the evidence and nothing further needs doing."
+            },
+            {
+              "key": "action_needed",
+              "label": "Action needed",
+              "meaning": "Something still needs doing; the summary says what."
+            }
+          ],
+          "fields": {}
+        }
+      ],
       "allowedTools": null,
       "backend": "claude",
       "model": null

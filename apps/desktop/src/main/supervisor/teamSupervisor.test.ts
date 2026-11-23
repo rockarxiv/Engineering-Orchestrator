@@ -38,7 +38,7 @@ import {
 import { listTransitionsForItem } from "../db/repos/transitionsRepo.js";
 import { trialSpendCentsSince } from "../db/repos/trialLoopsRepo.js";
 import { writeTrialPlan } from "../db/repos/trialsRepo.js";
-import { createTestItem, openMigratedTestDb, agentOfKind } from "../db/testHelpers.js";
+import { createTestItem, openMigratedTestDb, agentOfKind, setStepTeam } from "../db/testHelpers.js";
 import { createRunSupervisor, type RunSupervisor } from "./runSupervisor.js";
 import { taskContextOf } from "./teamEvidence.js";
 import type { ReportOnlyProviderAnswer } from "./teamSupervisor.js";
@@ -125,7 +125,7 @@ function client(): { prepare(source: string): { run(...args: unknown[]): unknown
 }
 
 function setTeam(value: IndependentTeam): void {
-  client().prepare("update pipeline_steps set team = ? where id = 'check'").run(JSON.stringify(value));
+  setStepTeam(handle.db, "check", value);
 }
 
 beforeEach(() => {

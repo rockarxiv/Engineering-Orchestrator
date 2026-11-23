@@ -39,7 +39,7 @@ const routes = (): StepRouteView[] => [
 ];
 
 /** The graph as a save sends it, with Approve's brief as given; `undefined` leaves the key out. */
-function graph(brief: StepBrief | null | undefined): Omit<PipelineStepView, "brief" | "team">[] {
+function graph(brief: StepBrief | null | undefined): Omit<PipelineStepView, "brief" | "team" | "teamId">[] {
   return [draft, approve, done].map((step) => {
     const view = {
       id: step.id,

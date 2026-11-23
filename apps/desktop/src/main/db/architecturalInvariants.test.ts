@@ -129,6 +129,8 @@ const APPEND_ONLY: Readonly<Record<string, readonly string[]>> = {
   skillVersions: [],
   jobWatchChecks: [],
   moduleChangeProposals: [],
+  // Every version of a declared team (EO-881): a restore is a new version, and rows go only with their team.
+  teamVersions: [],
 };
 
 /**

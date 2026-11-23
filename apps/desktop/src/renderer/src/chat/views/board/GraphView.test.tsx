@@ -46,6 +46,7 @@ function step(id: string, name: string, position: number, overrides: Partial<Pip
     moduleVersion: null,
     brief: null,
     team: null,
+    teamId: null,
     ...overrides,
   };
 }
@@ -146,6 +147,8 @@ function pushes() {
 
 interface World {
   steps?: PipelineStepView[];
+  /** Each step that runs as a team, as `pipelineSteps:list` reads it, the declared team it names included (EO-881). */
+  teams?: unknown[];
   routes?: StepRouteView[];
   items?: ItemSummary[];
   versions?: { id: string; pipelineId: string; number: number; createdAt: number; createdBy: string | null; createdByName: string | null; releaseNotes: string | null }[];
@@ -197,6 +200,7 @@ function mockIpc({
   entryRuleLines = [],
   agents,
   pipelineProjectId = "p1",
+  teams = [],
 }: World = {}) {
   const invoke = vi.fn(async (channel: string, payload?: unknown) => {
     void payload;
@@ -209,6 +213,7 @@ function mockIpc({
           data: {
             steps,
             pipelineProjectId,
+            teams,
             routes,
             entrySentence,
             entryRuleLines,
@@ -684,6 +689,21 @@ describe("a step's details, read-only (EO-524)", () => {
     expect(list("Limits")).toContain("2 participants at a time");
     expect(list("Limits")).toContain("spending: $2.50 for the whole team");
     expect(section.textContent).toContain("Independent — 2 participants each report on their own");
+  });
+
+  it("names the declared team a step runs as, on the step and in its details (EO-881)", async () => {
+    const led = StepTeamSchema.parse({ coordination: "leader", leader: { role: "reviewer", instructions: "Split the review." }, roles: ["tester"] });
+    mockIpc({
+      steps: [step("todo", "To Do", 0, { team: led, teamId: "team-1" }), step("done", "Done", 1)],
+      teams: [{ stepId: "todo", declared: { id: "team-1", name: "Review leads", locked: false, version: 2, draft: {} } }],
+    });
+    renderGraph();
+    const drawn = await screen.findByTitle('Runs as the team "Review leads"');
+    expect(drawn.textContent).toBe("team Review leads");
+    fireEvent.click(screen.getByRole("button", { name: "To Do" }));
+    expect(within(screen.getByRole("region", { name: "Team" })).getByRole("heading").textContent).toBe("Runs as the team “Review leads”");
+    // A step that runs as one agent names no team.
+    expect(screen.queryAllByTitle(/Runs as the team/)).toHaveLength(1);
   });
 
   it("says who leads a leader-led team, whom it may assign to, and its rounds (EO-848)", async () => {

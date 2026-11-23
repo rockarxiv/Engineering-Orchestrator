@@ -644,13 +644,13 @@ export const pipelineSteps = sqliteTable(
      */
     brief: text("brief", { mode: "json" }),
     /**
-     * The report-only team this agent step runs as (EO-843, ARCHITECTURE.md,
-     * "A team on an agent step"): a JSON `StepTeamSchema`, staffed by role.
-     * NULL is one agent, which is every step until somebody configures a
-     * team. Only an `agent` step may have one; `validatePipeline` refuses
-     * it elsewhere.
+     * The declared team this agent step runs as (EO-881, ARCHITECTURE.md
+     * §4.2a), or NULL for one agent. Replaced the inline `team` column
+     * (EO-843) in migration 0185, which declared a team for every step
+     * that had one. Only an `agent` step may name one; `validatePipeline`
+     * refuses it elsewhere, and a team of another project.
      */
-    team: text("team", { mode: "json" }),
+    teamId: text("team_id").references((): AnySQLiteColumn => teams.id),
   },
   (table) => [index("idx_pipeline_steps_pipeline").on(table.pipelineId, table.position)],
 );
@@ -2085,6 +2085,73 @@ export const agentCliTools = sqliteTable(
     createdAt: integer("created_at").notNull(),
   },
   (table) => [primaryKey({ columns: [table.agentId, table.cliToolId] })],
+);
+
+/**
+ * A declared team (EO-881, ARCHITECTURE.md §4.2a): a configured thing of
+ * its own, beside agents, which an agent step names by id. Its leader and
+ * members are agents; `definition` is the whole `TeamDefinitionSchema`
+ * JSON — name, coordination, member mode, leader and members by agent id,
+ * outcomes, completion or leader checks, limits, tool pool, model range
+ * and member cap — published whole by one Publish, never queried by its
+ * parts. `name` is a copy of the definition's, for lookups by name.
+ *
+ * Every change is a new row in `team_versions`; `version` is the current
+ * one's number. A locked team refuses every change but unlocking.
+ *
+ * No ON DELETE rule on the project, for `agents.project_id`'s reason:
+ * `deleteProject` removes a project's teams before the project row goes.
+ */
+export const teams = sqliteTable(
+  "teams",
+  {
+    id: text("id").primaryKey(), // uuidv7
+    /** The project it belongs to, or NULL for a team of pipelines on no project. */
+    projectId: text("project_id").references((): AnySQLiteColumn => projects.id),
+    name: text("name").notNull(),
+    definition: text("definition", { mode: "json" }).notNull(),
+    locked: integer("locked", { mode: "boolean" }).notNull().default(false),
+    version: integer("version").notNull(),
+    /**
+     * A trial's own copy of a team its draft writes (EO-881): the trial
+     * pipeline it belongs to, and the draft team it copies (its name, as
+     * `teamNameKey` reads it). NULL for every other team. What a later
+     * round finds its copy by — never by the copy's name, which another
+     * team may come to have.
+     */
+    trialPipelineId: text("trial_pipeline_id"),
+    trialSource: text("trial_source"),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (table) => [index("idx_teams_project").on(table.projectId, table.name), index("idx_teams_trial").on(table.trialPipelineId, table.trialSource)],
+);
+
+/**
+ * Every version of a declared team (EO-881), oldest first: what it was,
+ * who made it and the version a restore put back. Append-only — a restore
+ * is itself a new version — and removed only with its team.
+ */
+export const teamVersions = sqliteTable(
+  "team_versions",
+  {
+    id: text("id").primaryKey(), // uuidv7
+    teamId: text("team_id")
+      .notNull()
+      .references(() => teams.id, { onDelete: "cascade" }),
+    number: integer("number").notNull(),
+    definition: text("definition", { mode: "json" }).notNull(),
+    /** `TeamAuthor["kind"]`: person, assistant, leader or eo. */
+    authorKind: text("author_kind").notNull(),
+    /** The person's id for a person, the leader agent's for a leader; null otherwise. */
+    authorId: text("author_id"),
+    /** The item a leader added a member for (EO-883); null otherwise. */
+    authorItemId: text("author_item_id"),
+    /** The version a restore put back; null for every other version. */
+    restoredFrom: integer("restored_from"),
+    createdAt: integer("created_at").notNull(),
+  },
+  (table) => [uniqueIndex("idx_team_versions_number").on(table.teamId, table.number)],
 );
 
 // ── Execution ─────────────────────────────────────────────────

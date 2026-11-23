@@ -12,6 +12,7 @@ import {
   type Agent,
   type PipelineStep,
   type RegistryFacts,
+  type TeamDefinition,
   type TeamReading,
   type Uuid,
 } from "@eo/core";
@@ -19,6 +20,7 @@ import { teamProblems, type IsolatedCopyProblem } from "@eo/engine";
 import type { Db } from "../db/client.js";
 import { projectWorkspaceList } from "../db/repos/projectsRepo.js";
 import { getWorkspace } from "../db/repos/workspacesRepo.js";
+import type { StoredTeam } from "../db/repos/teamsRepo.js";
 import { reportOnlyAgentProblem } from "../providers/reportOnly.js";
 import { kindMakesMemberCopies } from "../workspaceKinds.js";
 
@@ -132,6 +134,20 @@ export interface TeamReadingContext {
   registry: RegistryFacts;
   staffedRoles: readonly string[];
   runTimeoutMs: number;
+  /** The declared teams a step may name, by id (EO-881), for the reading to say which team it runs as. */
+  teams?: ReadonlyMap<string, StoredTeam>;
+}
+
+/**
+ * A declared team as a draft's `teams` entry writes it (EO-881): its
+ * agents by name, as a draft names a step's, and everything else as it is.
+ */
+export function draftFormOfTeam(team: TeamDefinition, agents: readonly Agent[]): Record<string, unknown> {
+  const name = (agentId: string) => agents.find((agent) => agent.id === agentId)?.name ?? agentId;
+  if (team.coordination === "leader") {
+    return { ...team, leader: { agent: name(team.leader.agentId), instructions: team.leader.instructions }, members: team.members.map((member) => ({ agent: name(member.agentId) })) };
+  }
+  return { ...team, members: team.members.map(({ agentId, ...member }) => ({ ...member, agent: name(agentId) })) };
 }
 
 /** Each step of `steps` that has a team, as the read and validation answers describe it. */
@@ -175,10 +191,19 @@ export function teamReadings(steps: readonly PipelineStep[], context: TeamReadin
         finalAction: { role: kind, action, answeredBy: team.coordination === "independent" ? "eo" : "leader", problem: finalProblem },
         results: team.coordination === "independent" ? teamResultKeys(team) : (facts?.results.map((result) => result.key) ?? []),
         facts: teamFacts(team),
+        declared: declaredOf(step.teamId, context),
         problems: teamProblems([step], { registry: context.registry, agents: context.agents, staffedRoles: context.staffedRoles, runTimeoutMs: context.runTimeoutMs, reportOnlyRoleProblems: roleProblems, isolatedCopyProblems: copyProblems }).map(
           (problem) => problem.message,
         ),
       },
     ];
   });
+}
+
+/** The declared team a reading names (EO-881), or null where the step names none EO can read. */
+function declaredOf(teamId: string | null | undefined, context: TeamReadingContext): TeamReading["declared"] {
+  if (teamId === null || teamId === undefined) return null;
+  const team = context.teams?.get(teamId);
+  if (team === undefined || team.definition === null) return null;
+  return { id: team.id, name: team.name, locked: team.locked, version: team.version, draft: draftFormOfTeam(team.definition, context.agents) };
 }

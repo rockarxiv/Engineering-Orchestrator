@@ -823,7 +823,11 @@ function writeInstallation(
           const replaced = replacePipelineGraph(
             db,
             pipelineId,
-            [...each.steps, ...preserved].map(({ ownerPersonId: _person, ownerGroupId: _group, ...step }) => step),
+            // Without the declared team's id (EO-881): the merge compares
+            // teams as they run, by role, so the step's team is written from
+            // `team` — the team it names where that reads the same, a team
+            // declared from the template's otherwise.
+            [...each.steps, ...preserved].map(({ ownerPersonId: _person, ownerGroupId: _group, teamId: _teamId, ...step }) => step),
             each.routes.map(({ id: _id, ...route }) => route),
             { entryStepId: each.entryStepId, createdBy: author, releaseNotes: notes === "" ? null : notes },
           );
@@ -1258,6 +1262,9 @@ function graphOfDocument(db: Db, pipelineId: string, document: PipelineExport, l
       brief: remapStepReferences(step, local).brief ?? null,
       // The team an agent step runs as (EO-843): roles, never ids.
       team: step.team ?? null,
+      // A document names no declared team (EO-881): the write declares one
+      // from `team`, or keeps the step's own where it reads the same.
+      teamId: null,
     }));
   const routes: StepRoute[] = document.routes.map((route) => ({
     ...route,

@@ -17,6 +17,7 @@ import {
 import { entryRuleProblems } from "./entryRules.js";
 import { briefProblems } from "./stepBrief.js";
 import { teamProblems, type IsolatedCopyProblem } from "./team.js";
+import { declaredTeamProblems, type AgentToolSurface, type PipelineTeamFacts } from "./declaredTeam.js";
 import { moduleAtPin, type ModuleVersionFacts } from "./modulePins.js";
 
 /** The module a step runs, as its pin makes it (EO-770), or undefined for one it does not run or this installation does not have. */
@@ -145,6 +146,15 @@ export interface ValidatePipelineInput {
    * knows the installed kinds. Absent is "every step can".
    */
   isolatedCopyProblems?: Readonly<Record<string, IsolatedCopyProblem>>;
+  /**
+   * The declared teams a step may name (EO-881): the project's, with any
+   * the save declares laid over them. Read by the caller. Absent, no
+   * step's team is judged against them — a caller that knows no teams
+   * passes nothing, and the role-staffed checks above still hold.
+   */
+  teams?: readonly PipelineTeamFacts[];
+  /** What each agent a team names may use, by agent id (EO-881), for `validateTeam`'s tool pool check. */
+  teamAgentSurfaces?: Readonly<Record<string, AgentToolSurface>>;
   /**
    * What roles, built-in functions and item types this installation
    * knows about (KAN-124).
@@ -281,6 +291,8 @@ export function validatePipeline(input: ValidatePipelineInput): WorkflowProblem[
     reportOnlyRoleProblems = {},
     isolatedCopyProblems = {},
     staffedRoles,
+    teams,
+    teamAgentSurfaces,
   } = input;
 
   if (steps.length === 0) {
@@ -299,6 +311,13 @@ export function validatePipeline(input: ValidatePipelineInput): WorkflowProblem[
   // the action it answers and its limits.
   for (const { stepId, severity, message } of teamProblems(steps, { registry, agents, staffedRoles: staffedRoles ?? staffedKinds(agents, projectId), runTimeoutMs, reportOnlyRoleProblems, isolatedCopyProblems })) {
     problems.push({ severity, stateId: stepId, message });
+  }
+  // The declared team a step names (EO-881): that it exists, is this
+  // project's and can answer the step, and `validateTeam` on it.
+  if (teams !== undefined) {
+    for (const { stepId, message } of declaredTeamProblems(steps, { projectId, registry, teams, agents, ...(teamAgentSurfaces === undefined ? {} : { surfaces: teamAgentSurfaces }) })) {
+      problems.push({ severity: "error", stateId: stepId, message });
+    }
   }
 
   const byId = new Map(steps.map((step) => [step.id, step]));

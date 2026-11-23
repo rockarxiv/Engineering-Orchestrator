@@ -43,7 +43,7 @@ import { readToolDirectoryServers, TOOL_PLUGIN_NAME, writeToolDirectory } from "
 import { attachmentEnvironment } from "../agentAttachments/serverEnvironment.js";
 import { attachmentsForRun } from "../db/repos/agentAttachmentsRepo.js";
 import { insertAttachments, listAgents, saveMcpServer, setAgentAttachment } from "../db/repos/index.js";
-import { createTestItem, openMigratedTestDb, openMigratedTestDbAt, agentOfKind } from "../db/testHelpers.js";
+import { createTestItem, openMigratedTestDb, openMigratedTestDbAt, agentOfKind, setStepTeam } from "../db/testHelpers.js";
 import { createAgent, createRoute, createStep, getItem, listRunsForItem, saveActionDefinition } from "../db/repos/index.js";
 import { noneWorkspaceKind } from "../supervisor/noneKind.js";
 import { createRunSupervisor } from "../supervisor/runSupervisor.js";
@@ -1622,7 +1622,7 @@ async function isolatedMemberThroughSupervisor(
       completion: { rules: [], fallback: "aligned" },
       limits: { maxParticipants: 1, maxParallel: 1 },
     });
-    (handle.db as unknown as { $client: { prepare(sql: string): { run(...args: unknown[]): unknown } } }).$client.prepare("update pipeline_steps set team = ? where id = 'check'").run(JSON.stringify(team));
+    setStepTeam(handle.db, "check", team);
     const item = createTestItem(handle.db, { type: "story", title: "Check the export", stepId: "check" });
     const none = noneWorkspaceKind(join(root, "no-disk"));
     const evidence = none.evidence!;

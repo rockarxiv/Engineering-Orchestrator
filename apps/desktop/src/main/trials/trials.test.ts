@@ -9,6 +9,7 @@ import {
   RecordItemSchema,
   RecordPipelineSchema,
   RecordProjectSchema,
+  TeamDefinitionSchema,
   SCRATCH_KIND,
   ipcContract,
   jiraStateOf,
@@ -61,13 +62,15 @@ import {
   setItemArchived,
   sumCostCentsForItem,
   sumCostCentsSince,
+  updateAgent,
   updateRun,
 } from "../db/repos/index.js";
 import { listPipelinesUpdatedSince, readProjectItems, readProjectItemTypes, readProjectPipelines, writeAdoptedPage, writeAdoptedProject } from "../db/repos/projectMoveRepo.js";
 import { markProjectOnTheRecord } from "../db/repos/projectsRepo.js";
 import { upsertReplicaItem } from "../db/repos/replicaRepo.js";
 import { upsertReplicaPipeline } from "../db/repos/projectMoveRepo.js";
-import { itemTypes, pipelines, pipelineSteps, projects, stepRoutes, workspaces } from "../db/schema.js";
+import { itemTypes, pipelines, pipelineSteps, projects, stepRoutes, teams, workspaces } from "../db/schema.js";
+import { createTeam, getTeam, trialTeams } from "../db/repos/teamsRepo.js";
 import { trialCreationRefusal } from "../modules/moduleCreations.js";
 import { createModuleRunnerLookup } from "../modules/registry.js";
 import { asRecordItem } from "../record/serveRecord.js";
@@ -315,6 +318,39 @@ describe("creating a trial from a draft", () => {
 
     const check = listStepsForPipeline(handle.db, made.trial.id).find((entry) => entry.name === "Check");
     expect(check?.brief).toEqual([{ show: "output", step: made.stepIds.hotfix_fix }, { show: "comment", kind: "approval" }]);
+  });
+
+  it("runs a draft's team as the trial's own copy, never a live team that has the name the copy would get, and claims the copy as the trial's (EO-881)", async () => {
+    // Team members are held to report-only, which EO can do on Claude and not on the seeded fake backend.
+    for (const agent of listAgents(handle.db)) updateAgent(handle.db, agent.id, { provider: "claude" });
+    const target = hotfix();
+    const team = TeamDefinitionSchema.parse({
+      name: "Fix team (Hotfix (trial))",
+      coordination: "leader",
+      leader: { agentId: agentOfKind(handle.db, "implementer"), instructions: "Lead." },
+      members: [{ agentId: agentOfKind(handle.db, "reviewer") }],
+    });
+    // A live team already called what the trial's copy would be called.
+    const live = createTeam(handle.db, { projectId, definition: team, author: { kind: "assistant" } });
+    if (!live.ok) throw new Error(live.reason);
+    const conversation = await conversationOn(`/pipelines/${target}`);
+    const draft = {
+      ...hotfixWithCheck({ pipelineId: target }),
+      teams: [{ name: "Fix team", coordination: "leader", leader: { agent: "Implementer", instructions: "Plan the fix." }, members: [{ agent: "Reviewer" }] }],
+    };
+    draft.steps[0] = { ...draft.steps[0]!, team: "Fix team" } as (typeof draft.steps)[number];
+    const [messageId] = turn(conversation, { message: "Here.", draft }, target);
+
+    const made = trialFrom(conversation, messageId!);
+
+    const fix = listStepsForPipeline(handle.db, made.trial.id).find((entry) => entry.name === "Fix")!;
+    expect(fix.teamId).not.toBeNull();
+    expect(fix.teamId).not.toBe(live.team.id);
+    expect(getTeam(handle.db, fix.teamId!)?.name).toBe("Fix team (Hotfix (trial)) (2)");
+    expect(handle.db.select({ trial: teams.trialPipelineId, source: teams.trialSource }).from(teams).where(eq(teams.id, fix.teamId!)).get()).toEqual({ trial: made.trial.id, source: "fix team" });
+    expect(getTeam(handle.db, live.team.id)).toMatchObject({ version: 1, definition: team });
+    // A later round of the trial finds the same copy by what it belongs to.
+    expect(trialTeams(handle.db, { id: made.trial.id, name: "Hotfix (trial)" }, [{ id: "any", definition: { ...team, name: "Fix team" } }]).teams[0]!.id).toBe(fix.teamId);
   });
 
   it("makes a trial of a draft that creates a pipeline, with no pipeline to replace", async () => {

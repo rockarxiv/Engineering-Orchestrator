@@ -43,13 +43,13 @@ import { ACTION_KEY_PATTERN, RESERVED_ANSWER_FIELDS } from "./schemas/actionDefi
  */
 
 /** A key, an outcome or a result: what a route key is typed as. */
-const TeamKeySchema = z.string().regex(ACTION_KEY_PATTERN, "Use lowercase letters, digits and underscores.");
+export const TeamKeySchema = z.string().regex(ACTION_KEY_PATTERN, "Use lowercase letters, digits and underscores.");
 
 /** What a role slug may be: any non-empty name, since roles are configuration. */
 const RoleSchema = z.string().trim().min(1);
 
 /** Focused instructions: what this participant is asked to look at. Bounded, because it is sent on every one of its runs. */
-const InstructionsSchema = z.string().trim().min(1).max(4000);
+export const TeamInstructionsSchema = z.string().trim().min(1).max(4000);
 
 /**
  * The hard ceilings no team may exceed, whatever it declares. Small on
@@ -153,7 +153,7 @@ export const TeamParticipantSchema = z.strictObject({
   key: TeamKeySchema,
   /** Who is dispatched: an agent of this role, by the project's staffing rule. */
   role: RoleSchema,
-  instructions: InstructionsSchema,
+  instructions: TeamInstructionsSchema,
   /**
    * Whether the team cannot decide without it. A required participant that
    * fails to contribute fails the team; an optional one is left out of the
@@ -197,7 +197,7 @@ export const LeaderTeamSchema = z.strictObject({
   /** How its members work, the leader included (`TEAM_MEMBER_MODES`). */
   members: TeamMemberModeSchema,
   /** Who leads: an agent of this role, assigning work and answering the step's action. */
-  leader: z.strictObject({ role: RoleSchema, instructions: InstructionsSchema }),
+  leader: z.strictObject({ role: RoleSchema, instructions: TeamInstructionsSchema }),
   /** The roles the leader may assign work to. */
   roles: z.array(RoleSchema).min(1).max(TEAM_CEILINGS.participants),
   /** Outcomes a participant may report, if the team declares any. */
@@ -658,5 +658,15 @@ export const TeamReadingSchema = z.object({
   facts: TeamFactsSchema,
   /** What `validatePipeline` says about this team, word for word. */
   problems: z.array(z.string()),
+  /**
+   * The declared team the step names (EO-881): its id, name, whether a
+   * person locked it, its current version, and its definition as a draft's
+   * `teams` entry writes it — agents by name — so a draft can restate or
+   * change it. Null on a reading from before declared teams.
+   */
+  declared: z
+    .object({ id: z.string(), name: z.string(), locked: z.boolean(), version: z.number().int(), draft: z.unknown() })
+    .nullable()
+    .default(null),
 });
 export type TeamReading = z.infer<typeof TeamReadingSchema>;

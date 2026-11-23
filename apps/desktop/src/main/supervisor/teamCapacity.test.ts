@@ -12,7 +12,7 @@ import { getItem } from "../db/repos/itemsRepo.js";
 import { createStep } from "../db/repos/pipelineStepsRepo.js";
 import { listRunsForItem } from "../db/repos/runsRepo.js";
 import { listTeamSessionsForItem } from "../db/repos/teamSessionsRepo.js";
-import { createTestItem, openMigratedTestDb, agentOfKind } from "../db/testHelpers.js";
+import { createTestItem, openMigratedTestDb, agentOfKind, setStepTeam } from "../db/testHelpers.js";
 import { DEFAULT_GUARD_CONFIG } from "../ipc/configCommands.js";
 import { createRunSupervisor, type RunSupervisor } from "./runSupervisor.js";
 import type { ReportOnlyProviderAnswer } from "./teamSupervisor.js";
@@ -133,9 +133,7 @@ function answers(after: Promise<unknown> | number = 0): Turn {
 }
 
 function setTeam(value: StepTeam): void {
-  (handle.db as unknown as { $client: { prepare(source: string): { run(...args: unknown[]): unknown } } }).$client
-    .prepare("update pipeline_steps set team = ? where id = 'team_review'")
-    .run(JSON.stringify(value));
+  setStepTeam(handle.db, "team_review", value);
 }
 
 beforeEach(() => {

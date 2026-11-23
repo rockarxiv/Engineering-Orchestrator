@@ -1,4 +1,5 @@
 import { mkdtempSync, rmSync } from "node:fs";
+import { changeTeam, getTeam } from "../../db/repos/teamsRepo.js";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -596,9 +597,11 @@ describe("the scripted leader", () => {
     const team = reviewTeam();
     const without = team.leader.instructions.replace(/^3\. `tests`:.*$/m, "");
     expect(without).not.toBe(team.leader.instructions);
-    (handle.db as unknown as { $client: { prepare(source: string): { run(...args: unknown[]): unknown } } }).$client
-      .prepare("update pipeline_steps set team = ? where id = 'review'")
-      .run(JSON.stringify({ ...team, leader: { ...team.leader, instructions: without } }));
+    // The declared team Review names (EO-881), its leader's instructions changed as a version of it.
+    const declared = getTeam(handle.db, listStepsForPipeline(handle.db, "default").find((step) => step.id === "review")!.teamId!)!;
+    if (declared.definition?.coordination !== "leader") throw new Error("Review's team is not leader-led");
+    const changed = changeTeam(handle.db, declared.id, { definition: { ...declared.definition, leader: { ...declared.definition.leader, instructions: without } }, author: { kind: "person", personId: null } });
+    expect(changed.ok).toBe(true);
     story();
     const lead = leading([], () => ({ answer: { verdict: "approve", feedback: "Clean.", pull_request_body: "Body." } }));
     script = (turn) => (turn.leader ? lead(turn) : { outcome: { outcome: "clear", report: "Nothing blocks." } });
@@ -740,7 +743,7 @@ describe("the template's Review team, removed through the assistant's draft and 
     const agentBefore = review().agentId;
 
     const { on, cardId, body } = await draftCard();
-    expect(body).toContain("Team: a leader-led team → one agent");
+    expect(body).toMatch(/Team: ".+" → one agent/);
     // Nothing is written until the person presses Publish.
     expect(review().team).toEqual(team);
     expect(await publish(on, cardId)).toMatchObject({ ok: true, data: { saved: true } });

@@ -1,4 +1,5 @@
 import { and, asc, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
+import { deleteProjectTeams } from "./teamsRepo.js";
 import { uuidv7, type Uuid } from "@eo/core";
 import type { Db } from "../client.js";
 import { copyItemTypesToProject } from "./itemTypesRepo.js";
@@ -437,6 +438,11 @@ export function deleteProject(db: Db, id: Uuid): void {
       .set({ archivedAt: sql`coalesce(${agents.archivedAt}, ${at})`, projectId: null, updatedAt: at, revision: sql`${agents.revision} + 1` })
       .where(eq(agents.projectId, id))
       .run();
+    // Its declared teams go (EO-881): a team is configuration of the
+    // project's pipelines, which go with it, and has no runs of its own.
+    // `teams.project_id` has no ON DELETE rule, so they go first, and the
+    // steps naming them are let go of before that.
+    deleteProjectTeams(tx as unknown as Db, id);
     tx.delete(projects).where(eq(projects.id, id)).run();
   });
 }

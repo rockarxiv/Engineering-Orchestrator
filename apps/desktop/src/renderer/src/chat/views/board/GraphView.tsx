@@ -32,7 +32,9 @@ import { StepDetails } from "./StepDetails";
 export function GraphView({ pipelineId }: { pipelineId: string }) {
   const name = usePipelineName(pipelineId);
   const agentKindOf = useStepAgentKind();
-  const { items, states, routes, elsewhere, entrySentence, verification, workspaces, workspaceKind, isLoading, error } = usePipelineData(pipelineId);
+  const { items, states, routes, elsewhere, entrySentence, verification, workspaces, workspaceKind, teams, isLoading, error } = usePipelineData(pipelineId);
+  // The declared team each step runs as, by name (EO-881).
+  const teamNameOf = useCallback((step: { id: string }) => teams.find((team) => team.stepId === step.id)?.declared?.name ?? null, [teams]);
   const ordered = useMemo(() => [...states].sort((a, b) => a.position - b.position), [states]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const selected = ordered.find((step) => step.id === selectedId) ?? null;
@@ -75,6 +77,7 @@ export function GraphView({ pipelineId }: { pipelineId: string }) {
             routes={routes}
             elsewhere={elsewhere}
             agentKindOf={agentKindOf}
+            teamNameOf={teamNameOf}
             entryStepId={entry}
             entryNote={entrySentence}
             loads={loads}
@@ -94,6 +97,7 @@ export function GraphView({ pipelineId }: { pipelineId: string }) {
               verification={verification.find((entry) => entry.stepId === selected.id)}
               workspaces={workspaces}
               workspaceKind={workspaceKind}
+              teamName={teamNameOf(selected)}
             />
           )}
         </div>

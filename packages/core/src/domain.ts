@@ -716,6 +716,14 @@ export interface PipelineStep {
    * any other kind of step.
    */
   team: StepTeam | null;
+  /**
+   * The declared team this `agent` step runs as (EO-881, ARCHITECTURE.md
+   * §4.2a), by id, or null for one agent. `team` is that team as the
+   * role-staffed shape a session runs (`stepTeamOf`), read from the team
+   * whenever the step is read; null where the step names none, or names
+   * one EO cannot read.
+   */
+  teamId: string | null;
 }
 
 /**

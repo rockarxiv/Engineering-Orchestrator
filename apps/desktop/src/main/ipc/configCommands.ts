@@ -1,6 +1,6 @@
 import { backendAllowed, bindingRefusal, DEFAULT_MEMORY_DELIVERY_CHARS, DEFAULT_MEMORY_SCOPE_MAX_CHARS, DEFAULT_MEMORY_SCOPE_MAX_ENTRIES, DEFAULT_SKILL_ARCHIVE_AFTER_RUNS, DEFAULT_SKILL_MAX_BODY_CHARS, DEFAULT_SKILL_STALE_AFTER_RUNS, isBuiltinRole, rolesStaffedFor, isDispatchable, isPreviewAgent, settledWatch, stepAgentOf, stepAgentProblem, stepHoldsItemsMessage, stepWorkspaceChoice, timeLimitBoundProblem, withMemoryNoteGrant } from "@eo/core";
-import type { ActionDefinitionDraft, Agent, AgentRemovalImpact, StepNamingAgent, RegistryFacts, TeamReading, EntryRule, GuardConfigView, IpcPayload, IpcResponse, ItemTypeEntry, Registry, Uuid, PipelineStep, StepBrief, StepRoute, StepTeam, StepWatch } from "@eo/core";
-import { hasBlockingProblem, outsideReachByStep, validatePipeline, type IsolatedCopyProblem, type WorkflowProblem } from "@eo/engine";
+import type { ActionDefinitionDraft, Agent, AgentRemovalImpact, StepNamingAgent, RegistryFacts, TeamReading, EntryRule, GuardConfigView, IpcPayload, IpcResponse, ItemTypeEntry, Registry, Uuid, PipelineStep, StepBrief, StepRoute, StepWatch, TeamSave } from "@eo/core";
+import { hasBlockingProblem, outsideReachByStep, validatePipeline, validateTeam, type IsolatedCopyProblem, type WorkflowProblem } from "@eo/engine";
 import type { Db } from "../db/client.js";
 import { registry, registryForProject, withProposedActions } from "../registry.js";
 import { sectionLockFor } from "../managed/locks.js";
@@ -34,6 +34,7 @@ import {
   projectsWithWorkOnPipeline,
   listStepsElsewhere,
   listStepsForPipeline,
+  listRoutesForPipeline,
   olderVersionsInUse,
   pipelineHasWebhookEntry,
   unreachableRetiredSteps,
@@ -54,6 +55,7 @@ import {
   itemTypesFor,
 } from "../db/repos/index.js";
 import { sideEffectingServersByStep } from "../connectors/sideEffects.js";
+import { changeTeam, changesTeam, claimTrialTeam, createTeam, getTeam, listAllTeams, listTeams, stepsNamingTeam, teamNameKey, teamReader, teamsForValidation } from "../db/repos/teamsRepo.js";
 import { isolatedCopyProblems, reportOnlyRoleProblems, teamReadings } from "./teamReadings.js";
 import { readPolicy } from "../policy/policy.js";
 import { activeProjectId } from "./repositoryCommands.js";
@@ -853,15 +855,16 @@ function briefFor(db: Db, pipelineId: string, step: IpcPayload<"pipeline:save">[
 }
 
 /**
- * The team a step of this save ends up with (EO-843), on `briefFor`'s
- * terms: what the caller sent, `null` included, or where it left the field
- * out, the step's own row. That is how `pipeline_save`, which is not
- * offered the field, keeps a step's team rather than clearing it.
+ * The declared team a step of this save names (EO-843, EO-881), on
+ * `briefFor`'s terms: what the caller sent, `null` included, or where it
+ * left the field out, the step's own row. That is how `pipeline_save`,
+ * which is not offered the field, keeps a step's team rather than
+ * clearing it.
  */
-function teamFor(db: Db, pipelineId: string, step: IpcPayload<"pipeline:save">["steps"][number]): StepTeam | null {
-  if (step.team !== undefined) return step.team;
+function teamIdFor(db: Db, pipelineId: string, step: IpcPayload<"pipeline:save">["steps"][number]): string | null {
+  if (step.teamId !== undefined) return step.teamId;
   const stored = getStep(db, step.id);
-  return stored !== undefined && stored.pipelineId === pipelineId ? stored.team : null;
+  return stored !== undefined && stored.pipelineId === pipelineId ? stored.teamId : null;
 }
 
 /**
@@ -876,7 +879,9 @@ function watchTurnedOff(before: readonly PipelineStep[], after: readonly Pipelin
   return after.filter((step) => step.watch === null && was.get(step.id) != null).map((step) => ({ stepId: step.id, name: step.name }));
 }
 
-function toDomainSteps(db: Db, pipelineId: string, steps: IpcPayload<"pipeline:save">["steps"]): PipelineStep[] {
+function toDomainSteps(db: Db, pipelineId: string, steps: IpcPayload<"pipeline:save">["steps"], declaredTeams: readonly TeamSave[] = []): PipelineStep[] {
+  // Each step's team read as it runs (EO-881), those the save declares as they would be written.
+  const teamOf = teamReader(db, declaredTeams);
   return steps.map((step) => ({
     id: step.id,
     pipelineId: pipelineId as Uuid,
@@ -896,8 +901,9 @@ function toDomainSteps(db: Db, pipelineId: string, steps: IpcPayload<"pipeline:s
     watch: watchFor(db, pipelineId, step),
     // Absent keeps the row's (EO-827) — see `briefFor`.
     brief: briefFor(db, pipelineId, step),
-    // Absent keeps the row's (EO-843) — see `teamFor`.
-    team: teamFor(db, pipelineId, step),
+    // Absent keeps the row's (EO-843, EO-881) — see `teamIdFor`.
+    team: teamOf(teamIdFor(db, pipelineId, step)),
+    teamId: teamIdFor(db, pipelineId, step),
     // Never on the wire, by design: an off-dashboard step is not a column,
     // so the configuration screen has nothing to show for it and nothing
     // to submit. `savePipeline` skips those rows rather than reading this.
@@ -971,6 +977,112 @@ function forWriting(steps: PipelineStep[]): CreateStepInput[] {
   // such field is a compile-time conversation rather than a silent
   // omission.
   return steps.map(({ ownerPersonId: _ownerPersonId, ownerGroupId: _ownerGroupId, ...step }) => step);
+}
+
+/**
+ * What Publish's writing of a save's declared teams would refuse (EO-881),
+ * each a sentence naming the team, asked before anything is written by
+ * `pipeline:save`, `pipeline:validate` and the assistant's draft alike, so
+ * a draft card is never offered for a change Publish then refuses:
+ *
+ * - a change to a team a person locked: a locked team refuses every change
+ *   but unlocking. A team the save leaves as it is is no change to it;
+ * - two teams of the save with one name, as `teamNameKey` reads names
+ *   (trimmed and case-folded): a draft names teams by name, so the second
+ *   could never be told apart from the first;
+ * - a team named as another team of the project already is, which
+ *   `createTeam` and `changeTeam` refuse.
+ *
+ * Publish keeps its own refusal of a locked team in the repository, for a
+ * team a person locks after a draft was judged.
+ */
+export function teamSaveProblems(db: Db, pipelineId: string, declared: readonly TeamSave[]): WorkflowProblem[] {
+  if (declared.length === 0) return [];
+  const { projectId } = stepAgentsForPipeline(db, pipelineId);
+  // Who holds each name, as the save's writes leave it after each team:
+  // Publish writes them one by one, in this order.
+  const holder = new Map(listTeams(db, projectId).map((team) => [teamNameKey(team.name), team.id]));
+  const drafted = new Set<string>();
+  const problems: WorkflowProblem[] = [];
+  for (const team of declared) {
+    const name = team.definition.name;
+    const key = teamNameKey(name);
+    const stored = getTeam(db, team.id);
+    if (drafted.has(key)) {
+      problems.push({ severity: "error", stateId: null, message: `Two teams are called "${name}": each of a project's teams needs a name of its own.` });
+      continue;
+    }
+    drafted.add(key);
+    const other = holder.get(key);
+    if (other !== undefined && other !== team.id) {
+      problems.push({ severity: "error", stateId: null, message: `This project already has a team called "${name}": give the team another name.` });
+      continue;
+    }
+    if (stored !== undefined) holder.delete(teamNameKey(stored.name));
+    holder.set(key, team.id);
+    if (stored === undefined || !stored.locked) continue;
+    if (!changesTeam(stored, team.definition)) continue;
+    problems.push({ severity: "error", stateId: null, message: `The team "${stored.name}" is locked: a person must unlock it before this draft can change it.` });
+  }
+  return problems;
+}
+
+/**
+ * What is wrong with the declared teams a save or a draft writes (EO-881)
+ * that judging its own graph cannot see, each a sentence naming the team:
+ *
+ * - a team none of the graph's steps names is held to `validateTeam` here,
+ *   since `validatePipeline` judges a team only on a step naming it — so a
+ *   draft cannot publish an unused team with EO's system agent in it or a
+ *   member beyond its pool;
+ * - a team that already exists is judged, as changed, on every step of
+ *   another pipeline that names it: a change that would leave such a step
+ *   refused (a leader whose kind lacks the step's action, a staffing the
+ *   step's project cannot give) is refused here, naming that pipeline.
+ *   What that pipeline already had wrong is not this save's to answer, so
+ *   only what the change brings is said.
+ *
+ * Judged by the Publish button and the draft alike.
+ */
+export function declaredTeamReachProblems(
+  db: Db,
+  pipelineId: string,
+  steps: readonly Pick<PipelineStep, "teamId">[],
+  declaredTeams: readonly TeamSave[],
+  registryInForce?: Registry,
+): WorkflowProblem[] {
+  if (declaredTeams.length === 0) return [];
+  const problems: WorkflowProblem[] = [];
+  const named = new Set(steps.flatMap((step) => (step.teamId === null || step.teamId === undefined ? [] : [step.teamId])));
+  const { agents, projectId } = stepAgentsForPipeline(db, pipelineId);
+  const { surfaces } = teamsForValidation(db, projectId, declaredTeams);
+  for (const team of declaredTeams) {
+    if (named.has(team.id)) continue;
+    for (const message of validateTeam(team.definition, { agents, surfaces })) {
+      problems.push({ severity: "error", stateId: null, message: `The team "${team.definition.name}": ${message}` });
+    }
+  }
+
+  const changed = new Set(declaredTeams.filter((team) => getTeam(db, team.id) !== undefined).map((team) => team.id));
+  const elsewhere = new Set([...changed].flatMap((teamId) => stepsNamingTeam(db, teamId).map((step) => step.pipelineId)).filter((id) => id !== pipelineId));
+  const readAsChanged = teamReader(db, declaredTeams);
+  const key = (problem: WorkflowProblem) => `${problem.stateId ?? ""}\u0000${problem.message}`;
+  for (const otherId of elsewhere) {
+    const other = getPipeline(db, otherId);
+    if (other === undefined) continue;
+    const stored = listStepsForPipeline(db, otherId);
+    const naming = new Set(stored.filter((step) => step.teamId !== null && changed.has(step.teamId)).map((step) => step.id));
+    if (naming.size === 0) continue;
+    const routes = listRoutesForPipeline(db, otherId);
+    const judgedFor: JudgedFor = { serving: projectsServedByPipeline(db, otherId) };
+    const before = new Set(validatePipeline(validationInput(db, otherId, stored, routes, other.entryStepId, registryInForce, judgedFor)).map(key));
+    const asChanged = stored.map((step) => (naming.has(step.id) ? { ...step, team: readAsChanged(step.teamId) } : step));
+    for (const problem of validatePipeline(validationInput(db, otherId, asChanged, routes, other.entryStepId, registryInForce, judgedFor, undefined, declaredTeams))) {
+      if (problem.severity !== "error" || problem.stateId === null || !naming.has(problem.stateId) || before.has(key(problem))) continue;
+      problems.push({ severity: "error", stateId: null, message: `In the pipeline "${other.name}", which names the same team: ${problem.message}` });
+    }
+  }
+  return problems;
 }
 
 /** Who a human step waits on: a person, a group, or neither. Never both. */
@@ -1091,7 +1203,7 @@ export function isolatedCopyProblemsForPipeline(db: Db, pipelineId: string, step
  * The teams of a graph as `pipelineSteps:list` and `pipeline:validate`
  * describe them (EO-848), judged with what `validatePipeline` is given.
  */
-export function teamReadingsForPipeline(db: Db, pipelineId: string, steps: readonly PipelineStep[], registryInForce: RegistryFacts): TeamReading[] {
+export function teamReadingsForPipeline(db: Db, pipelineId: string, steps: readonly PipelineStep[], registryInForce: RegistryFacts, declaredTeams: readonly TeamSave[] = []): TeamReading[] {
   if (!steps.some((step) => step.team !== null && step.team !== undefined)) return [];
   return teamReadings(steps, {
     db,
@@ -1100,6 +1212,14 @@ export function teamReadingsForPipeline(db: Db, pipelineId: string, steps: reado
     registry: registryInForce,
     staffedRoles: staffedRolesForPipeline(db, pipelineId),
     runTimeoutMs: readGuards(db).wallClockTimeoutMs,
+    // Which declared team each step runs as (EO-881), those the save declares as they would be written.
+    teams: new Map([
+      ...listAllTeams(db).map((team) => [team.id, team] as const),
+      ...declaredTeams.map((team) => {
+        const stored = getTeam(db, team.id);
+        return [team.id, { ...(stored ?? { id: team.id, projectId: null, locked: false, version: 0, createdAt: 0, updatedAt: 0 }), name: team.definition.name, definition: team.definition }] as const;
+      }),
+    ]),
   });
 }
 
@@ -1153,8 +1273,11 @@ function validationInput(
   registryInForce?: Registry,
   judgedFor: JudgedFor = { editing: true },
   entryRules?: readonly EntryRule[],
+  /** The declared teams the save writes (EO-881), laid over the project's. */
+  declaredTeams: readonly TeamSave[] = [],
 ) {
   const projects = judgedProjects(db, judgedFor);
+  const declared = teamsForValidation(db, getPipeline(db, pipelineId)?.projectId ?? null, declaredTeams);
   const itemCountByStep: Record<string, number> = {};
   // Counted apart as well as in the total (EO-230): the refusal sends a
   // person to the board for what it can show and to the Archive for
@@ -1200,6 +1323,11 @@ function validationInput(
     // And where an isolated team's members could not each have a copy of
     // their own (EO-867), by the workspace dispatch would give the step.
     isolatedCopyProblems: isolatedCopyProblemsForPipeline(db, pipelineId, steps),
+    // The declared teams a step may name (EO-881) and what their agents
+    // may use, so a step naming a team that is missing, another project's
+    // or wrong for it is refused.
+    teams: declared.teams,
+    teamAgentSurfaces: declared.surfaces,
     // Archived ones included: a step naming a deleted module is a distinct
     // problem from one naming a module that was never here, and the
     // validator can only tell them apart if it is given both (KAN-104).
@@ -1407,17 +1535,25 @@ function uniqueById(steps: readonly PipelineStep[]): PipelineStep[] {
 }
 
 export function validatePipelineCommand(db: Db, input: IpcPayload<"pipeline:validate">): IpcResponse<"pipeline:validate"> {
-  const steps = toDomainSteps(db, input.pipelineId, input.steps);
+  const steps = toDomainSteps(db, input.pipelineId, input.steps, input.teams ?? []);
   const routes = toDomainRoutes(input.pipelineId, input.routes);
   const proposed = registryWith(db, input.actions ?? []);
-  const judged = validationInput(db, input.pipelineId, steps, routes, input.entryStepId, proposed.registry, undefined, input.entryRules);
+  const judged = validationInput(db, input.pipelineId, steps, routes, input.entryStepId, proposed.registry, undefined, input.entryRules, input.teams ?? []);
   return {
-    problems: [...proposed.refused, ...validatePipeline(judged), ...foreignWorkspaceProblems(db, input.pipelineId, steps)],
+    problems: [
+      ...proposed.refused,
+      ...validatePipeline(judged),
+      // What writing its teams would refuse, and every team it writes, used
+      // here or not, as Publish judges them (EO-881).
+      ...teamSaveProblems(db, input.pipelineId, input.teams ?? []),
+      ...declaredTeamReachProblems(db, input.pipelineId, steps, input.teams ?? [], proposed.registry),
+      ...foreignWorkspaceProblems(db, input.pipelineId, steps),
+    ],
     // What each step of the graph reaches outside EO (EO-584), from the
     // very inputs the webhook refusal above was judged with.
     outsideReach: outsideReachByStep(judged),
     // Each team of the graph sent (EO-848), read as dispatch would act on it.
-    teams: teamReadingsForPipeline(db, input.pipelineId, judged.steps, judged.registry),
+    teams: teamReadingsForPipeline(db, input.pipelineId, judged.steps, judged.registry, input.teams ?? []),
   };
 }
 
@@ -1493,10 +1629,19 @@ export function savePipeline(
    * A trial keeps them on its own row and its items alone see them; a row
    * in `action_definitions` would be read by every pipeline naming the
    * role, and outlive the trial.
+   *
+   * `trialTeams` (EO-881) is a trial's too: each team this save writes,
+   * by id, that is the trial's own copy of a draft's team — the draft
+   * team's name, as `teamNameKey` reads it (`trialTeams` in teamsRepo).
+   * Recorded on the team as it is written, so the next round finds its
+   * copy by what it belongs to and never by its name.
    */
-  options: { createdBy?: string | null; judgeActionsOnly?: boolean } = {},
+  options: { createdBy?: string | null; judgeActionsOnly?: boolean; trialTeams?: Readonly<Record<string, string>> } = {},
 ): IpcResponse<"pipeline:save"> {
-  const steps = toDomainSteps(db, input.pipelineId, input.steps);
+  // The declared teams this save writes (EO-881): the graph is read and
+  // judged with them as they would be written.
+  const declaredTeams = input.teams ?? [];
+  const steps = toDomainSteps(db, input.pipelineId, input.steps, declaredTeams);
   const routes = toDomainRoutes(input.pipelineId, input.routes);
   // What the graph is judged with, and what is written: the same, but
   // for a trial's save, which writes none (EO-832).
@@ -1523,7 +1668,13 @@ export function savePipeline(
   const proposed = registryWith(db, actions);
   const problems = [
     ...proposed.refused,
-    ...validatePipeline(validationInput(db, input.pipelineId, steps, routes, input.entryStepId, proposed.registry, undefined, entryRules)),
+    ...validatePipeline(validationInput(db, input.pipelineId, steps, routes, input.entryStepId, proposed.registry, undefined, entryRules, declaredTeams)),
+    // What writing its teams would refuse (EO-881): a change to a locked
+    // team, and two teams of one name.
+    ...teamSaveProblems(db, input.pipelineId, declaredTeams),
+    // And every team it writes is judged, used here or not, with the
+    // steps of other pipelines naming it (EO-881).
+    ...declaredTeamReachProblems(db, input.pipelineId, steps, declaredTeams, proposed.registry),
     // A module rule this installation could not run (EO-736): no module
     // host, or a binary its module needs that is not here. Refused when
     // it is published — on the record, where its doors are — rather than
@@ -1648,11 +1799,25 @@ export function savePipeline(
   );
 
   let written: ReturnType<typeof write>;
-  if (writtenActions.length === 0) {
+  if (writtenActions.length === 0 && declaredTeams.length === 0) {
     written = write();
   } else {
     try {
       written = db.transaction(() => {
+        // The declared teams first (EO-881), so the graph lands naming
+        // teams that exist: each created, or a new version of the team of
+        // that id, made by the assistant whose draft this is.
+        const projectId = getPipeline(db, input.pipelineId)?.projectId ?? null;
+        for (const team of declaredTeams) {
+          const stored = getTeam(db, team.id);
+          const saved =
+            stored === undefined
+              ? createTeam(db, { id: team.id, projectId, definition: team.definition, author: { kind: "assistant" } })
+              : changeTeam(db, team.id, { definition: team.definition, author: { kind: "assistant" } });
+          if (!saved.ok) throw new PublishRolledBack([{ severity: "error" as const, stateId: null, message: `The team "${team.definition.name}" cannot be saved: ${saved.reason}` }]);
+          const source = options.trialTeams?.[team.id];
+          if (source !== undefined) claimTrialTeam(db, team.id, input.pipelineId, source);
+        }
         for (const action of writtenActions) {
           const saved = saveActionDefinition(db, action);
           if (!saved.ok) {

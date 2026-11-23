@@ -75,6 +75,9 @@ export async function publishAssistDraft(conversationId: string, messageId: stri
     // The action definitions the card proposed (EO-426), written by the
     // same save: both or neither.
     ...((read.actions ?? []).length > 0 ? { actions: read.actions } : {}),
+    // The declared teams the card creates or changes (EO-881), written by
+    // the same save: both or neither.
+    ...((read.teams ?? []).length > 0 ? { teams: read.teams } : {}),
     // A restore (EO-520): the main process reads who each of that
     // version's person steps waited on out of the version itself and
     // puts them back, as the editor's Restore did.

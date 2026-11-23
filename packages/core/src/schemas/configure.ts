@@ -116,6 +116,7 @@ export const DraftStepSchema = PipelineStepViewSchema.omit({
   // (`AssistDraftStepSchema`, EO-848), and this one leaves a step's team
   // as it is.
   team: true,
+  teamId: true,
 }).extend({
   /**
    * The agent an agent step runs, by its name as the Agents screen and

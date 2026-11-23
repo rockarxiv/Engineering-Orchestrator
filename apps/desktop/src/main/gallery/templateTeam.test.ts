@@ -264,7 +264,10 @@ describe("an installation on 1.4, when 1.5 ships", () => {
 
   /** The person configures Review, through the repository every save goes through. */
   function personEdits(change: Partial<{ team: StepTeam; instructionsSummary: string }>): void {
-    const steps = listStepsForPipeline(handle.db, "default").map((step) => (step.id === "review" ? { ...step, ...change } : step));
+    // A team given inline is declared from it (EO-881): the step's own team id is left out, which would otherwise name the team.
+    const steps = listStepsForPipeline(handle.db, "default").map(({ teamId, ...step }) =>
+      step.id === "review" ? { ...step, ...change, ...(change.team === undefined ? { teamId } : {}) } : { ...step, teamId },
+    );
     replacePipelineGraph(handle.db, "default", steps, listRoutesForPipeline(handle.db, "default"));
   }
 

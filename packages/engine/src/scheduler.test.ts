@@ -62,6 +62,7 @@ function makeState(id: string, overrides: Partial<PipelineStep> = {}): PipelineS
     moduleVersion: null,
     brief: null,
     team: null,
+    teamId: null,
     results: [],
     ...overrides,
   };

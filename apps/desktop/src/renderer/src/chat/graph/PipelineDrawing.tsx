@@ -112,6 +112,7 @@ export function PipelineDrawing({
   onSelectStep,
   newStepIds,
   agentKindOf = () => null,
+  teamNameOf = () => null,
   className,
 }: {
   steps: PipelineStepView[];
@@ -142,6 +143,12 @@ export function PipelineDrawing({
    * `useStepAgentKind()`; absent, a chip says "agent".
    */
   agentKindOf?: (step: PipelineStepView) => string | null;
+  /**
+   * The name of the declared team an agent step runs as (EO-881), drawn
+   * under its name. The Graph view passes it from the pipeline's team
+   * readings; absent, nothing is drawn.
+   */
+  teamNameOf?: (step: PipelineStepView) => string | null;
   className?: string;
 }) {
   const kindOf = agentKindOf;
@@ -250,6 +257,11 @@ export function PipelineDrawing({
                 {noted ? (
                   <span title={entryNote ?? undefined} className="truncate text-[11px] leading-[13px] text-ink-subtle">
                     {entryNote}
+                  </span>
+                ) : teamNameOf(step) !== null ? (
+                  // The declared team it runs as (EO-881), where the entry note is not already on this line.
+                  <span data-team title={`Runs as the team "${teamNameOf(step) ?? ""}"`} className="truncate text-[11px] leading-[13px] text-ink-subtle">
+                    team {teamNameOf(step)}
                   </span>
                 ) : null}
                 {load !== undefined && here > 0 ? <LoadStrip load={load} /> : null}
