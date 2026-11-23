@@ -354,6 +354,8 @@ export const TeamVersionSchema = z.object({
   restoredFrom: z.number().int().positive().nullable(),
   /** Every member's runtime, model and reasoning when it was made, by agent id; null for a version made before EO-884 recorded them. */
   memberSettings: z.record(z.string(), TeamMemberSettingsSchema).nullable(),
+  /** Why EO made it, in a sentence (EO-899) — that it moved the team into the project whose pipeline runs as it; null for every other version. */
+  note: z.string().nullable(),
   createdAt: z.number(),
 });
 export type TeamVersion = z.infer<typeof TeamVersionSchema>;
@@ -415,6 +417,8 @@ export const TeamVersionViewSchema = z.object({
   /** The item a leader made it on, by key, where it still exists. */
   itemKey: z.string().nullable(),
   restoredFrom: z.number().int().positive().nullable(),
+  /** Why EO made it (EO-899), or null. */
+  note: z.string().nullable(),
   createdAt: z.number(),
 });
 export type TeamVersionView = z.infer<typeof TeamVersionViewSchema>;

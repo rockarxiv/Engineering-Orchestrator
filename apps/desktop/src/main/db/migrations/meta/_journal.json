@@ -1331,6 +1331,13 @@
       "when": 1800028800000,
       "tag": "0189_suggested_reply_uses",
       "breakpoints": true
+    },
+    {
+      "idx": 190,
+      "version": "6",
+      "when": 1800115200000,
+      "tag": "0190_team_version_note",
+      "breakpoints": true
     }
   ]
 }

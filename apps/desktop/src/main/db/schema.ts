@@ -2173,6 +2173,12 @@ export const teamVersions = sqliteTable(
      * back on the members. Null on versions made before migration 0186.
      */
     memberSettings: text("member_settings", { mode: "json" }),
+    /**
+     * Why EO made the version, in a sentence a person reads beside it
+     * (EO-899): that it moved the team into the project whose pipeline runs
+     * as it. Null on every other version (migration 0190).
+     */
+    note: text("note"),
     createdAt: integer("created_at").notNull(),
   },
   (table) => [uniqueIndex("idx_team_versions_number").on(table.teamId, table.number)],

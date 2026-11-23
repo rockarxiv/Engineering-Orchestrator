@@ -95,6 +95,7 @@ export function listTeamViews(db: Db): TeamView[] {
           authorName: version.author.kind === "person" ? nameOf(version.author.personId) : version.author.kind === "leader" ? (agents.get(version.author.agentId)?.name ?? null) : null,
           itemKey: version.author.kind === "leader" ? keyOf(version.author.itemId) : null,
           restoredFrom: version.restoredFrom,
+          note: version.note,
           createdAt: version.createdAt,
         }),
       )

@@ -72,6 +72,7 @@ import { createRunSupervisor, type RunSupervisor } from "../../supervisor/runSup
 import { MEMBER_NO_BRIDGE } from "../../supervisor/teamParticipants.js";
 import type { WorkspaceKind } from "../../supervisor/workspaceKind.js";
 import { useWorkspaceKinds } from "../../workspaceKinds.js";
+import { useGalleryCommand } from "../../ipc/galleryCommands.js";
 
 /**
  * The bundled software template's Review step as a team (EO-868): a
@@ -1277,5 +1278,54 @@ describe("the bundled Review team of a reviewer per pass, installed fresh (EO-88
     await supervisor().runOnce();
     expect(started.map((one) => one.agent.id)).toEqual([alone.id]);
     expect(largestMember).toBeLessThan(started[0]!.opts.instructions.length + started[0]!.opts.context.length);
+  });
+
+  /**
+   * Installed fresh from the gallery (EO-899): first run adopts the seeded
+   * Delivery into the project it makes, and Review's team, made while
+   * Delivery was on no project, comes with it — so Delivery has no
+   * team-project problem, and Review runs as Reviewers.
+   */
+  it("runs Review end to end as the Reviewers team once Use this has made the project and adopted Delivery, the team and its members the project's own", async () => {
+    syncRolePrompts(handle.db);
+    const history = loadTemplateHistory(GALLERY_DIRECTORY);
+    backfillPipelineOrigins(handle.db, history);
+    applyTemplateUpdates(handle.db, history, { isTheRecord: false });
+    // The keychain stand-in the gallery's preflight reads names from; nothing writes a secret.
+    const NO_SECRETS = { directory: join(scratch, "no-secrets"), store: { isEncryptionAvailable: () => false, encryptString: () => Buffer.from(""), decryptString: () => "" } };
+    const answer = await useGalleryCommand(handle.db, { directory: GALLERY_DIRECTORY, moduleSecrets: NO_SECRETS, signedInBackends: [] }, { slug: "software-feature-to-merge", answers: { keyPrefix: "ACME" }, roleSlots: {} });
+    expect(answer.problem).toBeNull();
+    expect(answer.pipelineId).toBe("default");
+    const projectId = answer.projectId!;
+    expect(getPipeline(handle.db, "default")?.projectId).toBe(projectId);
+
+    const team = getTeam(handle.db, listStepsForPipeline(handle.db, "default").find((step) => step.id === "review")!.teamId!)!;
+    expect(team).toMatchObject({ name: "Reviewers", projectId });
+    const definition = team.definition!;
+    if (definition.coordination !== "leader") throw new Error("Review's team is not leader-led");
+    const own = [definition.leader.agentId, ...definition.members.map((member) => member.agentId)];
+    for (const agentId of own) expect(listAgents(handle.db).find((agent) => agent.id === agentId)).toMatchObject({ teamId: team.id, projectId });
+    for (const agentId of own) updateAgent(handle.db, agentId as Uuid, { provider: "claude" });
+
+    const steps = listStepsForPipeline(handle.db, "default");
+    const problems = storedGraphProblems(handle.db, "default", steps, listRoutesForPipeline(handle.db, "default"), getPipeline(handle.db, "default")!.entryStepId);
+    expect(problems.filter((problem) => /team/i.test(problem.message))).toEqual([]);
+    expect(problems.filter((problem) => problem.severity === "error")).toEqual([]);
+
+    const item = createTestItem(handle.db, { type: "story", title: "Rate limit the API", stepId: "review", projectId: projectId as Uuid, spec: { acceptance_criteria: CRITERIA } });
+    postComment(handle.db, { itemId: item.id, author: { type: "engine" }, kind: "output", body: DIFF });
+    const lead = leadingByMember([], () => ({ verdict: "approve", feedback: "Every pass came back clean.", pull_request_body: "Rate limits the API per key." }));
+    script = (turn) => (turn.leader ? lead(turn) : { outcome: { outcome: "clear", report: `Checked ${turn.assignment}: nothing blocks. Not read: the rest of the change.` } });
+
+    await supervisor().runOnce();
+
+    expect(listTeamSessionsForItem(handle.db, item.id).map((record) => record.session.status)).toEqual(["finalized"]);
+    // Every turn was one of the team's own agents: the lead, then a member per pass.
+    expect(started.filter((one) => !own.includes(one.agent.id))).toEqual([]);
+    expect(new Set(leaderTurns().map((one) => one.agent.id))).toEqual(new Set([definition.leader.agentId]));
+    expect(memberTurns()).toHaveLength(EVERY_REVIEW.length);
+    expect(listRunsForItem(handle.db, item.id).filter((run) => run.status === "failed")).toEqual([]);
+    expect(listCommentsForItem(handle.db, item.id).filter((comment) => /another project|refus/i.test(comment.body))).toEqual([]);
+    expect(getItem(handle.db, item.id)?.stepId).toBe(routeOf("approved"));
   });
 });

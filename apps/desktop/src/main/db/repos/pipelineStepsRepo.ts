@@ -9,7 +9,7 @@ import { pipelines, pipelineSteps, projects, stepRoutes, items } from "../schema
 // both modules have loaded, which is what makes it safe.
 import { catchUpCurrentVersion, createPipelineVersion, ensureCurrentVersion, pipelineVersionsToKeep, prunePipelineVersions, setCurrentVersion } from "./pipelineVersionsRepo.js";
 import { getSetting } from "./settingsRepo.js";
-import { teamIdForCarriedTeam, teamReader } from "./teamsRepo.js";
+import { settleProjectlessTeams, teamIdForCarriedTeam, teamReader } from "./teamsRepo.js";
 import { pinEntryRules, stepModuleVersion } from "./moduleVersionsRepo.js";
 
 /**
@@ -312,9 +312,16 @@ export function staysShared(db: Db, pipeline: Pick<Pipeline, "id" | "name">): bo
  * importing a twin (see `pipelineAlreadyHere`); and the upgrade that
  * stopped pipelines being shared between projects gives it to the
  * oldest project (EO-766, `splitSharedPipelines`).
+ *
+ * The teams its steps run as that were made while it was on no project
+ * come with it (EO-899, `settleProjectlessTeams`): a step may run only as
+ * a team of its own pipeline's project. One another project's pipeline, or
+ * another pipeline still on none, also names stays where it is — for the
+ * startup check to settle, or tell the person about.
  */
 export function adoptPipeline(db: Db, id: string, projectId: Uuid): void {
   db.update(pipelines).set({ projectId, updatedAt: Date.now() }).where(eq(pipelines.id, id)).run();
+  settleProjectlessTeams(db, { pipelineId: id });
 }
 
 export function archivePipeline(db: Db, id: string, at: number = Date.now()): void {

@@ -258,6 +258,8 @@ function VersionAuthor({ version }: { version: TeamVersionView }) {
   }
   if (author.kind === "person") return <span>{version.authorName ?? "A person"}</span>;
   if (author.kind === "assistant") return <span>The assistant, in a draft a person published</span>;
+  // A version EO made for a reason of its own says it in its note (EO-899).
+  if (version.note !== null) return <span>EO</span>;
   return <span>EO, declaring a team that already existed (from a step, an import or the record)</span>;
 }
 
@@ -494,6 +496,7 @@ function TeamDetail({ team }: { team: TeamView }) {
               </span>
               <span className="text-ink-subtle">{when(version.createdAt)}</span>
               {version.restoredFrom !== null ? <span className="text-ink-subtle">restored v{version.restoredFrom}</span> : null}
+              {version.note !== null ? <span className="min-w-0 basis-full text-ink-subtle">{version.note}</span> : null}
               {version.number === team.version ? (
                 <Chip tone="success">current</Chip>
               ) : team.locked || graphManaged ? null : (

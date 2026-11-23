@@ -65,9 +65,9 @@ function team(overrides: Partial<TeamView> = {}): TeamView {
     ],
     steps: [{ stepId: "s-review", stepName: "Review", pipelineId: "pl-1", pipelineName: "Delivery" }],
     versions: [
-      { number: 3, author: { kind: "person", personId: "anna" }, authorName: "Anna", itemKey: null, restoredFrom: 1, createdAt: 3_000 },
-      { number: 2, author: { kind: "leader", agentId: "ag-lead", itemId: "item-42" }, authorName: "Review lead", itemKey: "EO-42", restoredFrom: null, createdAt: 2_000 },
-      { number: 1, author: { kind: "assistant" }, authorName: null, itemKey: null, restoredFrom: null, createdAt: 1_000 },
+      { number: 3, author: { kind: "person", personId: "anna" }, authorName: "Anna", itemKey: null, restoredFrom: 1, note: null, createdAt: 3_000 },
+      { number: 2, author: { kind: "leader", agentId: "ag-lead", itemId: "item-42" }, authorName: "Review lead", itemKey: "EO-42", restoredFrom: null, note: null, createdAt: 2_000 },
+      { number: 1, author: { kind: "assistant" }, authorName: null, itemKey: null, restoredFrom: null, note: null, createdAt: 1_000 },
     ],
     ...overrides,
   };
@@ -285,12 +285,32 @@ describe("the Teams tab (EO-884)", () => {
   });
 
   it("says in a whole sentence that EO declared a team that already existed, on its version and its members", async () => {
-    mockIpc(() => [team({ versions: [{ number: 1, author: { kind: "eo" }, authorName: null, itemKey: null, restoredFrom: null, createdAt: 1_000 }] })]);
+    mockIpc(() => [team({ versions: [{ number: 1, author: { kind: "eo" }, authorName: null, itemKey: null, restoredFrom: null, note: null, createdAt: 1_000 }] })]);
     mount();
     await openTeams();
     expect(within(screen.getByRole("list", { name: "Versions" })).getByText("EO, declaring a team that already existed (from a step, an import or the record)")).toBeInTheDocument();
     const card = within(screen.getByRole("region", { name: "Members" })).getByRole("listitem", { name: "Member Criteria expert" });
     expect(within(card).getByText("Added when EO declared a team that already existed (from a step, an import or the record)")).toBeInTheDocument();
+  });
+
+  it("shows the sentence a version by EO says why it was made with, beside EO, not that EO declared the team (EO-899)", async () => {
+    const note = 'EO moved this team into the project "Acme", which the pipeline "Delivery" that runs as it belongs to: it belonged to no project, and a step may run only as a team of its own pipeline\'s project.';
+    mockIpc(() => [
+      team({
+        version: 2,
+        versions: [
+          { number: 2, author: { kind: "eo" }, authorName: null, itemKey: null, restoredFrom: null, note, createdAt: 2_000 },
+          { number: 1, author: { kind: "eo" }, authorName: null, itemKey: null, restoredFrom: null, note: null, createdAt: 1_000 },
+        ],
+      }),
+    ]);
+    mount();
+    await openTeams();
+    const versions = screen.getByRole("list", { name: "Versions" });
+    const moved = within(versions).getByRole("listitem", { name: "Version 2" });
+    expect(within(moved).getByText(note)).toBeInTheDocument();
+    expect(moved).not.toHaveTextContent("declaring a team that already existed");
+    expect(within(versions).getByRole("listitem", { name: "Version 1" })).toHaveTextContent("EO, declaring a team that already existed");
   });
 
   it("says where a member's runtime is shown that this machine is not signed in to its backend", async () => {
