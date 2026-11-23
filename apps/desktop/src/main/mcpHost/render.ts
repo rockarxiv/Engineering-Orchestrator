@@ -2591,6 +2591,14 @@ export function renderUpdateConflict(data: IpcResponse<"pipeline:updateConflict"
           "Steps of the template's other boards that this version routes to, by the ids they have here — a draft's routes into another board use these ids:",
           ...conflict.linkedSteps.map((step) => `- ${step.id}: "${step.name}" on ${step.pipelineName} (${step.pipelineId}), the template's ${step.templateStepId}`),
         ]),
+    ...(conflict.templateTeams.length === 0
+      ? []
+      : [
+          "",
+          "The declared teams this version gives its steps, each ready for a draft (EO-898). To take one, put its entry in the draft's `teams` as it is and set the step's `team` to its `name`. " +
+            "Its leader and members are declared in `newMembers`: Publish creates each as an agent of the team's own, with the runtime, model and tools of the agent its `from` names, and its `toolPool` is those agents' tools, as this installation has them. Create no agents for it yourself.",
+          ...conflict.templateTeams.map((entry) => `- ${entry.stepName} (id: ${entry.stepId}): ${JSON.stringify(entry.team)}`),
+        ]),
     "",
     "The person's edits since the base, oldest first:",
     ...(edits.length === 0 ? ["- (none filed)"] : edits),

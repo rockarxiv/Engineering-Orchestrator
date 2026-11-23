@@ -95,6 +95,32 @@ export type LeaderTeamMember = z.infer<typeof LeaderTeamMemberSchema>;
 export const TEAM_NAME_MAX = 120;
 
 /**
+ * A member a save declares that does not exist yet (EO-898): what the
+ * assistant's draft says of a new member, with a stand-in `id` the team's
+ * definition names it by until Publish creates it as an agent the team
+ * owns (EO-897), in the transaction that writes the team — so a save that
+ * is refused, or fails part-way, leaves no agent behind.
+ *
+ * Its runtime, model and reasoning are its own where given; the rest are
+ * taken from `fromAgentId`'s agent — and its tools, kept to the team's
+ * pool — or else from the project's agent of its kind.
+ */
+export const NewTeamAgentSchema = z.strictObject({
+  /** What the definition names it by until it exists. Never an id an agent has. */
+  id: AgentIdSchema,
+  name: z.string().trim().min(1).max(TEAM_NAME_MAX),
+  kind: z.string().trim().min(1),
+  /** The agent's own instructions, what it is dispatched with. */
+  instructions: z.string().trim().min(1),
+  runtime: z.string().trim().min(1).optional(),
+  model: z.string().trim().min(1).optional(),
+  reasoning: z.string().trim().min(1).optional(),
+  /** The agent its runtime, model, reasoning and tools are taken from, where it gives none of its own. */
+  fromAgentId: AgentIdSchema.optional(),
+});
+export type NewTeamAgent = z.infer<typeof NewTeamAgentSchema>;
+
+/**
  * A name EO gives a team it declares itself — after a pipeline and step
  * ("Delivery · Review"), a copy or a trial — numbered `n` where an earlier
  * one took the name, always within `TEAM_NAME_MAX`, so the team it names

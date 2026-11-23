@@ -236,9 +236,18 @@ describe("the design card", () => {
   it("says whether a team step's team runs for real on the test items, or is mocked and so not tested (EO-848)", async () => {
     // Team members are held to report-only, which EO can do on Claude and not on the seeded fake backend.
     for (const agent of listAgents(handle.db)) updateAgent(handle.db, agent.id, { provider: "claude" });
-    // A declared team the draft creates (EO-881), its agents by name, and the step naming it.
+    // A declared team the draft creates (EO-881), its agents declared new (EO-898), and the step naming it.
     const name = (kind: string) => listAgents(handle.db).find((agent) => agent.role === kind)!.name;
-    const team = { name: "Fix team", coordination: "leader", leader: { agent: name("implementer"), instructions: "Plan the fix and weigh the reports." }, members: [{ agent: name("reviewer") }] };
+    const team = {
+      name: "Fix team",
+      coordination: "leader",
+      leader: { agent: "Fix lead", instructions: "Plan the fix and weigh the reports." },
+      members: [{ agent: "Fix checker" }],
+      newMembers: [
+        { name: "Fix lead", kind: "implementer", instructions: "Lead the fix.", from: name("implementer") },
+        { name: "Fix checker", kind: "reviewer", instructions: "Check the fix.", from: name("reviewer") },
+      ],
+    };
     const draft = { ...hotfixDraft(), teams: [team] } as ReturnType<typeof hotfixDraft>;
     draft.steps[0] = { ...draft.steps[0]!, team: "Fix team" } as (typeof draft.steps)[number];
     const chat = await conversation();

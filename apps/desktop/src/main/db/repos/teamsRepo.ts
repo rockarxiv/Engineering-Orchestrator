@@ -14,10 +14,12 @@ import {
   staffingAgents,
   storedTeamDefinition,
   teamAgentIds,
+  namesAdminServer,
   uuidv7,
+  withMemoryNoteGrant,
 } from "@eo/core";
 import { TeamMemberSettingsSchema } from "@eo/core";
-import type { Agent, ExportedTeam, ExportedTeamAgent, SessionTeam, StepTeam, TeamAuthor, TeamDefinition, TeamMemberSettings, TeamSave, TeamVersion, Uuid } from "@eo/core";
+import type { Agent, ExportedTeam, ExportedTeamAgent, NewTeamAgent, SessionTeam, StepTeam, TeamAuthor, TeamDefinition, TeamMemberSettings, TeamSave, TeamVersion, Uuid } from "@eo/core";
 import { sameValue, type AgentToolSurface, type PipelineTeamFacts } from "@eo/engine";
 import type { Db } from "../client.js";
 import { foldCase } from "../textFold.js";
@@ -275,12 +277,138 @@ export function ownedTeamDefinition(
     became.set(agentId, ownId);
   }
   if (became.size === 0) return { definition, became };
-  const asOwn = (agentId: string) => became.get(agentId) ?? agentId;
-  const owned: TeamDefinition =
-    definition.coordination === "leader"
-      ? { ...definition, leader: { ...definition.leader, agentId: asOwn(definition.leader.agentId) }, members: definition.members.map((member) => ({ ...member, agentId: asOwn(member.agentId) })) }
-      : { ...definition, members: definition.members.map((member) => ({ ...member, agentId: asOwn(member.agentId) })) };
-  return { definition: owned, became };
+  return { definition: withAgentIds(definition, became), became };
+}
+
+/** The definition with each agent it names that `became` maps named as what it became. */
+function withAgentIds(definition: TeamDefinition, became: ReadonlyMap<string, string>): TeamDefinition {
+  if (became.size === 0) return definition;
+  const as = (agentId: string) => became.get(agentId) ?? agentId;
+  return definition.coordination === "leader"
+    ? { ...definition, leader: { ...definition.leader, agentId: as(definition.leader.agentId) }, members: definition.members.map((member) => ({ ...member, agentId: as(member.agentId) })) }
+    : { ...definition, members: definition.members.map((member) => ({ ...member, agentId: as(member.agentId) })) };
+}
+
+/**
+ * A member a save declares that does not exist yet (EO-898), read as the
+ * agent Publish would create for it: what validation judges in its place,
+ * so a draft, `pipeline:validate` and `pipeline:save` refuse a new member
+ * in the same words, and Publish creates exactly what was judged.
+ */
+export interface DeclaredNewMember {
+  member: NewTeamAgent;
+  /** The team that declares it, which will own it. */
+  teamId: string;
+  /** The agent it would be, under its stand-in id: the team's own, on the team's project. */
+  agent: Agent;
+  /** The agent its runtime, model, reasoning and tools are taken from: the one it names, else the project's agent of its kind. */
+  base: Agent | undefined;
+  /** `fromAgentId` names no agent EO has. */
+  fromMissing: boolean;
+  /** Its reasoning cannot be set on its runtime. */
+  reasoningRefused: boolean;
+  /** Its tools: the base's, kept to the team's pool. */
+  surface: AgentToolSurface;
+}
+
+/**
+ * Every member these saves declare (EO-898), as `DeclaredNewMember`. A
+ * team's project is the stored team's, or `projectId` for a team the save
+ * creates. Writes nothing.
+ */
+export function declaredNewMembers(db: Db, declared: readonly TeamSave[], projectId: string | null): DeclaredNewMember[] {
+  if (!declared.some((save) => (save.newMembers ?? []).length > 0)) return [];
+  const roster = listAgents(db);
+  const answer: DeclaredNewMember[] = [];
+  for (const save of declared) {
+    const teamProjectId = getTeam(db, save.id)?.projectId ?? projectId;
+    const pool = save.definition.toolPool;
+    for (const member of save.newMembers ?? []) {
+      const named = member.fromAgentId === undefined ? undefined : roster.find((agent) => agent.id === member.fromAgentId && agent.deletedAt === null);
+      const base = member.fromAgentId === undefined ? kindCandidates(roster, member.kind, teamProjectId)[0] : named;
+      const provider = member.runtime ?? base?.provider ?? "";
+      // The base's config, as a copy for a team takes it; its reasoning
+      // only where it runs on the base's runtime, since each backend keeps
+      // its own under its own key.
+      const config: Record<string, unknown> = { ...(base?.config ?? withMemoryNoteGrant({})) };
+      // Never EO's administration grant (invariant 11): `newMemberProblems`
+      // refuses a base that holds it, and this keeps a save sent past that
+      // check from creating a team's member served `eo_admin`.
+      if (Array.isArray(config.allowedTools)) config.allowedTools = config.allowedTools.filter((entry: unknown) => typeof entry !== "string" || !namesAdminServer([entry]));
+      if (base !== undefined && base.provider !== provider) {
+        for (const one of [base.provider, provider]) {
+          const key = reasoningEffortKey(one);
+          if (key !== null) delete config[key];
+        }
+      }
+      const reasoningKey = reasoningEffortKey(provider);
+      if (member.reasoning !== undefined && reasoningKey !== null) config[reasoningKey] = member.reasoning;
+      const tools = base === undefined ? undefined : agentToolSurfaces(db, [base.id])[base.id];
+      answer.push({
+        member,
+        teamId: save.id,
+        agent: {
+          id: member.id as Uuid,
+          name: member.name.trim(),
+          role: member.kind,
+          provider,
+          model: member.model ?? (base !== undefined && base.provider === provider ? base.model : null),
+          instructions: member.instructions,
+          promptHash: null,
+          config,
+          enabled: true,
+          archivedAt: null,
+          deletedAt: null,
+          projectId: teamProjectId as Uuid | null,
+          teamId: save.id as Uuid,
+        },
+        base,
+        fromMissing: member.fromAgentId !== undefined && named === undefined,
+        reasoningRefused: member.reasoning !== undefined && reasoningKey === null,
+        surface: {
+          cliTools: (tools?.cliTools ?? []).filter((name) => pool.cliTools.includes(name)),
+          mcpServers: (tools?.mcpServers ?? []).filter((name) => pool.mcpServers.includes(name)),
+          skills: (tools?.skills ?? []).filter((name) => pool.skills.includes(name)),
+        },
+      });
+    }
+  }
+  return answer;
+}
+
+/**
+ * Creates the members a save declares (EO-898) as agents `team` owns
+ * (EO-897), each as `declaredNewMembers` read it: its base's tools, kept
+ * to the team's pool. Inside the caller's transaction, so a write refused
+ * after it leaves none of them. The stand-in id of each to the agent it
+ * became.
+ */
+function createDeclaredMembers(db: Db, team: { id: string; projectId: string | null }, definition: TeamDefinition, newMembers: readonly NewTeamAgent[], now: number): Map<string, string> {
+  const became = new Map<string, string>();
+  if (newMembers.length === 0) return became;
+  for (const declared of declaredNewMembers(db, [{ id: team.id, definition, newMembers: [...newMembers] }], team.projectId)) {
+    const { agent, base } = declared;
+    const id = createAgent(db, {
+      name: agent.name,
+      role: agent.role,
+      provider: agent.provider,
+      model: agent.model,
+      instructions: agent.instructions,
+      promptHash: null,
+      config: agent.config,
+      enabled: true,
+      projectId: team.projectId as Uuid | null,
+      teamId: team.id,
+    }).id;
+    if (base !== undefined) {
+      for (const row of db.select().from(agentCliTools).where(eq(agentCliTools.agentId, base.id)).all()) db.insert(agentCliTools).values({ ...row, agentId: id, createdAt: now }).run();
+      for (const row of db.select().from(agentMcpServers).where(eq(agentMcpServers.agentId, base.id)).all()) db.insert(agentMcpServers).values({ ...row, agentId: id, createdAt: now }).run();
+      for (const row of db.select().from(agentSkills).where(eq(agentSkills.agentId, base.id)).all()) db.insert(agentSkills).values({ ...row, agentId: id, createdAt: now }).run();
+      keepToPool(db, id, definition.toolPool);
+    }
+    became.set(declared.member.id, id);
+  }
+  return became;
 }
 
 /** Recorded member settings, keyed by the agents they became (`ownedTeamDefinition`). */
@@ -316,15 +444,17 @@ function writeVersion(
  */
 export function createTeam(
   db: Db,
-  input: { id?: string; projectId: string | null; definition: TeamDefinition; author: TeamAuthor; now?: number },
+  input: { id?: string; projectId: string | null; definition: TeamDefinition; author: TeamAuthor; now?: number; newMembers?: readonly NewTeamAgent[] },
 ): TeamWrite {
   const definition = TeamDefinitionSchema.parse(input.definition);
   if (nameTaken(db, input.projectId, definition.name, null)) return { ok: false, reason: `This project already has a team called "${definition.name}".` };
   const now = input.now ?? Date.now();
   const id = input.id ?? uuidv7();
   return db.transaction((tx) => {
-    // Its members are its own agents (EO-897).
-    const owned = ownedTeamDefinition(tx as unknown as Db, { id, projectId: input.projectId }, definition, now).definition;
+    // Its members are its own agents (EO-897): those it declares new
+    // made now (EO-898), any other it names made its own.
+    const declared = withAgentIds(definition, createDeclaredMembers(tx as unknown as Db, { id, projectId: input.projectId }, definition, input.newMembers ?? [], now));
+    const owned = ownedTeamDefinition(tx as unknown as Db, { id, projectId: input.projectId }, declared, now).definition;
     tx.insert(teams).values({ id, projectId: input.projectId, name: definition.name, definition: owned, locked: false, version: 1, createdAt: now, updatedAt: now }).run();
     writeVersion(tx as unknown as Db, id, 1, owned, input.author, null, now);
     return { ok: true, team: getTeam(tx as unknown as Db, id) as StoredTeam, changed: true };
@@ -353,7 +483,7 @@ export function changesTeam(team: Pick<StoredTeam, "definition">, definition: Te
 export function changeTeam(
   db: Db,
   id: string,
-  input: { definition: TeamDefinition; author: TeamAuthor; now?: number; restoredFrom?: number; memberSettings?: Record<string, TeamMemberSettings> },
+  input: { definition: TeamDefinition; author: TeamAuthor; now?: number; restoredFrom?: number; memberSettings?: Record<string, TeamMemberSettings>; newMembers?: readonly NewTeamAgent[] },
 ): TeamWrite {
   const team = getTeam(db, id);
   if (team === undefined) return { ok: false, reason: "That team no longer exists." };
@@ -368,9 +498,11 @@ export function changeTeam(
   if (nameTaken(db, team.projectId, definition.name, id)) return { ok: false, reason: `This project already has a team called "${definition.name}".` };
   const now = input.now ?? Date.now();
   return db.transaction((tx): TeamWrite => {
-    // Its members are its own agents (EO-897): an agent the change names
-    // that is not becomes one, and what was recorded for it goes with it.
-    const { definition: owned, became } = ownedTeamDefinition(tx as unknown as Db, team, definition, now);
+    // Its members are its own agents (EO-897): those the change declares
+    // new made now (EO-898), and an agent the change names that is not
+    // its own becomes one, what was recorded for it going with it.
+    const declared = withAgentIds(definition, createDeclaredMembers(tx as unknown as Db, team, definition, input.newMembers ?? [], now));
+    const { definition: owned, became } = ownedTeamDefinition(tx as unknown as Db, team, declared, now);
     if (input.restoredFrom === undefined && input.memberSettings === undefined && sameDefinition(team.definition, owned)) return { ok: true, team, changed: false };
     const settings = input.memberSettings === undefined ? undefined : settingsBecame(input.memberSettings, became);
     const number = team.version + 1;
@@ -592,10 +724,16 @@ export function agentToolSurfaces(db: Db, agentIds: readonly string[]): Record<s
 
 /**
  * The teams a pipeline on this project may name, as `validatePipeline`
- * reads them, with those a save declares laid over them (by id), and what
- * each agent they name may use.
+ * reads them, with those a save declares laid over them (by id), what
+ * each agent they name may use, and the agents the members a save
+ * declares new would be (EO-898) — which no `listAgents` has yet, and
+ * which every judging of the graph must be given beside it.
  */
-export function teamsForValidation(db: Db, projectId: string | null, declared: readonly TeamSave[] = []): { teams: PipelineTeamFacts[]; surfaces: Record<string, AgentToolSurface> } {
+export function teamsForValidation(
+  db: Db,
+  projectId: string | null,
+  declared: readonly TeamSave[] = [],
+): { teams: PipelineTeamFacts[]; surfaces: Record<string, AgentToolSurface>; newAgents: Agent[] } {
   const byId = new Map<string, PipelineTeamFacts>();
   for (const team of listAllTeams(db)) byId.set(team.id, { id: team.id, name: team.name, projectId: team.projectId, definition: team.definition, archived: team.archivedAt !== null });
   for (const team of declared) {
@@ -604,7 +742,11 @@ export function teamsForValidation(db: Db, projectId: string | null, declared: r
   }
   const list = [...byId.values()];
   const agentIds = list.flatMap((team) => (team.definition === null ? [] : teamAgentIds(team.definition)));
-  return { teams: list, surfaces: agentToolSurfaces(db, agentIds) };
+  // The members a save declares new (EO-898), as the agents they would be.
+  const declaredNew = declaredNewMembers(db, declared, projectId);
+  const surfaces = agentToolSurfaces(db, agentIds);
+  for (const one of declaredNew) surfaces[one.agent.id] = one.surface;
+  return { teams: list, surfaces, newAgents: declaredNew.map((one) => one.agent) };
 }
 
 /**
@@ -615,6 +757,8 @@ export function teamsForValidation(db: Db, projectId: string | null, declared: r
 export function teamReader(db: Db, declared: readonly TeamSave[] = []): (teamId: string | null) => StepTeam | null {
   const read = new Map<string, StepTeam | null>();
   const overlay = new Map(declared.map((team) => [team.id, team.definition]));
+  // A member a save declares new (EO-898) is of the kind it declares.
+  const declaredKinds = new Map(declared.flatMap((team) => (team.newMembers ?? []).map((member) => [member.id, member.kind] as const)));
   return (teamId) => {
     if (teamId === null) return null;
     const known = read.get(teamId);
@@ -624,7 +768,7 @@ export function teamReader(db: Db, declared: readonly TeamSave[] = []): (teamId:
     let shaped: StepTeam | null = null;
     if (definition !== null) {
       const ids = teamAgentIds(definition);
-      const kinds = new Map(db.select({ id: agents.id, role: agents.role }).from(agents).where(inArray(agents.id, ids)).all().map((row) => [row.id, row.role]));
+      const kinds = new Map([...declaredKinds, ...db.select({ id: agents.id, role: agents.role }).from(agents).where(inArray(agents.id, ids)).all().map((row) => [row.id, row.role] as const)]);
       shaped = stepTeamOf(definition, (agentId) => kinds.get(agentId));
     }
     read.set(teamId, shaped);
@@ -923,7 +1067,7 @@ export function trialTeams(
       if (!named.has(teamNameKey(candidate)) && (other === undefined || other.id === id)) name = candidate;
     }
     named.add(teamNameKey(name));
-    copies.set(team.id, { id, definition: { ...team.definition, name } });
+    copies.set(team.id, { ...team, id, definition: { ...team.definition, name } });
     if (!claimed) sources[id] = source;
   }
   return { teams: [...copies.values()], teamIdOf: (teamId) => (teamId === null || teamId === undefined ? teamId : (copies.get(teamId)?.id ?? teamId)), sources };

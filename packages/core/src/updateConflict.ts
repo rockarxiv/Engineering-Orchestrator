@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { PipelineStepViewSchema, StepRouteViewSchema } from "./ipc-schemas.js";
+import { AssistDraftTeamSchema } from "./schemas/assist.js";
 
 /**
  * A held template update, as the assistant reads it (EO-534,
@@ -116,6 +117,17 @@ export const UpdateConflictDetailSchema = z.object({
   linkedSteps: z
     .array(z.object({ id: z.string(), name: z.string(), templateStepId: z.string(), pipelineId: z.string(), pipelineName: z.string() }))
     .default([]),
+  /**
+   * Each declared team the held version gives a step and the pipeline does
+   * not run (EO-898), as a draft's `teams` entry takes it: its leader and
+   * members declared new, each taking its runtime, model and tools from
+   * the agent of its kind the pipeline's steps name (`from`), and its tool
+   * pool those agents' tools — the installation's, as an update keeps it
+   * (EO-885). A draft taking the template's team puts the entry in its
+   * `teams` and names it on the step, so Publish creates the team and its
+   * agents, and nothing else.
+   */
+  templateTeams: z.array(z.object({ stepId: z.string(), stepName: z.string(), team: AssistDraftTeamSchema })).default([]),
   /** The assistant chat Fix with assistant opened for this update, where one has been: the chat whose drafts resolve it. */
   chatId: z.string().nullable(),
   /** The person's own versions since the base, oldest first. */
