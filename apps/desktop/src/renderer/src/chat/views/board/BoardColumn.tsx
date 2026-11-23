@@ -61,12 +61,17 @@ function OwnerLine({ step, module, ink }: { step: PipelineStepView; module: Modu
         </span>
       </span>
     );
+  // Start-aligned, so only the text is a target, and capped at the
+  // column's width, so a line longer than the column ends in an ellipsis
+  // inside it rather than running over the next one (EO-902): `self-start`
+  // alone sizes the link to its text, which `truncate` cannot clip. The
+  // tooltip keeps the whole line.
   if (to !== null)
     return (
       <Link
         to={to}
-        title={step.type === "module" ? `Open ${label} in Settings → Modules` : `Open ${stepAgents.agentOf(step)?.name ?? ""}'s instructions`}
-        className={cn(className, "self-start underline-offset-2 hover:underline")}
+        title={step.type === "module" ? `Open ${label} in Settings → Modules` : `${label}\nOpen ${stepAgents.agentOf(step)?.name ?? ""}'s instructions`}
+        className={cn(className, "max-w-full self-start underline-offset-2 hover:underline")}
       >
         {label}
       </Link>
