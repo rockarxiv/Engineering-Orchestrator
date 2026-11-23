@@ -219,8 +219,12 @@ const participantRuns = () => listRunsForItem(handle.db, item.id).filter((run) =
 const notes = () => listCommentsForItem(handle.db, item.id).map((comment) => comment.body);
 const turnsOf = (name: string) => started.filter((one) => one.agent === name);
 
+/**
+ * The agent of this name the step's team runs: the team's own (EO-897),
+ * the latest made, since each `setTeam` declares a team of its own.
+ */
 const agentNamed = (name: string): Uuid =>
-  ((handle.db as unknown as { $client: { prepare(source: string): { get(...args: unknown[]): unknown } } }).$client.prepare("select id from agents where name = ?").get(name) as { id: Uuid }).id;
+  ((handle.db as unknown as { $client: { prepare(source: string): { get(...args: unknown[]): unknown } } }).$client.prepare("select id from agents where name = ? order by team_id is null, rowid desc").get(name) as { id: Uuid }).id;
 
 /** A file put on the item: evidence every member reads. */
 function attach(name: string, content: string): void {
@@ -294,11 +298,11 @@ describe("a leader-led team (EO-847)", () => {
     // Both leader turns and both participants are in the one session, each spend on its own run, counted once.
     const leaderAttempts = record.attempts.filter((attempt) => attempt.assignmentKey === LEADER_ASSIGNMENT_KEY);
     expect(leaderAttempts.map((attempt) => getRun(handle.db, attempt.runId as Uuid)?.costCents)).toEqual([3, 4]);
-    expect(leaderAttempts.map((attempt) => getRun(handle.db, attempt.runId as Uuid)?.agentId)).toEqual([lee.id, lee.id]);
+    expect(leaderAttempts.map((attempt) => getRun(handle.db, attempt.runId as Uuid)?.agentId)).toEqual([agentNamed("Lee"), agentNamed("Lee")]);
     expect(teamSessionTotals(handle.db, record.session.id).costCents).toBe(3 + 4 + 2 + 2);
     expect(teamRuns()[0]?.costCents ?? 0).toBe(0);
     // Assignments and the final account are on the thread, attributed to the leader.
-    const leaderComments = listCommentsForItem(handle.db, item.id).filter((comment) => comment.authorId === lee.id);
+    const leaderComments = listCommentsForItem(handle.db, item.id).filter((comment) => comment.authorId === agentNamed("Lee"));
     expect(leaderComments[0]?.body).toContain("Assigns round 1:");
     expect(leaderComments[0]?.body).toContain("**suite** (Tess, tester, optional)");
     expect(leaderComments[1]?.body).toContain("**Disagreements:** None: they agree.");
@@ -521,9 +525,9 @@ describe("a leader-led team (EO-847)", () => {
     const parent = createRun(handle.db, { itemId: item.id, agentId: quinn.id, action: "alignment", stepId: "check", status: "running", initiationId: `entered:${item.id}` }).id;
     const session = openTeamSession(handle.db, { itemId: item.id, stepId: "check", team: stepSessionTeam(handle.db, "check"), runId: parent });
     const verdict = { decision: "assign", accepted: [{ key: "auth", member: "Sasha", instructions: "Look at the login.", required: true, agentId: agentNamed("Sasha"), role: "sec" }], refused: [] };
-    const leaderRun = createRun(handle.db, { itemId: item.id, agentId: lee.id, action: TEAM_PARTICIPANT_ACTION, stepId: "check", status: "succeeded" }).id;
+    const leaderRun = createRun(handle.db, { itemId: item.id, agentId: agentNamed("Lee"), action: TEAM_PARTICIPANT_ACTION, stepId: "check", status: "succeeded" }).id;
     updateRun(handle.db, leaderRun, { result: { leader: true, answer: {}, verdict }, costCents: 5 });
-    const leaderAttempt = startTeamAttempt(handle.db, { sessionId: session.id, assignmentKey: LEADER_ASSIGNMENT_KEY, role: "lead", agentId: lee.id, instructions: "Lead.", runId: leaderRun, evidenceBaseline: nothing });
+    const leaderAttempt = startTeamAttempt(handle.db, { sessionId: session.id, assignmentKey: LEADER_ASSIGNMENT_KEY, role: "lead", agentId: agentNamed("Lee"), instructions: "Lead.", runId: leaderRun, evidenceBaseline: nothing });
     if (!leaderAttempt.ok) throw new Error(leaderAttempt.problem);
     expect(acceptTeamReport(handle.db, { attemptId: leaderAttempt.attempt.id, outcome: null, report: "Assigns round 1." }).ok).toBe(true);
     const sasha = agentNamed("Sasha");
@@ -576,10 +580,10 @@ describe("a leader-led team (EO-847)", () => {
     function settledByLeader(): void {
       const parent = createRun(handle.db, { itemId: item.id, agentId: quinn.id, action: "alignment", stepId: "check", status: "running", initiationId: `entered:${item.id}` }).id;
       const session = openTeamSession(handle.db, { itemId: item.id, stepId: "check", team: stepSessionTeam(handle.db, "check"), runId: parent });
-      const leaderRun = createRun(handle.db, { itemId: item.id, agentId: lee.id, action: TEAM_PARTICIPANT_ACTION, stepId: "check", status: "succeeded" }).id;
+      const leaderRun = createRun(handle.db, { itemId: item.id, agentId: agentNamed("Lee"), action: TEAM_PARTICIPANT_ACTION, stepId: "check", status: "succeeded" }).id;
       const value = { result: "aligned", summary: "Read it myself; fine." };
       updateRun(handle.db, leaderRun, { result: { leader: true, answer: {}, verdict: { decision: "final", accepted: true, problems: [], contributions: [] }, value } });
-      const turn = startTeamAttempt(handle.db, { sessionId: session.id, assignmentKey: LEADER_ASSIGNMENT_KEY, role: "lead", agentId: lee.id, instructions: "Lead.", runId: leaderRun, evidenceBaseline: nothingCaptured() });
+      const turn = startTeamAttempt(handle.db, { sessionId: session.id, assignmentKey: LEADER_ASSIGNMENT_KEY, role: "lead", agentId: agentNamed("Lee"), instructions: "Lead.", runId: leaderRun, evidenceBaseline: nothingCaptured() });
       if (!turn.ok) throw new Error(turn.problem);
       expect(acceptTeamReport(handle.db, { attemptId: turn.attempt.id, outcome: null, report: "Answers the step." }).ok).toBe(true);
       expect(endTeamSession(handle.db, { sessionId: session.id, status: "finalized", result: "aligned" }).ok).toBe(true);
@@ -876,7 +880,7 @@ describe("a team member asking the person (EO-847)", () => {
     beforeEach(() => setup());
 
     it("parks on the leader's question, grants nothing it asked for, and gives its next turn the answer", async () => {
-      const before = getAgent(handle.db, lee.id);
+      const before = getAgent(handle.db, agentNamed("Lee"));
       leaderTurns = [
         says(asks("May I have shell access to run the export?")),
         sayingThen(({ opts }) => {
@@ -889,7 +893,7 @@ describe("a team member asking the person (EO-847)", () => {
 
       expect(teamRuns()[0]?.status).toBe("awaiting_input");
       const question = listCommentsForItem(handle.db, item.id).find((comment) => comment.kind === "question");
-      expect(question?.authorId).toBe(lee.id);
+      expect(question?.authorId).toBe(agentNamed("Lee"));
       expect(question?.runId).toBe(attempts()[0]?.runId);
 
       reply("Lee", "No. Read the code instead.");
@@ -897,7 +901,7 @@ describe("a team member asking the person (EO-847)", () => {
 
       expect(getItem(handle.db, item.id)?.stepId).toBe("accepted");
       // Asking for a permission changed nothing about what the leader is dispatched with.
-      expect(getAgent(handle.db, lee.id)).toEqual(before);
+      expect(getAgent(handle.db, agentNamed("Lee"))).toEqual(before);
       expect(turnsOf("Lee")).toHaveLength(2);
     });
 

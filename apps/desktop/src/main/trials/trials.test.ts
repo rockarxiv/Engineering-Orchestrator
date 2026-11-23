@@ -348,7 +348,10 @@ describe("creating a trial from a draft", () => {
     expect(fix.teamId).not.toBe(live.team.id);
     expect(getTeam(handle.db, fix.teamId!)?.name).toBe("Fix team (Hotfix (trial)) (2)");
     expect(handle.db.select({ trial: teams.trialPipelineId, source: teams.trialSource }).from(teams).where(eq(teams.id, fix.teamId!)).get()).toEqual({ trial: made.trial.id, source: "fix team" });
-    expect(getTeam(handle.db, live.team.id)).toMatchObject({ version: 1, definition: team });
+    expect(getTeam(handle.db, live.team.id)).toMatchObject({ version: 1, definition: live.team.definition });
+    // The trial's copy runs agents of its own (EO-897), never the live team's.
+    const copyAgents = getTeam(handle.db, fix.teamId!)?.definition?.members.map((member) => member.agentId) ?? [];
+    expect(listAgents(handle.db).filter((agent) => copyAgents.includes(agent.id)).map((agent) => agent.teamId)).toEqual([fix.teamId]);
     // A later round of the trial finds the same copy by what it belongs to.
     expect(trialTeams(handle.db, { id: made.trial.id, name: "Hotfix (trial)" }, [{ id: "any", definition: { ...team, name: "Fix team" } }]).teams[0]!.id).toBe(fix.teamId);
   });

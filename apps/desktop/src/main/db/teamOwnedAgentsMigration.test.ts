@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { sql } from "drizzle-orm";
 import { afterEach, describe, expect, it } from "vitest";
-import { uuidv7, type StepTeam } from "@eo/core";
+import { uuidv7, type StepTeam, type Uuid } from "@eo/core";
 import { openDb, type DbHandle } from "./client.js";
 import { runMigrations } from "./migrate.js";
 import { getAgent, listAgents } from "./repos/agentsRepo.js";
@@ -123,7 +123,7 @@ describe("migration 0187: a team's members are the team's own agents (EO-897)", 
 
     // The ordinary agents, their tools and every step are as they were.
     expect(handle.db.all(sql`SELECT id, name, role, provider, model, instructions, prompt_hash, config, enabled, archived_at, deleted_at, project_id, updated_at, revision, record_stamp FROM agents WHERE id IN (${lead}, ${tess}) ORDER BY id`)).toEqual(ordinaryBefore);
-    expect([getAgent(handle.db, lead)?.teamId, getAgent(handle.db, tess)?.teamId]).toEqual([null, null]);
+    expect([getAgent(handle.db, lead as Uuid)?.teamId, getAgent(handle.db, tess as Uuid)?.teamId]).toEqual([null, null]);
     expect(agentToolSurfaces(handle.db, [tess])[tess]).toEqual({ cliTools: ["gh"], mcpServers: ["repo"], skills: ["write-tests"] });
     expect(handle.db.all(sql`SELECT id, agent_id, team_id FROM pipeline_steps WHERE pipeline_id = ${pipeline.id} ORDER BY id`)).toEqual(stepsBefore);
 
@@ -136,12 +136,12 @@ describe("migration 0187: a team's members are the team's own agents (EO-897)", 
     const checkTess = check.definition.members[0]!.agentId;
     expect(new Set([reviewLead, reviewTess, checkTess, lead, tess]).size).toBe(5);
     expect(review.version).toBe(2);
-    expect(getAgent(handle.db, reviewLead as never)).toMatchObject({ name: "Lead", role: "lead", provider: "codex", model: "gpt-5", instructions: "Be Lead.", config: { reasoningEffort: "high" }, teamId: reviewId, projectId: project.id, promptHash: null, enabled: true });
+    expect(getAgent(handle.db, reviewLead as Uuid)).toMatchObject({ name: "Lead", role: "lead", provider: "codex", model: "gpt-5", instructions: "Be Lead.", config: { reasoningEffort: "high" }, teamId: reviewId, projectId: project.id, promptHash: null, enabled: true });
     for (const [copy, teamId] of [
       [reviewTess, reviewId],
       [checkTess, checkId],
     ] as const) {
-      expect(getAgent(handle.db, copy as never)).toMatchObject({ name: "Tess", role: "tests", provider: "claude", model: "claude-opus-5", instructions: "Be Tess.", config: { effort: "low", maxTurns: 5 }, teamId, projectId: project.id, promptHash: null });
+      expect(getAgent(handle.db, copy as Uuid)).toMatchObject({ name: "Tess", role: "tests", provider: "claude", model: "claude-opus-5", instructions: "Be Tess.", config: { effort: "low", maxTurns: 5 }, teamId, projectId: project.id, promptHash: null });
       expect(agentToolSurfaces(handle.db, [copy])[copy]).toEqual({ cliTools: ["gh"], mcpServers: ["repo"], skills: ["write-tests"] });
     }
     // The rest of the team is as it was.

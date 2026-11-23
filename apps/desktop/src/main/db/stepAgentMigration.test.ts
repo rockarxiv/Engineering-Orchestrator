@@ -68,16 +68,37 @@ function oldStep(handle: DbHandle, input: { id: string; pipelineId: string; name
   `);
 }
 
+/**
+ * Today's agent reads and writes on a database from before 0187, which
+ * has no `agents.team_id` (EO-897): the column added for the call, then
+ * taken off again.
+ */
+function withAgentTeamColumn<T>(handle: DbHandle, act: () => T): T {
+  handle.db.run(sql`ALTER TABLE agents ADD team_id text`);
+  try {
+    return act();
+  } finally {
+    handle.db.run(sql`ALTER TABLE agents DROP COLUMN team_id`);
+  }
+}
+
+/** The agents, read before the migration. */
+function agentsBefore(handle: DbHandle): Agent[] {
+  return withAgentTeamColumn(handle, () => listAgents(handle.db));
+}
+
 function agent(handle: DbHandle, name: string, role: string, extra: { projectId?: Uuid | null; enabled?: boolean; preview?: boolean } = {}): Agent {
-  return createAgent(handle.db, {
-    name,
-    role,
-    provider: "fake",
-    instructions: `Be ${name}.`,
-    enabled: extra.enabled ?? true,
-    projectId: extra.projectId ?? null,
-    config: extra.preview === true ? { [PREVIEW_AGENT_KEY]: true } : {},
-  });
+  return withAgentTeamColumn(handle, () =>
+    createAgent(handle.db, {
+      name,
+      role,
+      provider: "fake",
+      instructions: `Be ${name}.`,
+      enabled: extra.enabled ?? true,
+      projectId: extra.projectId ?? null,
+      config: extra.preview === true ? { [PREVIEW_AGENT_KEY]: true } : {},
+    }),
+  );
 }
 
 /**
@@ -108,7 +129,7 @@ function migrate(handle: DbHandle): void {
 describe("migration 0181: a step names its agent (EO-875)", () => {
   it("gives a step with one candidate that candidate, and says nothing", () => {
     const handle = beforeTheMigration();
-    const reviewer = listAgents(handle.db).find((candidate) => candidate.role === "reviewer")!;
+    const reviewer = agentsBefore(handle).find((candidate) => candidate.role === "reviewer")!;
 
     migrate(handle);
 
@@ -123,7 +144,7 @@ describe("migration 0181: a step names its agent (EO-875)", () => {
     const handle = beforeTheMigration();
     const shop = createProject(handle.db, { name: "Shop", keyPrefix: "SHOP" }).id;
     const support = createProject(handle.db, { name: "Support", keyPrefix: "SUP" }).id;
-    const global = listAgents(handle.db).find((candidate) => candidate.role === "implementer")!;
+    const global = agentsBefore(handle).find((candidate) => candidate.role === "implementer")!;
     const shopsOwn = agent(handle, "Shop implementer", "implementer", { projectId: shop });
     const shopBoard = createPipeline(handle.db, { name: "Shop board", projectId: shop, position: 1 });
     const supportBoard = createPipeline(handle.db, { name: "Support board", projectId: support, position: 2 });
@@ -224,7 +245,7 @@ describe("migration 0181: a step names its agent (EO-875)", () => {
 
   it("rewrites no run, run event or transition written before it", () => {
     const handle = beforeTheMigration();
-    const implementer = listAgents(handle.db).find((candidate) => candidate.role === "implementer")!;
+    const implementer = agentsBefore(handle).find((candidate) => candidate.role === "implementer")!;
     withTodaysStepColumn(handle, () => {
       const item = createTestItem(handle.db, { type: "story", title: "Something built before", stepId: "todo" });
       const run = createRun(handle.db, { itemId: item.id, agentId: implementer.id, action: "implement", status: "succeeded" });

@@ -273,8 +273,12 @@ function freshInstallation(roster?: Roster, history: TemplateHistory = loadTempl
   const seeded = listAgents(handle.db).find((agent) => agent.role === "reviewer")!;
   roster.reviewers.forEach((backend, index) => {
     const config = backend === "codex" ? { provider: "codex", model: "gpt-reviewer" } : { provider: "claude" };
-    if (index === 0) updateAgent(handle.db, seeded.id, config);
-    else {
+    if (index === 0) {
+      updateAgent(handle.db, seeded.id, config);
+      // And the Review team's own reviewer (EO-897): the team runs its own copy, which the seeded one no longer moves.
+      const teamId = listStepsForPipeline(handle.db, "default").find((step) => step.id === "review")!.teamId!;
+      for (const own of listAgents(handle.db).filter((agent) => agent.teamId === teamId)) updateAgent(handle.db, own.id, config);
+    } else {
       // A member of the declared Review team in its own right (EO-882): a
       // second reviewer of the kind runs only because the team names it.
       const added = createAgent(handle.db, { name: `Reviewer ${index + 1}`, role: "reviewer", instructions: seeded.instructions, ...config });
@@ -631,7 +635,8 @@ describe("the Review team with report-only members, its leader on Claude and its
 
   async function settledAs(item: Item, resultKey: string): Promise<void> {
     expect(listTeamSessionsForItem(handle.db, item.id).map((record) => record.session.status)).toEqual(["finalized"]);
-    const agents = listAgents(handle.db).filter((agent) => agent.role === "reviewer");
+    // The team's own reviewers (EO-897), which it runs.
+    const agents = listAgents(handle.db).filter((agent) => agent.role === "reviewer" && agent.teamId !== null);
     const [leader, second] = [agents.find((agent) => agent.provider === "claude")!, agents.find((agent) => agent.provider === "codex")!];
     // The leader on Claude; the members' passes shared between the Claude and the Codex reviewer, each as itself.
     expect(new Set(leaderTurns().map((one) => one.agent.id))).toEqual(new Set([leader.id]));
@@ -689,7 +694,8 @@ describe.each(ROSTERS.filter((roster) => roster.reviewers.length === 1))("a Revi
     await supervisor().runOnce();
 
     expect(getItem(handle.db, item.id)?.stepId).toBe(routeOf("approved"));
-    const reviewers = listAgents(handle.db).filter((agent) => agent.role === "reviewer");
+    // The team's own reviewer (EO-897): one copy of the seeded one, leading and running every pass.
+    const reviewers = listAgents(handle.db).filter((agent) => agent.role === "reviewer" && agent.teamId !== null);
     expect(reviewers).toHaveLength(1);
     expect(started.every((one) => one.agent.id === reviewers[0]!.id)).toBe(true);
     expect(memberTurns()).toHaveLength(passes.length);
