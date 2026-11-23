@@ -104,7 +104,7 @@ export async function defaultAgentModel(backend: string, sources: SmallModelSour
 }
 
 /** The config key a backend's adapter reads an agent's reasoning effort under, or null for a backend with none. */
-function reasoningEffortKey(provider: string): string | null {
+export function reasoningEffortKey(provider: string): string | null {
   return provider === "claude" ? "effort" : provider === "codex" ? "reasoningEffort" : null;
 }
 

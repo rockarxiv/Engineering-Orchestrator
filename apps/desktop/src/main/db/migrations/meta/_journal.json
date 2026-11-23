@@ -1303,6 +1303,13 @@
       "when": 1799683200000,
       "tag": "0185_declared_teams",
       "breakpoints": true
+    },
+    {
+      "idx": 186,
+      "version": "6",
+      "when": 1799769600000,
+      "tag": "0186_team_member_settings",
+      "breakpoints": true
     }
   ]
 }

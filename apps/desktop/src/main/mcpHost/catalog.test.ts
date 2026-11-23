@@ -50,6 +50,14 @@ const NOT_CATALOGUED: Partial<Record<RecordChannel, string>> = {
   "items:teamSessions": "a team's reports, questions and answer are comments on the thread item_get and thread_read serve, and each participant's run is in item_get's runs; this is the item page's view of them",
   "teams:cancel": "a person's control on the item page; run_cancel on the team's own run already stops the whole session",
   "teams:retry": "a person's control on the item page; a reply on the thread carries a parked team on in the same way",
+  // The Teams tab in the Agents section (EO-884). An agent reads the team a
+  // step runs as through pipeline_get, and changes a team only through the
+  // assistant's draft a person publishes; restoring and locking are a
+  // person's guards on a team, which an agent holding them could undo.
+  "teams:list": "the Agents section's view of declared teams; pipeline_get already names the team each step runs as, and a draft is how the assistant reads and changes one",
+  "teams:restore": "restoring a team's version is a person's guard on what its leader and the assistant changed, so no agent may do it",
+  "teams:setMemberSettings": "which runtime, model and reasoning a team's member runs on is a person's choice in the Teams tab; no step-owning agent may change what it or a teammate is dispatched with",
+  "teams:setLocked": "locking a team is a person's guard against agents changing it, so no agent may lift or set it",
   // The command-line tool catalogue (EO-819, EO-822). List, save and
   // archive are tools, and the ticks ride on agent_attachments_list and
   // agent_attachments_set; bringing an archived CLI back is not.

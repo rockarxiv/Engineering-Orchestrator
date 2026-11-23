@@ -330,6 +330,20 @@ export const DeclaredTeamSchema = z.object({
 });
 export type DeclaredTeam = z.infer<typeof DeclaredTeamSchema>;
 
+/**
+ * What a member runs on (EO-884): its runtime, model and reasoning effort.
+ * Kept on the member's agent; each version of its team records it for every
+ * member, and restoring the version puts it back.
+ */
+export const TeamMemberSettingsSchema = z.object({
+  provider: z.string().min(1),
+  /** Null is the runtime's default model. */
+  model: z.string().nullable(),
+  /** Null is the model's default reasoning effort. */
+  reasoning: z.string().nullable(),
+});
+export type TeamMemberSettings = z.infer<typeof TeamMemberSettingsSchema>;
+
 /** One version of a team: what it was, who made it, and the version it restored, if it was a restore. */
 export const TeamVersionSchema = z.object({
   id: z.string(),
@@ -338,6 +352,8 @@ export const TeamVersionSchema = z.object({
   definition: TeamDefinitionSchema,
   author: TeamAuthorSchema,
   restoredFrom: z.number().int().positive().nullable(),
+  /** Every member's runtime, model and reasoning when it was made, by agent id; null for a version made before EO-884 recorded them. */
+  memberSettings: z.record(z.string(), TeamMemberSettingsSchema).nullable(),
   createdAt: z.number(),
 });
 export type TeamVersion = z.infer<typeof TeamVersionSchema>;
@@ -351,3 +367,77 @@ export function declaredTeamKind(team: Pick<TeamDefinition, "coordination">): st
 export function declaredTeamLine(team: TeamDefinition): string {
   return `"${team.name}", ${declaredTeamKind(team)} of ${memberModeWords(team.memberMode)} members`;
 }
+
+/**
+ * Who first put an agent on a team (EO-884), read from the team's
+ * versions: the author of the earliest version that names it. A leader's
+ * addition carries the item it was made for, so the Teams tab can link
+ * it.
+ */
+export const TeamMemberOriginSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("person"), personName: z.string().nullable() }),
+  z.object({ kind: z.literal("assistant") }),
+  z.object({ kind: z.literal("leader"), itemId: z.string(), itemKey: z.string().nullable() }),
+  z.object({ kind: z.literal("eo") }),
+]);
+export type TeamMemberOrigin = z.infer<typeof TeamMemberOriginSchema>;
+
+/**
+ * One agent on a team as the Teams tab draws it (EO-884): the agent as it
+ * is now — its kind, runtime, model, reasoning and own instructions — and
+ * what the team asks of it. `name` is null for an agent that no longer
+ * exists, which a team can still name.
+ */
+export const TeamMemberViewSchema = z.object({
+  agentId: z.string(),
+  name: z.string().nullable(),
+  kind: z.string().nullable(),
+  provider: z.string().nullable(),
+  model: z.string().nullable(),
+  reasoning: z.string().nullable(),
+  /** The agent's own instructions. */
+  instructions: z.string(),
+  /** What the team asks of it: the leader's, or an independent member's assignment; null for a leader-led team's member. */
+  teamInstructions: z.string().nullable(),
+  /** An independent member's assignment key. */
+  key: z.string().nullable(),
+  archived: z.boolean(),
+  addedBy: TeamMemberOriginSchema,
+});
+export type TeamMemberView = z.infer<typeof TeamMemberViewSchema>;
+
+/** One version of a team as the Teams tab lists it (EO-884), with who made it in words a person reads. */
+export const TeamVersionViewSchema = z.object({
+  number: z.number().int().positive(),
+  author: TeamAuthorSchema,
+  /** The person's name, or the leader agent's, where one is known. */
+  authorName: z.string().nullable(),
+  /** The item a leader made it on, by key, where it still exists. */
+  itemKey: z.string().nullable(),
+  restoredFrom: z.number().int().positive().nullable(),
+  createdAt: z.number(),
+});
+export type TeamVersionView = z.infer<typeof TeamVersionViewSchema>;
+
+/** A declared team as the Teams tab in the Agents section shows it (EO-884). */
+export const TeamViewSchema = z.object({
+  id: z.string(),
+  projectId: z.string().nullable(),
+  projectName: z.string().nullable(),
+  name: z.string(),
+  locked: z.boolean(),
+  version: z.number().int().positive(),
+  /** Null where its stored definition no longer parses: the team is listed, and nothing of it can be drawn. */
+  coordination: z.enum(["independent", "leader"]).nullable(),
+  memberMode: z.enum(TEAM_MEMBER_MODES).nullable(),
+  memberCap: z.number().int().nullable(),
+  toolPool: TeamToolPoolSchema.nullable(),
+  modelRange: TeamModelRangeSchema.nullable(),
+  limits: z.record(z.string(), z.number()).nullable(),
+  leader: TeamMemberViewSchema.nullable(),
+  members: z.array(TeamMemberViewSchema),
+  steps: z.array(z.object({ stepId: z.string(), stepName: z.string(), pipelineId: z.string(), pipelineName: z.string() })),
+  /** Newest first. */
+  versions: z.array(TeamVersionViewSchema),
+});
+export type TeamView = z.infer<typeof TeamViewSchema>;
