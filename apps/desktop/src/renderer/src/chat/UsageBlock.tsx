@@ -25,7 +25,13 @@ const AGE_REFRESH_MS = 30_000;
 /** The longest a timer may wait; anything later is caught by the next refresh. */
 const LONGEST_WAIT_MS = 2 ** 31 - 1;
 
-const FILL: Record<PlanWindowTone, string> = { neutral: "bg-ink-subtle", warning: "bg-warning", danger: "bg-danger" };
+/**
+ * A bar's fill by tone. The normal tone is the accent blue on the dark
+ * track, like Claude's own usage view (EO-904): the accent is the action
+ * colour and a bar is not pressable, a trade the person accepted for a
+ * thin indicator.
+ */
+const FILL: Record<PlanWindowTone, string> = { neutral: "bg-accent", warning: "bg-warning", danger: "bg-danger" };
 const FIGURE: Record<PlanWindowTone, string> = { neutral: "text-ink-subtle", warning: "text-warning", danger: "text-danger" };
 
 interface Group {
@@ -36,7 +42,7 @@ interface Group {
 
 /**
  * Each signed-in backend's plan usage, above the rail's footer (EO-896):
- * a 5-hour and a weekly bar per backend, neutral until a window reaches
+ * a 5-hour and a weekly bar per backend, accent blue until a window reaches
  * 80% (amber, with when it resets) or is refused (red, with when it is
  * back).
  *

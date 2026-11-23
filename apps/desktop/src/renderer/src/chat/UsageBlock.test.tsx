@@ -149,19 +149,21 @@ describe("the rail's Usage block", () => {
     expect(screen.getByRole("group", { name: "Codex" })).toBeInTheDocument();
   });
 
-  it("draws 79% neutral, and 80% amber with when it resets", async () => {
+  it("draws 79% in the accent blue, and 80% amber with when it resets", async () => {
     const resetsAt = NOW + 3 * 24 * 60 * MINUTE;
     await rendered({ runtimes: { claude: runtime("claude") }, usage: { backends: [backend("claude", { five_hour: { utilization: 79, resetsAt: NOW + 60 * MINUTE }, seven_day: { utilization: 80, resetsAt } })] } });
 
     const neutral = meter("Claude", "5h");
     expect(neutral.dataset["tone"]).toBe("neutral");
-    expect(neutral.querySelector('[data-testid="usage-fill"]')).toHaveClass("bg-ink-subtle");
+    expect(neutral.querySelector('[data-testid="usage-fill"]')).toHaveClass("bg-accent");
+    expect(neutral.querySelector('[data-testid="usage-fill"]')).not.toHaveClass("bg-ink-subtle");
     expect(within(neutral).getByText("79%")).toHaveClass("text-ink-subtle");
     expect(within(neutral).queryByText(/Resets/)).toBeNull();
 
     const amber = meter("Claude", "Week");
     expect(amber.dataset["tone"]).toBe("warning");
     expect(amber.querySelector('[data-testid="usage-fill"]')).toHaveClass("bg-warning");
+    expect(amber.querySelector('[data-testid="usage-fill"]')).not.toHaveClass("bg-accent");
     expect(within(amber).getByText("80%")).toHaveClass("text-warning");
     expect(within(amber).getByText(`Resets ${clockTime(resetsAt, NOW)}`)).toBeInTheDocument();
     expect(clockTime(resetsAt, NOW)).toMatch(/^[A-Z][a-z]{2} \d\d:\d\d$/);
@@ -181,6 +183,7 @@ describe("the rail's Usage block", () => {
     const rejected = meter("Claude", "5h");
     expect(rejected.dataset["tone"]).toBe("danger");
     expect(rejected.querySelector('[data-testid="usage-fill"]')).toHaveClass("bg-danger");
+    expect(rejected.querySelector('[data-testid="usage-fill"]')).not.toHaveClass("bg-accent");
     expect(within(rejected).getByText(`Refused · back at ${clockTime(back, NOW)}`)).toHaveClass("text-danger");
     expect(clockTime(back, NOW)).toBe("15:40");
 
