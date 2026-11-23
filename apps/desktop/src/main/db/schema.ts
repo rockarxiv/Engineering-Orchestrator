@@ -2149,6 +2149,12 @@ export const teamVersions = sqliteTable(
     authorItemId: text("author_item_id"),
     /** The version a restore put back; null for every other version. */
     restoredFrom: integer("restored_from"),
+    /**
+     * Every member's runtime, model and reasoning effort when the version was
+     * made (`TeamMemberSettings` by agent id, EO-884), which a restore puts
+     * back on the members. Null on versions made before migration 0186.
+     */
+    memberSettings: text("member_settings", { mode: "json" }),
     createdAt: integer("created_at").notNull(),
   },
   (table) => [uniqueIndex("idx_team_versions_number").on(table.teamId, table.number)],

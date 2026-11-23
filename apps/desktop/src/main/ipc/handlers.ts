@@ -4,6 +4,7 @@ import { ArchivedItemListFiltersSchema, ItemListFiltersSchema, toRegistryView, t
 import { AttachmentStorage } from "../attachments/storage.js";
 import { pipelineHome } from "./pipelineHome.js";
 import { cancelTeamSessionCommand, retryTeamSessionCommand, teamSessionsCommand } from "./teamCommands.js";
+import { listTeamsCommand, restoreTeamCommand, setTeamLockedCommand, setTeamMemberSettingsCommand } from "./declaredTeamCommands.js";
 import type { Db } from "../db/client.js";
 import { archiveAgentCommand, customiseAgent, deleteAgentCommand, listAgentDetails, projectStaffing, readGuards, saveAgent, setAgentBinding, savePipeline, validatePipelineCommand, writeGuards } from "./configCommands.js";
 import { runMemoryFacts } from "../process/runScope.js";
@@ -1555,6 +1556,24 @@ export function registerAllHandlers(db: Db, engine: EngineHandle | undefined, re
   registerHandler("items:teamSessions", (payload) => teamSessionsCommand(db, engine, payload), opts);
   registerHandler("teams:cancel", (payload) => cancelTeamSessionCommand(db, engine, payload), opts);
   registerHandler("teams:retry", (payload) => retryTeamSessionCommand(db, engine, payload), opts);
+  // Declared teams in the Agents section (EO-884). A restore or a lock moves
+  // the pipelines naming the team, so every window reads its graph again.
+  registerHandler("teams:list", () => listTeamsCommand(db), opts);
+  registerHandler("teams:restore", (payload) => {
+    const result = restoreTeamCommand(db, payload);
+    if (result.restored) emitPush("config:changed", {});
+    return result;
+  }, opts);
+  registerHandler("teams:setMemberSettings", (payload) => {
+    const result = setTeamMemberSettingsCommand(db, payload);
+    if (result.saved) emitPush("config:changed", {});
+    return result;
+  }, opts);
+  registerHandler("teams:setLocked", (payload) => {
+    const result = setTeamLockedCommand(db, payload);
+    if (result.changed) emitPush("config:changed", {});
+    return result;
+  }, opts);
   registerHandler("engine:pause", (payload) => pauseEngine(db, engine, payload), opts);
   registerHandler("engine:resume", () => resumeEngine(db, engine), opts);
   registerHandler("engine:status", () => engineStatus(db, engine), opts);

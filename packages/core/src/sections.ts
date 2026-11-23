@@ -360,6 +360,10 @@ export const SECTION_LOCKED_CHANNELS: Record<PublishedSection, readonly IpcChann
     "modules:archive",
     // Restoring a version is a save by another name (EO-360).
     "moduleVersions:restore",
+    // And restoring a declared team's version (EO-884): the team a step
+    // runs as is part of the graph, written otherwise only by a published
+    // draft.
+    "teams:restore",
     // And so is applying a change card, from either chat that draws one
     // (EO-418): the card's code and manifest written onto a module.
     "scenario:apply",

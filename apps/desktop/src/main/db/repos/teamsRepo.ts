@@ -10,12 +10,13 @@ import {
   teamAgentIds,
   uuidv7,
 } from "@eo/core";
-import type { Agent, SessionTeam, StepTeam, TeamAuthor, TeamDefinition, TeamSave, TeamVersion, Uuid } from "@eo/core";
+import { TeamMemberSettingsSchema } from "@eo/core";
+import type { Agent, SessionTeam, StepTeam, TeamAuthor, TeamDefinition, TeamMemberSettings, TeamSave, TeamVersion, Uuid } from "@eo/core";
 import type { AgentToolSurface, PipelineTeamFacts } from "@eo/engine";
 import type { Db } from "../client.js";
 import { foldCase } from "../textFold.js";
-import { listAgents } from "./agentsRepo.js";
-import { agentReasoningEffort } from "../../providers/smallModels.js";
+import { getAgent, listAgents, updateAgent } from "./agentsRepo.js";
+import { agentReasoningEffort, reasoningEffortKey } from "../../providers/smallModels.js";
 import { agentCliTools, agentMcpServers, agentSkills, agents, cliTools, mcpServers, pipelineSteps, pipelines, skills, teamVersions, teams } from "../schema.js";
 
 /**
@@ -106,6 +107,50 @@ function authorOf(row: typeof teamVersions.$inferSelect): TeamAuthor {
   return { kind: "eo" };
 }
 
+/** A version's recorded member settings, or null where it recorded none (before EO-884) or they no longer parse. */
+function storedMemberSettings(value: unknown): Record<string, TeamMemberSettings> | null {
+  if (value === null || typeof value !== "object") return null;
+  const settings: Record<string, TeamMemberSettings> = {};
+  for (const [agentId, one] of Object.entries(value)) {
+    const parsed = TeamMemberSettingsSchema.safeParse(one);
+    if (parsed.success) settings[agentId] = parsed.data;
+  }
+  return settings;
+}
+
+/**
+ * Each of these agents' runtime, model and reasoning effort as they are now
+ * (EO-884), by agent id: what a version of their team records. An agent
+ * that no longer exists is left out.
+ */
+export function memberSettingsOf(db: Db, agentIds: readonly string[]): Record<string, TeamMemberSettings> {
+  const settings: Record<string, TeamMemberSettings> = {};
+  for (const agentId of new Set(agentIds)) {
+    const agent = getAgent(db, agentId as Uuid);
+    if (agent !== undefined) settings[agentId] = { provider: agent.provider, model: agent.model, reasoning: agentReasoningEffort(agent) };
+  }
+  return settings;
+}
+
+/**
+ * Puts a runtime, model and reasoning effort on a member's agent (EO-884),
+ * and nothing else of it: the reasoning under the backend's own key, any
+ * the other backend kept dropped, since it means nothing there.
+ */
+function applyMemberSettings(db: Db, agentId: string, settings: TeamMemberSettings): void {
+  const agent = getAgent(db, agentId as Uuid);
+  if (agent === undefined) return;
+  const config: Record<string, unknown> = { ...agent.config };
+  // Whichever backend's key it was kept under: it means nothing on another.
+  for (const provider of [agent.provider, settings.provider]) {
+    const old = reasoningEffortKey(provider);
+    if (old !== null) delete config[old];
+  }
+  const key = reasoningEffortKey(settings.provider);
+  if (key !== null && settings.reasoning !== null && settings.reasoning.trim() !== "") config[key] = settings.reasoning.trim();
+  updateAgent(db, agent.id, { provider: settings.provider, model: settings.model, config });
+}
+
 /** Every version of a team, oldest first. A definition that no longer parses is left out. */
 export function listTeamVersions(db: Db, teamId: string): TeamVersion[] {
   return db
@@ -117,7 +162,7 @@ export function listTeamVersions(db: Db, teamId: string): TeamVersion[] {
     .flatMap((row): TeamVersion[] => {
       const definition = storedTeamDefinition(row.definition);
       if (definition === null) return [];
-      return [{ id: row.id, teamId: row.teamId, number: row.number, definition, author: authorOf(row), restoredFrom: row.restoredFrom, createdAt: row.createdAt }];
+      return [{ id: row.id, teamId: row.teamId, number: row.number, definition, author: authorOf(row), restoredFrom: row.restoredFrom, memberSettings: storedMemberSettings(row.memberSettings), createdAt: row.createdAt }];
     });
 }
 
@@ -146,10 +191,24 @@ function nameTaken(db: Db, projectId: string | null, name: string, except: strin
   return other !== undefined && other.id !== except;
 }
 
-/** Writes a version row and points the team at it. Inside the caller's transaction. */
-function writeVersion(db: Db, teamId: string, number: number, definition: TeamDefinition, author: TeamAuthor, restoredFrom: number | null, now: number): void {
+/**
+ * Writes a version row, recording every member's runtime, model and
+ * reasoning as they are (EO-884) unless the caller says what they will be.
+ * Inside the caller's transaction.
+ */
+function writeVersion(
+  db: Db,
+  teamId: string,
+  number: number,
+  definition: TeamDefinition,
+  author: TeamAuthor,
+  restoredFrom: number | null,
+  now: number,
+  memberSettings?: Record<string, TeamMemberSettings>,
+): void {
+  const settings = memberSettings ?? memberSettingsOf(db, teamAgentIds(definition));
   db.insert(teamVersions)
-    .values({ id: uuidv7(), teamId, number, definition, ...authorColumns(author), restoredFrom, createdAt: now })
+    .values({ id: uuidv7(), teamId, number, definition, ...authorColumns(author), restoredFrom, memberSettings: settings, createdAt: now })
     .run();
 }
 
@@ -191,18 +250,22 @@ export function changesTeam(team: Pick<StoredTeam, "definition">, definition: Te
  * team, and for a name another team of its project has. A definition
  * identical to the current one writes nothing.
  */
-export function changeTeam(db: Db, id: string, input: { definition: TeamDefinition; author: TeamAuthor; now?: number; restoredFrom?: number }): TeamWrite {
+export function changeTeam(
+  db: Db,
+  id: string,
+  input: { definition: TeamDefinition; author: TeamAuthor; now?: number; restoredFrom?: number; memberSettings?: Record<string, TeamMemberSettings> },
+): TeamWrite {
   const team = getTeam(db, id);
   if (team === undefined) return { ok: false, reason: "That team no longer exists." };
   const definition = TeamDefinitionSchema.parse(input.definition);
   // Writing what it already is changes nothing, so a locked team allows it.
-  if (input.restoredFrom === undefined && sameDefinition(team.definition, definition)) return { ok: true, team, changed: false };
+  if (input.restoredFrom === undefined && input.memberSettings === undefined && sameDefinition(team.definition, definition)) return { ok: true, team, changed: false };
   if (team.locked) return { ok: false, reason: `The team "${team.name}" is locked: a person must unlock it before it can change.` };
   if (nameTaken(db, team.projectId, definition.name, id)) return { ok: false, reason: `This project already has a team called "${definition.name}".` };
   const now = input.now ?? Date.now();
   return db.transaction((tx) => {
     const number = team.version + 1;
-    writeVersion(tx as unknown as Db, id, number, definition, input.author, input.restoredFrom ?? null, now);
+    writeVersion(tx as unknown as Db, id, number, definition, input.author, input.restoredFrom ?? null, now, input.memberSettings);
     tx.update(teams).set({ name: definition.name, definition, version: number, updatedAt: now }).where(eq(teams.id, id)).run();
     touchPipelinesNaming(tx as unknown as Db, id, now);
     return { ok: true, team: getTeam(tx as unknown as Db, id) as StoredTeam, changed: true };
@@ -212,11 +275,54 @@ export function changeTeam(db: Db, id: string, input: { definition: TeamDefiniti
 /**
  * Puts an earlier version of a team back, as a person (EO-881): itself a
  * new version, recording the one it restored. Refused for a locked team.
+ * Where the version recorded its members' runtime, model and reasoning
+ * (EO-884), they go back on those members' agents that still exist — and
+ * the new version records them as restored.
  */
 export function restoreTeamVersion(db: Db, id: string, number: number, person: { personId: string | null; now?: number }): TeamWrite {
   const version = listTeamVersions(db, id).find((one) => one.number === number);
   if (version === undefined) return { ok: false, reason: `That team has no version ${number}.` };
-  return changeTeam(db, id, { definition: version.definition, author: { kind: "person", personId: person.personId }, restoredFrom: number, ...(person.now === undefined ? {} : { now: person.now }) });
+  const author: TeamAuthor = { kind: "person", personId: person.personId };
+  const when = person.now === undefined ? {} : { now: person.now };
+  const recorded = version.memberSettings;
+  if (recorded === null) return changeTeam(db, id, { definition: version.definition, author, restoredFrom: number, ...when });
+  return db.transaction((tx) => {
+    const inTx = tx as unknown as Db;
+    const current = memberSettingsOf(inTx, teamAgentIds(version.definition));
+    const restored = Object.fromEntries(Object.entries(recorded).filter(([agentId]) => current[agentId] !== undefined));
+    const written = changeTeam(inTx, id, { definition: version.definition, author, restoredFrom: number, memberSettings: { ...current, ...restored }, ...when });
+    if (!written.ok) return written;
+    for (const [agentId, settings] of Object.entries(restored)) applyMemberSettings(inTx, agentId, settings);
+    return written;
+  });
+}
+
+/**
+ * A person changing one member's runtime, model and reasoning effort
+ * (EO-884), the leader's included: written on the member's agent — the
+ * team's own — and recorded as a new version of the team made by that
+ * person. Refused for a locked team, a team EO cannot read, and an agent
+ * that is not on the team or no longer exists. Settings it already has
+ * write nothing.
+ */
+export function setTeamMemberSettings(db: Db, id: string, agentId: string, settings: TeamMemberSettings, person: { personId: string | null; now?: number }): TeamWrite {
+  const team = getTeam(db, id);
+  if (team === undefined) return { ok: false, reason: "That team no longer exists." };
+  if (team.locked) return { ok: false, reason: `The team "${team.name}" is locked: a person must unlock it before it can change.` };
+  if (team.definition === null) return { ok: false, reason: `EO cannot read what the team "${team.name}" declares, so it cannot change a member of it.` };
+  const definition = team.definition;
+  const ids = teamAgentIds(definition);
+  if (!ids.includes(agentId)) return { ok: false, reason: `That agent is not on the team "${team.name}".` };
+  const agent = getAgent(db, agentId as Uuid);
+  if (agent === undefined || agent.deletedAt !== null) return { ok: false, reason: "That member's agent no longer exists." };
+  const wanted: TeamMemberSettings = { provider: settings.provider, model: settings.model === null || settings.model.trim() === "" ? null : settings.model.trim(), reasoning: settings.reasoning === null || settings.reasoning.trim() === "" ? null : settings.reasoning.trim() };
+  const before = memberSettingsOf(db, [agentId])[agentId];
+  if (before !== undefined && JSON.stringify(before) === JSON.stringify(wanted)) return { ok: true, team, changed: false };
+  return db.transaction((tx) => {
+    const inTx = tx as unknown as Db;
+    applyMemberSettings(inTx, agentId, wanted);
+    return changeTeam(inTx, id, { definition, author: { kind: "person", personId: person.personId }, memberSettings: memberSettingsOf(inTx, ids), ...(person.now === undefined ? {} : { now: person.now }) });
+  });
 }
 
 /**

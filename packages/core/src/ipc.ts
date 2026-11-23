@@ -2,6 +2,7 @@ import { z } from "zod";
 import { NONE_KIND } from "./schemas/workspaces.js";
 import { TeamReadingSchema } from "./team.js";
 import { TeamSessionViewSchema } from "./teamSessionView.js";
+import { TeamViewSchema } from "./declaredTeam.js";
 import { StepVerificationSchema } from "./schemas/verification.js";
 import { GalleryNeedSchema, GalleryTemplateViewSchema } from "./schemas/gallery.js";
 import {
@@ -2257,6 +2258,51 @@ export const recordContract = {
    * settled or historical session never runs again.
    */
   "teams:retry": channel(z.object({ sessionId: z.string(), ...ACTING_DEVICE }), z.object({ retried: z.boolean(), keys: z.array(z.string()), problem: z.string().nullable() })),
+  /**
+   * Every declared team, as the Teams tab in the Agents section shows it
+   * (EO-884): its leader and members as the agents they are, its pool,
+   * range, limits and cap, the steps that name it, and its versions with
+   * who made each. A trial's own copies of a draft's teams are left out.
+   */
+  "teams:list": channel(z.void(), z.object({ teams: z.array(TeamViewSchema) })),
+  /**
+   * A person putting an earlier version of a team back (EO-881, EO-884):
+   * itself a new version, made by the person asking and recording the one
+   * it restored. Refused, as `problem`, for a locked team or a version the
+   * team does not have.
+   */
+  "teams:restore": channel(
+    z.object({ teamId: z.string(), version: z.number().int().positive(), ...ACTING_DEVICE }),
+    z.object({ restored: z.boolean(), problem: z.string().nullable() }),
+  ),
+  /**
+   * A person locking a team against every change, the leader's additions
+   * included, or unlocking it (EO-881, EO-884). A guard, not a change to
+   * what the team is: it writes no version.
+   */
+  /**
+   * A person changing one member's runtime, model and reasoning effort from
+   * the Teams tab (EO-884), the leader's included: written on the member's
+   * agent, which is the team's own, and recorded as a new version of the
+   * team made by whoever asked. Refused, as `problem`, for a locked team,
+   * an agent that is not on it, or a backend the organisation does not
+   * allow. Never the member's instructions, kind or tools, which this
+   * cannot express (invariant 11).
+   */
+  "teams:setMemberSettings": channel(
+    z.object({
+      teamId: z.string(),
+      agentId: z.string(),
+      provider: z.string().min(1),
+      /** Null is the runtime's default model. */
+      model: z.string().nullable().default(null),
+      /** Null is the model's default reasoning effort. */
+      reasoning: z.string().nullable().default(null),
+      ...ACTING_DEVICE,
+    }),
+    z.object({ saved: z.boolean(), problem: z.string().nullable() }),
+  ),
+  "teams:setLocked": channel(z.object({ teamId: z.string(), locked: z.boolean() }), z.object({ changed: z.boolean(), problem: z.string().nullable() })),
   "engine:pause": channel(z.object({ cancelRunning: z.boolean().default(false) }), EngineStatusSchema),
   "engine:resume": channel(z.void(), EngineStatusSchema),
   "engine:status": channel(z.void(), EngineStatusSchema),
@@ -8229,6 +8275,9 @@ export const ACTOR_SCOPED_CHANNELS = [
   // EO-849. Cancelling or retrying a team session posts in the person's name.
   "teams:cancel",
   "teams:retry",
+  // EO-884. A restore or a member's new settings is a version made by whoever asked, which only the door knows.
+  "teams:restore",
+  "teams:setMemberSettings",
   "items:decide",
   "items:claim",
   "items:assign",
