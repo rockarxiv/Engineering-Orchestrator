@@ -1,7 +1,8 @@
 # Plan: a local System 1 model in EO, and review triage built on it
 
-**Status:** draft for the maintainer · **Date:** 2026-11-24
-**Scope of v1:** EO fetches, verifies and runs **one pinned local decision model** (Kev-4B, 4-bit, on llama.cpp). Modules ask it quick questions through a new `ctx` call. The first user is a **Review triage** step that decides which reviewers of the Review team should run.
+**Status:** draft for the maintainer, revised after Phase 0 · **Date:** 2026-11-24
+**Phase 0 result:** done; see [local-judge-phase0.md](./local-judge-phase0.md). Kev reliably decides whether the **user-facing, security and rules** reviewers are needed. It cannot decide **impact** or **tests**, so those always run (§12.1). The saving is about one reviewer of six per review.
+**Scope of v1:** EO fetches, verifies and runs **one pinned local decision model** (Kev-4B, 4-bit, on llama.cpp). Modules ask it quick questions through a new `ctx` call. The first user is a **Review triage** step that decides whether three of the Review team's passes (user-facing, security, rules) should run. Criteria, impact and tests always run.
 **Later (designed for now, built later):** other providers — a hosted System One endpoint ("subscription"), a person's own Ollama, or the person's Claude/Codex sign-in through side calls.
 
 Every file path and function name below was checked against the repository on 2026-11-24. Anything not checked is marked **(verify)**.
@@ -14,8 +15,8 @@ Every file path and function name below was checked against the repository on 20
 |---|---|
 | **Judge** | The new capability: a quick, single-step answer to typed questions about a piece of text, with probabilities. The working name avoids "decide", which EO already uses for a person's decision on a user step (`items:decide`, `ipc/decisions.ts`). The final name is an open question (§18). |
 | **Judgement** | One request to the judge and its answers. |
-| **Decision model** | A model built for judgements rather than chat — Kev (Jared Palmer, Apache-2.0) is the one v1 pins. It returns calibrated probabilities from a classifier head, not generated text. |
-| **System One API** | The wire format Kev's server, TypeSafe's hosted Jev, and (reportedly) llama.cpp's `llama-server` speak: `POST /v1/systemone` with `state` and typed `questions` (`noul` yes/no, `choice`, `score`). EO's own contract mirrors it, so later providers that speak it need almost no adapter. |
+| **Decision model** | A model built for judgements rather than chat — Kev (Jared Palmer, Apache-2.0) is the one v1 pins. It returns probabilities from a pointer head over the options, not generated text. They are temperature-scaled on Kev's own training data. llama.cpp's README says they "are not guaranteed to be calibrated for your data", so thresholds are set on EO's own reviews (§13). |
+| **System One API** | The wire format Kev's server, TypeSafe's hosted Jev, and llama.cpp's `llama-server` speak (confirmed in Phase 0: [ggml-org/llama.cpp#29818](https://github.com/ggml-org/llama.cpp/pull/29818), merged 2026-10-02). `POST /v1/systemone` takes a `state` and typed `questions`: `noul` yes/no, `choice` and `score`, with options in `criteria`. EO's own contract mirrors it, so later providers that speak it need almost no adapter. The same endpoint serves five decision models (Kev, OpenJev, Laya, Lev, Julia-1). |
 | **Provider** | Where judgements are answered: `managed_local` in v1; `system_one_http`, `ollama`, `side_call` later. |
 
 ---
@@ -26,7 +27,7 @@ Every file path and function name below was checked against the repository on 20
 1. A person can install the local judge from EO with one consent, the way they install the Claude or Codex CLI today (ARCHITECTURE.md §12.6): pinned versions, verified hashes, sizes and licences shown first.
 2. EO starts the model server when the first judgement needs it, stops it when idle and when EO quits, contains it, and cleans up after a crash. The person never starts or stops anything by hand.
 3. A module can ask the judge questions with `ctx.judge(...)`, declared in its manifest and shown at approval, scriptable in its tests.
-4. The *Software feature to merge* template gets a **Review triage** step that picks the reviewers; the Review lead assigns the ones it names and still writes the verdict.
+4. The *Software feature to merge* template gets a **Review triage** step that decides whether the user-facing, security and rules reviewers run. Criteria, impact and tests always run. The Review lead assigns the ones it names and still writes the verdict.
 5. Nothing is ever skipped silently: if the judge is missing, off, failing or unsure, triage asks for the full team and says why on the item (invariant 8).
 6. Every judgement is recorded, so thresholds can be tuned and, later, Kev can be fine-tuned on this installation's own reviews.
 
@@ -44,8 +45,10 @@ Every file path and function name below was checked against the repository on 20
 ```
                          ┌───────────────────────── EO main process ─────────────────────────┐
  Implement (agent) ──→   │  Review triage (module step)                                       │
+                         │    ticket + implementer's summary/handoff (ctx.ticket, ctx.runs)   │
                          │    git diff --name-only / --shortstat   (ctx.exec, needs.bin: git) │
-                         │    hard rules in code (Criteria always; Security on sensitive paths)│
+                         │    hard rules in code (Criteria, Impact, Tests always;              │
+                         │                        Security on sensitive paths)                │
                          │    ctx.judge({ state, questions })  ──fd 3 event──┐                 │
                          │                                                   ▼                 │
                          │                       JudgeService (src/main/judge/)               │
@@ -73,7 +76,7 @@ Why a module and not an agent step: a module is code a person approved, its clai
 | 2 | Engine is pure | Nothing goes in `packages/engine`. |
 | 3 | `run_events` append-only | Judgements go in a new append-only table, not `run_events`. |
 | 4 | Comments are the item's channel | The reviewer list reaches the lead as a comment on the item. |
-| 5 | Verify, don't trust | Sensitive paths and "Criteria always" are code, not the model's judgement. |
+| 5 | Verify, don't trust | Sensitive paths, and "Criteria, Impact and Tests always", are code, not the model's judgement. The judge reads what the ticket and the implementer *claim*; the reviewers it sends check those claims against the code. |
 | 8 | Every guard ends in a comment | Judge unavailable / failed / unsure → the triage comment says so and names the full team. |
 | 9 | Escalation ends the run | No waiting on a person; the judge answers in seconds or fails. |
 | 10 | Concurrency at 1 | A judgement is part of the module run that asks it, which already holds the slot. The server answers one request at a time. |
@@ -88,6 +91,13 @@ Spawn rule: every `child_process` spawn must set `windowsHide: true` (`apps/desk
 ## 4. Phase 0 — prove it before building (no code merged)
 
 Each step has a clear pass/fail. Phase 1 starts only when 0.1–0.4 pass.
+
+> **Done 2026-11-24** — [local-judge-phase0.md](./local-judge-phase0.md) has the numbers.
+> - **0.1 passes:** b12676 with CUDA 13.5 on the RTX 3070. Load 5.3 s, +3.9 GB VRAM. ~3.6 s per triage with the §12.1 state.
+> - **0.2 passes:** GitHub publishes a sha256 for each release asset; Hugging Face publishes one per file.
+> - **0.3 passes for three passes, fails for two.** User-facing, security and rules: 16% of optional passes skipped with no miss, confirmed on 60 held-out reviews with frozen thresholds. Impact and tests: no better than chance (§12.1, "Why impact and tests always run").
+> - Only the input in §12.1 works. The file list and criteria alone did no better than a path rule.
+> - 0.4 is still open.
 
 ### 0.1 Does `llama-server` really serve Kev's probabilities?
 - On the RTX 3070: `llama-server -hf ggml-org/Kev-4B-GGUF:Q4_K_M -ngl 99 -c 8192 --port 8080`.
@@ -133,13 +143,18 @@ Zod is the source of truth for anything crossing a boundary (CLAUDE.md). New fil
 
 ```ts
 // Mirrors the System One API so providers that speak it need no translation.
+// Options go in `criteria`, as llama-server's /v1/systemone takes them (checked in Phase 0).
 export const JudgeQuestionSchema = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("noul"),   instructions: z.string().min(1).max(2000) }),
+  z.object({ type: z.literal("noul"),   instructions: z.string().min(1).max(2000),
+             criteria: z.object({ true: z.string().max(200), false: z.string().max(200) }).optional() }),
   z.object({ type: z.literal("choice"), instructions: z.string().min(1).max(2000),
-             options: z.array(z.string().min(1).max(200)).min(2).max(255) }),
+             criteria: z.record(z.string().min(1).max(200), z.string().max(200).nullable())   // option → description
+               .refine((c) => Object.keys(c).length >= 2 && Object.keys(c).length <= 255) }),
   z.object({ type: z.literal("score"),  instructions: z.string().min(1).max(2000),
-             levels: z.array(z.string().min(1).max(200)).min(2).max(255) }),
+             criteria: z.array(z.string().min(1).max(200)).min(2).max(10) }),          // levels, lowest first
 ]);
+// On the wire, a noul answer is { noul: p }, and a score answer is { score: expected level, legend, probabilities }.
+// The provider maps them to JudgeAnswerSchema below.
 
 export const JudgeRequestSchema = z.object({
   state: z.string().min(1).max(JUDGE_MAX_STATE_CHARS),          // e.g. 24_000 chars ≈ 6k tokens, under Kev's 8k
@@ -168,7 +183,8 @@ export const JudgeFailureReasonSchema = z.enum([
 export const JudgeProviderIdSchema = z.enum(["managed_local"]); // later: "system_one_http", "ollama", "side_call"
 ```
 
-- `calibrated` is in the answer from day one. Kev's probabilities are calibrated; a generative provider's (later) are not, and a module must be able to tell.
+- `calibrated` is in the answer from day one. It means the provider returns real probabilities from a decision head: Kev's are, a generative provider's (later) are not, and a module must be able to tell. It does **not** mean they're calibrated for EO's questions. llama.cpp says so plainly, and Phase 0's useful thresholds ranged from 0.2 to 0.75 by pass. So thresholds are per question and set from data (§13).
+- **Cost is questions × state tokens.** Each question re-reads the whole state, and the prompt cache doesn't help (Phase 0). Keep the question count small.
 - `provider`, `model` and `judgementId` give every answer its provenance; the triage comment prints them.
 - Limits are constants in `packages/core/src/limits.ts` beside `DEFAULT_MODULE_TIMEOUT_MS`.
 
@@ -262,7 +278,7 @@ export interface JudgeModelSpec {                 // Kev-4B Q4_K_M
 |---|---|
 | EO starts | Nothing runs. A startup sweep removes a server left by a crashed EO (§8.3). |
 | First judgement | `ensureRunning()`: one start at a time (a mutex; concurrent callers wait on the same start). |
-| Start | Pick a free loopback port; generate a 32-byte API key; spawn `llama-server --model <gguf> --host 127.0.0.1 --port <p> --api-key <k> -ngl <gpuLayers> -c 8192 -np 1 [--no-webui] [prompt-cache flags from 0.1]` through `launchTree` with `windowsHide: true`; poll `GET /health` until ready (timeout e.g. 60 s for a cold model load). |
+| Start | Pick a free loopback port; generate a 32-byte API key; spawn `llama-server --model <gguf> --host 127.0.0.1 --port <p> --api-key <k> -ngl <gpuLayers> -c 8192 -np 1 --no-webui` (no prompt-cache flags: off by default for decision models, and no gain in 0.1). Check `GET /v1/models` reports `output_modalities` containing `"decisions"` before the first judgement through `launchTree` with `windowsHide: true`; poll `GET /health` until ready (timeout e.g. 60 s for a cold model load). |
 | Each judgement | One request at a time (EO queues); `POST /v1/systemone` with `Authorization: Bearer <k>`; per-request timeout from config; reset the idle timer. |
 | Idle `idleStopMinutes` | Stop the server (graceful, then `killTree` after `END_PROCESS_GRACE_MS`, `process/endProcess.ts:43`). The idle timer is `unref`'d, as the warm-backend timers are (`providers/codexClient.ts:520–537`). |
 | EO quits | Stop it from `stopBackgroundServices` (`startMain.ts:826–841`), which the shutdown coordinator already runs; also from the engine's `shutdown()` path if judgements are in flight. |
@@ -360,12 +376,13 @@ Manifest:
 ```json
 {
   "name": "Review triage",
-  "description": "Picks which reviewers of the Review team look at this change.",
+  "description": "Decides whether the user-facing, security and rules reviewers of the Review team look at this change. Criteria, impact and tests always do.",
   "results": ["triaged"],
   "needs": { "bin": ["git"], "item": true, "comment": true, "judge": true },
   "inputs": {
     "mode":              { "type": "string", "default": "shadow", "description": "shadow: name everyone, report what would be skipped. enforce: name only the picked reviewers." },
-    "threshold":         { "type": "number", "default": 0.5 },
+    "userFacingThreshold": { "type": "number", "default": 0.4, "description": "Phase 0: no miss in 120 reviews at 0.4 (16% skipped); 0.75 skipped 22–23% with one miss." },
+    "rulesThreshold":    { "type": "number", "default": 0.65 },
     "securityThreshold": { "type": "number", "default": 0.2 },
     "sensitivePaths":    { "type": "string", "default": "auth|permission|session|token|secret|crypt|sanitiz|password|oauth|\\.env|migrations?/|package\\.json|pnpm-lock|yarn\\.lock|Cargo\\.(toml|lock)|go\\.(mod|sum)|requirements.*\\.txt" }
   }
@@ -374,24 +391,37 @@ Manifest:
 
 Behaviour, in order:
 1. **Facts from git** (`ctx.exec("git", …)` in the item's worktree, `ctx.cwd`): `--name-only` and `--shortstat` against `ctx.workspace.git.baseBranch`, including uncommitted changes. `ctx.exec` keeps the *tail* of stdout, so cap and say so ("+312 more files") rather than trust a long list **(verify the tail size)**.
-2. **Hard rules (code):** Criteria reviewer always. Security reviewer when any path matches `sensitivePaths`. **Sticky:** any reviewer whose pass came back `blocking` or `needs_decision` in this item's previous review round is kept — read with `ctx.runs(key)` (ARCHITECTURE.md §4.6, EO-710).
-3. **Judgement:** one `noul` question per remaining optional reviewer — Impact, Tests, Rules, Security (if not already forced), User-facing — over a state of: shortstat, file list (capped), the item's title and acceptance criteria (capped). Under Kev's 8k tokens.
-4. **Pick:** a reviewer is picked when its probability ≥ its threshold.
-5. **Fail closed:** any `ok: false` → every optional reviewer is picked; the comment says why (e.g. "The local judge isn't installed on this machine, so the full team reviews").
-6. **Mode:** `shadow` names all six reviewers but lists which the judge *would* have skipped; `enforce` names only the picked ones.
-7. **Comment** (`ctx.comment`), machine-readable first line, human reasons after:
+2. **Hard rules (code):** Criteria, Impact and Tests reviewers always (see "Why impact and tests always run" below). Security reviewer when any path matches `sensitivePaths`. **Sticky:** any reviewer whose pass came back `blocking` or `needs_decision` in this item's previous review round is kept — read with `ctx.runs(key)` (ARCHITECTURE.md §4.6, EO-710).
+3. **What the work says it is.** Read with `ctx.item()`: the whole ticket (title, description, acceptance criteria, the spec's `touches`). Read with `ctx.runs(key)`: the implementer's account, meaning the `summary` and `handoff` in the `answer` of the latest succeeded `implement` run (`moduleRunsView` passes the parsed result, `ipc/domainQueries.ts:1247`). Then a short "what the diff actually touches" section from step 1: UI files, shared contracts, source files with no matching test file, and the capped file list. Caps used in Phase 0: description 5,000 chars, criteria 4,000, summary 3,500, handoff 3,500, 60 files. That's ~2k tokens median and ~4k at most, under Kev's 8k.
+4. **Judgement:** one `noul` question each for User-facing, Rules and Security (if not already forced), asked about what the work *claims*, so the reviewer it sends verifies the claim. The Phase 0 wording, which these thresholds belong to:
+   - user_facing: *"Do the story or the implementer's account say this work changes what a person sees or reads: a screen, a card, a button, a message, wording, CLI output, a public API or docs?"*
+   - rules: *"Do the story or the implementer's account involve the repository's written rules or architecture invariants, such as the engine, comments, guards, run events, pipelines, agents' tools, prompts or the organisation record?"*
+   - security: *"Do the story or the implementer's account involve authentication, permissions, input handling, secrets, network or file-system access, or dependencies?"*
+
+   This catches the commonest UI miss, a change that *should* have touched the UI and didn't (EO-776, EO-798 in Phase 0): the ticket and the handoff mention the board, so the reviewer goes and finds it unchanged. The file list or diff alone did no better than a path rule.
+5. **Pick:** a reviewer is picked when its probability ≥ its threshold.
+6. **Fail closed:** any `ok: false` → every optional reviewer is picked; the comment says why (e.g. "The local judge isn't installed on this machine, so the full team reviews").
+7. **Mode:** `shadow` names all six reviewers but lists which the judge *would* have skipped; `enforce` names only the picked ones.
+8. **Comment** (`ctx.comment`), machine-readable first line, human reasons after:
    ```
-   Reviewers: Criteria reviewer, Tests reviewer, Security reviewer
-   - Criteria reviewer: always runs
+   Reviewers: Criteria reviewer, Impact reviewer, Tests reviewer, Security reviewer
+   - Criteria, Impact, Tests reviewers: always run
    - Security reviewer: sensitive path changed (src/auth/session.ts)
-   - Tests reviewer: judge 0.81
-   Skipped: Impact reviewer (0.12), Rules reviewer (0.07), User-facing reviewer (0.03)
-   Judge: Kev-4B Q4 (local), calibrated, 0.4 s
+   Skipped: Rules reviewer (0.31), User-facing reviewer (0.12)
+   Judge: Kev-4B Q4 (local), 3.4 s
    ```
-8. Return `{ ok: true, result: "triaged" }`.
+9. Return `{ ok: true, result: "triaged" }`.
+
+**Why impact and tests always run** (Phase 0, 120 reviews): Kev's answers for these two were no better than chance (impact AUROC 0.56–0.57; tests 0.44–0.76 on 3–5 cases). Two reasons, and both would hold for any model given this input:
+- **The subject is in almost every EO change.** Kev said "yes, shared behaviour" on 70–82% of reviews whose impact pass found nothing, and "needs tests" on 95–100%. That's true: EO's stories nearly all touch contracts, sync or the record, and nearly all change behaviour. A relevance question that is always yes can't skip anything. Impact is also the commonest block (8–22% of reviews), so a skip there costs most.
+- **What decides a block isn't in any text triage reads.** Impact blocks are side effects on code paths nobody mentions. EO-830's other callers still wrote unprotected paths, and EO-833's rollback still fired comment events. Those stories *read* as local fixes, which is why they scored lowest (0.27–0.49). Tests blocks are about what a test actually exercises: one scripted provider standing in for both backends (EO-868), a faked nested call (EO-845), a test that never calls `releaseRun` (EO-813). That needs the test code and the code under test, side by side. The only check is the review itself.
+
+If these are ever triaged, it shouldn't be by a quick judgement over text. Deterministic checks would be the honest tool. For impact: callers of changed exported symbols that the diff doesn't touch, from CodeWiki's index. For tests: changed source with no test exercising it. Those are code, not a model, and a separate design.
 
 Test cases (all scripted; approval requires them):
 - sensitive path forces Security regardless of the judge;
+- Criteria, Impact and Tests are named on every run, whatever the judge answers;
+- the state carries the ticket's description and the implementer's summary and handoff; with no implement run, it says so and triage still runs;
 - high/low probabilities pick/skip as thresholds say;
 - judge `not_installed`, `timeout`, `unavailable_here` → full team with the reason;
 - sticky reviewer from a previous blocking report is kept;
@@ -420,7 +450,7 @@ Test cases (all scripted; approval requires them):
 
 1. **Shadow first.** Ship 1.9 with `mode: shadow`. For the first N reviews (e.g. 50) every reviewer runs, and the comment records what would have been skipped.
 2. **Measure** from `judgements` + team reports: for each skipped-in-shadow reviewer, did its report block? Target: no blocking report among the would-be-skipped, beyond what the hard rules catch. Also: average members per review, judge latency, judge failures by reason.
-3. **Tune** `threshold`/`securityThreshold` per installation from that data (step inputs, no code).
+3. **Tune** `userFacingThreshold`, `rulesThreshold` and `securityThreshold` per installation from that data (step inputs, no code). The defaults come from Phase 0. They hold only for the question wording in §12.1, so changing a question means re-measuring.
 4. **Enforce** by changing the step input to `enforce` — a pipeline edit a person publishes.
 5. A small read-only report (a module or a saved query, later a screen) showing members saved per week and any blocking report the judge would have skipped.
 
@@ -477,7 +507,8 @@ Issues 2, 3 and 9 can start in parallel. The critical path is 0 → 3 → 4 → 
 | Risk | Effect | Mitigation |
 |---|---|---|
 | llama.cpp doesn't actually serve Kev's head | No managed path | Phase 0.1 gates everything; fallback is a `system_one_http` provider pointed at a person-run `kev.serve` |
-| Kev under-calls a risky change | A needed reviewer skipped | Hard rules for sensitive paths; sticky reviewers; low security threshold; shadow mode first; lead may add reviewers |
+| Kev under-calls a risky change | A needed reviewer skipped | Impact and tests are never judged (§12.1); hard rules for sensitive paths; sticky reviewers; low security threshold; shadow mode first; lead may add reviewers |
+| The saving doesn't pay for the machinery | ~1 of 6 reviewer passes saved per review (Phase 0), for a 3 GB install, a GPU process and ~4 s per triage | Ship shadow mode and measure members saved per week (§13.5) before enforcing; the judge's other users (inbox routing, "is this about X") may carry more of the cost |
 | 3 GB download on poor connections | Install fails or annoys | Resume, progress, cancel; never auto-download |
 | GPU memory contention (games, other apps) | Load failure or slow CPU fallback | Lazy start, idle stop, automatic layer reduction with a visible status |
 | A second long-lived process (§21.3's cost) | Orphans, "failed to start" states | Lazy, contained, swept, status always visible; judgement failure never blocks work |
