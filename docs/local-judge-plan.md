@@ -29,7 +29,7 @@ Every file path and function name below was checked against the repository on 20
 3. A module can ask the judge questions with `ctx.judge(...)`, declared in its manifest and shown at approval, scriptable in its tests.
 4. The *Software feature to merge* template gets a **Review triage** step that decides whether the user-facing, security and rules reviewers run. Criteria, impact and tests always run. The Review lead assigns the ones it names and still writes the verdict.
 5. Nothing is ever skipped silently: if the judge is missing, off, failing or unsure, triage asks for the full team and says why on the item (invariant 8).
-6. Every judgement is recorded and later labelled by the outcome it predicted (§13.1), so each installation learns its own thresholds in shadow, a person accepts them before anything is skipped, and, later, Kev can be fine-tuned on that installation's own reviews.
+6. Every judgement is recorded and later labelled by the outcome it predicted (§13.1), so each repository of each project learns its own thresholds in shadow, a person accepts them before anything is skipped, and, later, Kev can be fine-tuned on that installation's own reviews.
 
 ### Non-goals (v1)
 - No judge for **agents**. Only modules call it. Serving it to agents would make it a capability under invariant 12 (both backends) and invariant 11 (tool surface), and is a separate decision.
@@ -454,7 +454,9 @@ Test cases (all scripted; approval requires them):
 
 ## 13. Phase 9 — shadow mode that learns each installation's thresholds
 
-Phase 0's thresholds were measured on EO's own reviews. Nobody installing the template will measure their own, and nobody should have to. So triage starts in shadow on every installation, **learns from the Review team's own reports**, and asks a person before it skips anything. Each pass (user-facing, security, rules) earns trust on its own.
+Phase 0's thresholds were measured on EO's own reviews. Nobody installing the template will measure their own, and nobody should have to. So triage starts in shadow on every installation, **learns from the Review team's own reports**, and asks a person before it skips anything. Each pass (user-facing, security, rules) earns trust on its own, **in each repository (workspace) of each project**.
+
+In practice EO learns, not Kev: the model's weights never change. What EO learns is where to put each pass's threshold for a given body of work. That's why the record is scoped (§13.1a). The same score can mean different things in a UI repository and in a backend service.
 
 ### 13.1 Labels come for free
 In shadow every reviewer runs, and each one already reports `clear`, `blocking` or `needs_decision` (`team_attempts.outcome`). That is the label for the judgement asked about that pass in the same round. No person labels anything. (Phase 0 labelled by hand only because the old single-reviewer history had no per-pass outcomes.)
@@ -464,8 +466,22 @@ In shadow every reviewer runs, and each one already reports `clear`, `blocking` 
 - **No outcome, no label.** If the assignment never ran, the round was cancelled, or the lead didn't assign it, nothing is recorded. EO never guesses.
 - Stats are kept per **question wording and model** (a hash of the instructions plus the model id). Rewording a question, or a new model, starts its record from zero. Phase 0 showed the thresholds belong to the exact wording.
 
+### 13.1a Scope: per project, and per repository within it
+A record is keyed by **project + workspace + module + question hash + model**. Each judgement row already knows its item, and every item carries `project_id` and `workspace_id`, so the scope costs no new data.
+
+Why not one record per installation:
+- **Projects differ.** A person's work project and a hobby project block on different things. One shared threshold would be set by whichever has more reviews.
+- **Repositories differ even within a project.** For a frontend repository, "touches the UI" is nearly always true and the UI reviewer rarely gets skipped. For a backend service, it's rarely true, and skips are plentiful. Security in an auth service isn't security in a docs site. Phase 0's base rates moved a lot between two samples of *one* repository: impact blocked in 8% of one sample and 22% of the other.
+
+Rules for the scope:
+- **The decision is per repository.** A pass is offered, accepted, spot-checked and demoted for one repository of one project (§13.3–13.4). A miss in one repository demotes only that one.
+- **No pooling into a decision.** A repository with too few labels stays in shadow, even if the project as a whole has plenty. Borrowing another repository's evidence is exactly the mistake the scope exists to prevent. Project-level and installation-level numbers are shown in the report (§13.5) as context only, for example "this project: user-facing would have skipped 120 times, 0 misses", so a person can see it's likely to come.
+- **Items with no workspace** (non-code pipelines, or a project with none) use the project alone as their scope (workspace = none).
+- **Moving or copying a project** (project moves, EO-766) carries its record with it. Labels belong to the project's items, not to the machine.
+- **Domain-neutral naming:** `readiness.ts` and the tables say *workspace*. Only the developer pack's words call it a repository (invariant 13).
+
 ### 13.2 What EO works out, per pass
-A pure function in `src/main/judge/readiness.ts` (unit-tested, no I/O) reads this installation's labelled judgements for one module and one question. It answers:
+A pure function in `src/main/judge/readiness.ts` (unit-tested, no I/O) reads the labelled judgements for one scope (project + workspace, §13.1a), one module and one question. It answers:
 - `labelled`, `blocked`: how many judgements have a label, and how many of those blocked;
 - `lowestBlockingScore`: the lowest score among the ones that blocked;
 - for a threshold *t*: `wouldSkip` (labelled judgements under *t*) and `missed` (those of them that blocked);
@@ -477,38 +493,39 @@ A pure function in `src/main/judge/readiness.ts` (unit-tested, no I/O) reads thi
 - Statistically, 0 misses in *n* would-be skips puts the true miss rate below about 3/*n* with 95% confidence (the "rule of three"). So 30 skips means under ~10%, and 100 means under ~3%. `targetMissRate` (0.1) sets *n* = 3 / target.
 - At least `minBlocked` (2) blocking examples for the pass, so the threshold has something real to sit below. A pass that never blocks here stays in shadow with a note ("security hasn't found anything in 80 reviews; nothing to learn from yet"). That's an honest reason, not a silent stall.
 
-The module reads this through a new read-only call, `ctx.judgeRecord(question, threshold)`. It's covered by `needs.judge`, scriptable in tests as a `judgeRecord` fixture, and in the docs in the same three places as `ctx.judge` (§10.4).
+The module reads this through a new read-only call, `ctx.judgeRecord(question, threshold)`, always for the running item's own project and workspace. A module cannot ask about another scope's record. It's covered by `needs.judge`, scriptable in tests as a `judgeRecord` fixture, and in the docs in the same three places as `ctx.judge` (§10.4).
 
 ### 13.3 From shadow to skipping: a person says yes
 1. **Shadow (default for every pass).** Every reviewer runs. The triage comment adds a line per pass: `Would skip: User-facing (0.21; learning — 18 of 30 needed)`.
-2. **Offer.** When a pass becomes `ready`, EO sends one message to the person who published the pipeline (messages, ARCHITECTURE.md §7.1; no item). For example: *"In 64 reviews, the User-facing reviewer would have been skipped 31 times at 0.38, and none of those 31 found anything. Start skipping it below 0.38?"* The buttons publish a pipeline edit (Accept), or leave the pass in shadow (Not now). It's sent once per pass, again only if the numbers change materially, and never repeated after "Not now" until the person asks.
-3. **Accept = a published pipeline edit.** Accepting sets two step inputs: `enforce` (the list of passes that may be skipped, e.g. `["user_facing"]`) and that pass's threshold. It goes through the normal publish path, so it's versioned, visible and reversible like any pipeline change (invariant 7). EO never flips a pass to skipping by itself.
+2. **Offer.** When a pass becomes `ready` in a repository, EO sends one message to the person who published the pipeline (messages, ARCHITECTURE.md §7.1; no item). The message names the project and the repository. For example: *"In **EO** (repository **eo-desktop**), 64 reviews: the User-facing reviewer would have been skipped 31 times at 0.38, and none of those 31 found anything. Start skipping it below 0.38 for this repository?"* The buttons publish a pipeline edit (Accept), or leave the pass in shadow (Not now). It's sent once per pass and repository, again only if the numbers change materially, and never repeated after "Not now" until the person asks.
+3. **Accept = a published pipeline edit.** Accepting adds one entry to the step's `enforce` input: the pass, the workspace and the threshold, e.g. `user_facing@<workspace id>=0.38`. It goes through the normal publish path, so it's versioned, visible and reversible like any pipeline change (invariant 7). Pipelines belong to one project (EO-766), so the project is implied by the pipeline. An entry for one repository says nothing about another. EO never flips a pass to skipping by itself.
 
 ### 13.4 After skipping starts: it keeps checking itself
 - **Spot checks.** Each skip is still run with probability `spotCheckRate` (0.1). The draw is deterministic, from a hash of the item id and the round, so tests and reruns agree. The comment says so: `User-facing reviewer: spot check (judge 0.22)`. Without this, skipped passes produce no labels and the record silently freezes. It's also the price of knowing the skips are still right.
-- **A miss demotes the pass at once.** Two things count as a miss: a spot-checked reviewer that blocks, and a reviewer the lead added against triage (§12.2) that blocks. From then on `ctx.judgeRecord` reports the miss, and the module treats that pass as shadow again on the next round. That's always the safe direction (more reviewers), so it needs nobody's approval. But EO says so twice: a line in that item's triage comment, and a message to the publisher (invariant 8): *"User-facing went back to shadow: EO-812's spot check found a blocking issue at score 0.31."* The `enforce` input stays as published. The module simply won't skip a pass whose record shows a miss since it was enabled, until the person accepts a new offer.
+- **A miss demotes the pass at once, in that repository only.** Two things count as a miss: a spot-checked reviewer that blocks, and a reviewer the lead added against triage (§12.2) that blocks. From then on `ctx.judgeRecord` reports the miss for that scope, and the module treats that pass as shadow again on the next round there. Other repositories keep skipping. That's always the safe direction (more reviewers), so it needs nobody's approval. But EO says so twice: a line in that item's triage comment, and a message to the publisher (invariant 8): *"User-facing went back to shadow: EO-812's spot check found a blocking issue at score 0.31."* The `enforce` input stays as published. The module simply won't skip a pass whose record shows a miss since it was enabled, until the person accepts a new offer.
 - **Drift.** If the question's wording or the model changes, the hash changes, the pass has no record and goes back to shadow (§13.1).
 
 ### 13.5 What a person sees
 - Each triage comment, as now, plus the shadow, learning, spot-check and demotion lines above.
-- A small read-only report per pipeline (Settings → Local judge, or the pipeline's page; §18 Q2): each pass's state (shadow, learning n of m, offered, skipping at t, demoted), would-be skips and misses, members saved per week, and the judge's latency and failures.
+- A small read-only report per pipeline (Settings → Local judge, or the pipeline's page; §18 Q2). It has **one row per repository × pass**: state (shadow, learning n of m, offered, skipping at t, demoted), would-be skips and misses, and members saved per week. Below that, the project-wide and installation-wide totals, as context only (§13.1a), plus the judge's latency and failures.
 
 ### 13.6 Inputs (replace §12.1's `mode`)
 ```json
-"enforce":        { "type": "string", "default": "", "description": "Comma-separated passes a person has accepted skipping for (user_facing, security, rules). Empty: shadow for all." },
+"enforce":        { "type": "string", "default": "", "description": "Comma-separated entries a person has accepted, each pass@workspace=threshold (e.g. user_facing@<workspace id>=0.38; workspace 'none' for items without one). Empty: shadow everywhere." },
 "spotCheckRate":  { "type": "number", "default": 0.1 },
 "minSkips":       { "type": "number", "default": 30 },
 "minBlocked":     { "type": "number", "default": 2 },
 "targetMissRate": { "type": "number", "default": 0.1 }
 ```
-The per-pass thresholds stay as in §12.1. Their defaults are only the starting guess shown in shadow reports, and what's in force is what the person accepted.
+The per-pass thresholds stay as in §12.1. Their defaults are only the starting guess shown in shadow reports. What's in force is the threshold in each accepted `enforce` entry, for that repository.
 
 ### 13.7 Cost and expectations
 - During shadow nothing is saved, and each review pays ~4 s for the judgement.
 - At a few reviews a day, user-facing (blocks in 8–13% of EO reviews) should reach the bar in weeks. Security and rules block rarely (2–7%), so `minBlocked` may hold them in shadow for months, by design.
+- Scoping per repository slows learning in proportion: a project with three repositories splits its reviews three ways, and a quiet repository may never reach the bar. That's the intended trade. A repository that hasn't earned trust keeps reviewing as today.
 - If an installation never reaches the bar, it never skips, and the review is exactly today's.
 
-**Acceptance (Phase 9):** a completed team assignment labels the triage judgement of its round, exactly once. An unassigned or cancelled pass labels nothing. `readiness.ts` gives the documented answers on fixtures (no blocks, one block under the default, 0 misses in 29 vs 30 skips, a reworded question). No pass is skipped without a published `enforce`. Spot checks are deterministic per item and round. A spot-check or lead-added block demotes the pass on the next round, with a comment and a message. The offer is sent once and not after "Not now". All on both backends (the team run is the only backend-dependent part).
+**Acceptance (Phase 9):** records are per project + workspace: labels in one repository never change another's readiness, an `enforce` entry for one repository skips nothing in another, and a miss demotes only its own repository. A completed team assignment labels the triage judgement of its round, exactly once. An unassigned or cancelled pass labels nothing. `readiness.ts` gives the documented answers on fixtures (no blocks, one block under the default, 0 misses in 29 vs 30 skips, a reworded question). No pass is skipped without a published `enforce`. Spot checks are deterministic per item and round. A spot-check or lead-added block demotes the pass on the next round, with a comment and a message. The offer is sent once and not after "Not now". All on both backends (the team run is the only backend-dependent part).
 
 ---
 
@@ -551,7 +568,7 @@ What the provider choice changes for a person: one "Provider" picker in the Loca
 | 9 | Embedding a module in a gallery template: install + approval path | — | M **(verify scope)** |
 | 10 | Review triage module + its tests | 7 | M |
 | 11 | Template 1.9: step, routes, lead instructions, history, test updates, e2e on both backends | 9, 10 | M |
-| 12 | Learning shadow mode (§13): `judgement_labels` + labelling from team outcomes, `readiness.ts`, `ctx.judgeRecord` + fixture, offer message and accept-to-publish, spot checks, demotion, per-pipeline report | 6, 7, 11 | L |
+| 12 | Learning shadow mode (§13), scoped per project + repository (§13.1a): `judgement_labels` + labelling from team outcomes, `readiness.ts`, `ctx.judgeRecord` + fixture, offer message and accept-to-publish (`pass@workspace=threshold`), spot checks, demotion, per-repository report | 6, 7, 11 | L |
 | later | `system_one_http` · `side_call` · `ollama` providers · fine-tuning export · `ctx.judge` for agents | 6 | — |
 
 Issues 2, 3 and 9 can start in parallel. The critical path is 0 → 3 → 4 → 5 → 6 → 7 → 10 → 11.
@@ -565,7 +582,7 @@ Issues 2, 3 and 9 can start in parallel. The critical path is 0 → 3 → 4 → 
 | llama.cpp doesn't actually serve Kev's head | No managed path | Phase 0.1 gates everything; fallback is a `system_one_http` provider pointed at a person-run `kev.serve` |
 | Kev under-calls a risky change | A needed reviewer skipped | Impact and tests are never judged (§12.1); hard rules for sensitive paths; sticky reviewers; low security threshold; shadow mode first; lead may add reviewers |
 | The saving doesn't pay for the machinery | ~1 of 6 reviewer passes saved per review (Phase 0), for a 3 GB install, a GPU process and ~4 s per triage | Shadow by default; the report shows members saved per week (§13.5) before anyone accepts skipping; the judge's other users (inbox routing, "is this about X") may carry more of the cost |
-| EO's thresholds don't fit another installation | Wrong skips, or none | Nothing is skipped on defaults: each installation learns its own in shadow (§13), a person accepts each pass, spot checks keep measuring, and a miss demotes the pass |
+| EO's thresholds don't fit another installation, project or repository | Wrong skips, or none | Nothing is skipped on defaults: each repository of each project learns its own in shadow (§13.1a), a person accepts each pass per repository, spot checks keep measuring, and a miss demotes the pass in that repository |
 | 3 GB download on poor connections | Install fails or annoys | Resume, progress, cancel; never auto-download |
 | GPU memory contention (games, other apps) | Load failure or slow CPU fallback | Lazy start, idle stop, automatic layer reduction with a visible status |
 | A second long-lived process (§21.3's cost) | Orphans, "failed to start" states | Lazy, contained, swept, status always visible; judgement failure never blocks work |
@@ -584,4 +601,5 @@ Issues 2, 3 and 9 can start in parallel. The critical path is 0 → 3 → 4 → 
 5. **Recording the judged text** (`recordState` default on): fine on a person's own machine; what on an organisation's record?
 6. ~~**Shadow → enforce:** a person flips it per pipeline, or EO suggests it once the shadow report is clean?~~ **Decided (§13):** EO offers it per pass once that pass meets the readiness bar, and a person accepts with a published pipeline edit. A miss demotes the pass on its own. Still open: the defaults for `minSkips`, `targetMissRate`, `minBlocked` and `spotCheckRate`, and whether demotion should also re-send the offer automatically once the record recovers.
 7. **Should agents ever call the judge?** If yes, it becomes a capability under invariants 11 and 12 — a separate design.
-8. **Organisation mode and learning:** `judgements` and `judgement_labels` are machine-local in v1, so each desktop learns alone. Should labels travel on the record, so an organisation learns once? It ties to the v1 gap that the server has no judge (§1).
+8. **Organisation mode and learning:** records are per project and repository (§13.1a), but `judgements` and `judgement_labels` are machine-local in v1, so each desktop learns its share of a shared project alone. Should labels travel on the organisation's record, so a project learns once from everyone's reviews? It ties to the v1 gap that the server has no judge (§1).
+9. **Scope granularity:** is per repository right for monorepos, or should a project be able to declare finer scopes, such as a path prefix ("`apps/web/**` is UI, `services/**` isn't")? v1 is per repository. Finer scopes would split the data further and slow learning.
