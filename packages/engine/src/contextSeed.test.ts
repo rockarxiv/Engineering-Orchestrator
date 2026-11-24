@@ -77,6 +77,46 @@ describe("assembleSeedContext", () => {
     expect(fullText).toContain("It does the thing.");
   });
 
+  /**
+   * A team member answers its assignment with a report, not the step
+   * (EO-888): it is sent the item, its criteria and its thread, and none
+   * of what only the step's own agent acts on — the task and its answer
+   * instructions, plan mode, what woke the dispatch, and a section the
+   * caller marks as the step's agent's alone.
+   */
+  it("leaves what only the step's own agent acts on out of a team member's seed", () => {
+    const sections: SectionRenderer[] = [
+      ...PACK_SECTIONS,
+      { id: "afterTask", after: "task", render: () => "## Answer the step like this" },
+      { id: "attachHere", after: "item", stepAgentOnly: true, render: () => "## Attach files here" },
+      { id: "theOutput", after: "item", render: () => "## The current output" },
+    ];
+    const input = baseInput({
+      action: "implement",
+      planMode: true,
+      taskAppendix: "## If you approve\n\nReturn a body.",
+      sectionRenderers: sections,
+      triggerComment: comment("@you look at this", { authorType: "human", authorName: "you", authorRole: null }),
+      stepComments: [{ stepName: "To Do", comment: comment("the handoff") }],
+      humanComments: [comment("use the per-item limit", { authorType: "human", authorName: "you", authorRole: null })],
+      pinnedComments: [comment("settled: per key", { pinned: true })],
+    });
+
+    const step = assembleSeedContext(input).fullText;
+    const member = assembleSeedContext({ ...input, audience: "member" }).fullText;
+
+    for (const kept of ["# EO-1: A story", "Do the thing.", "## Acceptance Criteria", "It does the thing.", "## The current output", "## Pinned", "settled: per key", "## What the person said", "use the per-item limit", "## What each step said", "the handoff", "## What is not here"]) {
+      expect(member, kept).toContain(kept);
+      expect(step, kept).toContain(kept);
+    }
+    for (const left of ["# Task", "## If you approve", "## Answer the step like this", "## Propose before you change anything", "## What woke you", "## Attach files here"]) {
+      expect(member, left).not.toContain(left);
+      expect(step, left).toContain(left);
+    }
+    // The step's own agent's seed is what it always was: the audience said or not.
+    expect(assembleSeedContext({ ...input, audience: "step" }).fullText).toBe(step);
+  });
+
   it("names each step's newest word under the step it was said at", () => {
     const { fullText } = assembleSeedContext(baseInput({
       stepComments: [

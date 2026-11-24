@@ -21,12 +21,14 @@ import { ACTIONS_FACET, INSTRUCTIONS_FACET } from "./address";
 import { AgentEditor } from "./AgentEditor";
 import { ConfirmRemove } from "./ConfirmRemove";
 import { RuntimesPanel } from "./RuntimesPanel";
+import { TeamsPanel } from "./TeamsPanel";
 import { toneOf } from "./runtime";
 
 /**
  * Agents (`/agents`), drawn in the chat layout's own terms: the agents
  * as a narrow list on the left and the open one's editor as cards on the
- * right, with the machine's runtimes on a second tab.
+ * right, the declared teams on a second tab (EO-884) and the machine's
+ * runtimes on a third.
  *
  * Everything the classic screen does, it does: search and the role,
  * status and archived filters; a menu per agent with Edit, Enable or
@@ -44,7 +46,7 @@ import { toneOf } from "./runtime";
  * published fields alone (`AgentEditor`).
  */
 
-type Tab = "agents" | "runtimes";
+type Tab = "agents" | "teams" | "runtimes";
 
 /** One agent in the list. The menu sits beside the row's button, never inside it. */
 function AgentRow({
@@ -132,6 +134,7 @@ export function AgentsView() {
   const [roleFilter, setRoleFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedTeamId, setSelectedTeamId] = useState<string | null>(null);
   const [creating, setCreating] = useState<AgentDetail | null>(null);
   const [addingRuntime, setAddingRuntime] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
@@ -282,10 +285,12 @@ export function AgentsView() {
   const selected = creating ?? visible.find((agent) => agent.id === selectedId) ?? addressed ?? (unheld === null ? groups[0]?.agents[0] : undefined) ?? null;
 
   // What this view has picked out (EO-192): the effective selection, none while New agent is open, and none on Runtimes.
+  // On Teams, the team picked, so the assistant it links to knows which team is meant (EO-884).
   const onAgents = tab === "agents";
   const selectedAgentId = onAgents && creating === null && selected !== null ? selected.id : null;
+  const viewSelection = tab === "teams" ? (selectedTeamId === null ? [] : [selectedTeamId]) : selectedAgentId === null ? [] : [selectedAgentId];
   useViewParameters({
-    selection: selectedAgentId === null ? [] : [selectedAgentId],
+    selection: viewSelection,
     filter: onAgents
       ? { text: search, facets: { tab, role: roleFilter || "all", status: statusFilter || "all", archived: showArchived ? "true" : "false" } }
       : { text: "", facets: { tab } },
@@ -355,10 +360,17 @@ export function AgentsView() {
       <ViewHeader
         icon={<Bot size={15} />}
         title="Agents"
-        meta={onAgents ? "Who your agents are, which backend each runs on, and what each is told." : "The agent CLIs on this machine, and who is signed in to them."}
+        meta={
+          onAgents
+            ? "Who your agents are, which backend each runs on, and what each is told."
+            : tab === "teams"
+              ? "The teams your steps run as: who leads, who is on each, and what each may use."
+              : "The agent CLIs on this machine, and who is signed in to them."
+        }
         actions={
           // One primary action, for whatever the visible tab is about. Creating an agent *is* the agents section, so it goes under a lock.
-          <Button
+          // None on Teams: a team is declared through the assistant's draft (EO-884).
+          tab === "teams" ? undefined : <Button
             variant="primary"
             icon={<Plus size={14} />}
             disabled={onAgents && locked}
@@ -368,21 +380,22 @@ export function AgentsView() {
           </Button>
         }
       >
-        {runtimesTab ? (
-          <Tabs
-            label="Agents"
-            value={tab}
-            onChange={setTab}
-            tabs={[
-              { value: "agents", label: "Agents", count: live.length },
-              { value: "runtimes", label: "Runtimes" },
-            ]}
-          />
-        ) : null}
+        <Tabs
+          label="Agents"
+          value={tab}
+          onChange={setTab}
+          tabs={[
+            { value: "agents", label: "Agents", count: live.length },
+            { value: "teams", label: "Teams" },
+            ...(runtimesTab ? [{ value: "runtimes" as const, label: "Runtimes" }] : []),
+          ]}
+        />
       </ViewHeader>
 
       {tab === "runtimes" && runtimesTab ? (
         <RuntimesPanel adding={addingRuntime} onAddingChange={setAddingRuntime} />
+      ) : tab === "teams" ? (
+        <TeamsPanel selectedId={selectedTeamId} onSelect={setSelectedTeamId} />
       ) : (
         <div className="flex min-w-0 flex-col gap-3">
           <ManagedLockLine section="agents" />

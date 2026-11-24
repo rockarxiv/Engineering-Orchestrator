@@ -66,7 +66,7 @@ describe("a board whose pipeline has moved on", () => {
       timeoutMs: step.timeoutMs,
       watch: step.watch,
       results: step.results,
-      moduleVersion: null, brief: null,
+      moduleVersion: null, brief: null, team: null, teamId: null,
     }));
 
   const save = (steps: PipelineStep[], routes: StepRouteView[] = []) =>

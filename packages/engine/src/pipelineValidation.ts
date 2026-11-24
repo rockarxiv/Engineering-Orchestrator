@@ -16,6 +16,8 @@ import {
 } from "@eo/core";
 import { entryRuleProblems } from "./entryRules.js";
 import { briefProblems } from "./stepBrief.js";
+import { teamProblems, type IsolatedCopyProblem } from "./team.js";
+import { declaredTeamProblems, type AgentToolSurface, type PipelineTeamFacts } from "./declaredTeam.js";
 import { moduleAtPin, type ModuleVersionFacts } from "./modulePins.js";
 
 /** The module a step runs, as its pin makes it (EO-770), or undefined for one it does not run or this installation does not have. */
@@ -120,6 +122,46 @@ export interface ValidatePipelineInput {
    * more than a module has always been allowed.
    */
   runTimeoutMs?: number;
+  /**
+   * Why a role's agents cannot be held to report-only, by role (EO-848):
+   * for each role an agent of which dispatch could choose and EO would
+   * refuse to start as a team participant — a backend that cannot be
+   * locked, the person's own setup, no model to take tools out of. Read
+   * from the agents by the caller, since this package reads nothing.
+   * Absent is "every role can be".
+   */
+  reportOnlyRoleProblems?: Readonly<Record<string, string>>;
+  /**
+   * Why an agent cannot be held to report-only, by agent id (EO-882): what
+   * a step's declared report-only team is judged by, member by member,
+   * since each runs as itself. Absent is "every agent can be".
+   */
+  reportOnlyAgentProblems?: Readonly<Record<string, string>>;
+  /**
+   * The roles a team that names no agents yet may be bound to (EO-843) —
+   * one carried inline, as an imported document carries it — by the rule
+   * that binds a kind to an agent, which the caller reads from the agents.
+   * Absent, it is the kinds of the enabled, live agents this pipeline's
+   * steps may name. A declared team's agents are judged as themselves.
+   */
+  staffedRoles?: readonly string[];
+  /**
+   * Why a step's isolated team could not give each member a copy of its
+   * own (EO-867), by step id: the sentence naming the workspace kinds the
+   * step could work in that make no copy, an error where none of them
+   * does and a warning where some do (EO-871). Read by the caller, which
+   * knows the installed kinds. Absent is "every step can".
+   */
+  isolatedCopyProblems?: Readonly<Record<string, IsolatedCopyProblem>>;
+  /**
+   * The declared teams a step may name (EO-881): the project's, with any
+   * the save declares laid over them. Read by the caller. Absent, no
+   * step's team is judged against them — a caller that knows no teams
+   * passes nothing, and the role-staffed checks above still hold.
+   */
+  teams?: readonly PipelineTeamFacts[];
+  /** What each agent a team names may use, by agent id (EO-881), for `validateTeam`'s tool pool check. */
+  teamAgentSurfaces?: Readonly<Record<string, AgentToolSurface>>;
   /**
    * What roles, built-in functions and item types this installation
    * knows about (KAN-124).
@@ -253,6 +295,12 @@ export function validatePipeline(input: ValidatePipelineInput): WorkflowProblem[
     moduleVersions,
     entryRules = [],
     itemTypes = registry.itemTypes,
+    reportOnlyRoleProblems = {},
+    reportOnlyAgentProblems,
+    isolatedCopyProblems = {},
+    staffedRoles,
+    teams,
+    teamAgentSurfaces,
   } = input;
 
   if (steps.length === 0) {
@@ -266,6 +314,18 @@ export function validatePipeline(input: ValidatePipelineInput): WorkflowProblem[
   // a step, field or comment kind it names has to exist here.
   for (const { stepId, message } of briefProblems(steps, itemTypes)) {
     problems.push({ severity: "error", stateId: stepId, message });
+  }
+  // The report-only team an agent step runs as (EO-843): its staffing,
+  // the action it answers and its limits.
+  for (const { stepId, severity, message } of teamProblems(steps, { registry, agents, staffedRoles: staffedRoles ?? staffedKinds(agents, projectId), runTimeoutMs, reportOnlyRoleProblems, isolatedCopyProblems })) {
+    problems.push({ severity, stateId: stepId, message });
+  }
+  // The declared team a step names (EO-881): that it exists, is this
+  // project's and can answer the step, and `validateTeam` on it.
+  if (teams !== undefined) {
+    for (const { stepId, message } of declaredTeamProblems(steps, { projectId, registry, teams, agents, ...(teamAgentSurfaces === undefined ? {} : { surfaces: teamAgentSurfaces }), ...(reportOnlyAgentProblems === undefined ? {} : { reportOnly: reportOnlyAgentProblems }) })) {
+      problems.push({ severity: "error", stateId: stepId, message });
+    }
   }
 
   const byId = new Map(steps.map((step) => [step.id, step]));
@@ -490,6 +550,13 @@ export function validatePipeline(input: ValidatePipelineInput): WorkflowProblem[
           severity: "error",
           stateId: step.id,
           message: `"${step.name}" names an agent this installation does not have, so there is nobody to dispatch it to. Choose another agent for it.`,
+        });
+      } else if (agent.teamId !== null && agent.teamId !== undefined) {
+        // A team's own agent runs in its team and nowhere else (EO-897).
+        problems.push({
+          severity: "error",
+          stateId: step.id,
+          message: `"${step.name}" names ${agent.name}, which belongs to a team and runs only as part of it — choose an ordinary agent for the step, or have the step run as that team.`,
         });
       } else if (agent.projectId !== null && agent.projectId !== projectId) {
         problems.push({
@@ -1414,4 +1481,14 @@ function reachableFrom(startId: string, steps: PipelineStep[], routes: StepRoute
 
 export function hasBlockingProblem(problems: WorkflowProblem[]): boolean {
   return problems.some((problem) => problem.severity === "error");
+}
+
+/**
+ * The kinds a team may be staffed with when the caller says nothing
+ * (EO-843): those of the enabled agents, neither archived nor deleted,
+ * that this pipeline's steps may name — every global agent, and the
+ * project's own.
+ */
+function staffedKinds(agents: readonly StepAgentFacts[], projectId: string | null): string[] {
+  return [...new Set(agents.filter((agent) => agent.enabled && agent.archivedAt === null && agent.deletedAt === null && (agent.projectId === null || agent.projectId === projectId)).map((agent) => agent.role))];
 }

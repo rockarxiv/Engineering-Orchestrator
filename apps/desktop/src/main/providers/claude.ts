@@ -31,6 +31,8 @@ import {
   type SearchInterceptionEvent,
   type UsageEvent,
   eoToolName,
+  AgentWriteBridgeAddressSchema,
+  TEAM_EVIDENCE_TOOLS,
   MEMORY_READ_TOOL_NAME,
   MICROCENTS_PER_CENT,
   withoutReservedEnvironmentVariables,
@@ -42,7 +44,8 @@ import { withAttachmentNote } from "./attachmentNote.js";
 import { openingPrompt } from "../agentAttachments/cliToolsPrompt.js";
 import { readToolDirectoryServers, TOOL_PLUGIN_NAME, toolDirectoryMcpConfigPath, toolDirectoryServerToolPrefixes, toolDirectorySkillNames, toolDirectorySkillsPromptSection } from "../agentAttachments/pluginDirectory.js";
 import { claudeSkillLoaded, leadingWith, skillsOffered, withoutEvents } from "./skillUsage.js";
-import { REFUSED_CALL_EVENTS, refusalHookOutput, refusedCall, type CallRule } from "./callRefusal.js";
+import { REFUSED_CALL_EVENTS, refusalHookOutput, refusedCall, reportOnlyCallRule, type CallRule } from "./callRefusal.js";
+import { reportOnlyBridgeProblem, reportOnlyStartRefusal } from "./reportOnly.js";
 import { openedFork } from "./threadFork.js";
 import type { SearchNudge } from "./searchNudge.js";
 import type { AdminMcpDispatch } from "../agentAttachments/adminDelivery.js";
@@ -317,6 +320,14 @@ export interface ClaudeProviderOptions {
   processGraceMs?: number;
   /** Seam for tests: what each turn spawns its CLI through (`claudeProcess.ts`), handed the run's scope where the turn has one (EO-738). */
   turnProcesses?: (scope?: RunProcessScope) => ClaudeProcesses;
+  /**
+   * A report-only team participant's provider (EO-845): every turn —
+   * a start, a resume, a recovery — is locked to the participant's four
+   * evidence tools (`lockReportOnly`) and checked before its CLI is
+   * spawned (`reportOnlyOptionsProblem`), and refused with the reason
+   * where it does not hold. Never warmed and never forked.
+   */
+  reportOnly?: boolean;
 }
 
 /** `mcp__eo__comment` -> `comment`: EO's own tools are recorded under their bare names on both backends. What a write tool did reaches EO over the agent write bridge, never from this (EO-543). */
@@ -1240,6 +1251,121 @@ function callRefusals(eoTools: readonly string[] | undefined, server: Repository
 const CLAUDE_ANSWER_TOOL = "StructuredOutput";
 
 /**
+ * The CLI's own tools a report-only participant is never offered
+ * (EO-845), named as well as switched off by `tools: []`: every one that
+ * runs a command, edits, reads the disk, reaches the web, delegates to a
+ * subagent or loads a skill. A belt beside `tools: []`, so that a CLI
+ * that stopped honouring the empty list would still not offer these.
+ */
+export const REPORT_ONLY_DENIED_CLAUDE_TOOLS = [
+  "Bash",
+  "BashOutput",
+  "KillShell",
+  "Edit",
+  "MultiEdit",
+  "Write",
+  "NotebookEdit",
+  "Read",
+  "Glob",
+  "Grep",
+  "LS",
+  "WebFetch",
+  "WebSearch",
+  "Task",
+  "Agent",
+  "Skill",
+  "SlashCommand",
+  "TodoWrite",
+  "ToolSearch",
+] as const;
+
+/**
+ * Locks one turn's options to a report-only participant (EO-845), after
+ * everything else has built them, so nothing an agent's row, a tool
+ * directory or a caller's option added survives it:
+ *
+ * - **no built-in tool**: `tools: []`, the SDK's "disable all built-in
+ *   tools" — no shell, no edit, no file read, no subagent, no skill, no
+ *   web — with the same tools named in `disallowedTools` as well;
+ * - **no setting source**, so neither the person's settings nor the
+ *   checkout's `.claude/settings.json` — whose hooks run commands — nor
+ *   its `CLAUDE.md` is loaded; strict MCP configuration, no plugin, no
+ *   `--mcp-config`, no skills;
+ * - **EO's `eo` server alone**, which on a report-only address lists the
+ *   four evidence tools and refuses everything else;
+ * - **one `PreToolUse` hook**, offered every call and refusing all but
+ *   those four and the answer tool (`reportOnlyCallRule`) — in place of
+ *   any other, the search interception included;
+ * - no suggested next message, which is a request of its own.
+ */
+export function lockReportOnly(options: Options): void {
+  options.tools = [];
+  options.disallowedTools = [...REPORT_ONLY_DENIED_CLAUDE_TOOLS];
+  options.allowedTools = TEAM_EVIDENCE_TOOLS.map((tool) => eoToolName(tool));
+  options.settingSources = [];
+  options.strictMcpConfig = true;
+  options.skills = [];
+  delete options.plugins;
+  delete options.agents;
+  delete options.promptSuggestions;
+  if (options.extraArgs) {
+    const rest = Object.fromEntries(Object.entries(options.extraArgs).filter(([name]) => name !== "mcp-config"));
+    if (Object.keys(rest).length > 0) options.extraArgs = rest;
+    else delete options.extraArgs;
+  }
+  const eo = options.mcpServers?.[EO_SERVER_NAME];
+  if (eo) options.mcpServers = { [EO_SERVER_NAME]: eo };
+  else delete options.mcpServers;
+  const rule = reportOnlyCallRule(options.outputFormat !== undefined ? CLAUDE_ANSWER_TOOL : undefined);
+  const hook = async (input: HookInput): Promise<HookJSONOutput> => {
+    if (input.hook_event_name !== "PreToolUse") return {};
+    const reason = refusedCall(input.tool_name, rule);
+    return reason === null ? {} : refusalHookOutput(reason);
+  };
+  options.hooks = { PreToolUse: [{ hooks: [hook] }] };
+}
+
+/**
+ * Why these options do not hold a report-only participant to its rules
+ * (EO-845), or null where they do — read off what the CLI would be
+ * spawned with, so a lock that was skipped, undone or never had an `eo`
+ * server to keep is a turn refused, not one run with more than it may.
+ */
+export function reportOnlyOptionsProblem(options: Options): string | null {
+  if (!Array.isArray(options.tools) || options.tools.length > 0) return "its built-in tools are not switched off";
+  if (!Array.isArray(options.settingSources) || options.settingSources.length > 0) return "it would load settings that can add hooks and permissions";
+  if (options.strictMcpConfig !== true) return "it would start MCP servers EO did not name";
+  if (options.plugins !== undefined && options.plugins.length > 0) return "it would load a plugin";
+  if (options.extraArgs?.["mcp-config"] !== undefined) return "it would start the agent's attached servers";
+  if (Array.isArray(options.skills) ? options.skills.length > 0 : options.skills !== undefined) return "it would be given skills";
+  const servers = Object.keys(options.mcpServers ?? {});
+  if (servers.length !== 1 || servers[0] !== EO_SERVER_NAME) return servers.length === 0 ? "it has no EO server to read its evidence through" : `it would start ${servers.filter((name) => name !== EO_SERVER_NAME).join(", ")} beside EO's own server`;
+  const eo = options.mcpServers?.[EO_SERVER_NAME] as { env?: Record<string, string> } | undefined;
+  const raw = eo?.env?.["EO_MCP_WRITE_BRIDGE"];
+  let address: unknown;
+  try {
+    address = raw === undefined ? undefined : JSON.parse(raw);
+  } catch {
+    return "its credential could not be read";
+  }
+  const parsed = AgentWriteBridgeAddressSchema.safeParse(address);
+  const bridge = reportOnlyBridgeProblem(parsed.success ? parsed.data : undefined);
+  if (bridge !== null) return bridge;
+  const entries = options.hooks?.PreToolUse ?? [];
+  if (entries.length !== 1 || entries[0]?.matcher !== undefined || entries[0]?.hooks.length !== 1) return "no hook refuses its other calls";
+  if (Object.keys(options.hooks ?? {}).some((event) => event !== "PreToolUse")) return "it carries hooks EO did not write";
+  return null;
+}
+
+/** Locks and checks one report-only turn's options, throwing the reason it cannot be run with (EO-845). */
+function reportOnlyTurn(options: Options): Options {
+  lockReportOnly(options);
+  const problem = reportOnlyOptionsProblem(options);
+  if (problem !== null) throw new Error(reportOnlyStartRefusal("Claude", problem));
+  return options;
+}
+
+/**
  * Firings, held between two messages (EO-168).
  *
  * The hook runs on the SDK's control protocol while this adapter is
@@ -2103,7 +2229,7 @@ export function createClaudeProvider(options: ClaudeProviderOptions = {}): Agent
    *   - `now` **interrupts**. The running turn ends immediately with an
    *     empty `result`, and a fresh `system/init` opens a second turn
    *     carrying the message. For EO that is fatal, not merely untidy:
-   *     `processStream` ends the run on the first `result` it sees, so
+   *     `readTurn` ends the run on the first `result` it sees, so
    *     steering would have finished every run it touched on an empty
    *     result and thrown away the work the agent had done.
    *   - `later` waits for the turn to finish and then starts another —
@@ -2457,7 +2583,7 @@ export function createClaudeProvider(options: ClaudeProviderOptions = {}): Agent
           }
           if (message.type === "result") notOurs = null;
           // Before the events are yielded rather than after, because a
-          // yield is where a consumer walks away: `processStream`
+          // yield is where a consumer walks away: `readTurn`
           // returns on the first `result` it sees, and the session has
           // to already be winding itself up by then.
           if (message.type === "result") {
@@ -2571,7 +2697,8 @@ export function createClaudeProvider(options: ClaudeProviderOptions = {}): Agent
     };
   };
   /** A turn's options, the attached servers' values read for this turn's own variables (EO-488). */
-  const turnOptions = (spec: ClaudeTurn, admin: AdminMcpDispatch | null): Options => buildOptions(spec, adapterNow(admin, spec.environmentVariables));
+  const turnOptions = (spec: ClaudeTurn, admin: AdminMcpDispatch | null): Options =>
+    options.reportOnly === true ? reportOnlyTurn(buildOptions(spec, adapterNow(admin, spec.environmentVariables))) : buildOptions(spec, adapterNow(admin, spec.environmentVariables));
 
   /** A fresh turn's half of the options, the signal left to the caller. */
   const startSpec = (opts: Omit<AgentProviderStartOptions, "context" | "signal">, onInterception: InterceptionQueue["record"]): ClaudeTurn => ({
@@ -2712,7 +2839,7 @@ export function createClaudeProvider(options: ClaudeProviderOptions = {}): Agent
   /** A turn on a session already written: the session itself, or (`fork`) a copy of it the CLI makes for this turn. */
   const resumed = (threadId: string, message: string, resumeOpts: AgentProviderResumeOptions | undefined, fork: boolean): InterruptibleStream<AgentEvent> =>
     leadingWith(
-      offeredSkills(resumeOpts?.toolDirectory),
+      offeredSkills(options.reportOnly === true ? undefined : resumeOpts?.toolDirectory),
       translatingLostSession(
         threadId,
         deferred(async () => {
@@ -2734,7 +2861,7 @@ export function createClaudeProvider(options: ClaudeProviderOptions = {}): Agent
           // On a turn whose calls are refused, a `Skill` call loaded
           // nothing and an `Edit` changed nothing: the hook refused them,
           // so the events the call alone would say are not said (EO-732).
-          return resumeOpts?.refuseCallsExcept ? withoutEvents(opened, REFUSED_CALL_EVENTS) : opened;
+          return resumeOpts?.refuseCallsExcept || options.reportOnly === true ? withoutEvents(opened, REFUSED_CALL_EVENTS) : opened;
         }),
       ),
     );
@@ -2746,14 +2873,16 @@ export function createClaudeProvider(options: ClaudeProviderOptions = {}): Agent
       // tool's list, an attached skill went unused. Read and reported
       // before `start` returns, which is when debug mode records it. A
       // resumed turn sends none — the thread already has it.
-      const skillsSection = opts.toolDirectory ? toolDirectorySkillsPromptSection(opts.toolDirectory) : "";
+      // A report-only participant is given no skills (EO-845).
+      const toolDirectory = options.reportOnly === true ? undefined : opts.toolDirectory;
+      const skillsSection = toolDirectory ? toolDirectorySkillsPromptSection(toolDirectory) : "";
       opts.onSkillsSection?.(skillsSection);
       // Deferred rather than resolved here, because the SDK has to be
       // loaded before a query exists and `start` is not async. The
       // returned stream is what the caller drives.
       // Which of EO's skills this turn is given (EO-715), said first: the
       // allowlist read off the directory, the same list the SDK is handed.
-      return leadingWith(offeredSkills(opts.toolDirectory), deferred(async () => {
+      return leadingWith(offeredSkills(toolDirectory), deferred(async () => {
         const sdk = await sdkFor();
         // One queue per turn, built before the options it is wired into
         // and handed to the stream that drains it (EO-168).
@@ -2791,6 +2920,9 @@ export function createClaudeProvider(options: ClaudeProviderOptions = {}): Agent
       // write this turn to the copy alone (EO-716). A missing session is
       // refused in the same words a resume's is, so it is translated the
       // same way and answered as `thread_not_found`.
+      // A report-only participant's thread is its own and nobody's to
+      // copy (EO-845): a fork would be a second turn with its evidence.
+      if (options.reportOnly === true) return Promise.resolve({ ok: false, reason: "failed", threadId, message: "A report-only team participant's thread is not forked." });
       return openedFork(threadId, resumed(threadId, message, forkOpts, true));
     },
 
@@ -2801,6 +2933,10 @@ export function createClaudeProvider(options: ClaudeProviderOptions = {}): Agent
       // hook is opened per turn: the two backends warm the same turns.
       // Conversations have none.
       if (turn.repositoryMcp) return;
+      // Nor for a report-only participant (EO-845): its every turn is
+      // locked and checked as it opens, and a warm process is one more
+      // place for that to come apart.
+      if (options.reportOnly === true) return;
       const startedBefore = turnsStarted;
       // The bearer this warm process would be spawned with (EO-444), held
       // here until the warm query owns it and let go on every way out
@@ -2912,6 +3048,8 @@ export function createClaudeProvider(options: ClaudeProviderOptions = {}): Agent
         },
         { config: options.config, enableCommentTool, executablePath: options.executablePath, eoMcp: options.eoMcp, apiKey: null },
       );
+      // A report-only participant is described as it is locked (EO-845).
+      if (options.reportOnly === true) lockReportOnly(built);
       return {
         instructionsSlot: "systemPrompt",
         model: built.model ?? null,
@@ -2921,7 +3059,7 @@ export function createClaudeProvider(options: ClaudeProviderOptions = {}): Agent
         // generated directory's `.mcp.json`, which the CLI is pointed
         // at. Their names are that file's keys — and its values are
         // `${VAR}` references, which this does not read anyway.
-        mcpServers: [...Object.keys(built.mcpServers ?? {}), ...(turn.toolDirectory ? Object.keys(readToolDirectoryServers(turn.toolDirectory)) : [])],
+        mcpServers: [...Object.keys(built.mcpServers ?? {}), ...(turn.toolDirectory && options.reportOnly !== true ? Object.keys(readToolDirectoryServers(turn.toolDirectory)) : [])],
         allowedTools: built.allowedTools ?? null,
         skills: Array.isArray(built.skills) ? [...built.skills] : [],
         inheritsAmbientConfig: options.config?.inheritAmbientConfig === true,

@@ -103,13 +103,28 @@ export async function defaultAgentModel(backend: string, sources: SmallModelSour
   return listed.ok ? (listed.models.find((model) => model.isDefault === true)?.value ?? null) : null;
 }
 
+/** The config key a backend's adapter reads an agent's reasoning effort under, or null for a backend with none. */
+export function reasoningEffortKey(provider: string): string | null {
+  return provider === "claude" ? "effort" : provider === "codex" ? "reasoningEffort" : null;
+}
+
+/**
+ * The config that gives an agent on `provider` this reasoning effort,
+ * under the key `agentReasoningEffort` reads it from (EO-883); null for a
+ * backend with no effort to set.
+ */
+export function reasoningEffortConfig(provider: string, effort: string): Record<string, unknown> | null {
+  const key = reasoningEffortKey(provider);
+  return key === null ? null : { [key]: effort };
+}
+
 /**
  * The reasoning effort an agent is configured with, from the key its own
  * backend's adapter reads it under — Claude's `effort`, Codex's
  * `reasoningEffort` (EO-578). Null for none, or a backend with no effort.
  */
 export function agentReasoningEffort(agent: { provider: string; config: Readonly<Record<string, unknown>> }): string | null {
-  const key = agent.provider === "claude" ? "effort" : agent.provider === "codex" ? "reasoningEffort" : null;
+  const key = reasoningEffortKey(agent.provider);
   if (key === null) return null;
   const value = agent.config[key];
   return typeof value === "string" && value.trim() !== "" ? value.trim() : null;

@@ -57,6 +57,7 @@ import { backfillDone, backfillsOutstanding, rememberBackfill, wantBackfill } fr
 import { getAgent, recordStampOf } from "../db/repos/agentsRepo.js";
 import { attachArrivedTools, getAgentAttachments, type UnarrivedTools } from "../db/repos/agentAttachmentsRepo.js";
 import { mirrorItemWatch } from "../db/repos/itemWatchesRepo.js";
+import { mirrorTeamSession, runsOfTeamSession } from "../db/repos/teamSessionsRepo.js";
 import {
   forgetCommands,
   hasQueuedWatch,
@@ -145,6 +146,7 @@ const START: RecordCursors = {
   watches: EMPTY_CURSOR,
   memories: EMPTY_CURSOR,
   skills: EMPTY_CURSOR,
+  teamSessions: EMPTY_CURSOR,
 };
 
 function readCursors(db: Db): RecordCursors {
@@ -816,23 +818,26 @@ function nextBatch(db: Db, batchSize: number): QueuedCommand[] {
  * is sent once rather than twenty times.
  */
 function carryPrerequisiteRun(db: Db, command: RecordCommand, carried: Set<string>, into: RecordCommand[]): void {
-  const runId = runBehind(command);
-  if (runId === null || carried.has(runId)) return;
-  carried.add(runId);
-  const run = getRun(db, runId as Uuid);
-  // A run this device itself no longer has — its item deleted under it
-  // — is not sent, and the command naming it is refused by the record
-  // with a sentence rather than dropped in silence. That is the honest
-  // order: the record is the one that knows whether it can hold the row.
-  if (run !== undefined) into.push(asRunCommand(run, runCommandId(run.id, run.status), 0));
+  for (const runId of runsBehind(command)) {
+    if (carried.has(runId)) continue;
+    carried.add(runId);
+    const run = getRun(db, runId as Uuid);
+    // A run this device itself no longer has — its item deleted under it
+    // — is not sent, and the command naming it is refused by the record
+    // with a sentence rather than dropped in silence. That is the honest
+    // order: the record is the one that knows whether it can hold the row.
+    if (run !== undefined) into.push(asRunCommand(run, runCommandId(run.id, run.status), 0));
+  }
 }
 
-/** The run a command's foreign key points at, or null when it names none. */
-function runBehind(command: RecordCommand): string | null {
+/** The runs a command's foreign keys point at — none, one, or a team session's several. */
+function runsBehind(command: RecordCommand): string[] {
   // A side call made inside a run (EO-514): `side_calls.run_id` is a
   // foreign key too, and the call is queued while its run is still going.
-  if (command.kind === "comment" || command.kind === "transition" || command.kind === "sideCall") return command.runId;
-  return null;
+  if (command.kind === "comment" || command.kind === "transition" || command.kind === "sideCall") return command.runId === null ? [] : [command.runId];
+  // A team session names its own run and each attempt's (EO-844).
+  if (command.kind === "teamSession") return runsOfTeamSession(command);
+  return [];
 }
 
 /**
@@ -1305,6 +1310,12 @@ async function applyChanges(options: DrainOptions, changes: RecordChanges): Prom
   for (const entry of changes.memories) {
     applied += place(options, "memory", entry.id, entry, now) ? 1 : 0;
   }
+  // Team sessions (EO-844), after the runs and comments a session names —
+  // held until they are here when they are a page behind. The newest copy
+  // is the one kept waiting, since a session pages again on every change.
+  for (const teamSession of changes.teamSessions) {
+    applied += place(options, "teamSession", teamSession.session.id, teamSession, now) ? 1 : 0;
+  }
 
   return applied;
 }
@@ -1386,7 +1397,7 @@ function retryPending(options: DrainOptions): number {
   // Parents before children, exactly as a fresh page is applied — and
   // `attachment` is deliberately not among them: that kind's row is a
   // want rather than a held write, and `fetchFiles` is what ends it.
-  for (const kind of ["agent", "agentTools", "item", "run", "transition", "comment", "runEvents", "pin", "mention", "watch", "memory", "message"] as const) {
+  for (const kind of ["agent", "agentTools", "item", "run", "transition", "comment", "runEvents", "pin", "mention", "watch", "memory", "message", "teamSession"] as const) {
     const waiting = pending(db, kind, MAX_RETRIES_PER_PASS);
     const done: string[] = [];
     const again: string[] = [];
@@ -1438,7 +1449,7 @@ function place(options: DrainOptions, kind: HeldKind, key: string, payload: unkn
   // while it waits, and the copy to write when the wait ends is the
   // newest one (EO-476). Every other held row is the same row each time
   // it arrives.
-  if (kind === "agent" || kind === "memory" || kind === "message") rememberLatest(options.db, kind, key, payload, outcome.waitingFor, now);
+  if (kind === "agent" || kind === "memory" || kind === "message" || kind === "teamSession") rememberLatest(options.db, kind, key, payload, outcome.waitingFor, now);
   else remember(options.db, kind, key, payload, outcome.waitingFor, now);
   return false;
 }
@@ -1710,6 +1721,14 @@ function apply(options: DrainOptions, kind: HeldKind, payload: unknown, now: num
       if (getComment(db, comment.commentId as Uuid) !== undefined) return placed;
       mirrorRecordComment(db, local, comment);
       return placed;
+    }
+
+    case "teamSession": {
+      // A team session as the record has it (EO-844), merged so nothing
+      // that only grows — an accepted report, a supersession, an end — is
+      // taken back by a copy that arrives late.
+      const outcome = mirrorTeamSession(db, payload as RecordChanges["teamSessions"][number]);
+      return outcome.placed ? placed : { placed: false, waitingFor: outcome.waitingFor };
     }
 
     case "runEvents": {

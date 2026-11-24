@@ -137,7 +137,7 @@ describe("a watch that never gives up, in a document", () => {
   });
 
   it("parses under the watch a version-9 build reads, so that build reaches its format check and refuses it there", () => {
-    expect(neverGivesUp.eoPipelineExport).toBe(16);
+    expect(neverGivesUp.eoPipelineExport).toBe(PIPELINE_EXPORT_VERSION);
     // `StepWatchSchema` as format 9 had it.
     const version9Watch = z.object({ everyMinutes: z.number().finite(), giveUpAfterHours: z.number().finite().default(168) });
     const watch = (JSON.parse(JSON.stringify(neverGivesUp)) as { steps: { watch: unknown }[] }).steps[0]!.watch;
@@ -181,7 +181,7 @@ describe("a pinned module version, in a document", () => {
   });
 
   it("parses under the step and module schemas a version-13 build reads, so that build reaches its format check and refuses it there", () => {
-    expect(pinned.eoPipelineExport).toBe(16);
+    expect(pinned.eoPipelineExport).toBe(PIPELINE_EXPORT_VERSION);
     const version13Step = ExportedStepSchema.omit({ moduleVersion: true });
     const version13Module = ExportedModuleSchema.omit({ version: true });
     expect(version13Step.safeParse(step).success).toBe(true);
@@ -221,7 +221,7 @@ describe("a person step's brief, in a document", () => {
   const approve = { id: "approve", position: 1, name: "Approve", type: "user", ownerRole: null, entryAction: null, instructionsSummary: null, isTerminal: true, planMode: false, brief };
 
   it("parses under the step schema a version-14 build reads, so that build reaches its format check", () => {
-    expect(PIPELINE_EXPORT_VERSION).toBe(16);
+    expect(PIPELINE_EXPORT_VERSION).toBeGreaterThanOrEqual(15);
     expect(ExportedStepSchema.omit({ brief: true }).safeParse(approve).success).toBe(true);
   });
 
@@ -245,10 +245,10 @@ describe("a person step's brief, in a document", () => {
  */
 describe("a step's kind, in a document", () => {
   it("parses under the step schema a version-15 build reads, so that build reaches its format check", () => {
-    expect(PIPELINE_EXPORT_VERSION).toBe(16);
+    expect(PIPELINE_EXPORT_VERSION).toBeGreaterThanOrEqual(16);
     // No key was added: the step a version-15 build reads is this one.
     expect(ExportedStepSchema.safeParse(document().steps[0]).success).toBe(true);
-    expect(PipelineExportSchema.parse(document()).eoPipelineExport).toBe(16);
+    expect(PipelineExportSchema.parse(document()).eoPipelineExport).toBe(PIPELINE_EXPORT_VERSION);
   });
 
   it("carries a kind and never an agent's id", () => {
@@ -259,5 +259,108 @@ describe("a step's kind, in a document", () => {
 
   it.each([1, 13, 15])("reads a format-%i document's ownerRole as the kind", (format) => {
     expect(PipelineExportSchema.parse(document({ eoPipelineExport: format })).steps[0]?.ownerRole).toBe("triager");
+  });
+});
+
+/**
+ * Format 17 (EO-843): an agent step may carry a report-only team, staffed
+ * by role. A version-16 build drops the key rather than refusing it, so it
+ * parses the document and refuses it at its format check instead of
+ * importing the step as one agent.
+ */
+describe("an agent step's team, in a document", () => {
+  const team = {
+    coordination: "independent",
+    participants: [
+      { key: "security", role: "reviewer", instructions: "Look for injection and auth gaps." },
+      { key: "tests", role: "tester", instructions: "Check the tests cover the criteria.", required: false },
+    ],
+    outcomes: [
+      { key: "clear", label: "Clear" },
+      { key: "concerns", label: "Concerns" },
+    ],
+    completion: { rules: [{ when: "any", outcomes: ["concerns"], result: "changes_requested" }], fallback: "approved" },
+  };
+  const review = { id: "review", position: 1, name: "Review", type: "agent", ownerRole: "reviewer", entryAction: "check", instructionsSummary: null, isTerminal: true, planMode: false, team };
+
+  it("parses under the step schema a version-16 build reads, so that build reaches its format check", () => {
+    expect(PIPELINE_EXPORT_VERSION).toBeGreaterThanOrEqual(17);
+    expect(ExportedStepSchema.omit({ team: true }).safeParse(review).success).toBe(true);
+  });
+
+  it("carries a team's member mode (EO-867): isolated read back as written, and a team that names none as report-only", () => {
+    const isolated = { ...review, team: { ...team, members: "isolated" } };
+    const parsed = PipelineExportSchema.parse(JSON.parse(JSON.stringify(document({ steps: [document().steps[0], isolated] }))));
+    expect(parsed.steps[1]?.team?.members).toBe("isolated");
+    expect(PipelineExportSchema.parse(JSON.parse(JSON.stringify(parsed))).steps[1]?.team?.members).toBe("isolated");
+    expect(PipelineExportSchema.parse(JSON.parse(JSON.stringify(document({ steps: [document().steps[0], review] })))).steps[1]?.team?.members).toBe("report_only");
+  });
+
+  it("reads the team back unchanged through JSON, with its limits filled in, and a step without one as one agent", () => {
+    const parsed = PipelineExportSchema.parse(JSON.parse(JSON.stringify(document({ steps: [document().steps[0], review] }))));
+    expect(parsed.steps[1]?.team).toMatchObject({ ...team, limits: { maxParticipants: 4, maxParallel: 2, maxRetries: 1 } });
+    expect(PipelineExportSchema.parse(JSON.parse(JSON.stringify(parsed))).steps[1]?.team).toEqual(parsed.steps[1]?.team);
+    expect(parsed.steps[0]).not.toHaveProperty("team");
+  });
+
+  it("refuses a team naming an agent rather than a role, or granting a participant tools", () => {
+    const withAgent = { ...team, participants: [{ ...team.participants[0], agentId: "019f0000-0000-7000-8000-000000000001" }] };
+    const withTools = { ...team, participants: [{ ...team.participants[0], allowedTools: ["Bash"] }] };
+    expect(PipelineExportSchema.safeParse(document({ steps: [{ ...review, team: withAgent }] })).success).toBe(false);
+    expect(PipelineExportSchema.safeParse(document({ steps: [{ ...review, team: withTools }] })).success).toBe(false);
+  });
+});
+
+/**
+ * Format 18 (EO-885): a step's team is the declared team it runs as, its
+ * agents by kind and instructions and never by id. A version-17 build
+ * cannot read that team, so the number refuses it at the format check;
+ * a format-17 document's role-staffed team still reads.
+ */
+describe("a declared team, in a document", () => {
+  const declared = {
+    coordination: "leader",
+    name: "Reviewers",
+    memberMode: "isolated",
+    toolPool: { cliTools: ["git"], mcpServers: ["repo"], skills: [] },
+    modelRange: { runtimes: ["claude", "codex"], models: [], reasoning: ["high"] },
+    memberCap: 6,
+    leader: { name: "Lead", kind: "reviewer", instructions: "You review.", teamInstructions: "Assign criteria to Criteria and tests to Tests." },
+    members: [
+      { name: "Criteria", kind: "reviewer", instructions: "Check each criterion." },
+      { name: "Tests", kind: "reviewer", instructions: "Check the tests." },
+    ],
+    limits: { maxRounds: 2 },
+  };
+  const review = { id: "review", position: 1, name: "Review", type: "agent", ownerRole: "reviewer", entryAction: "review", instructionsSummary: null, isTerminal: true, planMode: false, team: declared };
+
+  it("is the newest format", () => {
+    expect(PIPELINE_EXPORT_VERSION).toBe(18);
+  });
+
+  it("reads back through JSON unchanged, naming no agent id", () => {
+    const parsed = PipelineExportSchema.parse(JSON.parse(JSON.stringify(document({ steps: [document().steps[0], review] }))));
+    const team = parsed.steps[1]?.team;
+    expect(team).toMatchObject(declared);
+    expect(PipelineExportSchema.parse(JSON.parse(JSON.stringify(parsed))).steps[1]?.team).toEqual(team);
+    expect(JSON.stringify(team)).not.toContain("agentId");
+  });
+
+  it("refuses eo_admin in the pool, an agent id on a member, and two agents of one name that differ", () => {
+    const admin = { ...declared, toolPool: { ...declared.toolPool, mcpServers: ["eo_admin"] } };
+    const withId = { ...declared, members: [{ ...declared.members[0], agentId: "019f0000-0000-7000-8000-000000000001" }] };
+    const twins = { ...declared, members: [...declared.members, { name: "criteria", kind: "reviewer", instructions: "Something else." }] };
+    for (const team of [admin, withId, twins]) expect(PipelineExportSchema.safeParse(document({ steps: [{ ...review, team }] })).success).toBe(false);
+  });
+
+  it("refuses more members than the team's cap", () => {
+    const over = { ...declared, memberCap: 1 };
+    expect(PipelineExportSchema.safeParse(document({ steps: [{ ...review, team: over }] })).success).toBe(false);
+  });
+
+  it("still reads a format-17 document's role-staffed team", () => {
+    const team = { coordination: "leader", members: "isolated", leader: { role: "reviewer", instructions: "Split the review." }, roles: ["reviewer"] };
+    const parsed = PipelineExportSchema.parse(document({ eoPipelineExport: 17, steps: [document().steps[0], { ...review, team }] }));
+    expect(parsed.steps[1]?.team).toMatchObject(team);
   });
 });

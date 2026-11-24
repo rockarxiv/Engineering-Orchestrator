@@ -38,6 +38,8 @@ function step(id: string, position: number, overrides: Partial<PipelineStep> = {
     ownerGroupId: null,
     moduleVersion: null,
     brief: null,
+    team: null,
+    teamId: null,
     results: [],
     ...overrides,
   };
@@ -1757,6 +1759,18 @@ describe("validatePipeline: the agent a step names (EO-875)", () => {
         severity: "error",
         stateId: "review",
         message: `"review" names Rex of Q, which works for another project than this pipeline's — choose this project's own agent or a global one.`,
+      },
+    ]);
+  });
+
+  it("refuses a step naming a team's own agent, saying it runs only in its team (EO-897)", () => {
+    const member = agent("Tess of the review team", "reviewer", { teamId: "team-1" as Uuid });
+
+    expect(problemsOn(reviewedBy(member, { projectId: P }), "review")).toEqual([
+      {
+        severity: "error",
+        stateId: "review",
+        message: '"review" names Tess of the review team, which belongs to a team and runs only as part of it — choose an ordinary agent for the step, or have the step run as that team.',
       },
     ]);
   });

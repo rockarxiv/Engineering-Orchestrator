@@ -24,6 +24,8 @@ function step(id: string, position: number, overrides: Partial<PipelineStep> = {
     ownerGroupId: null,
     moduleVersion: null,
     brief: null,
+    team: null,
+    teamId: null,
     results: [],
     ...overrides,
   };

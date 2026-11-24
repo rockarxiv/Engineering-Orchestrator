@@ -9,7 +9,10 @@ import {
   type IpcResponse,
   type Item,
   type TrialDesign,
+  type TrialStepMode,
+  type StepTeam,
   type Uuid,
+  MOCKED_TEAM_NOTE,
 } from "@eo/core";
 import type { Db } from "../db/client.js";
 import { getModule, listTrialPipelinesForConversation, newestTrialRound, readTrialDesign, type TrialPipeline } from "../db/repos/index.js";
@@ -185,6 +188,7 @@ export function designCardView(
           reason: entry?.reason ?? null,
           reaches: reach[step.id] ?? null,
           mocks: (entry?.mocks ?? []).map((mock) => ({ item: titleOf(mock.item), resultKey: mock.resultKey, output: mock.output })),
+          team: trialTeamOf(read.steps.find((candidate) => candidate.id === step.id), entry?.mode ?? "real"),
         };
       }),
     modules: [...modules.values()],
@@ -192,6 +196,24 @@ export function designCardView(
     problem:
       unfit.length > 0 ? `The trial plan does not fit this draft, so this design cannot be approved: ${unfit.join(" ")} Ask for the draft again with its trial plan.` : refused,
     approved: approvedHere ? { trialPipelineId: own.trial.id, round: newestTrialRound(db, own.trial.id)?.number ?? null } : null,
+  };
+}
+
+/**
+ * What a design card says of a step that runs as a team (EO-848): a team
+ * planned real runs its participants on the trial's own test items, its
+ * runs and spending the trial's; a mocked one runs nobody, and is labelled
+ * so rather than shown as tested. Null for a step that is not a team.
+ */
+function trialTeamOf(step: { type: string; team?: StepTeam | null | undefined } | undefined, mode: TrialStepMode): AssistTrialCard["steps"][number]["team"] {
+  const team = step?.type === "agent" ? (step.team ?? null) : null;
+  if (team === null) return null;
+  const kind = team.coordination === "leader" ? "a leader-led team" : "an independent team";
+  if (mode === "mocked") return { coordination: team.coordination, tested: false, note: `Mocked — ${kind} that does not run on this trial. ${MOCKED_TEAM_NOTE}` };
+  return {
+    coordination: team.coordination,
+    tested: true,
+    note: `Runs as ${kind} for real: its participants run on the test items, report on their threads, and count against this trial's budget.`,
   };
 }
 

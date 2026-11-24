@@ -2,6 +2,8 @@ import { z } from "zod";
 import { namesAdminServer } from "../agent-capabilities.js";
 import { EntryRulesSchema } from "../entryRules.js";
 import { StepBriefSchema } from "../stepBrief.js";
+import { ExportedTeamSchema } from "../declaredTeam.js";
+import { StepTeamSchema } from "../team.js";
 import { ConnectorSetupSchema, connectorSetupProblems } from "./connectors.js";
 import { PipelineStepViewSchema, StepRouteViewSchema } from "../ipc-schemas.js";
 import { ActionOverridesSchema } from "../registry/index.js";
@@ -258,8 +260,38 @@ import { SpecShapeSchema } from "./specShape.js";
  * chose. The shape is a version-15 build's, so it parses the document
  * and refuses it at its format check. Reading an older document is
  * unchanged: its `ownerRole` was always a role, and a role is a kind.
+ *
+ * **17 (EO-843).** An agent step may carry a **team** (`team`): the
+ * report-only participants it runs as, staffed by role and never by an
+ * agent id, so it means the same on any installation.
+ *
+ * Bumped for version 4's reason: a version-16 build strips the key and
+ * imports the step as one agent, which is not what the author published,
+ * and nothing says so. The key is one a version-16 build drops rather than
+ * refuses, so it parses the document and reaches its format check.
+ * Reading an older document is unchanged: no step in it has a team, so
+ * every step is one agent.
+ *
+ * A team's `members` (EO-867, `report_only` or `isolated`) joined format
+ * 16 before any build reading it was released, so it did not take a
+ * number of its own; a team written without it is report-only.
+ *
+ * **18 (EO-885).** A step's `team` is the **declared team** it runs as
+ * (`ExportedTeamSchema`): its name, its leader and members each as an
+ * agent of a kind with its own instructions, its tool pool by tool name,
+ * its model range, member cap and limits — never an agent id. An import
+ * binds each of its agents to an agent of that kind with the same
+ * instructions where there is one, creates one otherwise, and declares
+ * the team.
+ *
+ * Bumped for version 16's reason: the key is the same and what it holds
+ * changed. A version-17 build reads it as a role-staffed team, fails to
+ * parse it, and would call the document damaged; refused at its format
+ * check instead, it says "Update EO and try again". Reading an older
+ * document is unchanged: its role-staffed team still imports, declared
+ * as a team of the agents its roles bind to.
  */
-export const PIPELINE_EXPORT_VERSION = 16;
+export const PIPELINE_EXPORT_VERSION = 18;
 
 /**
  * An action a role defines, as the document carries it (EO-424).
@@ -728,7 +760,7 @@ export const ExportedPipelineHeadSchema = z.object({
  * which version the author pinned; it names nothing on the far side,
  * where an import pins the version it creates or matches.
  */
-export const ExportedStepSchema = PipelineStepViewSchema.omit({ pipelineId: true, inputs: true, timeoutMs: true, workspaceMode: true, workspaceId: true, agentId: true }).extend({
+export const ExportedStepSchema = PipelineStepViewSchema.omit({ pipelineId: true, inputs: true, timeoutMs: true, workspaceMode: true, workspaceId: true, agentId: true, teamId: true }).extend({
   /**
    * The kind of agent an agent step needs — never an agent's id or name,
    * which mean nothing on another installation (EO-875, ARCHITECTURE.md
@@ -743,6 +775,11 @@ export const ExportedStepSchema = PipelineStepViewSchema.omit({ pipelineId: true
   // The brief a person step declares (EO-827), optional for the same
   // reason: written where one is declared and absent everywhere else.
   brief: StepBriefSchema.optional(),
+  // The team an agent step runs as, optional for the same reason:
+  // written where one is configured and absent everywhere else. The
+  // declared team (EO-885) from format 18; a role-staffed one (EO-843) in
+  // a document written before it, which still imports.
+  team: z.union([ExportedTeamSchema, StepTeamSchema]).optional(),
 });
 /** A route as the document carries it. Its target is a step of any board in the document, or a sentinel. */
 export const ExportedRouteSchema = StepRouteViewSchema.omit({ id: true, pipelineId: true });

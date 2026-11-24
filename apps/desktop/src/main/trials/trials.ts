@@ -1,4 +1,5 @@
 import { NONE_KIND, remapStepReferences, TERMINAL_TARGET, USER_ATTENTION_TARGET, uuidv7, type IpcPayload, type IpcResponse, type Item, type Uuid } from "@eo/core";
+import { trialTeams } from "../db/repos/teamsRepo.js";
 import type { Db } from "../db/client.js";
 import {
   createItem,
@@ -147,7 +148,7 @@ export function createTrialFromDraft(
 /** A draft as Publish reads it, from a posted card or from a turn not yet posted: what a trial is made from. */
 export type TrialDraft = Pick<
   IpcResponse<"assist:draft">,
-  "pipelineId" | "newPipelineName" | "steps" | "routes" | "entryStepId" | "entryRules" | "actions" | "rename" | "icon"
+  "pipelineId" | "newPipelineName" | "steps" | "routes" | "entryStepId" | "entryRules" | "actions" | "rename" | "icon" | "teams"
 >;
 
 function refuseTrial(problem: string): CreateTrialResult {
@@ -220,6 +221,8 @@ export function createTrialFromRead(
         const entryAction = moduleIds[step.entryAction] ?? step.entryAction;
         return { ...step, entryAction, moduleVersion: newestModuleVersion(db, entryAction) };
       };
+      // The draft's teams as the trial's own (EO-881), so trying it changes no live team.
+      const teams = trialTeams(db, pipeline, read.teams);
       const saved = savePipeline(
         db,
         engine,
@@ -231,7 +234,9 @@ export function createTrialFromRead(
             ...remapStepReferences(runs(step), mapped),
             id: mapped(step.id),
             pipelineId: pipeline.id,
+            teamId: teams.teamIdOf(step.teamId),
           })),
+          ...(teams.teams.length === 0 ? {} : { teams: teams.teams }),
           routes: read.routes.map((route) => ({ ...route, pipelineId: pipeline.id, fromStepId: mapped(route.fromStepId), target: mapped(route.target) })),
           entryStepId: mapped(read.entryStepId!),
           // The draft's own, where it set any (EO-610). They are not
@@ -241,7 +246,7 @@ export function createTrialFromRead(
           ...(read.actions.length === 0 ? {} : { actions: read.actions }),
         },
         undefined,
-        { judgeActionsOnly: true },
+        { judgeActionsOnly: true, trialTeams: teams.sources },
       );
       if (!saved.saved) {
         throw new TrialRefused(

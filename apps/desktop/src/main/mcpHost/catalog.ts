@@ -11,6 +11,7 @@ import {
   MemoryScopeKindSchema,
   MODULE_COVERAGE_BAR,
   PipelineSaveInputSchema,
+  PipelineStepSaveSchema,
   pipelineMachineSpecificWarnings,
   testCaseMachineSpecificWarnings,
   PostCommentInputSchema,
@@ -46,6 +47,7 @@ import {
   type AgentAttachmentsWithCliTools,
   renderAgentSaved,
   renderAgents,
+  renderTeams,
   renderArchived,
   renderCommentPinned,
   renderCommentPosted,
@@ -119,6 +121,7 @@ import {
   renderItems,
   renderWorktrees,
   kindBindingLine,
+  teamAgentBindingLine,
   type MemoryConsolidationRestored,
   type RuntimeEntry,
   type SpendReport,
@@ -616,6 +619,16 @@ function spelledTool<K extends IpcChannel>(spec: ChannelToolSpec<K>, spelling: T
  * person's, delegated — and a risk is the one thing that cannot be
  * delegated to whoever would be reading the payload.
  */
+/**
+ * A step as an agent may send it to `pipeline_save`: without the declared
+ * team it names (EO-843, EO-881). A step is pointed at a team only through
+ * the assistant's draft and the card a person publishes (EO-848), never
+ * by a tool — so the key is taken off, and a step keeps the team it has
+ * (`teamIdFor` in configCommands.ts). `pipeline_validate` takes it, to
+ * judge a team before it is drafted.
+ */
+const STEP_WITHOUT_TEAM = PipelineStepSaveSchema.omit({ teamId: true });
+
 const PIPELINE_SAVE_TOOL: ToolSpec = withoutWebhookUnattended(
   withMachineSpecificSteps(
     channelTool({
@@ -640,7 +653,11 @@ const PIPELINE_SAVE_TOOL: ToolSpec = withoutWebhookUnattended(
       // draft *card* is published with, by a person. A definition the
       // assistant writes itself goes through `role_action_save`, which
       // answers with the save's own reasons.
-      input: PipelineSaveInputSchema.omit({ restoredFrom: true, actions: true }),
+      //
+      // And each step without `teamId`, and no `teams` (EO-843, EO-848,
+      // EO-881): a team reaches a pipeline, and changes, only through a
+      // draft's card, so the keys are stripped and a step keeps its own.
+      input: PipelineSaveInputSchema.omit({ restoredFrom: true, actions: true, teams: true }).safeExtend({ steps: z.array(STEP_WITHOUT_TEAM) }),
       kind: "write",
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       render: renderPipelineSaved,
@@ -2209,6 +2226,20 @@ const READ_TOOLS: readonly ToolSpec[] = [
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     render: renderAgents,
   }),
+  // EO-897: what team_archive and team_delete are given a team's id from.
+  channelTool({
+    name: "teams_list",
+    channel: "teams:list",
+    description:
+      "The declared teams: each one's id, project, version and whether a person locked it, its model range, its leader and " +
+      "members by name with the runtime, model and reasoning each runs on, and the steps that run as it. An archived team " +
+      "is not listed. A team is created or changed only by a draft's `teams` entry, which a person publishes; " +
+      "team_member_settings_set changes what its members run on, and team_archive and team_delete take one away.",
+    kind: "read",
+    list: "teams",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    render: renderTeams,
+  }),
   RUNTIME_STATUS_TOOL,
   RUNTIME_DESCRIBE_TOOL,
   channelTool({
@@ -2225,7 +2256,9 @@ const READ_TOOLS: readonly ToolSpec[] = [
     channel: "pipelineSteps:list",
     description:
       "One pipeline's steps and the routes between them — where work enters, what each step is for, and which result " +
-      "key sends a ticket where. The graph is data, so this is the whole of it.",
+      "key sends a ticket where. The graph is data, so this is the whole of it. A step that runs as a report-only team " +
+      "is listed under Teams: its members, coordination, completion and limits, who would staff each role, and the " +
+      "action its one answer is held to.",
     kind: "read",
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     render: renderPipeline,
@@ -2660,6 +2693,112 @@ const AGENT_ARCHIVE_TOOL: ToolSpec = channelTool({
   render: () => "Agent archived. Nothing dispatches it now; the row is kept, so its runs and comments still resolve and agents_list still shows it.",
   refusal: (data, tool) => (data.archived ? null : unconfirmedAgentRemoval(data, "archived", tool)),
 });
+
+/** What an unconfirmed or refused team archive or delete says (EO-897). */
+function unconfirmedTeamRemoval(data: { problem: string | null; members: readonly string[] }, verb: "archived" | "deleted", tool: string): string {
+  if (data.problem !== null) return `Nothing was ${verb}: ${data.problem} Nothing has changed.`;
+  const members = data.members.length === 0 ? "" : ` Its own agents go with it: ${data.members.join(", ")}.`;
+  return `Nothing has been ${verb} yet.${members} Tell the person, and call ${tool} again with confirm: true only once they have said to go ahead.`;
+}
+
+/**
+ * Archive a declared team (EO-897), its own agents with it.
+ *
+ * Beside `agent_archive`, and ungated for its reason: nothing is deleted,
+ * the rows stay, so the runs and comments of its agents still resolve.
+ * One-way all the same, as an agent's archive is, so `destructiveHint`.
+ */
+const TEAM_ARCHIVE_TOOL: ToolSpec = channelTool({
+  name: "team_archive",
+  channel: "teams:archive",
+  description:
+    "Archive a declared team, by its id from teams_list. Its leader and members — agents of the team's own — are archived " +
+    "with it; it leaves teams_list and no step may run as it after. Nothing brings it back. Call it without confirm first: " +
+    "nothing is archived, and the answer names the agents that go with it. Tell the person, and call again with " +
+    "confirm: true only once they have said to go ahead. A team a step runs as — in its pipeline's current version or " +
+    "an older one tickets still run on — cannot be archived: the refusal names the steps. A locked team cannot be " +
+    "archived until a person unlocks it.",
+  kind: "write",
+  annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+  render: () => "Team archived, with its own agents. No step may run as it now; the rows are kept, so its runs and comments still resolve.",
+  refusal: (data, tool) => (data.archived ? null : unconfirmedTeamRemoval(data, "archived", tool)),
+});
+
+const TeamMemberSettingsArgsSchema = z.object({
+  teamId: z.string().min(1).describe("The team, by its id from teams_list."),
+  members: z
+    .array(z.string().trim().min(1))
+    .min(1)
+    .max(64)
+    .describe("The members to set, by their names within the team as teams_list gives them — the leader's name included."),
+  provider: z.string().min(1).describe("The runtime they run on, by id: runtime_status reports the ids."),
+  model: z.string().nullable().optional().describe("The model, as the runtime names it; null or left out for the runtime's default."),
+  reasoning: z.string().nullable().optional().describe("The reasoning effort, such as low, medium or high; null or left out for the model's default."),
+});
+
+/**
+ * Set one or more members of a declared team to a runtime, model and
+ * reasoning (EO-900): what the Teams tab does, under its rules, by EO's
+ * system agent on `eo_admin` or an outside client over EO's MCP server.
+ *
+ * Built by hand rather than with `channelTool` because who made the
+ * version is the door's to say: the administrative host stamps the system
+ * agent, and only this tool, called on the outside listener, says the
+ * version is a client's. A client's own `throughClient` or
+ * `actingAgentId` never reaches the channel — the schema has neither.
+ *
+ * Ungated: it deletes nothing, and the version it files can be restored.
+ * The system agent may call it under invariant 11's exception — it owns
+ * no step, and reconfiguring the installation is its job; it changes a
+ * member's runtime, model and reasoning only, never a tool or the team.
+ */
+const TEAM_MEMBER_SETTINGS_SET_TOOL: ToolSpec = {
+  name: "team_member_settings_set",
+  description:
+    "Set one or more members of a declared team — its leader included — to a runtime, model and reasoning effort, as a " +
+    "person does in the Teams tab. Name the team by its id and the members by their names within it, both as " +
+    "teams_list gives them, with each member's runtime, model and reasoning now. Nothing but those three settings " +
+    "changes: a member's instructions and tools, and who is on the team, stay as they are (those change only through " +
+    "a draft's `teams` entry a person publishes). The whole change is one new version of the team, filed as yours, " +
+    "which a person can restore. Refused whole, with nothing changed: a locked team (a person must unlock it); a name " +
+    "that is not on the team; and a backend the organisation does not allow. The team's model range is not asked: it " +
+    "bounds only the members a leader adds. A runtime this machine has not installed or is not signed in to is still " +
+    "saved, and the answer says so, as the Teams tab does — pass that on. Tell the person what a team runs before you change it.",
+  kind: "write",
+  annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  channels: ["teams:setMembersSettings"],
+  inputSchema: inputSchemaFor(TeamMemberSettingsArgsSchema),
+  async run(dispatch, args, call) {
+    const parsed = TeamMemberSettingsArgsSchema.safeParse(args);
+    if (!parsed.success) {
+      return { ok: false, message: 'Invalid arguments for "team_member_settings_set". Nothing was changed.', issues: parsed.error.issues.map((issue) => issue.message) };
+    }
+    const { teamId, members, provider, model, reasoning } = parsed.data;
+    const set = await ask(dispatch, "teams:setMembersSettings", {
+      teamId,
+      members,
+      provider,
+      model: model ?? null,
+      reasoning: reasoning ?? null,
+      // The outside listener is a client's; the administrative one stamps its system agent itself.
+      ...(call?.audience === "external" ? { throughClient: true } : {}),
+    });
+    if (!set.ok) return set;
+    const data = set.data;
+    if (!data.saved) return { ok: true, refused: true, data, text: `Nothing was changed: ${data.problem ?? "it refused."}` };
+    const runsOn = `${provider}${model === null || model === undefined ? ", the runtime's default model" : `, model ${model}`}${reasoning === null || reasoning === undefined ? ", the model's default reasoning" : `, reasoning ${reasoning}`}`;
+    return {
+      ok: true,
+      refused: false,
+      data,
+      text:
+        (data.changed.length === 0
+          ? `Nothing changed: ${members.join(", ")} already ${members.length === 1 ? "runs" : "run"} on ${runsOn}. No version was filed.`
+          : `Set ${data.changed.join(", ")} to ${runsOn}, as version ${String(data.version)} of the team, which a person can restore. Each runs on it from its next turn.`) +
+        (data.note === null ? "" : ` ${data.note}`),
+    };
+  },
+};
 
 /**
  * Define an action for a role, or change the definition it has (EO-425).
@@ -3944,9 +4083,9 @@ const UNGATED_WRITE_TOOLS: readonly ToolSpec[] = [
     name: "run_cancel",
     channel: "runs:cancel",
     description:
-      "Interrupt an agent mid-run. Whatever it had not finished is discarded, and the ticket stays where it is — and " +
-      "stays put: EO does not start that step again by itself afterwards, until somebody mentions an agent, moves the " +
-      "ticket, or holds and resumes it. Run ids come from ticket_get.",
+      "Interrupt an agent mid-run. Whatever it had not finished is discarded, and the ticket is put on hold on the step " +
+      "it is on: EO does not start that step again by itself. Resuming the ticket (ticket_resume) runs the step again, " +
+      "and moving it ends the hold. Run ids come from ticket_get.",
     kind: "write",
     // Destructive without being gated: it throws away work in progress,
     // which a caller should be told about — but it is also the ordinary
@@ -3984,9 +4123,13 @@ const UNGATED_WRITE_TOOLS: readonly ToolSpec[] = [
   channelTool({
     name: "pipeline_validate",
     channel: "pipeline:validate",
+    // With each step's team (EO-848): a team is judged here before it is
+    // drafted, and a step that leaves the key out keeps the one it has.
     description:
       "Check a pipeline graph without publishing it. Writes nothing. Call this before pipeline_save — a graph with a " +
-      "blocking problem is refused there anyway, and this says what is wrong while it is still cheap to fix.",
+      "blocking problem is refused there anyway, and this says what is wrong while it is still cheap to fix. A step may " +
+      "carry `team`, as a draft's step does, to check a report-only team before you draft it: the answer lists each team's " +
+      "staffing, restrictions, the action its answer is held to and the results it can end on.",
     kind: "read",
     list: "problems",
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
@@ -4239,7 +4382,7 @@ const UNGATED_WRITE_TOOLS: readonly ToolSpec[] = [
       "it wants that are not set, modules that would reach the network, and module slugs that collide with ones " +
       "already here. A pack also brings item types, roles and connectors, so it reports, for each kind of agent its steps " +
       "need, which agent here its steps would name, which several you must choose between in pipeline_import's `agents`, " +
-      "or that one would be created from the document's prompt; which backend each role was built on, which connectors would land disconnected, and what the " +
+      "or that one would be created from the document's prompt; for each team a step runs as, which of its agents would be bound to an agent here of its kind with the same instructions and which created; which backend each role was built on, which connectors would land disconnected, and what the " +
       "pack's tool surface amounts to. It also lists values in the document that look like they only hold on the " +
       "machine it was written on — a home-directory path, a drive letter, a loopback address — as advice that " +
       "refuses nothing. Writes nothing. Read this before pipeline_import — an imported module " +
@@ -4276,6 +4419,10 @@ const UNGATED_WRITE_TOOLS: readonly ToolSpec[] = [
           }),
           "",
         );
+      }
+      // Each declared team, and which of its agents bind to one here and which are created (EO-885).
+      for (const team of p.teams) {
+        lines.push(`Team "${team.teamName}" (the step "${team.stepName}"):`, ...team.agents.map((agent) => `- ${teamAgentBindingLine(agent)}`), "");
       }
       if (p.connectors.length > 0) {
         lines.push("Connectors (they land disconnected):", ...p.connectors.map((item) => `- ${item.label}${item.connected ? " — connected here" : " — not connected here"}`), "");
@@ -4342,6 +4489,8 @@ const UNGATED_WRITE_TOOLS: readonly ToolSpec[] = [
   GUARDRAILS_SET_TOOL,
   AGENT_SAVE_TOOL,
   AGENT_ARCHIVE_TOOL,
+  TEAM_ARCHIVE_TOOL,
+  TEAM_MEMBER_SETTINGS_SET_TOOL,
   ROLE_ACTION_SAVE_TOOL,
   ...PROJECT_SETUP_TOOLS,
   PROJECT_SET_ACTIVE_TOOL,
@@ -4462,6 +4611,24 @@ const GATED_TOOLS: readonly ToolSpec[] = [
         "confirm: true only once the person has said to delete it."
       );
     },
+  }),
+  // EO-897. The same confirmation `team_archive` takes, one step further:
+  // the team and its versions go, its own agents left as tombstones.
+  // Gated like `agent_delete`.
+  channelTool({
+    name: "team_delete",
+    channel: "teams:delete",
+    description:
+      "Delete a declared team, by its id from teams_list, archived ones included. The team and its versions go; its leader " +
+      "and members — agents of the team's own — are deleted with it, keeping only their names so their past runs and " +
+      "comments still say who did them. Call it without confirm first: nothing is deleted, and the answer names the agents " +
+      "that go with it. Tell the person, and call again with confirm: true only once they have said to delete it. A team a " +
+      "step runs as — in its pipeline's current version or an older one tickets still run on — cannot be deleted: the " +
+      "refusal names the steps. A locked team cannot be deleted until a person unlocks it.",
+    kind: "dangerous",
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+    render: () => "Team deleted. Its own agents are gone with it; their past runs and comments still show their names.",
+    refusal: (data, tool) => (data.deleted ? null : unconfirmedTeamRemoval(data, "deleted", tool)),
   }),
   // EO-350. The same confirmation `agent_archive` takes, one step
   // further: the agent goes from the Agents screen altogether. Gated

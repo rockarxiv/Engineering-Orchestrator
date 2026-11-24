@@ -9,6 +9,8 @@ import { StepInputsSchema } from "./modules.js";
 import { PipelineIconSchema } from "./pipelines.js";
 import { WorkspaceModeSchema } from "./workspaces.js";
 import { StepWatchSchema } from "../watch.js";
+import { TeamInstructionsSchema } from "../team.js";
+import { IndependentTeamDefinitionSchema, IndependentTeamMemberSchema, LeaderTeamDefinitionSchema, TEAM_MEMBER_CAP_CEILING, TEAM_NAME_MAX } from "../declaredTeam.js";
 
 /**
  * What a draft says for "Works on" when it means the item's own disk
@@ -37,8 +39,8 @@ export const RUNS_ONCE = "off";
  * deliberately leaves out: how long a module step may run (EO-162), what
  * it sets for the inputs its module or builtin declares (EO-78, EO-507),
  * whether it keeps checking (EO-456, EO-516), which disk it works on
- * (EO-301) and whether it works on a branch or reads the repository
- * (EO-296).
+ * (EO-301), whether it works on a branch or reads the repository
+ * (EO-296), and the declared team an agent step runs as (EO-848, EO-881).
  *
  * They are left out *there* because on a step that already exists they
  * are somebody's setting of this installation, and a draft that had to
@@ -72,7 +74,72 @@ export const AssistDraftStepSchema = DraftStepSchema.extend({
   workspaceId: z.string().min(1).optional(),
   /** On a repository, `isolated` works on a branch of its own and `read` reads the repository as it stands. Absent keeps the step's own. */
   workspaceMode: WorkspaceModeSchema.optional(),
+  /**
+   * The declared team an agent step runs as (EO-881), by name — one the
+   * project has, or one this draft declares in its `teams` — or `"none"`
+   * to make it one agent again. Absent keeps the step's own. Published
+   * only through the card, whose Publish a person presses: no tool points
+   * a step at a team.
+   */
+  team: z.string().trim().min(1).optional(),
 });
+
+/** An independent team's member in a draft: its agent by name, as a draft names a step's agent (EO-876). */
+const AssistDraftIndependentMemberSchema = IndependentTeamMemberSchema.omit({ agentId: true }).extend({
+  /** The agent, by name. */
+  agent: z.string().trim().min(1),
+});
+
+/** A leader-led team's member in a draft, by its agent's name. */
+const AssistDraftLeaderMemberSchema = z.strictObject({ agent: z.string().trim().min(1) });
+
+/**
+ * A member a draft's team declares that does not exist yet (EO-898): its
+ * name, kind and instructions, and either its own runtime, model and
+ * reasoning or the name of an existing agent to take them — and its tools,
+ * kept to the team's pool — from (`from`). Giving neither takes them from
+ * the project's agent of its kind. The team's `leader` and `members` name
+ * it by its `name`. Nothing is created until a person publishes the card:
+ * Publish creates it as an agent the team owns (EO-897), with the team.
+ */
+export const AssistDraftNewMemberSchema = z.strictObject({
+  name: z.string().trim().min(1).max(TEAM_NAME_MAX),
+  /** The agent kind it is, as a step's agent kind is named. */
+  kind: z.string().trim().min(1),
+  /** Its own instructions, what it is dispatched with. */
+  instructions: z.string().trim().min(1),
+  /** The runtime it runs on. Absent takes `from`'s. */
+  runtime: z.string().trim().min(1).optional(),
+  /** Its model. Absent takes `from`'s, where it runs on `from`'s runtime; otherwise the runtime's default. */
+  model: z.string().trim().min(1).optional(),
+  /** Its reasoning effort. Absent takes `from`'s. */
+  reasoning: z.string().trim().min(1).optional(),
+  /** An existing agent, by name, to take the runtime, model, reasoning and tools from. Absent is the project's agent of its kind. */
+  from: z.string().trim().min(1).optional(),
+});
+export type AssistDraftNewMember = z.infer<typeof AssistDraftNewMemberSchema>;
+
+/** The members a draft's team declares that do not exist yet, the leader included where it is one. */
+const newMembers = { newMembers: z.array(AssistDraftNewMemberSchema).max(TEAM_MEMBER_CAP_CEILING + 1).optional() };
+
+/**
+ * A declared team a draft creates or changes (EO-881), whole: named as the
+ * project's teams are, so a draft naming a team the project has changes it
+ * (a new version, refused where a person locked it) and one naming none
+ * creates it. Its agents are named by name: the team's own (EO-897), or a
+ * member it declares in `newMembers` (EO-898) — never an ordinary agent,
+ * which no team may have. Publish binds them to ids. Judged with the graph
+ * by the validation Publish applies.
+ */
+export const AssistDraftTeamSchema = z.discriminatedUnion("coordination", [
+  IndependentTeamDefinitionSchema.omit({ members: true }).extend({ members: z.array(AssistDraftIndependentMemberSchema).min(1), ...newMembers }),
+  LeaderTeamDefinitionSchema.omit({ leader: true, members: true }).extend({
+    leader: z.strictObject({ agent: z.string().trim().min(1), instructions: TeamInstructionsSchema }),
+    members: z.array(AssistDraftLeaderMemberSchema).min(1),
+    ...newMembers,
+  }),
+]);
+export type AssistDraftTeam = z.infer<typeof AssistDraftTeamSchema>;
 
 /**
  * One route of a draft raised in the assistant's room (EO-520).
@@ -149,6 +216,11 @@ export const AssistDraftSchema = PipelineDraftSchema.extend({
    * entry.
    */
   templateStepIds: z.record(z.string().min(1), z.string().min(1)).optional(),
+  /**
+   * The declared teams this draft creates or changes (EO-881), each whole.
+   * A step names one by name in its `team`. Absent changes no team.
+   */
+  teams: z.array(AssistDraftTeamSchema).optional(),
 });
 
 export type AssistDraftStep = z.infer<typeof AssistDraftStepSchema>;

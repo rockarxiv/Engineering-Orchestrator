@@ -65,6 +65,18 @@ export const agents = sqliteTable("agents", {
    * wrote the row. Never read on the record itself.
    */
   recordStamp: integer("record_stamp"),
+  /**
+   * The declared team that owns this agent, or null for an ordinary one
+   * (EO-897, migration 0187). A team's leader and members are its own:
+   * nothing outside the team runs them, and changing one changes the
+   * team alone (`Agent.teamId`).
+   *
+   * No foreign key, deliberately: a deleted team's members stay as
+   * tombstones (`deleteAgent`) that its runs and comments still name, and
+   * they keep saying which team they were — a key would have to either
+   * block the team's delete or forget that.
+   */
+  teamId: text("team_id"),
 });
 
 /**
@@ -643,6 +655,14 @@ export const pipelineSteps = sqliteTable(
      * `user` step may declare one; `validatePipeline` refuses it elsewhere.
      */
     brief: text("brief", { mode: "json" }),
+    /**
+     * The declared team this agent step runs as (EO-881, ARCHITECTURE.md
+     * §4.2a), or NULL for one agent. Replaced the inline `team` column
+     * (EO-843) in migration 0185, which declared a team for every step
+     * that had one. Only an `agent` step may name one; `validatePipeline`
+     * refuses it elsewhere, and a team of another project.
+     */
+    teamId: text("team_id").references((): AnySQLiteColumn => teams.id),
   },
   (table) => [index("idx_pipeline_steps_pipeline").on(table.pipelineId, table.position)],
 );
@@ -2079,6 +2099,91 @@ export const agentCliTools = sqliteTable(
   (table) => [primaryKey({ columns: [table.agentId, table.cliToolId] })],
 );
 
+/**
+ * A declared team (EO-881, ARCHITECTURE.md §4.2a): a configured thing of
+ * its own, beside agents, which an agent step names by id. Its leader and
+ * members are agents; `definition` is the whole `TeamDefinitionSchema`
+ * JSON — name, coordination, member mode, leader and members by agent id,
+ * outcomes, completion or leader checks, limits, tool pool, model range
+ * and member cap — published whole by one Publish, never queried by its
+ * parts. `name` is a copy of the definition's, for lookups by name.
+ *
+ * Every change is a new row in `team_versions`; `version` is the current
+ * one's number. A locked team refuses every change but unlocking.
+ *
+ * No ON DELETE rule on the project, for `agents.project_id`'s reason:
+ * `deleteProject` removes a project's teams before the project row goes.
+ */
+export const teams = sqliteTable(
+  "teams",
+  {
+    id: text("id").primaryKey(), // uuidv7
+    /** The project it belongs to, or NULL for a team of pipelines on no project. */
+    projectId: text("project_id").references((): AnySQLiteColumn => projects.id),
+    name: text("name").notNull(),
+    definition: text("definition", { mode: "json" }).notNull(),
+    locked: integer("locked", { mode: "boolean" }).notNull().default(false),
+    version: integer("version").notNull(),
+    /**
+     * A trial's own copy of a team its draft writes (EO-881): the trial
+     * pipeline it belongs to, and the draft team it copies (its name, as
+     * `teamNameKey` reads it). NULL for every other team. What a later
+     * round finds its copy by — never by the copy's name, which another
+     * team may come to have.
+     */
+    trialPipelineId: text("trial_pipeline_id"),
+    trialSource: text("trial_source"),
+    /**
+     * When a person archived the team (EO-897, migration 0188), or NULL.
+     * One-way, as an agent's archive is: its members are archived with it,
+     * it leaves the Teams tab and no step may name it.
+     */
+    archivedAt: integer("archived_at"),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (table) => [index("idx_teams_project").on(table.projectId, table.name), index("idx_teams_trial").on(table.trialPipelineId, table.trialSource)],
+);
+
+/**
+ * Every version of a declared team (EO-881), oldest first: what it was,
+ * who made it and the version a restore put back. Append-only — a restore
+ * is itself a new version — and removed only with its team.
+ */
+export const teamVersions = sqliteTable(
+  "team_versions",
+  {
+    id: text("id").primaryKey(), // uuidv7
+    teamId: text("team_id")
+      .notNull()
+      .references(() => teams.id, { onDelete: "cascade" }),
+    number: integer("number").notNull(),
+    definition: text("definition", { mode: "json" }).notNull(),
+    /** `TeamAuthor["kind"]`: person, assistant, leader, eo, system (EO's system agent) or client (an outside MCP client). */
+    authorKind: text("author_kind").notNull(),
+    /** The person's id for a person, the leader agent's for a leader, the system agent's for `system`; null otherwise. */
+    authorId: text("author_id"),
+    /** The item a leader added a member for (EO-883); null otherwise. */
+    authorItemId: text("author_item_id"),
+    /** The version a restore put back; null for every other version. */
+    restoredFrom: integer("restored_from"),
+    /**
+     * Every member's runtime, model and reasoning effort when the version was
+     * made (`TeamMemberSettings` by agent id, EO-884), which a restore puts
+     * back on the members. Null on versions made before migration 0186.
+     */
+    memberSettings: text("member_settings", { mode: "json" }),
+    /**
+     * Why EO made the version, in a sentence a person reads beside it
+     * (EO-899): that it moved the team into the project whose pipeline runs
+     * as it. Null on every other version (migration 0190).
+     */
+    note: text("note"),
+    createdAt: integer("created_at").notNull(),
+  },
+  (table) => [uniqueIndex("idx_team_versions_number").on(table.teamId, table.number)],
+);
+
 // ── Execution ─────────────────────────────────────────────────
 
 export const runs = sqliteTable("runs", {
@@ -2412,6 +2517,98 @@ export const comments = sqliteTable(
     createdAt: integer("created_at").notNull(),
   },
   (table) => [index("idx_comments_item").on(table.itemId, table.createdAt)],
+);
+
+/**
+ * One team's work on one item (EO-844, ARCHITECTURE.md, "A team on an
+ * agent step"): on one step, entered by one transition, under one pinned
+ * pipeline version, with the team as configured when it opened — a copy,
+ * so a later edit to the step does not rewrite what this session was.
+ *
+ * `status` is the orchestration's state (`TeamSessionStatus`), not whether
+ * a provider is running: that is each attempt's run. `run_id` is the
+ * orchestration's own run, whose spending is its own and never its
+ * children's. A replaced session is not deleted or rewritten: it ends
+ * `superseded` and names its successor. Rows go only with their item
+ * (`deleteItem`); archiving touches none.
+ *
+ * `device_id` is the machine whose session it is — the one the record
+ * takes reports of it from. Null on a solo desktop. `updated_at` is what a
+ * replica pages on, and moves when any attempt under the session changes.
+ */
+export const teamSessions = sqliteTable(
+  "team_sessions",
+  {
+    id: text("id").primaryKey(), // uuidv7
+    itemId: text("item_id")
+      .notNull()
+      .references(() => items.id),
+    stepId: text("step_id").notNull(),
+    // Not foreign keys: a replica can learn of a session before the move or
+    // the version it names, and both are only references for reading back.
+    entryTransitionId: text("entry_transition_id"),
+    pipelineVersionId: text("pipeline_version_id"),
+    runId: text("run_id").references(() => runs.id),
+    team: text("team", { mode: "json" }).notNull(),
+    status: text("status").notNull(),
+    result: text("result"),
+    finalCommentId: text("final_comment_id").references(() => comments.id),
+    supersededBy: text("superseded_by"),
+    deviceId: text("device_id"),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+    endedAt: integer("ended_at"),
+  },
+  (table) => [index("idx_team_sessions_item").on(table.itemId), index("idx_team_sessions_updated").on(table.updatedAt, table.id)],
+);
+
+/**
+ * One participant's attempt at one assignment of a team session (EO-844).
+ *
+ * The provider thread, the timing and the spending are its run's — so a
+ * team's spending is its attempts' runs, counted once wherever runs are
+ * summed. The agent is kept by name beside its id, so an agent retired or
+ * renamed later still reads as who made the attempt. `report_comment_id`
+ * and `superseded_by` are written once and never cleared: a result
+ * delivered twice finds its comment already named, and a retry is a new
+ * row naming the one it replaces rather than an edit of it.
+ */
+export const teamAttempts = sqliteTable(
+  "team_attempts",
+  {
+    id: text("id").primaryKey(), // uuidv7
+    sessionId: text("session_id")
+      .notNull()
+      .references(() => teamSessions.id),
+    itemId: text("item_id")
+      .notNull()
+      .references(() => items.id),
+    assignmentKey: text("assignment_key").notNull(),
+    role: text("role").notNull(),
+    agentId: text("agent_id").references(() => agents.id),
+    agentName: text("agent_name").notNull().default(""),
+    instructions: text("instructions").notNull().default(""),
+    round: integer("round").notNull().default(1),
+    attempt: integer("attempt").notNull().default(1),
+    runId: text("run_id").references(() => runs.id),
+    status: text("status").notNull(),
+    outcome: text("outcome"),
+    error: text("error"),
+    evidenceBaseline: text("evidence_baseline", { mode: "json" }),
+    reportCommentId: text("report_comment_id").references(() => comments.id),
+    acceptedAt: integer("accepted_at"),
+    supersededBy: text("superseded_by"),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+    endedAt: integer("ended_at"),
+  },
+  (table) => [
+    index("idx_team_attempts_session").on(table.sessionId),
+    index("idx_team_attempts_item").on(table.itemId),
+    uniqueIndex("idx_team_attempts_number").on(table.sessionId, table.assignmentKey, table.round, table.attempt),
+    uniqueIndex("idx_team_attempts_report").on(table.reportCommentId),
+    uniqueIndex("idx_team_attempts_run").on(table.runId),
+  ],
 );
 
 /** Durable files owned by one item comment. Paths never cross IPC. */
@@ -2963,6 +3160,28 @@ export const jobWatchChecks = sqliteTable(
 );
 
 // ── The record and its devices ────────────────────────────────
+
+/**
+ * The holds a cancelled run set (EO-891): one row per item held because
+ * a person cancelled its run, naming that run.
+ *
+ * Cancelling a run holds its item where it is (`items.held_at`), so the
+ * board shows it held and Resume runs the step again. This row is what
+ * sets that hold apart from one a person asked for: a move ends it
+ * (`transitionItem`), as a move ended the stop EO-175 kept before it,
+ * while a person's own hold stays put. Written and cleared with the hold
+ * by `setItemHeld`; gone with its item. Local to this installation, as
+ * the hold is.
+ *
+ * No reference on `run_id`: the row says which run it was, and
+ * `deleteItem` removes runs before the item whose cascade removes this.
+ */
+export const cancelHolds = sqliteTable("cancel_holds", {
+  itemId: text("item_id")
+    .primaryKey()
+    .references((): AnySQLiteColumn => items.id, { onDelete: "cascade" }),
+  runId: text("run_id").notNull(),
+});
 
 /**
  * Who is allowed to be dispatching an item right now, and until when

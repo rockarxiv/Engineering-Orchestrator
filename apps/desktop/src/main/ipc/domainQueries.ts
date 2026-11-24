@@ -130,6 +130,7 @@ import { outputFor } from "./outputCommands.js";
 import { originIndex, originOfItem } from "../jobs/origin.js";
 import { projectWorkspaceKind, stepWorkspaceKind, resolveItemWorkspace } from "../supervisor/workspaceResolution.js";
 import { verificationOfKind } from "../workspaceKinds.js";
+import { teamReadingsForPipeline } from "./configCommands.js";
 import { activeProjectId } from "./repositoryCommands.js";
 import { workspaceView } from "./workspaceCommands.js";
 import { providerSteersLiveTurns } from "../providers/capabilities.js";
@@ -2231,6 +2232,8 @@ export function listAgentViews(db: Db): IpcResponse<"agents:list"> {
       deletedAt: agent.deletedAt,
       // So a step whose agent moved to another project says nothing runs there (EO-876).
       projectId: agent.projectId,
+      // So the Agents screen and every step picker leave a team's own agents out (EO-897).
+      teamId: agent.teamId ?? null,
     })),
   };
 }
@@ -2290,6 +2293,9 @@ function toStepView(step: PipelineStep): PipelineStepView {
     moduleVersion: step.moduleVersion,
     // What the decision's details show on a person step (EO-827).
     brief: step.brief,
+    // The team an agent step runs as (EO-843), and which declared team it is (EO-881).
+    team: step.team,
+    teamId: step.teamId,
   };
 }
 
@@ -2556,6 +2562,9 @@ export function listPipelineStepViews(
     // webhook refusal classifies them, with the registry the validator
     // judges this project's pipelines by.
     outsideReach: outsideReachForSteps(db, onBoard, registryForProject(db, projectId)),
+    // Each step that runs as a report-only team (EO-848), read as
+    // dispatch would act on it and judged as `pipeline:validate` judges it.
+    teams: teamReadingsForPipeline(db, input.pipelineId, onBoard, registryForProject(db, projectId)),
   };
 }
 

@@ -242,6 +242,9 @@ export const developerSectionRenderers: SectionRenderer[] = [
   {
     id: "ticketFiles",
     after: "item",
+    // A team member posts nothing on the ticket, files included (EO-888):
+    // its report is what reaches it.
+    stepAgentOnly: true,
     render: ({ item }) =>
       item.workspaceKind !== GIT_WORKTREE_KIND
         ? null

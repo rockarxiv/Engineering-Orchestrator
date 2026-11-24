@@ -133,3 +133,26 @@ describe("agentWriteToolResult is the eo server's answer, exactly", () => {
     }
   });
 });
+
+describe("a credential scoped to an attempt (EO-845)", () => {
+  it("names its attempt to the handler under the MAC, and a rewritten scope is not recognised", async () => {
+    const seen: (string | null | undefined)[] = [];
+    const bridge = await startAgentWriteBridge(async (_itemId, _request, _writes, scope) => {
+      seen.push(scope);
+      return NOTED;
+    });
+    open.push(bridge);
+    const address = bridge.tokenFor("item-1", ["evidence_read"], "attempt-a");
+    expect((await sendAgentWrite(address, { tool: "evidence_read", args: { path: "a" } })).ok).toBe(true);
+    expect(seen).toEqual(["attempt-a"]);
+    const forged = { ...address, token: address.token.replace("attempt-a", "attempt-b") };
+    const refused = await sendAgentWrite(forged, { tool: "evidence_read", args: { path: "a" } });
+    expect(!refused.ok && refused.code).toBe("UNRECOGNISED_CREDENTIAL");
+    // An unscoped credential tells the handler no scope.
+    await sendAgentWrite(bridge.tokenFor("item-1"), { tool: "comment", args: { body: "hi" } });
+    expect(seen.at(-1)).toBeNull();
+    // A scope is never minted without the writes it narrows to, nor with a separator in it.
+    expect(() => bridge.tokenFor("item-1", undefined, "attempt-a")).toThrow();
+    expect(() => bridge.tokenFor("item-1", ["evidence_read"], "a~b")).toThrow();
+  });
+});

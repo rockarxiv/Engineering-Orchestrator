@@ -3,6 +3,8 @@ import { join } from "node:path";
 import { ArchivedItemListFiltersSchema, ItemListFiltersSchema, toRegistryView, type AgentRemovalImpact, type IpcChannel, type IpcResponse, type Message, type Uuid } from "@eo/core";
 import { AttachmentStorage } from "../attachments/storage.js";
 import { pipelineHome } from "./pipelineHome.js";
+import { cancelTeamSessionCommand, retryTeamSessionCommand, teamSessionsCommand } from "./teamCommands.js";
+import { archiveTeamCommand, deleteTeamCommand, listTeamsCommand, restoreTeamCommand, setTeamLockedCommand, setTeamMemberSettingsCommand, setTeamMembersSettingsCommand } from "./declaredTeamCommands.js";
 import type { Db } from "../db/client.js";
 import { archiveAgentCommand, customiseAgent, deleteAgentCommand, listAgentDetails, projectStaffing, readGuards, saveAgent, setAgentBinding, savePipeline, validatePipelineCommand, writeGuards } from "./configCommands.js";
 import { runMemoryFacts } from "../process/runScope.js";
@@ -1559,6 +1561,50 @@ export function registerAllHandlers(db: Db, engine: EngineHandle | undefined, re
     opts,
   );
   registerHandler("runs:cancel", (payload) => cancelRun(engine, payload), opts);
+  // A team session, read whole and controlled whole (EO-849).
+  registerHandler("items:teamSessions", (payload) => teamSessionsCommand(db, engine, payload), opts);
+  registerHandler("teams:cancel", (payload) => cancelTeamSessionCommand(db, engine, payload), opts);
+  registerHandler("teams:retry", (payload) => retryTeamSessionCommand(db, engine, payload), opts);
+  // Declared teams in the Agents section (EO-884). A restore or a lock moves
+  // the pipelines naming the team, so every window reads its graph again.
+  registerHandler("teams:list", () => listTeamsCommand(db), opts);
+  registerHandler("teams:restore", (payload) => {
+    const result = restoreTeamCommand(db, payload);
+    if (result.restored) emitPush("config:changed", {});
+    return result;
+  }, opts);
+  registerHandler("teams:setMemberSettings", (payload) => {
+    const result = setTeamMemberSettingsCommand(db, payload);
+    if (result.saved) emitPush("config:changed", {});
+    return result;
+  }, opts);
+  // The same change through EO's tools (EO-900), several members at once,
+  // asked of the runtime as the Teams tab asks before it lets one be chosen.
+  registerHandler(
+    "teams:setMembersSettings",
+    async (payload) => {
+      const result = await setTeamMembersSettingsCommand(db, payload, async (provider) => (await runtimeStatusWithAuth(runtimes, { provider })).runtime);
+      if (result.changed.length > 0) emitPush("config:changed", {});
+      return result;
+    },
+    opts,
+  );
+  registerHandler("teams:setLocked", (payload) => {
+    const result = setTeamLockedCommand(db, payload);
+    if (result.changed) emitPush("config:changed", {});
+    return result;
+  }, opts);
+  // Archiving or deleting one (EO-897) takes its own agents with it.
+  registerHandler("teams:archive", (payload) => {
+    const result = archiveTeamCommand(db, payload);
+    if (result.archived) emitPush("config:changed", {});
+    return result;
+  }, opts);
+  registerHandler("teams:delete", (payload) => {
+    const result = deleteTeamCommand(db, payload);
+    if (result.deleted) emitPush("config:changed", {});
+    return result;
+  }, opts);
   registerHandler("engine:pause", (payload) => pauseEngine(db, engine, payload), opts);
   registerHandler("engine:resume", () => resumeEngine(db, engine), opts);
   registerHandler("engine:status", () => engineStatus(db, engine), opts);

@@ -31,7 +31,8 @@ export type PendingKind =
   | "attachment"
   | "watch"
   | "memory"
-  | "message";
+  | "message"
+  | "teamSession";
 
 export interface PendingRow<T = unknown> {
   id: string;

@@ -13,7 +13,6 @@ import {
   stepForItem,
   type Project,
 } from "../db/repos/index.js";
-import { clearStop } from "../supervisor/stoppedByHand.js";
 import { managedProjectRefusal, unfinishedCount } from "./deleteProjectCommand.js";
 import type { EngineHandle } from "./domainCommands.js";
 import { ACTIVE_PROJECT_KEY, activeProjectId } from "./repositoryCommands.js";
@@ -61,15 +60,9 @@ export function stoppedByArchiveNote(projectName: string, stepName: string): str
  * **Runs in flight are stopped as `superseded`**, the classification
  * for a cancellation that belongs to something larger and says its own
  * sentence about it. The sentence is `stoppedByArchiveNote`, on each
- * such item. Any stand-off a person's earlier stop left on that
- * item (EO-175) is cleared here too, for `resumeHeldItem`'s reason:
- * restoring is the one re-authorisation that leaves the item exactly
- * where it stood, same step, same initiation — and a restored project
- * whose stopped tickets then sat still would be a restore that needed
- * a second, invisible step per item. Cleared now rather than on
- * restore because nothing between the two can record another stop —
- * no run of the project's is going — and so nothing has to remember
- * which tickets these were.
+ * such item. A hold an earlier cancel set (EO-891) is left as it is:
+ * it is on the board with its own Resume, so the restored item says
+ * what it is waiting for.
  *
  * **The window moves off it** in the same write, as it does for a
  * delete: another live project if there is one, "No projects yet" if
@@ -117,7 +110,6 @@ export function archiveProjectCommand(db: Db, engine: EngineHandle | undefined, 
     const run = activeRuns.get(item.id);
     if (!run) continue;
     engine?.cancelRun(run.id, "superseded");
-    clearStop(db, item.id);
     const stepName = item.stepId === null ? "no pipeline" : (stepForItem(db, item)?.name ?? item.stepId);
     postComment(db, { itemId: item.id, runId: run.id, author: { type: "engine" }, body: stoppedByArchiveNote(project.name, stepName) });
   }

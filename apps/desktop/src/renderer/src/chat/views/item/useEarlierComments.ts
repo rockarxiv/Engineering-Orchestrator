@@ -46,6 +46,14 @@ export interface ItemThread {
   load: () => void;
   /** Reads what has been read back again — after a person acted on the thread here. */
   invalidateHistory: () => Promise<void>;
+  /**
+   * Brings one comment onto the page, however far back it is (EO-849): a
+   * team's report or output a person asked to see. Held at that comment,
+   * as "Show earlier" holds the page, so it and everything after it are
+   * drawn and the history before it is still read on demand. Nothing
+   * where it is drawn already.
+   */
+  reveal: (commentId: string) => void;
 }
 
 /** The key the read-back history of an item is cached under: beside the item's own, not under it. */
@@ -144,5 +152,9 @@ export function useItemThread(itemId: string): ItemThread {
       else if (history.hasNextPage) void history.fetchNextPage();
     },
     invalidateHistory: () => queryClient.invalidateQueries({ queryKey: itemHistoryKey(itemId) }),
+    reveal: (commentId) => {
+      if (from === commentId || comments.some((comment) => comment.id === commentId)) return;
+      setHeld({ itemId, from: commentId });
+    },
   };
 }

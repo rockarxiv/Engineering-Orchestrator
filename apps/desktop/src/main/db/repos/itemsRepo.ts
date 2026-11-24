@@ -32,6 +32,7 @@ import { boundStepFieldSql, ensureCurrentVersion, versionForArrival } from "./pi
 import { FOLD_CASE_SQL_FUNCTION, foldCase } from "../textFold.js";
 import {
   attachmentRemovals,
+  cancelHolds,
   attachments,
   sideCalls,
   projects,
@@ -47,6 +48,8 @@ import {
   runs,
   itemDeps,
   items,
+  teamAttempts,
+  teamSessions,
   transitions,
 } from "../schema.js";
 
@@ -970,8 +973,21 @@ export function setItemArchived(db: Db, id: Uuid, archivedAt: number | null): vo
  * the work, so it deliberately leaves `updatedAt`, `pipelineId` and
  * `stepId` untouched.
  */
-export function setItemHeld(db: Db, id: Uuid, heldAt: number | null): void {
-  db.update(items).set({ heldAt }).where(eq(items.id, id)).run();
+export function setItemHeld(db: Db, id: Uuid, heldAt: number | null, byCancelOf: Uuid | null = null): void {
+  // Every write says whose hold it is (EO-891): a person holding or
+  // resuming an item a cancel held makes the hold theirs, or ends it, and
+  // a move then leaves their hold alone.
+  db.transaction((tx) => {
+    tx.update(items).set({ heldAt }).where(eq(items.id, id)).run();
+    tx.delete(cancelHolds).where(eq(cancelHolds.itemId, id)).run();
+    if (heldAt !== null && byCancelOf !== null) tx.insert(cancelHolds).values({ itemId: id, runId: byCancelOf }).run();
+  });
+}
+
+/** The run whose cancellation holds this item, or null where nothing does or a person holds it (EO-891). */
+export function heldByCancelOf(db: Db, id: Uuid): Uuid | null {
+  const row = db.select({ runId: cancelHolds.runId }).from(cancelHolds).where(eq(cancelHolds.itemId, id)).get();
+  return (row?.runId as Uuid | undefined) ?? null;
 }
 
 /**
@@ -1443,6 +1459,12 @@ export function deleteItem(db: Db, id: Uuid): { deletedItemIds: Uuid[] } {
       .where(inArray(comments.itemId, ids))
       .all()
       .map((row) => row.id);
+
+    // Their team sessions and attempts (EO-844), before the comments,
+    // runs and items those name. They go with the item as its runs do;
+    // archiving takes none of them.
+    tx.delete(teamAttempts).where(inArray(teamAttempts.itemId, ids)).run();
+    tx.delete(teamSessions).where(inArray(teamSessions.itemId, ids)).run();
 
     // Every file on these items — their comments' and their own
     // (EO-702) — before the comments a file may name. And the note of

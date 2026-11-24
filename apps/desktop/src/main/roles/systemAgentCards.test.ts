@@ -367,3 +367,121 @@ describe("what the system agent's prompt says about several cards in one reply (
     expect(Number(/prompt-version:\s*(\d+)/.exec(prompt)![1])).toBeGreaterThanOrEqual(63);
   });
 });
+
+describe("what the system agent's prompt says about teams on a step (EO-848)", () => {
+  const teams = () => section("### A declared team on an agent step");
+
+  it("offers `team` on a draft's agent step, by name, and `\"none\"` for one agent again", () => {
+    expect(flat).toContain("- **An `agent` step may set `team`** — the name of the declared team it runs as,");
+    expect(teams()).toContain("A team is created, changed and named only through a draft published from its card — all but what its members run on, below; `pipeline_save` takes the keys off.");
+  });
+
+  it("says every member is report-only by default, and what it cannot do", () => {
+    expect(teams()).toContain("posts an attributed report on the thread, and cannot edit the work, run commands, change anything outside EO or widen what it may use.");
+  });
+
+  it("gives both coordination modes, their completion and limits", () => {
+    expect(teams()).toContain('"coordination": "independent"');
+    expect(teams()).toContain('"coordination": "leader"');
+    expect(teams()).toContain("A required participant that could not contribute fails the team");
+    expect(teams()).toContain("Left out they are 4, 2, 1 and 2.");
+  });
+
+  it("sends an independent team to the action catalogue, and to a custom action of its own rather than a pack's", () => {
+    expect(teams()).toContain("read the actions with `registry_get`");
+    expect(teams()).toContain("carry a definition of your own in `actions` beside the draft");
+    expect(teams()).toContain("never point the team at a pack's action");
+  });
+
+  it("says what is refused before a card, that live work keeps its version, and how a mocked team is reported on a trial", () => {
+    expect(teams()).toContain("**What is refused**, and named, before a card is offered");
+    expect(teams()).toContain("**Publishing a team files a new version.**");
+    expect(teams()).toContain("do not report the team as tested from a mocked result.");
+  });
+});
+
+describe("what the system agent's prompt says about a team's member mode (EO-867)", () => {
+  const teams = () => section("### A declared team on an agent step");
+
+  it("says what each mode is for: report-only for content EO should not let an agent act on, isolated where members should work as their agents do", () => {
+    expect(teams()).toContain("**Members: report-only or isolated.**");
+    expect(teams()).toContain('`"report_only"`, the default, is for content EO should not let an agent act on');
+    expect(teams()).toContain('`"isolated"` is for a team whose members should work as their agents do');
+    expect(teams()).toContain("in a copy of the item's workspace made for it alone and removed when its turn ends.");
+  });
+
+  it("says an isolated team escapes the report-only refusals and is refused where its workspace cannot be copied", () => {
+    expect(teams()).toContain("none of the report-only refusals below applies to it");
+    expect(teams()).toContain("a step that works in a workspace EO cannot copy for each member — a folder, a scratch directory — is refused instead, and the refusal names the kind.");
+  });
+});
+
+describe("what the system agent's prompt says about declared teams (EO-881)", () => {
+  const teams = () => section("### A declared team on an agent step");
+
+  it("says a team is its own entity, beside agents, which a step names and several pipelines may share", () => {
+    expect(teams()).toContain("A team is a configured thing of its own, beside agents: it has a name, a leader agent (leader-led only) and member agents, and a step names it the way it names an agent.");
+    expect(teams()).toContain("Several pipelines can name one team.");
+  });
+
+  it("says how a draft creates, changes and names a team, by name, with its agents by name", () => {
+    expect(teams()).toContain("A draft creates or changes a team in its `teams` list, each entry whole, and points a step at one by name in the step's `team`.");
+    expect(teams()).toContain("An entry whose `name` the project's team has changes that team — a new version — and any other creates one.");
+    expect(teams()).toContain('"agent": "Security reviewer"');
+    expect(teams()).toContain("whole entry as a draft's `teams` takes it");
+  });
+
+  it("names the tool pool, model range and member cap, and that eo_admin and the system agent are never on a team", () => {
+    expect(teams()).toContain("a `toolPool` — the CLI tools (by command), MCP servers (by name) and skills (by slug) its members may be given");
+    expect(teams()).toContain("a `modelRange` — the `runtimes`, `models` and `reasoning` levels a member its leader adds may run on");
+    expect(teams()).toContain("`eo_admin` can never be in a pool, and EO's system agent can never be a leader or a member.");
+  });
+
+  it("says a locked team refuses every change, and that every change is a version a person can restore", () => {
+    expect(teams()).toContain("**A locked team refuses every change but a person unlocking it**");
+    expect(teams()).toContain("Every change to a team is a version, recorded with who made it, and a person can restore any earlier one.");
+  });
+
+  it("is a newer version than the one before declared teams", () => {
+    expect(Number(/prompt-version:\s*(\d+)/.exec(prompt)![1])).toBeGreaterThanOrEqual(66);
+  });
+});
+
+describe("what the system agent's prompt says about a team's new members (EO-898)", () => {
+  const teams = () => section("### A declared team on an agent step");
+  const held = () => section("### A held template update");
+
+  it("says a team's agents are its own, declared new in `newMembers`, created only by Publish, and never an ordinary agent", () => {
+    expect(teams()).toContain("**declares every agent it does not have yet in `newMembers`**");
+    expect(teams()).toContain("Nothing is created until the person presses Publish, which creates each as an agent of the team's own, with the team; so never create agents for a team with `agent_save` first.");
+    expect(teams()).toContain("A draft naming an ordinary agent as a leader or member is refused: declare a new member instead, with `from` naming that agent.");
+    expect(teams()).toContain('"newMembers": [');
+  });
+
+  it("says a held update lists the template's team ready for a draft, taken on one card with no agents made first", () => {
+    expect(held()).toContain("To take the template's team, put that entry in the draft's `teams` as it is and set the step's `team` to its `name` — one card, like any other change.");
+    expect(held()).toContain("Never create agents for it yourself: Publish creates them, as the team's own.");
+  });
+
+  it("is a newer version than the one before a team's new members", () => {
+    expect(Number(/prompt-version:\s*(\d+)/.exec(prompt)![1])).toBeGreaterThanOrEqual(67);
+  });
+});
+
+describe("what the system agent's prompt says about its team members' runtime, model and reasoning (EO-900)", () => {
+  const teams = () => section("### A declared team on an agent step");
+
+  it("says it can read what each member runs on and set it with team_member_settings_set, nothing else of a member or the team", () => {
+    expect(teams()).toContain("all but what its members run on, below;");
+    expect(teams()).toContain("`teams_list` gives each team's id, its model range, and the runtime, model and reasoning each member — the leader included — runs on now; say what a team runs before you change it.");
+    expect(teams()).toContain("`team_member_settings_set` sets one or more members, named by their names within the team, to one runtime, model and reasoning, as a person does in the Teams tab.");
+    expect(teams()).toContain("files one version of the team, recorded as yours, which a person can restore.");
+  });
+
+  it("names what refuses it, what it saves and says, and is newer than the prompt before it", () => {
+    expect(teams()).toContain("It is refused for a locked team, saying so, and for a backend the organisation does not allow.");
+    expect(teams()).toContain("It does not ask the team's model range, which bounds only the members a leader adds.");
+    expect(teams()).toContain("A runtime this machine has not installed or is not signed in to is still saved, and the answer says so, as the Teams tab does: pass that on to the person.");
+    expect(Number(/prompt-version:\s*(\d+)/.exec(prompt)![1])).toBeGreaterThanOrEqual(68);
+  });
+});

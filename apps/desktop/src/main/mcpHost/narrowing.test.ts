@@ -61,6 +61,7 @@ const MAIN_LIST: Record<string, string | null> = {
   settings_read: null,
   guardrails_get: null,
   spend_read: null,
+  teams_list: "teams",
   worktrees_list: "worktrees",
   jira_connections_list: "connections",
   jira_test: "steps",

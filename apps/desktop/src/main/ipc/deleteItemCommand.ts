@@ -8,6 +8,7 @@ import { allWorktreeConfigs } from "../packs/developer/workspace/dispatchWorkspa
 import { releaseReferenceCheckouts } from "../packs/developer/workspace/referenceCheckouts.js";
 import { listHeldWorktrees, removeWorktree, type WorktreeConfig } from "../packs/developer/workspace/worktrees.js";
 import type { EngineHandle } from "./domainCommands.js";
+import { releaseMemberCopiesOf } from "../workspaceKinds.js";
 
 /** Nothing was deleted, and this is why. Every early return has this shape. */
 function refused(problem: string, flags: { activeRun?: boolean; uncommitted?: boolean } = {}): IpcResponse<"items:delete"> {
@@ -194,6 +195,8 @@ export async function removeItemsAndTheirWork(
   // was written is still said on the item first, as every removal says
   // it (invariant 8).
   for (const entry of work.doomed) await releaseReferenceCheckouts(db, entry);
+  // And any copy an isolated team member's turn left (EO-867), said the same way.
+  for (const entry of work.doomed) await releaseMemberCopiesOf(db, entry);
 
   // Collected before the rows go, because the rows are how a file is
   // found; removed after, because a file removed for a delete that then

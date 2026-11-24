@@ -18,7 +18,7 @@ import type {
   RecordRunEvent,
   Uuid,
 } from "@eo/core";
-import type { Run } from "@eo/core";
+import type { Run, StepTeam } from "@eo/core";
 import {
   EntryRulesSchema,
   parseStoredCommentOptions,
@@ -47,11 +47,14 @@ import { publishedSectionRow } from "./publishedSectionsRepo.js";
 import { isDiverged } from "./divergenceRepo.js";
 import { dropWebhookWaiversWithoutEntry } from "./webhookWaiverRepo.js";
 import { writeArrivedMemory } from "./memoriesRepo.js";
+import { writeAdoptedTeamSession } from "./teamSessionsRepo.js";
+import { teamIdForInlineTeam, teamReader } from "./teamsRepo.js";
 import { PipelineExportSchema, UNBOUND_BACKEND, VersionStepSchema } from "@eo/core";
 import { getAppliedTemplateUpdate, getPipelineOrigin, isTemplateDocument, recordAppliedTemplateUpdate, recordPipelineOrigin } from "./pipelineOriginsRepo.js";
 import {
   agents,
   attachments,
+  cancelHolds,
   comments,
   commentMentions,
   items,
@@ -70,6 +73,7 @@ import {
   runEvents,
   runs,
   skills,
+  teamSessions,
   stepRoutes,
   transitions,
 } from "../schema.js";
@@ -208,6 +212,19 @@ function trialColumnsOf(trial: RecordPipeline["trial"]): {
 }
 
 /**
+ * The declared team a step arriving from elsewhere runs as here (EO-881):
+ * none where it carries no team; otherwise the team it carries, by role,
+ * declared under the sender's id — the team this copy already names where
+ * it reads the same, else written as that id's team, its roles bound to
+ * this machine's agents (`teamIdForInlineTeam`).
+ */
+function arrivingTeamId(db: Db, pipelineId: string, step: { name: string; team?: StepTeam | null; teamId?: string | null }, current: string | null): string | null {
+  const team = step.team ?? null;
+  if (team === null) return null;
+  return teamIdForInlineTeam(db, { pipelineId, stepName: step.name, team, current, ...(step.teamId === null || step.teamId === undefined ? {} : { id: step.teamId }) });
+}
+
+/**
  * One pipeline row, with its steps and routes, as it travels.
  *
  * Shared by the move going up and the mirror coming down, because they
@@ -219,6 +236,7 @@ function trialColumnsOf(trial: RecordPipeline["trial"]): {
 function toRecordPipeline(db: Db, row: typeof pipelines.$inferSelect): RecordPipeline {
   const steps = db.select().from(pipelineSteps).where(eq(pipelineSteps.pipelineId, row.id)).orderBy(asc(pipelineSteps.position)).all();
   const versions = versionsAReplicaNeeds(db, row.id, row.currentVersionId);
+  const readTeam = teamReader(db);
   return {
     // The agents the versions it carries name too (EO-877): an item bound
     // to an older version runs that version's steps, and a replica without
@@ -269,6 +287,11 @@ function toRecordPipeline(db: Db, row: typeof pipelines.$inferSelect): RecordPip
         moduleVersion: step.moduleVersion,
         // What its decision's details show (EO-827), so a replica shows what the record does.
         brief: storedBrief(step.brief),
+        // The team it runs as (EO-843), so a replica runs what the record
+        // configures: read as it runs, by role, and the declared team it is
+        // (EO-881), so the copy declares it here under the same id.
+        team: readTeam(step.teamId),
+        teamId: step.teamId,
       })),
     routes: db
       .select()
@@ -546,6 +569,7 @@ function toRecordAgent(db: Db, row: typeof agents.$inferSelect & { projectId: st
     toolNames: toolNames(db, attached),
     revision: row.revision,
     updatedAt: row.updatedAt,
+    teamId: row.teamId,
   };
 }
 
@@ -653,7 +677,7 @@ export function upsertReplicaProjectAgent(db: Db, agent: RecordAgent): "written"
   const published = publishedSectionRow(db, "agents") !== undefined;
   if (here !== undefined && !published) return "kept";
   db.transaction(() => {
-    upsertReplicaAgent(db, agent, { projectId: agent.projectId as Uuid, stamp: agent.revision });
+    upsertReplicaAgent(db, agent, { projectId: agent.projectId as Uuid, stamp: agent.revision, teamId: agent.teamId ?? null });
     // A tombstone has no tool surface, and `upsertReplicaAgent` has
     // just removed what it had.
     if (agent.deletedAt === null) replaceReplicaAttachments(db, agent.id, agent.mcpServerIds, agent.skillIds);
@@ -811,6 +835,11 @@ export function upsertReplicaPipeline(db: Db, pipeline: RecordPipeline): "writte
       })
       .run();
     for (const step of pipeline.steps) {
+      // Its declared team (EO-881), declared here under the record's id —
+      // only where the record's graph is what this copy takes: a new step,
+      // or a managed one.
+      const held = db.select({ teamId: pipelineSteps.teamId }).from(pipelineSteps).where(eq(pipelineSteps.id, step.id)).get();
+      const arriving = held === undefined || managed ? arrivingTeamId(db, pipeline.id, step, held?.teamId ?? null) : held.teamId;
       db.insert(pipelineSteps)
         .values({
           id: step.id,
@@ -838,6 +867,7 @@ export function upsertReplicaPipeline(db: Db, pipeline: RecordPipeline): "writte
           // is this replica's too once the section's modules have applied.
           moduleVersion: step.moduleVersion,
           brief: step.brief ?? null,
+          teamId: arriving,
         })
         .onConflictDoUpdate({
           target: pipelineSteps.id,
@@ -862,6 +892,7 @@ export function upsertReplicaPipeline(db: Db, pipeline: RecordPipeline): "writte
                 results: step.results,
                 moduleVersion: step.moduleVersion,
                 brief: step.brief ?? null,
+                teamId: arriving,
                 // `workspaceId` is absent on purpose — see this
                 // function's header. It is the one thing on a step that
                 // belongs to the machine rather than to the graph.
@@ -1092,6 +1123,7 @@ export function countProjectRows(db: Db, projectId: Uuid): Omit<RecordAdoptCount
     ),
     memories: one(sql`select count(*) as n from ${memories} where project_id = ${projectId}`),
     skills: one(sql`select count(*) as n from ${skills} where project_id = ${projectId} and scope <> 'global'`),
+    teamSessions: one(sql`select count(*) as n from ${teamSessions} s join ${items} i on i.id = s.item_id where i.project_id = ${projectId}`),
   };
 }
 
@@ -1111,13 +1143,14 @@ export function countProjectRows(db: Db, projectId: Uuid): Omit<RecordAdoptCount
  */
 export function readProjectItems(db: Db, projectId: Uuid): RecordAdoptedItem[] {
   return db
-    .select({ item: items, typeSlug: itemTypes.slug })
+    .select({ item: items, typeSlug: itemTypes.slug, heldByCancelOf: cancelHolds.runId })
     .from(items)
     .innerJoin(itemTypes, eq(itemTypes.id, items.typeId))
+    .leftJoin(cancelHolds, eq(cancelHolds.itemId, items.id))
     .where(eq(items.projectId, projectId))
     .orderBy(asc(items.createdAt), asc(items.id))
     .all()
-    .map(({ item, typeSlug }) => ({
+    .map(({ item, typeSlug, heldByCancelOf }) => ({
       id: item.id,
       key: item.key,
       typeId: item.typeId,
@@ -1134,6 +1167,9 @@ export function readProjectItems(db: Db, projectId: Uuid): RecordAdoptedItem[] {
       priority: item.priority,
       archivedAt: item.archivedAt,
       heldAt: item.heldAt,
+      // Whose hold it is (EO-891), so a cancel's hold still ends with a
+      // move on the record rather than arriving as a person's.
+      heldByCancelOf: item.heldAt === null ? null : (heldByCancelOf ?? null),
       previewAt: item.previewAt,
       // The trial mark (EO-582): a move must not turn a trial into live work.
       trialAt: item.trialAt,
@@ -1635,6 +1671,7 @@ export function writeAdoptedPage(db: Db, project: RecordProject, page: RecordAdo
     attachments: 0,
     memories: 0,
     skills: 0,
+    teamSessions: 0,
     skipped: [],
   };
 
@@ -1794,6 +1831,8 @@ export function writeAdoptedPage(db: Db, project: RecordProject, page: RecordAdo
       for (const step of pipeline.steps) {
         counts.steps += 1;
         const agentId = movedAgents.has(step.id) ? (movedAgents.get(step.id) ?? null) : step.agentId;
+        // Its declared team (EO-881), declared on the record under the sender's id.
+        const arriving = arrivingTeamId(db, pipeline.id, step, db.select({ teamId: pipelineSteps.teamId }).from(pipelineSteps).where(eq(pipelineSteps.id, step.id)).get()?.teamId ?? null);
         db.insert(pipelineSteps)
           .values({
             id: step.id,
@@ -1819,6 +1858,7 @@ export function writeAdoptedPage(db: Db, project: RecordProject, page: RecordAdo
             // The module version it runs (EO-772), as the sender pins it.
             moduleVersion: step.moduleVersion,
             brief: step.brief ?? null,
+            teamId: arriving,
           })
           // Wholesale, because a step carries no timestamp of its own
           // and travels with the pipeline that does. What the sender
@@ -1844,6 +1884,7 @@ export function writeAdoptedPage(db: Db, project: RecordProject, page: RecordAdo
               results: step.results,
               moduleVersion: step.moduleVersion,
               brief: step.brief ?? null,
+              teamId: arriving,
             },
           })
           .run();
@@ -2017,6 +2058,8 @@ export function writeAdoptedPage(db: Db, project: RecordProject, page: RecordAdo
         archivedAt: agent.archivedAt,
         deletedAt: agent.deletedAt,
         projectId: project.id,
+        // A team's own agent stays its team's (EO-897).
+        teamId: agent.teamId ?? null,
         updatedAt: agent.updatedAt,
         // The sender's count, so the record's next change to it is one
         // more than anything the sender's own desktop could hold.
@@ -2077,6 +2120,7 @@ export function writeAdoptedPage(db: Db, project: RecordProject, page: RecordAdo
         })
         .onConflictDoNothing()
         .run();
+      keepAdoptedCancelHold(db, item);
       updateAdoptedItem(db, item);
       // After the item, which it hangs off, and after the items before
       // it on the page — oldest first, so the item it was created from
@@ -2434,6 +2478,23 @@ export function writeAdoptedPage(db: Db, project: RecordProject, page: RecordAdo
       writeArrivedMemory(db, { ...entry, source, projectId: project.id });
     }
 
+    // The items' team sessions (EO-844), after the runs and comments they
+    // name. A session on an item this record does not have on the project,
+    // or naming a run or comment that did not arrive, is a skip.
+    for (const one of page.teamSessions) {
+      const here = db.select({ projectId: items.projectId }).from(items).where(eq(items.id, one.session.itemId)).get();
+      if (here?.projectId !== project.id) {
+        skip(counts, `team session ${one.session.id} is on an item that is not this project's`);
+        continue;
+      }
+      const why = writeAdoptedTeamSession(db, one, deviceId, Date.now());
+      if (why !== null) {
+        skip(counts, why);
+        continue;
+      }
+      counts.teamSessions += 1;
+    }
+
     /**
      * The dependency graph, replaced rather than added to (EO-325).
      *
@@ -2471,6 +2532,20 @@ export function writeAdoptedPage(db: Db, project: RecordProject, page: RecordAdo
   });
 
   return counts;
+}
+
+/** Whose hold an arriving item's is, kept with it (EO-891). */
+function keepAdoptedCancelHold(db: Db, item: RecordAdoptedItem): void {
+  // Whose hold it is follows the hold (EO-891): newer wins off the same
+  // `updated_at` the hold itself does in `updateAdoptedItem`, read before
+  // that update moves the stamp. A first arrival was inserted just now
+  // with this very stamp, so it takes the page's answer too.
+  const held = db.select({ updatedAt: items.updatedAt }).from(items).where(eq(items.id, item.id)).get();
+  if (held === undefined || item.updatedAt < held.updatedAt) return;
+  db.delete(cancelHolds).where(eq(cancelHolds.itemId, item.id)).run();
+  if (item.heldAt !== null && item.heldByCancelOf !== null) {
+    db.insert(cancelHolds).values({ itemId: item.id, runId: item.heldByCancelOf }).run();
+  }
 }
 
 /**
@@ -2598,6 +2673,11 @@ export function writeAdoptedProject(
       // out a project still arriving, and a cursor that moved past its
       // entries meanwhile has to be offered them again.
       db.update(memories).set({ updatedAt: at }).where(eq(memories.projectId, project.id)).run();
+      // …and its items' team sessions, for the same reason (EO-844).
+      db.update(teamSessions)
+        .set({ updatedAt: at })
+        .where(sql`${teamSessions.itemId} in (select ${items.id} from ${items} where ${items.projectId} = ${project.id})`)
+        .run();
       // …and its skills, for the same reason (EO-513) — by the stamp the
       // feed pages on and never by `updated_at`, which is the sender's
       // version: the sweep that follows this commit may still carry an

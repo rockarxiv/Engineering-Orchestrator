@@ -40,6 +40,23 @@ import { SERVER_INSTRUCTIONS } from "./server.js";
  * nothing in the contract is unconsidered from MCP.
  */
 const NOT_CATALOGUED: Partial<Record<RecordChannel, string>> = {
+  // A team session's panel and its two controls (EO-849). The read is the
+  // item page's: an agent reads a team's work where it is the conversation —
+  // its reports, questions and answer are comments on the thread `item_get`
+  // and `thread_read` already serve, and each participant's run is in
+  // `item_get`'s runs. Cancelling and retrying are a person's acts on the
+  // item page; a tool would let an agent stop or restart a team it does not
+  // own, which `run_cancel` already covers for the team's own run.
+  "items:teamSessions": "a team's reports, questions and answer are comments on the thread item_get and thread_read serve, and each participant's run is in item_get's runs; this is the item page's view of them",
+  "teams:cancel": "a person's control on the item page; run_cancel on the team's own run already stops the whole session",
+  "teams:retry": "a person's control on the item page; a reply on the thread carries a parked team on in the same way",
+  // The Teams tab in the Agents section (EO-884). An agent reads the team a
+  // step runs as through pipeline_get, and changes a team only through the
+  // assistant's draft a person publishes; restoring and locking are a
+  // person's guards on a team, which an agent holding them could undo.
+  "teams:restore": "restoring a team's version is a person's guard on what its leader and the assistant changed, so no agent may do it",
+  "teams:setMemberSettings": "the Teams tab's one-member change, by agent id; EO's tools change members by name through teams:setMembersSettings (team_member_settings_set, EO-900), and no step-owning agent is served either",
+  "teams:setLocked": "locking a team is a person's guard against agents changing it, so no agent may lift or set it",
   // The command-line tool catalogue (EO-819, EO-822). List, save and
   // archive are tools, and the ticks ride on agent_attachments_list and
   // agent_attachments_set; bringing an archived CLI back is not.
@@ -1034,6 +1051,11 @@ describe("the MCP tool catalog", () => {
     // Deleting one (EO-350): the tombstone keeps the name on its runs
     // and comments, and nothing else about the agent survives.
     "agent_delete",
+    // Archiving and deleting a declared team (EO-897), the same two acts
+    // for a team and the agents it owns: nothing un-archives it, and a
+    // delete leaves only its agents' tombstones.
+    "team_archive",
+    "team_delete",
     // Both halves of a server's secrets, which is `module_secret_set`'s
     // case rather than a new one: clearing a value destroys it, and so
     // does setting one over a value already there, because nothing can

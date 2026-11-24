@@ -9,6 +9,7 @@ import { CommentOptionSchema, parseStoredCommentOptions } from "./schemas/commen
 import { SideCallFailureReasonSchema, SideCallPurposeSchema } from "./side-calls.js";
 import { TrialActionsSchema, TrialPlanSchema, TrialStepSourcesSchema } from "./trialPlan.js";
 import { DEPENDENCY_WAITS } from "./domain.js";
+import { RecordTeamSessionCommandSchema, TeamSessionRecordSchema } from "./teamSession.js";
 
 /**
  * The longest `dataBase64` a file may arrive as.
@@ -733,6 +734,7 @@ export const RecordCommandSchema = z.discriminatedUnion("kind", [
   RecordSideCallCommandSchema,
   RecordRebindCommandSchema,
   RecordSendMessageCommandSchema,
+  RecordTeamSessionCommandSchema,
 ]);
 export type RecordCommand = z.infer<typeof RecordCommandSchema>;
 export type RecordWatchCommand = z.infer<typeof RecordWatchCommandSchema>;
@@ -1320,6 +1322,13 @@ export const RecordAgentSchema = PublishedAgentSchema.extend({
    * Absent from a sender that predates it, when the comment names the id.
    */
   toolNames: z.record(z.string(), z.string()).optional(),
+  /**
+   * The declared team that owns it, or null for an ordinary agent
+   * (EO-897), so a team's own agent stays its team's — off every picker
+   * and staffing — wherever the project goes. Absent from a sender that
+   * predates it, read as an ordinary agent.
+   */
+  teamId: z.string().nullable().optional(),
 });
 export type RecordAgent = z.infer<typeof RecordAgentSchema>;
 
@@ -1555,6 +1564,13 @@ export const RecordCursorsSchema = z.object({
    * when the record last changed the row, as their agents are.
    */
   skills: RecordCursorSchema.default({ ts: 0, id: "" }),
+  /**
+   * Team sessions (EO-844), paged on when the record last changed the
+   * session. A session's attempts travel with it, as a pipeline's steps
+   * travel with the pipeline, so a change to an attempt pages its session
+   * again.
+   */
+  teamSessions: RecordCursorSchema.default({ ts: 0, id: "" }),
 });
 export type RecordCursors = z.infer<typeof RecordCursorsSchema>;
 
@@ -1684,6 +1700,12 @@ export const RecordChangesSchema = z.object({
    * moved the project.
    */
   skills: z.array(RecordSkillSchema).default([]),
+  /**
+   * Team sessions changed since the cursor, each whole with its attempts
+   * (EO-844): which participant contributed what, under which session,
+   * against which evidence, and which comment carries each accepted report.
+   */
+  teamSessions: z.array(TeamSessionRecordSchema).default([]),
   /** What to send next time. */
   cursors: RecordCursorsSchema,
   more: z.boolean(),
@@ -1970,6 +1992,18 @@ export const RecordAdoptedItemSchema = RecordItemSchema.extend({
    * record holds and cannot act on.
    */
   spec: z.unknown().nullable().default(null),
+  /**
+   * The run whose cancellation holds this item, where a cancel set its
+   * hold rather than a person (EO-891).
+   *
+   * Carried so the hold arrives as what it was: a later move ends a
+   * cancel's hold and leaves a person's alone, and a record that took
+   * every hold as a person's would keep a cancelled item held through
+   * the move that should have released it. Defaulted, so a page from a
+   * build that predates it reads as a person's hold, which is the one
+   * every hold such a build sent was.
+   */
+  heldByCancelOf: z.string().nullable().default(null),
 });
 export type RecordAdoptedItem = z.infer<typeof RecordAdoptedItemSchema>;
 
@@ -2165,6 +2199,11 @@ export const RecordAdoptPageSchema = z.object({
    * items an entry may name as its source.
    */
   memories: z.array(RecordMemorySchema).max(500).default([]),
+  /**
+   * The items' team sessions, each whole with its attempts (EO-844). Sent
+   * after the runs and comments a session names.
+   */
+  teamSessions: z.array(TeamSessionRecordSchema).max(50).default([]),
 });
 export type RecordAdoptPage = z.infer<typeof RecordAdoptPageSchema>;
 
@@ -2221,6 +2260,12 @@ export const RecordAdoptCountsSchema = z.object({
    * stops on rather than finishing with the project's skills left behind.
    */
   skills: z.number().int().nonnegative().default(0),
+  /**
+   * Team sessions (EO-844). Zero from a record that predates them, which
+   * the move reads as a shortfall and stops on rather than finishing with
+   * the items' sessions left behind.
+   */
+  teamSessions: z.number().int().nonnegative().default(0),
   /**
    * The rows this page carried and the record could not write, with the
    * reason.

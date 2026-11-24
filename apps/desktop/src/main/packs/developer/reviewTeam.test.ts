@@ -1,0 +1,1331 @@
+import { createHash } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
+import { changeTeam, getTeam } from "../../db/repos/teamsRepo.js";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import type { SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import {
+  ADMIN_MCP_SERVER_NAME,
+  AssistOutputSchema,
+  FOLDER_KIND,
+  GIT_WORKTREE_KIND,
+  developerRegistry,
+  outputSchemaFor,
+  pageDescriptorFor,
+  TEAM_PARTICIPANT_ACTION,
+  uuidv7,
+  type Agent,
+  type AgentEvent,
+  type AgentProvider,
+  type AgentProviderStartOptions,
+  type AgentWriteBridgeAddress,
+  type AgentWriteTool,
+  type ExportedTeam,
+  type IpcChannel,
+  isExportedTeam,
+  type Item,
+  type LeaderTeam,
+  type StepTeam,
+  type Uuid,
+} from "@eo/core";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { createClaudeProvider } from "../../providers/claude.js";
+import { createCodexProvider } from "../../providers/codex.js";
+import { CodexClient, dropWarmCodexThread } from "../../providers/codexClient.js";
+import { fakeAppServer, note, type FakeAppServer } from "../../testing/fakeCodexAppServer.js";
+import type { DbHandle } from "../../db/client.js";
+import { createAgent, listAgents, updateAgent } from "../../db/repos/agentsRepo.js";
+import { adoptPipeline, appendRunEvent, getPipelineOrigin, openUpdateConflict, replacePipelineGraph } from "../../db/repos/index.js";
+import { listCommentsForItem, postComment } from "../../db/repos/commentsRepo.js";
+import { listReviewVerdicts } from "../../db/repos/index.js";
+import { getItem } from "../../db/repos/itemsRepo.js";
+import { getItemType } from "../../db/repos/itemTypesRepo.js";
+import { getPipeline, listRoutesForPipeline, listStepsForPipeline } from "../../db/repos/pipelineStepsRepo.js";
+import { addWorkspaceToProject, createProject } from "../../db/repos/projectsRepo.js";
+import { createWorkspace } from "../../db/repos/workspacesRepo.js";
+import { createRun, listRunsForItem, updateRun } from "../../db/repos/runsRepo.js";
+import { listTeamSessionsForItem } from "../../db/repos/teamSessionsRepo.js";
+import { listTransitionsForItem } from "../../db/repos/transitionsRepo.js";
+import { createTestItem, openMigratedTestDb } from "../../db/testHelpers.js";
+import { loadTemplateHistory, type TemplateHistory } from "../../gallery/history.js";
+import { templateHistoryUpTo } from "../../gallery/historyTestHelpers.js";
+import { backfillPipelineOrigins } from "../../gallery/origins.js";
+import { applyTemplateUpdates } from "../../gallery/templateUpdates.js";
+import { readAssistDraftForPublish, sendToAssist } from "../../ipc/assistCommands.js";
+import { DEFAULT_GUARD_CONFIG, savePipeline, storedGraphProblems } from "../../ipc/configCommands.js";
+import { handleIpcRequest } from "../../ipc/handleRequest.js";
+import { clearHandlerRegistry } from "../../ipc/registry.js";
+import { sectionLockFor } from "../../managed/locks.js";
+import { assistAgent, postAssistReply } from "../../roles/assist.js";
+import { ASSIST_ACTION } from "../../roles/conversationSteps.js";
+import { PROPOSAL_KIND } from "../../roles/proposal.js";
+import { BUILTIN_RUNNERS } from "./builtins.js";
+import { developerSectionRenderers } from "./sections.js";
+import { createRoleWiring } from "./wiring.js";
+import { syncRolePrompts } from "../../roles/prompts.js";
+import { ALONE_END, ALONE_START, withoutAnsweringAlone } from "../../roles/answeringAlone.js";
+import { buildTurnContext } from "../../supervisor/buildDispatchContext.js";
+import type { AgentWriteBridge } from "../../mcp/writeBridge.js";
+import { registryForItem } from "../../registry.js";
+import { createRunSupervisor, type RunSupervisor } from "../../supervisor/runSupervisor.js";
+import { MEMBER_NO_BRIDGE } from "../../supervisor/teamParticipants.js";
+import type { WorkspaceKind } from "../../supervisor/workspaceKind.js";
+import { useWorkspaceKinds } from "../../workspaceKinds.js";
+import { useGalleryCommand } from "../../ipc/galleryCommands.js";
+
+/**
+ * The bundled software template's Review step as a team (EO-868): a
+ * leader-led team of focused reviewers, in isolated mode, run end to end
+ * through the supervisor on the Delivery pipeline a fresh installation
+ * has once its first launch brought it to the template's newest version.
+ *
+ * Mocked: what each backend answers, scripted per turn. Real: the two
+ * adapters a Claude or Codex agent is dispatched through — the Claude
+ * provider over a stubbed SDK `query`, and the Codex provider and client
+ * over a stubbed `codex app-server` child process — so a turn's
+ * instructions, context and answer schema cross each backend's own
+ * delivery, and its answer comes back through each backend's own
+ * parsing (invariant 12). Real too: the template, the seeded agents and
+ * their prompts, the developer pack's review schema, verdict and routing,
+ * the team supervisor and the member copies (on no disk, the kind an
+ * item without a repository works in).
+ */
+
+/**
+ * The sha-256 of the reviewer prompt's words as version 18 shipped them,
+ * the version line left off and runs of whitespace made one space, so a
+ * line re-wrapped around a marker is not a change of wording: what a
+ * reviewer answering alone was sent before EO-888 marked which passages
+ * are for answering alone (EO-888).
+ */
+const REVIEWER_18_WORDS = "365e7c0e29c67e15bd611b5f44a7e273f9b993879ce6a94f261302e5b427152c";
+
+const GALLERY_DIRECTORY = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..", "resources", "gallery");
+const CRITERIA = ["A key over its limit gets a 429", "The 429 carries a Retry-After header", "The limit is configurable per key"];
+const CODEX_EXECUTABLE = "/opt/eo/runtimes/codex/bin/codex";
+const DIFF = "diff --git a/src/limit.ts b/src/limit.ts\n+export function limit(key: string) { return counts[key]++ > 100 ? 429 : 200; }";
+
+type Backend = "claude" | "codex";
+interface Roster {
+  name: string;
+  /** The backends of the Review team's reviewer agents, in the team's order: the leader is the first. */
+  reviewers: Backend[];
+}
+const ROSTERS: Roster[] = [
+  { name: "every member on Claude", reviewers: ["claude"] },
+  { name: "every member on Codex", reviewers: ["codex"] },
+  { name: "members on both backends", reviewers: ["claude", "codex"] },
+];
+
+interface Started {
+  agent: Agent;
+  opts: AgentProviderStartOptions;
+}
+
+/** What a turn answers, given who it is and what it was told. */
+type Script = (turn: { agent: Agent; opts: AgentProviderStartOptions; leader: boolean; assignment: string | null }) => unknown;
+
+/** What reached a backend on one turn: the backend that was reached, the turn's text as it crossed, and the answer schema it was handed. */
+interface Crossed {
+  backend: Backend;
+  agent: Agent;
+  said: () => Promise<string>;
+  /** The instructions as they crossed: Claude's `systemPrompt`, Codex's `baseInstructions` on `thread/start`. */
+  told: () => unknown;
+  schema: () => unknown;
+}
+
+let handle: DbHandle;
+let scratch: string;
+let started: Started[];
+let crossed: Crossed[];
+let script: Script;
+const supervisors: RunSupervisor[] = [];
+
+async function* says(data: unknown, afterMs = 0): AsyncGenerator<AgentEvent> {
+  yield { type: "thread_started", threadId: `thread-${uuidv7()}` };
+  // A member's turn takes a moment, so the passes overlap as they do on a real backend.
+  if (afterMs > 0) await new Promise((resolve) => setTimeout(resolve, afterMs));
+  yield { type: "result", data };
+}
+
+/** One Claude turn through the real adapter, over an SDK `query` that answers `data` as structured output. */
+function claudeTurn(agent: Agent, opts: AgentProviderStartOptions, data: unknown, afterMs: number, reportOnly = false): ReturnType<AgentProvider["start"]> {
+  const calls: { prompt: unknown; options: Record<string, unknown> }[] = [];
+  const session = `sess-${uuidv7()}`;
+  const runQuery = ((params: { prompt: unknown; options?: Record<string, unknown> }) => {
+    calls.push({ prompt: params.prompt, options: params.options ?? {} });
+    return (async function* () {
+      yield { type: "system", subtype: "init", session_id: session } as unknown as SDKMessage;
+      if (afterMs > 0) await new Promise((resolve) => setTimeout(resolve, afterMs));
+      yield { type: "result", subtype: "success", result: JSON.stringify(data), structured_output: data, total_cost_usd: 0.01, usage: { input_tokens: 10, output_tokens: 10 }, session_id: session } as unknown as SDKMessage;
+    })();
+  }) as never;
+  crossed.push({
+    backend: "claude",
+    agent,
+    said: async () => {
+      for await (const message of (calls[0]?.prompt ?? []) as AsyncIterable<SDKUserMessage>) {
+        const content = message.message.content;
+        return typeof content === "string" ? content : content.map((block) => ("text" in block ? block.text : "")).join("");
+      }
+      return typeof calls[0]?.prompt === "string" ? calls[0].prompt : "";
+    },
+    told: () => calls[0]?.options["systemPrompt"],
+    schema: () => (calls[0]?.options["outputFormat"] as { schema?: unknown } | undefined)?.schema,
+  });
+  // A report-only participant's adapter is the one `reportOnlyProviderForAgent` builds: locked to the evidence tools (EO-845).
+  return createClaudeProvider({ runQuery, enableCommentTool: false, ...(reportOnly ? { reportOnly: true, eoMcp: PARTICIPANT_EO_MCP } : {}) }).start(opts);
+}
+
+/** One Codex turn through the real adapter and client, over an app-server child process that answers `data` as the turn's final message. */
+function codexTurn(agent: Agent, opts: AgentProviderStartOptions, data: unknown, afterMs: number, reportOnly = false): ReturnType<AgentProvider["start"]> {
+  const fake: FakeAppServer = fakeAppServer({
+    after: {
+      "turn/start": [
+        note.turnStarted(),
+        ...(afterMs > 0 ? [{ wait: afterMs }] : []),
+        note.agentMessage(JSON.stringify(data)),
+        note.tokenUsage({ input: 10, output: 10 }),
+        note.turnCompleted(),
+      ],
+    },
+  });
+  crossed.push({
+    backend: "codex",
+    agent,
+    said: () => Promise.resolve(((fake.paramsOf("turn/start")?.["input"] as { text: string }[] | undefined) ?? []).map((part) => part.text).join("")),
+    told: () => fake.paramsOf("thread/start")?.["baseInstructions"],
+    schema: () => fake.paramsOf("turn/start")?.["outputSchema"],
+  });
+  const locked = reportOnly
+    ? { reportOnly: true, eoMcp: PARTICIPANT_EO_MCP, searchHookCommandPath: "/opt/eo/hook.mjs", searchHookTrust: async () => ({ key: "/<session-flags>/config.toml:pre_tool_use:0:0", hash: "sha256:abc123" }), codexHome: () => mkdtempSync(join(scratch, "codex-home-")), config: { model: agent.model ?? "gpt-reviewer" } }
+    : {};
+  return createCodexProvider({ executablePath: CODEX_EXECUTABLE, ...locked, createCodex: () => new CodexClient({ executablePath: CODEX_EXECUTABLE, spawn: fake.spawn, shutdownGraceMs: 200 }) }).start(opts);
+}
+
+/**
+ * The provider each agent is dispatched through: a Claude or Codex agent
+ * through its own backend's real adapter, answering what the script says
+ * for this turn. The seeded `fake` agent, which no real backend serves,
+ * answers in memory.
+ */
+/** What a report-only participant's `eo` server is started with, as `reportOnlyProviderForAgent` starts it. */
+const PARTICIPANT_EO_MCP = { serverPath: "/app/eoServer.mjs", enableCommentTool: false, enableConfigTools: false, enableFullThread: false, enableMemoryNote: false };
+
+function providerFor(agent: Agent, reportOnly = false): AgentProvider {
+  return {
+    start: (opts) => {
+      started.push({ agent, opts });
+      const assignment = /## Your assignment: (\w+)/.exec(opts.context)?.[1] ?? null;
+      const leader = opts.context.includes("## What you lead");
+      const data = script({ agent, opts, leader, assignment });
+      // A member's turn takes a moment, so the passes overlap as they do on a real backend.
+      const afterMs = assignment === null ? 0 : 30;
+      if (agent.provider === "claude") return claudeTurn(agent, opts, data, afterMs, reportOnly);
+      if (agent.provider === "codex") return codexTurn(agent, opts, data, afterMs, reportOnly);
+      return says(data, afterMs)[Symbol.asyncIterator]() as unknown as ReturnType<AgentProvider["start"]>;
+    },
+    resume: () => {
+      throw new Error("Nothing here resumes.");
+    },
+  };
+}
+
+/** A bridge that signs nothing: a member's credential, and the team boundary on it, can be read back from what its turn is handed. */
+const bridge: Pick<AgentWriteBridge, "tokenFor" | "close"> = {
+  tokenFor: (itemId: string, writes?: readonly AgentWriteTool[], scope?: string): AgentWriteBridgeAddress =>
+    writes === undefined ? { url: "http://127.0.0.1:1/agent-write", token: `${itemId}.mac` } : { url: "http://127.0.0.1:1/agent-write", token: `${itemId}~${writes.join(",")}${scope === undefined ? "" : `~${scope}`}.mac`, writes: [...writes] },
+  close: async () => undefined,
+};
+
+function supervisor(extra: Partial<Parameters<typeof createRunSupervisor>[0]> = {}): RunSupervisor {
+  const made = createRunSupervisor({
+    db: handle.db,
+    // EO's default guardrails, every cap at one (EO-871): the session is
+    // one run against them, and its turns are held back by nothing but
+    // the team's own limit.
+    limits: DEFAULT_GUARD_CONFIG,
+    provider: providerFor,
+    reportOnlyProvider: () => {
+      throw new Error("A member of the Review team was built as a report-only participant.");
+    },
+    teamPollMs: 5,
+    noDiskRoot: join(scratch, "no-disk"),
+    builtins: BUILTIN_RUNNERS,
+    sectionRenderers: developerSectionRenderers,
+    agentWriteBridge: () => bridge as AgentWriteBridge,
+    ...createRoleWiring(handle.db),
+    ...extra,
+  });
+  supervisors.push(made);
+  return made;
+}
+
+/**
+ * The template up to 1.7, the last version whose Review team is staffed by
+ * role: one reviewer agent leading and doing every pass. The scenarios
+ * written for that team (EO-868, EO-870, EO-882, EO-888) run on it; 1.8's
+ * team of a reviewer per pass (EO-885) is the describe at the end.
+ */
+const UP_TO_17 = templateHistoryUpTo(GALLERY_DIRECTORY, "software-feature-to-merge", "1.7");
+
+/**
+ * Delivery on 1.7 — or the newest version in `history` — as a fresh
+ * installation has it after its first launch, with the reviewers on
+ * `roster`.
+ */
+function freshInstallation(roster?: Roster, history: TemplateHistory = UP_TO_17): void {
+  syncRolePrompts(handle.db);
+  backfillPipelineOrigins(handle.db, history);
+  applyTemplateUpdates(handle.db, history, { isTheRecord: false });
+  if (roster === undefined) return;
+  const seeded = listAgents(handle.db).find((agent) => agent.role === "reviewer")!;
+  roster.reviewers.forEach((backend, index) => {
+    const config = backend === "codex" ? { provider: "codex", model: "gpt-reviewer" } : { provider: "claude" };
+    if (index === 0) {
+      updateAgent(handle.db, seeded.id, config);
+      // And the Review team's own reviewer (EO-897): the team runs its own copy, which the seeded one no longer moves.
+      const teamId = listStepsForPipeline(handle.db, "default").find((step) => step.id === "review")!.teamId!;
+      for (const own of listAgents(handle.db).filter((agent) => agent.teamId === teamId)) updateAgent(handle.db, own.id, config);
+    } else {
+      // A member of the declared Review team in its own right (EO-882): a
+      // second reviewer of the kind runs only because the team names it.
+      const added = createAgent(handle.db, { name: `Reviewer ${index + 1}`, role: "reviewer", instructions: seeded.instructions, ...config });
+      const declared = getTeam(handle.db, listStepsForPipeline(handle.db, "default").find((step) => step.id === "review")!.teamId!)!;
+      if (declared.definition?.coordination !== "leader") throw new Error("Review is not a leader-led declared team.");
+      const changed = changeTeam(handle.db, declared.id, { definition: { ...declared.definition, members: [...declared.definition.members, { agentId: added.id }] }, author: { kind: "person", personId: null } });
+      if (!changed.ok) throw new Error(changed.reason);
+    }
+  });
+}
+
+function story(): Item {
+  const item = createTestItem(handle.db, { type: "story", title: "Rate limit the API", stepId: "review", spec: { acceptance_criteria: CRITERIA } });
+  postComment(handle.db, { itemId: item.id, author: { type: "engine" }, kind: "output", body: DIFF });
+  return item;
+}
+
+const reviewTeam = (): LeaderTeam => {
+  const team = listStepsForPipeline(handle.db, "default").find((step) => step.id === "review")?.team as StepTeam | null;
+  if (team?.coordination !== "leader") throw new Error("Review has no leader-led team.");
+  return team;
+};
+
+/** The six passes a change touching input handling and an error message calls for, each finding one fault. */
+const PASSES = {
+  criteria: "src/limit.ts: a key at exactly its limit gets a 429; correct is a 429 only past it.",
+  impact: "src/server.ts: the old `limit()` caller still expects a boolean; correct is to read the status it now returns.",
+  tests: "src/limit.test.ts: nothing drives a request past the limit; correct is a test that sends the 101st.",
+  rules: "src/limit.ts: CONTRIBUTING says configuration is read from config/, and the limit is a literal; correct is to read it from config/limits.json.",
+  security: "src/limit.ts: the key is taken from the request unvalidated; correct is to reject a key that is not one the server issued.",
+  user_facing: "src/limit.ts: the 429 body is empty; correct is a message saying when to retry.",
+} as const;
+type Pass = keyof typeof PASSES;
+
+/** What each pass covers, as the template's instructions have the leader say (EO-888): the whole change for the criteria alone. */
+const COVERS: Record<Pass, string> = {
+  criteria: "The whole change.",
+  impact: "limit() in src/limit.ts, and its caller in src/server.ts.",
+  tests: "src/limit.test.ts, and limit() in src/limit.ts that it tests.",
+  rules: "CONTRIBUTING, and src/limit.ts, which it governs.",
+  security: "How src/limit.ts takes the key from the request.",
+  user_facing: "The 429 response src/limit.ts sends.",
+};
+
+/**
+ * The passes the leader's instructions list, read from what the leader was
+ * told on its turn (EO-873) — never from a list of this file's: the
+ * numbered passes every review gets, and the bulleted ones it gets "when
+ * the change calls for them". So a pass dropped from the template's
+ * instructions is a pass the scripted leader does not assign, and the
+ * scenarios below, which expect it, fail.
+ */
+function passesIn(context: string): { every: string[]; calledFor: string[] } {
+  const start = context.indexOf("## What you lead");
+  const end = context.indexOf("## This turn", start);
+  const told = context.slice(start, end === -1 ? undefined : end);
+  return {
+    every: [...told.matchAll(/^\d+\. `(\w+)`:/gm)].map((match) => match[1]!),
+    calledFor: [...told.matchAll(/^- `(\w+)`, when /gm)].map((match) => match[1]!),
+  };
+}
+
+/** The team's reviewers, by the names the leader is told to assign them work under (EO-882), in the team's order. */
+function reviewersIn(context: string): string[] {
+  const told = context.slice(context.indexOf("Your team's members"));
+  const named = [...told.matchAll(/^- (.+?) — a reviewer agent on /gm)].map((match) => match[1]!);
+  if (named.length === 0) throw new Error("The leader was told of no reviewer to assign work to.");
+  return named;
+}
+
+/**
+ * A leader's first round, as the instructions it was given say: every pass
+ * they list for every review, and those of the passes they list for when
+ * the change calls for them that this change does (`calledFor`), each
+ * required, with the note the instructions ask for.
+ */
+function assignAsTold(context: string, calledFor: readonly Pass[]): unknown {
+  const listed = passesIn(context);
+  const passes = [...listed.every, ...listed.calledFor.filter((key) => calledFor.includes(key as Pass))];
+  return {
+    outcome: {
+      decision: "assign",
+      // Shared out across the team's reviewers, so a team of both backends has each do some.
+      assignments: passes.map((key, index) => ({ key, member: reviewersIn(context)[index % reviewersIn(context).length]!, scope: COVERS[key as Pass], instructions: `Your focus is ${key}, and only ${key}.`, required: true })),
+      note: listed.calledFor.map((key) => `${key} ${calledFor.includes(key as Pass) ? "assigned" : "not assigned"}: ${calledFor.includes(key as Pass) ? "the change calls for it" : "nothing in the change calls for it"}.`).join(" "),
+    },
+  };
+}
+
+/** The report comment ids and their bodies, as the leader's context shows them. */
+function reportsIn(context: string): { id: string; body: string }[] {
+  const found: { id: string; body: string }[] = [];
+  const pattern = /Report \(comment ([^)]+)\)[^\n]*:\n\n([\s\S]*?)(?=\n### |\n## |$)/g;
+  for (let match = pattern.exec(context); match !== null; match = pattern.exec(context)) found.push({ id: match[1]!, body: match[2]! });
+  return found;
+}
+
+/** What the leader's final answer says beside its verdict. */
+interface Settled {
+  answer: Record<string, unknown>;
+  disagreements?: string;
+}
+
+/**
+ * A leader that assigns what its instructions list (`assignAsTold`), with
+ * the optional passes this change calls for, and once the reports are in
+ * builds its answer from them; `answer` is told which final turn this is,
+ * from 1.
+ */
+function leading(calledFor: readonly Pass[], answer: (reports: { id: string; body: string }[], final: number) => Settled): (turn: Parameters<Script>[0]) => unknown {
+  let turns = 0;
+  return ({ opts }) => {
+    turns += 1;
+    if (turns === 1) return assignAsTold(opts.context, calledFor);
+    const reports = reportsIn(opts.context);
+    const settled = answer(reports, turns - 1);
+    return { outcome: { decision: "final", answer: settled.answer, contributions: reports.map((one) => one.id), disagreements: settled.disagreements ?? "None.", limitations: "None." } };
+  };
+}
+
+/** The passes the template lists for every review, as this file expects them: a pass the template drops fails every scenario below. */
+const EVERY_REVIEW: Pass[] = ["criteria", "impact", "tests", "rules"];
+/** The key each member turn was assigned. */
+const assigned = () => memberTurns().map((one) => /## Your assignment: (\w+)/.exec(one.opts.context)![1]!);
+
+/** Each member reports its own pass's fault, and the impact pass sees the criteria fault as well — a duplicate the leader must merge. */
+function memberFinding(assignment: string): unknown {
+  const fault = PASSES[assignment as Pass];
+  const also = assignment === "impact" ? `\nBLOCKING: ${PASSES.criteria}` : "";
+  return { outcome: { outcome: "blocking", report: `Checked my focus.\nBLOCKING: ${fault}${also}` } };
+}
+
+const blockingIn = (reports: readonly { body: string }[]) => [...new Set(reports.flatMap((one) => [...one.body.matchAll(/BLOCKING: (.+)/g)].map((match) => match[1]!.trim())))];
+const coverage = () => CRITERIA.map((criterion, index) => ({ criterion, result: index === 0 ? "not_met" : "met" }));
+
+const routeOf = (resultKey: string) => listRoutesForPipeline(handle.db, "default").find((route) => route.fromStepId === "review" && route.resultKey === resultKey)!.target;
+/** What the step's own run posted: the verdict, as a single reviewer's run posts it. */
+const ownVerdicts = (item: Item) => {
+  const own = listRunsForItem(handle.db, item.id).find((run) => run.action === "review")!;
+  return listCommentsForItem(handle.db, item.id).filter((comment) => comment.runId === own.id && comment.authorType === "agent");
+};
+const memberTurns = () => started.filter((one) => one.opts.context.includes("## Your assignment:"));
+const leaderTurns = () => started.filter((one) => one.opts.context.includes("## What you lead"));
+
+beforeEach(() => {
+  handle = openMigratedTestDb();
+  scratch = mkdtempSync(join(tmpdir(), "eo-review-team-"));
+  started = [];
+  crossed = [];
+});
+
+afterEach(async () => {
+  for (const made of supervisors.splice(0)) await made.shutdown();
+  dropWarmCodexThread();
+  handle.close();
+  rmSync(scratch, { recursive: true, force: true });
+});
+
+describe("the template's Review team, on either backend (EO-868)", () => {
+  describe.each(ROSTERS)("$name", (roster) => {
+    beforeEach(() => freshInstallation(roster));
+
+    /**
+     * What every scenario leaves true: one team session, settled; every
+     * turn reached its own agent's backend, through that backend's
+     * adapter, carrying the turn's context and an answer schema.
+     */
+    async function settledOnce(item: Item): Promise<void> {
+      expect(listTeamSessionsForItem(handle.db, item.id).map((record) => record.session.status)).toEqual(["finalized"]);
+      expect(new Set(started.map((one) => one.agent.provider))).toEqual(new Set(roster.reviewers));
+      expect(started.every((one) => one.agent.role === "reviewer")).toBe(true);
+      expect(crossed.map((one) => [one.agent.id, one.backend])).toEqual(started.map((one) => [one.agent.id, one.agent.provider]));
+      expect(new Set(crossed.map((one) => one.backend))).toEqual(new Set(roster.reviewers));
+      for (const [index, one] of crossed.entries()) {
+        const context = started[index]!.opts.context;
+        const said = await one.said();
+        const heading = /## Your assignment: \w+|## What you lead/.exec(context)![0];
+        expect(said, `${one.backend} turn ${index}`).toContain(heading);
+        expect(said, `${one.backend} turn ${index}`).toContain(CRITERIA[0]);
+        expect(one.schema(), `${one.backend} turn ${index}`).toBeTypeOf("object");
+      }
+      // Every report and the leader's answer came back through the adapters' parsing, and nothing failed on the way.
+      expect(listRunsForItem(handle.db, item.id).filter((run) => run.status === "failed")).toEqual([]);
+    }
+
+    /** The item moved once, to where the verdict's route sends it. */
+    async function movedOnceTo(item: Item, resultKey: string): Promise<void> {
+      await settledOnce(item);
+      const moves = listTransitionsForItem(handle.db, item.id);
+      expect(moves).toHaveLength(1);
+      expect(moves[0]!.toStepId).toBe(routeOf(resultKey));
+      expect(getItem(handle.db, item.id)?.stepId).toBe(routeOf(resultKey));
+    }
+
+    it("approves on clean reports, with the pull request body, from a leader who assigned the four passes every review gets", async () => {
+      const item = story();
+      const lead = leading([], () => ({ answer: { verdict: "approve", feedback: "Every pass came back clean.", pull_request_body: "Rate limits the API per key." } }));
+      script = (turn) => (turn.leader ? lead(turn) : { outcome: { outcome: "clear", report: `Checked ${turn.assignment}: nothing blocks.` } });
+
+      await supervisor().runOnce();
+
+      await movedOnceTo(item, "approved");
+      // What the leader read in the template's instructions is what it assigned, and that is the four.
+      expect(assigned().sort()).toEqual([...EVERY_REVIEW].sort());
+      expect(leaderTurns()).toHaveLength(2);
+      // The leader is told what to assign, in the template's own words.
+      expect(leaderTurns()[0]!.opts.context).toContain(reviewTeam().leader.instructions);
+    });
+
+    it("rejects once, carrying every blocking issue from every pass, merged and de-duplicated, with coverage for every criterion", async () => {
+      const item = story();
+      const lead = leading(["security", "user_facing"], (reports) => ({
+        answer: { verdict: "reject", feedback: "Six passes, six faults.", blocking_issues: blockingIn(reports), criteria_coverage: coverage() },
+      }));
+      script = (turn) => (turn.leader ? lead(turn) : memberFinding(turn.assignment!));
+
+      await supervisor().runOnce();
+
+      await movedOnceTo(item, "changes_requested");
+      // The four every review gets and the two this change calls for, each as the template's instructions list it.
+      expect(assigned().sort()).toEqual((Object.keys(PASSES) as Pass[]).sort());
+      // One rejection, carrying all six faults — the duplicate the impact pass also reported counted once.
+      const verdicts = listReviewVerdicts(handle.db, item.id);
+      expect(verdicts).toHaveLength(1);
+      expect(verdicts[0]).toMatchObject({ verdict: "reject", blockingIssues: 6, declaredCriteria: CRITERIA.length, met: 2, notMet: 1, unexamined: 0 });
+      // The step's own rejection, on the review's run as a single reviewer's is, beside the leader's answer on the team's thread.
+      const rejection = ownVerdicts(item).filter((comment) => Object.values(PASSES).every((fault) => comment.body.includes(fault)));
+      expect(rejection).toHaveLength(1);
+      expect(rejection[0]!.body.split(PASSES.criteria)).toHaveLength(2);
+    });
+
+    it("asks the person when a pass finds something only they can decide", async () => {
+      const item = story();
+      const lead = leading([], () => ({ answer: { verdict: "needs_user_input", feedback: "Decide whether a limit applies per key or per account: the story says key, the thread says account." } }));
+      script = (turn) =>
+        turn.leader ? lead(turn) : { outcome: turn.assignment === "criteria" ? { outcome: "needs_decision", report: "Per key or per account is not mine to decide." } : { outcome: "clear", report: "Nothing blocks." } };
+
+      await supervisor().runOnce();
+
+      // Its route is to the person: the item is flagged where it stands, and the step's run waits on them.
+      await settledOnce(item);
+      expect(assigned().sort()).toEqual([...EVERY_REVIEW].sort());
+      expect(routeOf("needs_user_input")).toBe("user_attention");
+      expect(listTransitionsForItem(handle.db, item.id)).toEqual([]);
+      expect(getItem(handle.db, item.id)?.stepId).toBe("review");
+      expect(listRunsForItem(handle.db, item.id).find((run) => run.action === "review")?.status).toBe("awaiting_input");
+      expect(listCommentsForItem(handle.db, item.id).some((comment) => comment.body.includes("the pipeline routes this result to you"))).toBe(true);
+      expect(ownVerdicts(item).some((comment) => comment.body.includes("per key or per account"))).toBe(true);
+    });
+
+    /**
+     * A member's team boundary reaches its `eo` server only on the
+     * credential the write bridge signs (EO-870). With no bridge — not
+     * listening yet, or never — no member starts on either backend, each
+     * attempt fails and is retried as any execution failure is, and the
+     * item says why; nothing is ever served the whole thread.
+     */
+    it("starts no member without a write bridge, saying so on the item, and moves nothing", async () => {
+      const item = story();
+      script = () => {
+        throw new Error("No member's turn may start without its team boundary.");
+      };
+
+      await supervisor({ agentWriteBridge: () => null }).runOnce();
+
+      // No backend was reached: neither adapter was handed a turn.
+      expect(started).toEqual([]);
+      expect(crossed).toEqual([]);
+      expect(getItem(handle.db, item.id)?.stepId).toBe("review");
+      expect(listTransitionsForItem(handle.db, item.id)).toEqual([]);
+      // The leader's attempt, then its retry: each a failed run, each said on the item.
+      const members = listRunsForItem(handle.db, item.id).filter((run) => run.action === TEAM_PARTICIPANT_ACTION);
+      expect(members).toHaveLength(1 + reviewTeam().limits.maxRetries);
+      expect(members.every((run) => run.status === "failed" && run.error === MEMBER_NO_BRIDGE)).toBe(true);
+      const memberRunIds = new Set<string | null>(members.map((run) => run.id));
+      const said = listCommentsForItem(handle.db, item.id).filter((comment) => comment.authorType === "engine" && comment.body.includes(MEMBER_NO_BRIDGE));
+      const onAttempts = said.filter((comment) => memberRunIds.has(comment.runId));
+      expect(onAttempts.map((comment) => comment.runId).sort()).toEqual(members.map((run) => run.id).sort());
+      expect(onAttempts[0]!.body).toContain("did not start");
+      // And the team's own stop says it last (EO-886): the reason the last attempt failed.
+      expect(said.filter((comment) => !memberRunIds.has(comment.runId)).map((comment) => comment.body.includes(`The last of them: ${MEMBER_NO_BRIDGE}`))).toEqual([true]);
+      expect(listRunsForItem(handle.db, item.id).find((run) => run.action !== TEAM_PARTICIPANT_ACTION)?.error?.endsWith(`The last of them: ${MEMBER_NO_BRIDGE}`)).toBe(true);
+      const attempts = listTeamSessionsForItem(handle.db, item.id).at(-1)!.attempts;
+      expect(attempts.every((attempt) => attempt.status === "failed" && attempt.error === MEMBER_NO_BRIDGE)).toBe(true);
+    });
+
+    /**
+     * The template's team declares that a blocking pass rules out an
+     * approval (EO-873), so a leader that approves over one, saying
+     * nothing of it, is refused, and answers again.
+     */
+    it("refuses an approval over a blocking report the leader does not say it overruled, and takes the rejection it answers with next", async () => {
+      const item = story();
+      const lead = leading([], (reports, final) =>
+        final === 1
+          ? { answer: { verdict: "approve", feedback: "Looks fine to me.", pull_request_body: "Rate limits the API per key." } }
+          : { answer: { verdict: "reject", feedback: "The criteria pass found a fault.", blocking_issues: blockingIn(reports), criteria_coverage: coverage() } },
+      );
+      script = (turn) =>
+        turn.leader ? lead(turn) : turn.assignment === "criteria" ? memberFinding("criteria") : { outcome: { outcome: "clear", report: `Checked ${turn.assignment}: nothing blocks.` } };
+
+      await supervisor().runOnce();
+
+      const refusals = listCommentsForItem(handle.db, item.id).filter((comment) => comment.body.startsWith("EO did not accept the leader's final answer"));
+      expect(refusals).toHaveLength(1);
+      expect(refusals[0]!.body).toMatch(/Its result "approved" is one \*\*criteria\*\*'s report \(comment [^)]+\) rules out: it concluded "Blocking issues" \(blocking\)\./);
+      // The leader was told what rules out what before it answered, and why it was refused after.
+      expect(leaderTurns()[0]!.opts.context).toContain("- `blocking` rules out `approved`");
+      expect(leaderTurns()[2]!.opts.context).toContain("Why EO refused your final answer:");
+      await movedOnceTo(item, "changes_requested");
+      expect(listReviewVerdicts(handle.db, item.id)).toEqual([expect.objectContaining({ verdict: "reject", blockingIssues: 1 })]);
+    });
+  });
+});
+
+/**
+ * The template's case (EO-870): one reviewer agent staffs the leader and
+ * every pass, so each member's turn comes after runs of its own agent in
+ * its own session — the leader's first turn, and siblings that have
+ * finished. None of them is the agent having looked.
+ */
+/**
+ * The Review team made report-only (EO-882): its leader the seeded
+ * reviewer on Claude, its members that reviewer and a second one on
+ * Codex — each run as itself, through its own backend's report-only
+ * adapter, never as another agent of its kind — through an approval and
+ * a rejection. The isolated mode is the scenarios above, on the same
+ * mixed roster.
+ */
+describe("the Review team with report-only members, its leader on Claude and its members on Claude and Codex (EO-882)", () => {
+  const mixed = ROSTERS.find((roster) => roster.reviewers.length === 2)!;
+  let reportOnlyTurns: string[];
+
+  beforeEach(() => {
+    freshInstallation(mixed);
+    const declared = getTeam(handle.db, listStepsForPipeline(handle.db, "default").find((step) => step.id === "review")!.teamId!)!;
+    const changed = changeTeam(handle.db, declared.id, { definition: { ...declared.definition!, memberMode: "report_only" }, author: { kind: "person", personId: null } });
+    if (!changed.ok) throw new Error(changed.reason);
+    reportOnlyTurns = [];
+  });
+
+  function reportOnlySupervisor(): RunSupervisor {
+    return supervisor({
+      // Members and leader alike are built as report-only participants, each through its own backend's adapter.
+      provider: () => {
+        throw new Error("A member of a report-only team was dispatched through its ordinary provider.");
+      },
+      reportOnlyProvider: (agent, attemptId) => {
+        reportOnlyTurns.push(agent.id);
+        return { ok: true, cwd: join(scratch, attemptId), provider: providerFor(agent, true) };
+      },
+    });
+  }
+
+  async function settledAs(item: Item, resultKey: string): Promise<void> {
+    expect(listTeamSessionsForItem(handle.db, item.id).map((record) => record.session.status)).toEqual(["finalized"]);
+    // The team's own reviewers (EO-897), which it runs.
+    const agents = listAgents(handle.db).filter((agent) => agent.role === "reviewer" && agent.teamId !== null);
+    const [leader, second] = [agents.find((agent) => agent.provider === "claude")!, agents.find((agent) => agent.provider === "codex")!];
+    // The leader on Claude; the members' passes shared between the Claude and the Codex reviewer, each as itself.
+    expect(new Set(leaderTurns().map((one) => one.agent.id))).toEqual(new Set([leader.id]));
+    expect(new Set(memberTurns().map((one) => one.agent.provider))).toEqual(new Set(["claude", "codex"]));
+    expect(new Set(memberTurns().map((one) => one.agent.id))).toEqual(new Set([leader.id, second.id]));
+    expect(reportOnlyTurns).toEqual(started.map((one) => one.agent.id));
+    expect(crossed.map((one) => [one.agent.id, one.backend])).toEqual(started.map((one) => [one.agent.id, one.agent.provider]));
+    for (const [index, one] of crossed.entries()) {
+      const heading = /## Your assignment: \w+|## What you lead/.exec(started[index]!.opts.context)![0];
+      expect(await one.said(), `${one.backend} turn ${index}`).toContain(heading);
+      expect(one.schema(), `${one.backend} turn ${index}`).toBeTypeOf("object");
+    }
+    expect(listRunsForItem(handle.db, item.id).filter((run) => run.status === "failed")).toEqual([]);
+    expect(listTransitionsForItem(handle.db, item.id)).toHaveLength(1);
+    expect(getItem(handle.db, item.id)?.stepId).toBe(routeOf(resultKey));
+  }
+
+  it("approves on clean reports", async () => {
+    const item = story();
+    const lead = leading([], () => ({ answer: { verdict: "approve", feedback: "Every pass came back clean.", pull_request_body: "Rate limits the API per key." } }));
+    script = (turn) => (turn.leader ? lead(turn) : { outcome: { outcome: "clear", report: `Checked ${turn.assignment}: nothing blocks.` } });
+    await reportOnlySupervisor().runOnce();
+    await settledAs(item, "approved");
+    expect(assigned().sort()).toEqual([...EVERY_REVIEW].sort());
+  });
+
+  it("rejects once, carrying every blocking issue from every pass", async () => {
+    const item = story();
+    const lead = leading(["security", "user_facing"], (reports) => ({
+      answer: { verdict: "reject", feedback: "Six passes, six faults.", blocking_issues: blockingIn(reports), criteria_coverage: coverage() },
+    }));
+    script = (turn) => (turn.leader ? lead(turn) : memberFinding(turn.assignment!));
+    await reportOnlySupervisor().runOnce();
+    await settledAs(item, "changes_requested");
+    const verdicts = listReviewVerdicts(handle.db, item.id);
+    expect(verdicts).toHaveLength(1);
+    expect(verdicts[0]).toMatchObject({ verdict: "reject", blockingIssues: 6 });
+  });
+});
+
+describe.each(ROSTERS.filter((roster) => roster.reviewers.length === 1))("a Review team staffed by one agent, $name", (roster) => {
+  beforeEach(() => freshInstallation(roster));
+
+  const PERSON = "PERSON-SAID: the 429 must say when to retry, in seconds.";
+  /** The "What the person said" section of a turn's context. */
+  const personSection = (context: string) => /## What the person said\n([\s\S]*?)(?=\n## |$)/.exec(context)?.[1] ?? "";
+
+  it("shows every member and the leader a person's comment from before the session under what the person said, not only in the count", async () => {
+    const item = story();
+    postComment(handle.db, { itemId: item.id, author: { type: "human" }, kind: "note", body: PERSON });
+    const passes = EVERY_REVIEW;
+    const lead = leading([], () => ({ answer: { verdict: "approve", feedback: "Clean.", pull_request_body: "Body." } }));
+    script = (turn) => (turn.leader ? lead(turn) : { outcome: { outcome: "clear", report: `Checked ${turn.assignment}.` } });
+
+    await supervisor().runOnce();
+
+    expect(getItem(handle.db, item.id)?.stepId).toBe(routeOf("approved"));
+    // The team's own reviewer (EO-897): one copy of the seeded one, leading and running every pass.
+    const reviewers = listAgents(handle.db).filter((agent) => agent.role === "reviewer" && agent.teamId !== null);
+    expect(reviewers).toHaveLength(1);
+    expect(started.every((one) => one.agent.id === reviewers[0]!.id)).toBe(true);
+    expect(memberTurns()).toHaveLength(passes.length);
+
+    // Some members started only after a run of the same agent in the same session had ended: the leader's first turn, and siblings.
+    const runs = listRunsForItem(handle.db, item.id).filter((run) => run.action === TEAM_PARTICIPANT_ACTION);
+    const ended = (run: (typeof runs)[number]) => run.endedAt ?? Infinity;
+    const later = runs.filter((run) => runs.some((other) => other.id !== run.id && ended(other) <= (run.startedAt ?? 0)));
+    expect(later.length).toBeGreaterThanOrEqual(passes.length);
+
+    for (const [index, one] of started.entries()) {
+      const heading = /## Your assignment: \w+|## What you lead/.exec(one.opts.context)![0];
+      expect(personSection(one.opts.context), heading).toContain(PERSON);
+      expect(personSection(one.opts.context), heading).not.toContain("Nothing since you last worked on this ticket");
+      // And it crossed the backend so.
+      expect(await crossed[index]!.said(), heading).toContain(PERSON);
+    }
+  });
+});
+
+/**
+ * The scripted leader above assigns what the template's instructions
+ * list, not what this file lists (EO-873): change the instructions, and
+ * what it assigns changes with them — so dropping a pass from the
+ * template fails the scenarios that expect it.
+ */
+describe("the scripted leader", () => {
+  beforeEach(() => freshInstallation(ROSTERS[0]));
+
+  it("assigns no pass the template's instructions no longer list", async () => {
+    const team = reviewTeam();
+    const without = team.leader.instructions.replace(/^3\. `tests`:.*$/m, "");
+    expect(without).not.toBe(team.leader.instructions);
+    // The declared team Review names (EO-881), its leader's instructions changed as a version of it.
+    const declared = getTeam(handle.db, listStepsForPipeline(handle.db, "default").find((step) => step.id === "review")!.teamId!)!;
+    if (declared.definition?.coordination !== "leader") throw new Error("Review's team is not leader-led");
+    const changed = changeTeam(handle.db, declared.id, { definition: { ...declared.definition, leader: { ...declared.definition.leader, instructions: without } }, author: { kind: "person", personId: null } });
+    expect(changed.ok).toBe(true);
+    story();
+    const lead = leading([], () => ({ answer: { verdict: "approve", feedback: "Clean.", pull_request_body: "Body." } }));
+    script = (turn) => (turn.leader ? lead(turn) : { outcome: { outcome: "clear", report: "Nothing blocks." } });
+
+    await supervisor().runOnce();
+
+    expect(assigned().sort()).toEqual(["criteria", "impact", "rules"]);
+    expect(assigned().sort()).not.toEqual([...EVERY_REVIEW].sort());
+  });
+});
+
+/**
+ * What a member of the template's Review team reads (EO-888): its own
+ * instructions without what they say only to a reviewer answering the step
+ * alone, a team section that has it read what its assignment covers and
+ * say what it did not read, and the item without what only the step's own
+ * agent acts on — on Claude, on Codex and with both, through each
+ * backend's own adapter. And the same reviewer answering Review alone is
+ * sent what it always was.
+ */
+describe.each(ROSTERS)("a member of the template's Review team, $name (EO-888)", (roster) => {
+  beforeEach(() => freshInstallation(roster));
+
+  /** The reviewer prompt's single-agent reading rules, and the team section words a member is no longer told. */
+  const ALONE_ONLY = ["Read the whole change before you decide anything.", "every file in the diff", "the people who will merge it have not", "Reach for it having read", "for each symbol it changed", "That is impact analysis", "**Your verdict is the last thing you say.**", "<!-- alone -->"];
+
+  it("is sent its instructions without the single-agent reading rules, told to read what its assignment covers, and shown what that is", async () => {
+    const item = story();
+    const lead = leading(["security", "user_facing"], () => ({ answer: { verdict: "approve", feedback: "Clean.", pull_request_body: "Body." } }));
+    script = (turn) => (turn.leader ? lead(turn) : { outcome: { outcome: "clear", report: "Nothing blocks. Not read: anything outside what my assignment covers." } });
+
+    await supervisor().runOnce();
+
+    expect(getItem(handle.db, item.id)?.stepId).toBe(routeOf("approved"));
+    expect(memberTurns()).toHaveLength(6);
+    for (const one of memberTurns()) {
+      const key = /## Your assignment: (\w+)/.exec(one.opts.context)![1] as Pass;
+      const instructions = one.opts.instructions;
+      // Its own instructions come first, without what is for answering alone.
+      expect(instructions.startsWith(`${withoutAnsweringAlone(one.agent.instructions)}\n\n## Your part in a team`), key).toBe(true);
+      for (const words of ALONE_ONLY) expect(instructions, `${key}: ${words}`).not.toContain(words);
+      // What a member does use of the reviewer's prompt is still there.
+      expect(instructions).toContain("**On an assignment**, stay within its focus.");
+      expect(instructions).toContain("Judge correctness, then clarity");
+      // The team section: not the step alone, but its assignment and what that leads to, and what it did not read.
+      expect(instructions).not.toContain("as you would on this step alone");
+      expect(instructions).toContain("Read what your assignment names and what that leads to");
+      expect(instructions).toContain("what you did not read that a reader might expect you to have");
+      // What its assignment covers, under the assignment, as the leader said it.
+      expect(one.opts.context).toContain(`## Your assignment: ${key}\n\n**What it covers:** ${COVERS[key]}\n\nYour focus is ${key}`);
+      // The item, its criteria and its thread; not the step's task or how to answer it.
+      expect(one.opts.context).toContain("# EO-");
+      for (const criterion of CRITERIA) expect(one.opts.context).toContain(criterion);
+      expect(one.opts.context).toContain("## What each step said");
+      expect(one.opts.context).not.toContain("# Task");
+      expect(one.opts.context).not.toContain('perform the "review" action');
+    }
+    // As it crossed each backend's adapter: the instructions, and the context with its scope.
+    const members = crossed.filter((_one, index) => started[index]!.opts.context.includes("## Your assignment:"));
+    expect(new Set(members.map((one) => one.backend))).toEqual(new Set(roster.reviewers));
+    for (const one of members) {
+      const told = one.told();
+      expect(typeof told, one.backend).toBe("string");
+      expect(told as string).toContain("Read what your assignment names and what that leads to");
+      for (const words of ALONE_ONLY) expect(told as string, `${one.backend}: ${words}`).not.toContain(words);
+      const said = await one.said();
+      expect(said).toContain("**What it covers:**");
+      expect(said).not.toContain('perform the "review" action');
+    }
+    // The leader answers the step: it is told as before, and shown each assignment's scope.
+    const leader = leaderTurns()[0]!;
+    expect(leader.opts.instructions.startsWith(`${leader.agent.instructions}\n\n## Your part in a team`)).toBe(true);
+    expect(leader.opts.instructions).toContain("You work as you would on this step alone");
+    expect(leader.opts.instructions).toContain("what it covers — the files, areas or questions it is about");
+    expect(leader.opts.context).toContain('perform the "review" action');
+    expect(leaderTurns()[1]!.opts.context).toContain(`Covering: ${COVERS.impact}`);
+    // And the thread says what each assignment covers.
+    expect(listCommentsForItem(handle.db, item.id).some((comment) => comment.body.includes(`covering ${COVERS.tests}`))).toBe(true);
+  });
+
+  it("answering Review alone, is sent its own instructions and the step's ordinary context, as it always was", async () => {
+    // The agent Review names, which leads its team and here answers it alone.
+    const reviewer = listAgents(handle.db).find((agent) => agent.id === listStepsForPipeline(handle.db, "default").find((step) => step.id === "review")!.agentId)!;
+    // Review as one reviewer: the step names the agent, and no team.
+    const steps = listStepsForPipeline(handle.db, "default").map(({ teamId, ...step }) => (step.id === "review" ? { ...step, team: null, teamId: null } : { ...step, teamId }));
+    replacePipelineGraph(handle.db, "default", steps, listRoutesForPipeline(handle.db, "default"));
+    const item = story();
+    script = () => ({ verdict: "approve", feedback: "Clean.", pull_request_body: "Body." });
+    // What the step's ordinary dispatch builds for it, read before the run adds to the thread.
+    const ordinary = await buildTurnContext(handle.db, item, reviewer, "review", null, developerSectionRenderers);
+
+    await supervisor().runOnce();
+
+    expect(started).toHaveLength(1);
+    const alone = started[0]!;
+    expect(alone.agent.id).toBe(reviewer.id);
+    // Its instructions are its own, whole: every reading rule a reviewer alone is given.
+    expect(alone.opts.instructions).toBe(reviewer.instructions);
+    for (const words of ALONE_ONLY) expect(alone.opts.instructions).toContain(words);
+    // And they are the words it was sent before EO-888, word for word, but for the version line, the markers that say which are for answering alone and where lines wrap around them.
+    const words = reviewer.instructions
+      .split("\n")
+      .slice(1)
+      .filter((line) => line.trim() !== ALONE_START && line.trim() !== ALONE_END)
+      .join("\n")
+      .split(/\s+/)
+      .filter(Boolean)
+      .join(" ");
+    expect(createHash("sha256").update(words).digest("hex")).toBe(REVIEWER_18_WORDS);
+    // Its context is what the step's ordinary dispatch builds, task and all.
+    expect(alone.opts.context).toContain(ordinary);
+    expect(alone.opts.context).toContain('perform the "review" action');
+    expect(crossed[0]!.told()).toBe(reviewer.instructions);
+  });
+
+  /**
+   * What a turn is sent, measured without running a model: its
+   * instructions and its prompt together, in characters, as EO handed them
+   * to the backend's adapter.
+   */
+  const sizeOf = (one: Started) => one.opts.instructions.length + one.opts.context.length;
+
+  /**
+   * A fresh installation of `roster` with the same item on Review, in a
+   * database of its own: what one agent answering Review alone is sent is
+   * measured on an item whose thread no team run has added to, and the
+   * team's on one no single reviewer's run has, so neither is measured on
+   * the other's comments.
+   */
+  async function reinstalled(): Promise<void> {
+    for (const made of supervisors.splice(0)) await made.shutdown();
+    dropWarmCodexThread();
+    handle.close();
+    handle = openMigratedTestDb();
+    started = [];
+    crossed = [];
+    freshInstallation(roster);
+  }
+
+  it("is sent less, instructions and prompt together, than the same agent answering Review alone, for the same item", async () => {
+    // What each reviewer agent is sent answering Review alone, Review naming it and no team.
+    const aloneSizes = new Map<string, number>();
+    for (const name of new Set(listAgents(handle.db).filter((agent) => agent.role === "reviewer").map((agent) => agent.name))) {
+      await reinstalled();
+      const agent = listAgents(handle.db).find((one) => one.name === name)!;
+      const steps = listStepsForPipeline(handle.db, "default").map(({ teamId, ...step }) => (step.id === "review" ? { ...step, agentId: agent.id, team: null, teamId: null } : { ...step, teamId }));
+      replacePipelineGraph(handle.db, "default", steps, listRoutesForPipeline(handle.db, "default"));
+      const item = story();
+      script = () => ({ verdict: "approve", feedback: "Clean.", pull_request_body: "Body." });
+      await supervisor().runOnce();
+      expect(started.map((one) => one.agent.id)).toEqual([agent.id]);
+      expect(started[0]!.opts.context).toContain(`# ${item.key}: Rate limit the API`);
+      aloneSizes.set(name, sizeOf(started[0]!));
+    }
+    expect(aloneSizes.size).toBe(roster.reviewers.length);
+
+    // What each member of the Review team is sent, on the same item, its thread as it stood before Review ran.
+    await reinstalled();
+    const item = story();
+    const lead = leading(["security", "user_facing"], () => ({ answer: { verdict: "approve", feedback: "Clean.", pull_request_body: "Body." } }));
+    script = (turn) => (turn.leader ? lead(turn) : { outcome: { outcome: "clear", report: "Nothing blocks." } });
+    await supervisor().runOnce();
+    expect(getItem(handle.db, item.id)?.stepId).toBe(routeOf("approved"));
+    expect(memberTurns()).toHaveLength(6);
+    expect(new Set(memberTurns().map((one) => one.agent.provider))).toEqual(new Set(roster.reviewers));
+
+    // Every member, whatever its pass — the criteria member, told to read the whole change, too — is sent less than its agent alone is.
+    for (const one of memberTurns()) {
+      const key = /## Your assignment: (\w+)/.exec(one.opts.context)![1]!;
+      const alone = aloneSizes.get(one.agent.name);
+      expect(alone, `${key}: ${one.agent.name} answered Review alone`).toBeDefined();
+      expect(sizeOf(one), `${key} on ${one.agent.provider}: ${sizeOf(one)} characters against ${alone} alone`).toBeLessThan(alone!);
+    }
+  });
+});
+
+/**
+ * An installation whose reviewer could review before can run the team
+ * (EO-868): the seeded reviewer is on a backend EO could never hold
+ * report-only, and the team is isolated, so nothing refuses it.
+ */
+describe("a fresh installation from the template", () => {
+  beforeEach(() => freshInstallation());
+
+  it("publishes Delivery as it stands and runs Review as a team, refusing nothing", async () => {
+    const pipeline = getPipeline(handle.db, "default")!;
+    const steps = listStepsForPipeline(handle.db, "default");
+    const routes = listRoutesForPipeline(handle.db, "default");
+    expect(listAgents(handle.db).find((agent) => agent.role === "reviewer")?.provider).toBe("fake");
+    expect(storedGraphProblems(handle.db, "default", steps, routes, pipeline.entryStepId).filter((problem) => problem.severity === "error")).toEqual([]);
+    const published = savePipeline(handle.db, { notifyStateChange: () => {} }, { pipelineId: "default", steps: steps.map((step) => ({ ...step })), routes, entryStepId: pipeline.entryStepId });
+    expect(published.saved).toBe(true);
+    expect(reviewTeam().members).toBe("isolated");
+
+    const item = story();
+    const lead = leading([], () => ({ answer: { verdict: "approve", feedback: "Clean.", pull_request_body: "Body." } }));
+    script = (turn) => (turn.leader ? lead(turn) : { outcome: { outcome: "clear", report: "Nothing blocks." } });
+
+    await supervisor().runOnce();
+
+    expect(getItem(handle.db, item.id)?.stepId).toBe(routeOf("approved"));
+    expect(memberTurns()).toHaveLength(4);
+    expect(listCommentsForItem(handle.db, item.id).filter((comment) => /report-only|refus/i.test(comment.body))).toEqual([]);
+  });
+});
+
+/**
+ * Removing the team as a person does (EO-873): no tool writes a team, so
+ * the assistant drafts Review with `team: "none"` and the person presses
+ * Publish on its card. The next review is the single reviewer's, and a
+ * later template version that changes Review's team is held for the
+ * person, as it is for any step they edited, rather than putting the
+ * team back.
+ */
+describe("the template's Review team, removed through the assistant's draft and its card", () => {
+  // On 1.5, so the version after it — 1.6, which changes Review's team — is a real later update.
+  beforeEach(() => freshInstallation(ROSTERS[0], templateHistoryUpTo(GALLERY_DIRECTORY, "software-feature-to-merge", "1.5")));
+  afterEach(() => clearHandlerRegistry());
+
+  const PIPELINE_READ = `mcp__${ADMIN_MCP_SERVER_NAME}__pipeline_get`;
+
+  /** The assistant's draft of Delivery as it stands, but for Review, which is one agent again. */
+  function draftWithoutTeam() {
+    return {
+      rationale: "Review goes back to a single reviewer.",
+      entryStepId: getPipeline(handle.db, "default")!.entryStepId,
+      target: { pipelineId: "default" },
+      removes: [],
+      // Each agent step names its agent by name, as a draft does (EO-876).
+      steps: listStepsForPipeline(handle.db, "default").map((step) => ({
+        id: step.id,
+        position: step.position,
+        name: step.name,
+        type: step.type,
+        agent: step.agentId === null ? null : (listAgents(handle.db).find((agent) => agent.id === step.agentId)?.name ?? null),
+        entryAction: step.entryAction,
+        instructionsSummary: step.instructionsSummary,
+        isTerminal: step.isTerminal,
+        planMode: step.planMode,
+        ...(step.id === "review" ? { team: "none" } : {}),
+      })),
+      routes: listRoutesForPipeline(handle.db, "default").map(({ fromStepId, resultKey, label, tone, target, position }) => ({ fromStepId, resultKey, label, tone, target, position })),
+    };
+  }
+
+  /** The assistant's turn: it read Delivery and replied with `draft`, and the card it posted. */
+  async function draftCard(): Promise<{ on: Item; cardId: Uuid; body: string }> {
+    const sent = await sendToAssist(handle.db, undefined, { page: pageDescriptorFor("/pipelines/default"), conversationId: null, body: "Make Review a single reviewer again.", attachmentIds: [], interrupt: false });
+    const on = getItem(handle.db, sent.conversation.id as Uuid)!;
+    const parsed = AssistOutputSchema.parse({ message: "Review is one reviewer again.", draft: draftWithoutTeam() });
+    const agent = assistAgent(handle.db)!;
+    const asked = listCommentsForItem(handle.db, on.id).filter((comment) => comment.authorType === "human").at(-1)!;
+    const run = createRun(handle.db, { itemId: on.id, agentId: agent.id, action: ASSIST_ACTION, initiationId: asked.id });
+    appendRunEvent(handle.db, run.id, "tool_call", { name: PIPELINE_READ, args: { pipelineId: "default" }, callId: "call-1" });
+    appendRunEvent(handle.db, run.id, "tool_result", { name: PIPELINE_READ, callId: "call-1", ok: true, output: "", truncated: false });
+    updateRun(handle.db, run.id, { status: "succeeded", result: { raw: JSON.stringify(parsed), parsed } });
+    postAssistReply(handle.db, on, agent.id, run.id, parsed);
+    const posted = listCommentsForItem(handle.db, on.id).filter((comment) => comment.runId === run.id);
+    expect(posted.filter((comment) => comment.kind === "rejection").map((comment) => comment.body)).toEqual([]);
+    const card = posted.find((comment) => comment.kind === PROPOSAL_KIND)!;
+    return { on, cardId: card.id as Uuid, body: card.body };
+  }
+
+  /** Publish, as the card's button sends it: the draft read for publishing, then `pipeline:save` with the section lock every channel is asked. */
+  async function publish(on: Item, cardId: Uuid) {
+    const read = readAssistDraftForPublish(handle.db, { conversationId: on.id, messageId: cardId });
+    expect(read.problem).toBeNull();
+    return handleIpcRequest(
+      "pipeline:save",
+      { pipelineId: read.pipelineId, steps: read.steps, routes: read.routes, entryStepId: read.entryStepId, ...((read.actions ?? []).length > 0 ? { actions: read.actions } : {}) },
+      (payload) => savePipeline(handle.db, undefined, payload),
+      { exposeErrorDetails: true, sectionLock: (channel: IpcChannel, payload: unknown) => sectionLockFor(handle.db, channel, payload) },
+    );
+  }
+
+  const review = () => listStepsForPipeline(handle.db, "default").find((step) => step.id === "review")!;
+  const routesOf = () => listRoutesForPipeline(handle.db, "default").map(({ fromStepId, resultKey, label, tone, target }) => ({ fromStepId, resultKey, label, tone, target }));
+
+  it("gives back the single reviewer's review — one run, the ordinary review schema, the same routes — and a later template update is held rather than putting the team back", async () => {
+    expect(getPipelineOrigin(handle.db, "default")?.version).toBe("1.5");
+    const team = reviewTeam();
+    const routesBefore = routesOf();
+    const agentBefore = review().agentId;
+
+    const { on, cardId, body } = await draftCard();
+    expect(body).toMatch(/Team: ".+" → one agent/);
+    // Nothing is written until the person presses Publish.
+    expect(review().team).toEqual(team);
+    expect(await publish(on, cardId)).toMatchObject({ ok: true, data: { saved: true } });
+    expect(review().team).toBeNull();
+    // Still the reviewer agent it named (EO-875), now on its own.
+    expect(review()).toMatchObject({ type: "agent", agentId: agentBefore, entryAction: "review" });
+    expect(routesOf()).toEqual(routesBefore);
+
+    const item = story();
+    script = () => ({ verdict: "reject", feedback: "One fault.", blocking_issues: [PASSES.criteria], criteria_coverage: coverage() });
+
+    await supervisor().runOnce();
+
+    expect(started).toHaveLength(1);
+    expect(started[0]!.opts.instructions).not.toContain("## Your part in a team");
+    expect(started[0]!.opts.context).not.toContain("## What you lead");
+    // The review action's own answer schema, as dispatch resolves it for this item and its reviewer: no leader's wrapper around it.
+    expect(started[0]!.opts.outputSchema).toEqual(outputSchemaFor(registryForItem(handle.db, item), "review", getItemType(handle.db, item.typeId), "reviewer"));
+    expect(started[0]!.opts.outputSchema).toEqual(outputSchemaFor(developerRegistry(), "review", getItemType(handle.db, item.typeId), "reviewer"));
+    expect(listTeamSessionsForItem(handle.db, item.id)).toEqual([]);
+    expect(listRunsForItem(handle.db, item.id).map((run) => run.action)).toEqual(["review"]);
+    expect(getItem(handle.db, item.id)?.stepId).toBe(routeOf("changes_requested"));
+
+    // 1.6 changes Review's team; the person removed it, so the update is held for them.
+    const shipped = templateHistoryUpTo(GALLERY_DIRECTORY, "software-feature-to-merge", "1.6");
+    const next = shipped.get("software-feature-to-merge")!.find((version) => version.version === "1.6")!;
+    expect(applyTemplateUpdates(handle.db, shipped, { isTheRecord: false })).toContainEqual(expect.objectContaining({ pipelineId: "default", outcome: "conflict", from: "1.5", to: "1.6" }));
+    expect(review().team).toBeNull();
+    expect(getPipelineOrigin(handle.db, "default")?.version).toBe("1.5");
+    expect(openUpdateConflict(handle.db, "default")?.conflicts).toEqual([
+      expect.objectContaining({ key: { kind: "setting", stepId: "review", field: "team" }, base: team, current: null, template: next.document.steps.find((step) => step.id === "review")!.team }),
+    ]);
+  });
+});
+
+/**
+ * Delivery updated from 1.4 on a project with a Git and a folder workspace
+ * (EO-871): the update applies, and an item in the folder — which cannot
+ * give each member a copy of its own — is refused at start with a comment
+ * naming the kind. Never a member in the item's own folder, and never the
+ * single reviewer in the team's place.
+ */
+describe.each([
+  { name: "beside a Git repository", git: true },
+  { name: "the project's only workspace", git: false },
+])("an item in a folder workspace, $name, on Delivery updated to 1.5", ({ git }) => {
+  let folder: string;
+  let item: Item;
+
+  beforeEach(() => {
+    folder = mkdtempSync(join(tmpdir(), "eo-review-folder-"));
+    syncRolePrompts(handle.db);
+    const onFourteen = templateHistoryUpTo(GALLERY_DIRECTORY, "software-feature-to-merge", "1.4");
+    backfillPipelineOrigins(handle.db, onFourteen);
+    const shop = createProject(handle.db, { name: "Shop", keyPrefix: "SHOP" }).id;
+    adoptPipeline(handle.db, "default", shop);
+    applyTemplateUpdates(handle.db, onFourteen, { isTheRecord: false });
+    // The git kind installed, as the developer pack installs it.
+    useWorkspaceKinds(new Map([[GIT_WORKTREE_KIND, { slug: GIT_WORKTREE_KIND, evidence: { copy: {} } } as unknown as WorkspaceKind]]));
+    if (git) addWorkspaceToProject(handle.db, shop, createWorkspace(handle.db, { config: { name: "shop", repoPath: join(folder, "shop.git") } }).id);
+    const docs = createWorkspace(handle.db, { kind: FOLDER_KIND, config: { path: folder } });
+    addWorkspaceToProject(handle.db, shop, docs.id);
+    // The update applies either way (EO-871): what cannot run is said on each item, at start.
+    expect(applyTemplateUpdates(handle.db, templateHistoryUpTo(GALLERY_DIRECTORY, "software-feature-to-merge", "1.5"), { isTheRecord: false })).toContainEqual(expect.objectContaining({ pipelineId: "default", outcome: "applied", from: "1.4", to: "1.5" }));
+    expect(getPipelineOrigin(handle.db, "default")?.version).toBe("1.5");
+    expect(reviewTeam().members).toBe("isolated");
+    item = createTestItem(handle.db, { type: "story", title: "Rewrite the setup guide", stepId: "review", projectId: shop, workspaceId: docs.id, spec: { acceptance_criteria: CRITERIA } });
+  });
+
+  afterEach(() => {
+    useWorkspaceKinds(new Map());
+    rmSync(folder, { recursive: true, force: true });
+  });
+
+  it("refuses the team at start with a comment naming the kind, and starts nobody — no member, and no single reviewer", async () => {
+    script = () => {
+      throw new Error("Nobody should have been started.");
+    };
+
+    await supervisor().runOnce();
+
+    expect(started).toEqual([]);
+    expect(listRunsForItem(handle.db, item.id).filter((run) => run.action === TEAM_PARTICIPANT_ACTION)).toEqual([]);
+    expect(listRunsForItem(handle.db, item.id).map((run) => run.action)).toEqual(["review"]);
+    expect(listTransitionsForItem(handle.db, item.id)).toEqual([]);
+    expect(getItem(handle.db, item.id)?.stepId).toBe("review");
+    const said = listCommentsForItem(handle.db, item.id).map((comment) => comment.body).join("\n");
+    expect(said).toContain('its step works in a "folder" workspace, which cannot give each member a copy of its own, so EO started nobody');
+  });
+});
+
+
+/**
+ * The bundled template as it ships (EO-885, 1.8): Review is a declared
+ * team, a lead reviewer and one reviewer per pass with instructions of its
+ * own. Installed on a fresh installation, as its first launch brings it to
+ * the newest version, and run end to end with its lead and members on
+ * Claude, on Codex, and on both — each through its own backend's real
+ * adapter (invariant 12).
+ */
+describe("the bundled Review team of a reviewer per pass, installed fresh (EO-885)", () => {
+  /** The backends of the lead, then of each member in the team's order, cycled. */
+  const SPLITS: { name: string; lead: Backend; members: Backend[] }[] = [
+    { name: "every agent on Claude", lead: "claude", members: ["claude"] },
+    { name: "every agent on Codex", lead: "codex", members: ["codex"] },
+    { name: "the lead on Claude and its members on both backends", lead: "claude", members: ["codex", "claude"] },
+  ];
+
+  /** The passes the lead's instructions list, each with the member they give it to (EO-885): numbered for every review, bulleted for when the change calls for them. */
+  function passesByMember(context: string): { every: [string, string][]; calledFor: [string, string][] } {
+    const start = context.indexOf("## What you lead");
+    const end = context.indexOf("## This turn", start);
+    const told = context.slice(start, end === -1 ? undefined : end);
+    return {
+      every: [...told.matchAll(/^\d+\. `(\w+)`, to (.+?):/gm)].map((match): [string, string] => [match[1]!, match[2]!]),
+      calledFor: [...told.matchAll(/^- `(\w+)`, to (.+?), when /gm)].map((match): [string, string] => [match[1]!, match[2]!]),
+    };
+  }
+
+  /** A lead that gives each pass its instructions list to the member they name, and then answers from the reports. */
+  function leadingByMember(calledFor: readonly Pass[], answer: (reports: { id: string; body: string }[]) => Record<string, unknown>): (turn: Parameters<Script>[0]) => unknown {
+    let turns = 0;
+    return ({ opts }) => {
+      turns += 1;
+      if (turns > 1) {
+        const reports = reportsIn(opts.context);
+        return { outcome: { decision: "final", answer: answer(reports), contributions: reports.map((one) => one.id), disagreements: "None.", limitations: "None." } };
+      }
+      const listed = passesByMember(opts.context);
+      const members = reviewersIn(opts.context);
+      const passes = [...listed.every, ...listed.calledFor.filter(([key]) => calledFor.includes(key as Pass))];
+      for (const [, member] of passes) expect(members).toContain(member);
+      return {
+        outcome: {
+          decision: "assign",
+          assignments: passes.map(([key, member]) => ({ key, member, scope: COVERS[key as Pass], instructions: `This change adds a per-key limit; look at ${key}.`, required: true })),
+          note: "security and user_facing assigned: the change takes a key from the request and answers with a 429.",
+        },
+      };
+    };
+  }
+
+  function installed(split: (typeof SPLITS)[number]): { teamId: string; template: ExportedTeam } {
+    syncRolePrompts(handle.db);
+    const history = loadTemplateHistory(GALLERY_DIRECTORY);
+    backfillPipelineOrigins(handle.db, history);
+    applyTemplateUpdates(handle.db, history, { isTheRecord: false });
+    expect(getPipelineOrigin(handle.db, "default")?.version).toBe("1.8");
+    const template = history.get("software-feature-to-merge")!.at(-1)!.document.steps.find((step) => step.id === "review")!.team;
+    if (template === undefined || !isExportedTeam(template)) throw new Error("1.8's Review carries no declared team");
+    const teamId = listStepsForPipeline(handle.db, "default").find((step) => step.id === "review")!.teamId!;
+    const definition = getTeam(handle.db, teamId)!.definition!;
+    if (definition.coordination !== "leader") throw new Error("Review's team is not leader-led");
+    const on = (backend: Backend) => (backend === "codex" ? { provider: "codex", model: "gpt-reviewer" } : { provider: "claude" });
+    updateAgent(handle.db, definition.leader.agentId as Uuid, on(split.lead));
+    definition.members.forEach((member, index) => updateAgent(handle.db, member.agentId as Uuid, on(split.members[index % split.members.length]!)));
+    return { teamId, template };
+  }
+
+  describe.each(SPLITS)("$name", (split) => {
+    let template: ExportedTeam;
+    beforeEach(() => {
+      ({ template } = installed(split));
+    });
+
+    /** Every turn reached its own agent's backend through that backend's adapter, each pass its own member, and nothing failed. */
+    async function ranAsDeclared(item: Item, passes: readonly Pass[]): Promise<void> {
+      expect(listTeamSessionsForItem(handle.db, item.id).map((record) => record.session.status)).toEqual(["finalized"]);
+      expect(crossed.map((one) => [one.agent.id, one.backend])).toEqual(started.map((one) => [one.agent.id, one.agent.provider]));
+      expect(new Set(crossed.map((one) => one.backend))).toEqual(new Set([split.lead, ...split.members]));
+      expect(new Set(leaderTurns().map((one) => one.agent.name))).toEqual(new Set(["Lead reviewer"]));
+      // Each pass done by the member its instructions name, sent that member's own instructions.
+      const byPass = Object.fromEntries(memberTurns().map((one) => [/## Your assignment: (\w+)/.exec(one.opts.context)![1]!, one]));
+      expect(Object.keys(byPass).sort()).toEqual([...passes].sort());
+      for (const pass of passes) {
+        const one = byPass[pass]!;
+        const declared = template.members.find((member) => member.name === one.agent.name);
+        expect(declared, pass).toBeDefined();
+        expect(one.agent.teamId).not.toBeNull();
+        expect(one.opts.instructions.startsWith(`${declared!.instructions}\n\n## Your part in a team`), pass).toBe(true);
+        expect(one.opts.instructions, pass).not.toContain("prompt-version");
+      }
+      expect(memberTurns().map((one) => one.agent.name).sort()).toEqual(
+        passes.map((pass) => ({ criteria: "Criteria reviewer", impact: "Impact reviewer", tests: "Tests reviewer", rules: "Rules reviewer", security: "Security reviewer", user_facing: "User-facing reviewer" })[pass]).sort(),
+      );
+      for (const [index, one] of crossed.entries()) {
+        const heading = /## Your assignment: \w+|## What you lead/.exec(started[index]!.opts.context)![0];
+        expect(await one.said(), `${one.backend} turn ${index}`).toContain(heading);
+        expect(one.schema(), `${one.backend} turn ${index}`).toBeTypeOf("object");
+      }
+      expect(listRunsForItem(handle.db, item.id).filter((run) => run.status === "failed")).toEqual([]);
+    }
+
+    it("approves on clean reports, each of the four passes every review gets done by its own member", async () => {
+      const item = story();
+      const lead = leadingByMember([], () => ({ verdict: "approve", feedback: "Every pass came back clean.", pull_request_body: "Rate limits the API per key." }));
+      script = (turn) => (turn.leader ? lead(turn) : { outcome: { outcome: "clear", report: `Checked ${turn.assignment}: nothing blocks. Not read: the rest of the change.` } });
+
+      await supervisor().runOnce();
+
+      await ranAsDeclared(item, EVERY_REVIEW);
+      expect(listTransitionsForItem(handle.db, item.id)).toHaveLength(1);
+      expect(getItem(handle.db, item.id)?.stepId).toBe(routeOf("approved"));
+    });
+
+    it("rejects once, carrying every blocking issue from all six passes, each done by its own member", async () => {
+      const item = story();
+      const lead = leadingByMember(["security", "user_facing"], (reports) => ({ verdict: "reject", feedback: "Six passes, six faults.", blocking_issues: blockingIn(reports), criteria_coverage: coverage() }));
+      script = (turn) => (turn.leader ? lead(turn) : memberFinding(turn.assignment!));
+
+      await supervisor().runOnce();
+
+      await ranAsDeclared(item, Object.keys(PASSES) as Pass[]);
+      expect(getItem(handle.db, item.id)?.stepId).toBe(routeOf("changes_requested"));
+      expect(listReviewVerdicts(handle.db, item.id)).toEqual([expect.objectContaining({ verdict: "reject", blockingIssues: 6 })]);
+    });
+  });
+
+  it("sends each member less, instructions and prompt together, than the reviewer answering Review alone is sent, for the same item", async () => {
+    installed(SPLITS[0]!);
+    const reviewer = listAgents(handle.db).find((agent) => agent.id === listStepsForPipeline(handle.db, "default").find((step) => step.id === "review")!.agentId)!;
+    updateAgent(handle.db, reviewer.id, { provider: "claude" });
+    const item = story();
+    const lead = leadingByMember(["security", "user_facing"], () => ({ verdict: "approve", feedback: "Clean.", pull_request_body: "Body." }));
+    script = (turn) => (turn.leader ? lead(turn) : { outcome: { outcome: "clear", report: "Nothing blocks." } });
+    await supervisor().runOnce();
+    expect(getItem(handle.db, item.id)?.stepId).toBe(routeOf("approved"));
+    expect(memberTurns()).toHaveLength(6);
+    const largestMember = Math.max(...memberTurns().map((one) => one.opts.instructions.length + one.opts.context.length));
+
+    // The same item on a fresh installation whose Review is the reviewer alone.
+    for (const made of supervisors.splice(0)) await made.shutdown();
+    dropWarmCodexThread();
+    handle.close();
+    handle = openMigratedTestDb();
+    started = [];
+    crossed = [];
+    installed(SPLITS[0]!);
+    const alone = listAgents(handle.db).find((agent) => agent.id === listStepsForPipeline(handle.db, "default").find((step) => step.id === "review")!.agentId)!;
+    updateAgent(handle.db, alone.id, { provider: "claude" });
+    const steps = listStepsForPipeline(handle.db, "default").map(({ teamId, ...step }) => (step.id === "review" ? { ...step, team: null, teamId: null } : { ...step, teamId }));
+    replacePipelineGraph(handle.db, "default", steps, listRoutesForPipeline(handle.db, "default"));
+    story();
+    script = () => ({ verdict: "approve", feedback: "Clean.", pull_request_body: "Body." });
+    await supervisor().runOnce();
+    expect(started.map((one) => one.agent.id)).toEqual([alone.id]);
+    expect(largestMember).toBeLessThan(started[0]!.opts.instructions.length + started[0]!.opts.context.length);
+  });
+
+  /**
+   * Installed fresh from the gallery (EO-899): first run adopts the seeded
+   * Delivery into the project it makes, and Review's team, made while
+   * Delivery was on no project, comes with it — so Delivery has no
+   * team-project problem, and Review runs as Reviewers.
+   */
+  it("runs Review end to end as the Reviewers team once Use this has made the project and adopted Delivery, the team and its members the project's own", async () => {
+    syncRolePrompts(handle.db);
+    const history = loadTemplateHistory(GALLERY_DIRECTORY);
+    backfillPipelineOrigins(handle.db, history);
+    applyTemplateUpdates(handle.db, history, { isTheRecord: false });
+    // The keychain stand-in the gallery's preflight reads names from; nothing writes a secret.
+    const NO_SECRETS = { directory: join(scratch, "no-secrets"), store: { isEncryptionAvailable: () => false, encryptString: () => Buffer.from(""), decryptString: () => "" } };
+    const answer = await useGalleryCommand(handle.db, { directory: GALLERY_DIRECTORY, moduleSecrets: NO_SECRETS, signedInBackends: [] }, { slug: "software-feature-to-merge", answers: { keyPrefix: "ACME" }, roleSlots: {} });
+    expect(answer.problem).toBeNull();
+    expect(answer.pipelineId).toBe("default");
+    const projectId = answer.projectId!;
+    expect(getPipeline(handle.db, "default")?.projectId).toBe(projectId);
+
+    const team = getTeam(handle.db, listStepsForPipeline(handle.db, "default").find((step) => step.id === "review")!.teamId!)!;
+    expect(team).toMatchObject({ name: "Reviewers", projectId });
+    const definition = team.definition!;
+    if (definition.coordination !== "leader") throw new Error("Review's team is not leader-led");
+    const own = [definition.leader.agentId, ...definition.members.map((member) => member.agentId)];
+    for (const agentId of own) expect(listAgents(handle.db).find((agent) => agent.id === agentId)).toMatchObject({ teamId: team.id, projectId });
+    for (const agentId of own) updateAgent(handle.db, agentId as Uuid, { provider: "claude" });
+
+    const steps = listStepsForPipeline(handle.db, "default");
+    const problems = storedGraphProblems(handle.db, "default", steps, listRoutesForPipeline(handle.db, "default"), getPipeline(handle.db, "default")!.entryStepId);
+    expect(problems.filter((problem) => /team/i.test(problem.message))).toEqual([]);
+    expect(problems.filter((problem) => problem.severity === "error")).toEqual([]);
+
+    const item = createTestItem(handle.db, { type: "story", title: "Rate limit the API", stepId: "review", projectId: projectId as Uuid, spec: { acceptance_criteria: CRITERIA } });
+    postComment(handle.db, { itemId: item.id, author: { type: "engine" }, kind: "output", body: DIFF });
+    const lead = leadingByMember([], () => ({ verdict: "approve", feedback: "Every pass came back clean.", pull_request_body: "Rate limits the API per key." }));
+    script = (turn) => (turn.leader ? lead(turn) : { outcome: { outcome: "clear", report: `Checked ${turn.assignment}: nothing blocks. Not read: the rest of the change.` } });
+
+    await supervisor().runOnce();
+
+    expect(listTeamSessionsForItem(handle.db, item.id).map((record) => record.session.status)).toEqual(["finalized"]);
+    // Every turn was one of the team's own agents: the lead, then a member per pass.
+    expect(started.filter((one) => !own.includes(one.agent.id))).toEqual([]);
+    expect(new Set(leaderTurns().map((one) => one.agent.id))).toEqual(new Set([definition.leader.agentId]));
+    expect(memberTurns()).toHaveLength(EVERY_REVIEW.length);
+    expect(listRunsForItem(handle.db, item.id).filter((run) => run.status === "failed")).toEqual([]);
+    expect(listCommentsForItem(handle.db, item.id).filter((comment) => /another project|refus/i.test(comment.body))).toEqual([]);
+    expect(getItem(handle.db, item.id)?.stepId).toBe(routeOf("approved"));
+  });
+});

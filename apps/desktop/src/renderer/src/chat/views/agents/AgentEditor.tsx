@@ -75,7 +75,7 @@ function OldToolNames({ text }: { text: string }) {
 }
 
 /** The model, from the list the provider actually offers (U-11), with a custom entry because discovery must never be the only way in. */
-function ModelField({
+export function ModelField({
   provider,
   value,
   models,
@@ -162,6 +162,15 @@ function effortKeyOf(provider: string): string {
   return provider === "claude" ? "effort" : "reasoningEffort";
 }
 
+/** The reasoning levels the chosen model takes on a backend, as the editor offers them: none where it takes none. */
+export function reasoningLevelsFor(provider: string, caps: ProviderCapabilities | undefined, models: readonly ProviderModel[], model: string | null): string[] {
+  if (!caps) return [];
+  const chosen = models.find((entry) => entry.value === model);
+  const efforts = chosen?.supportsEffort ? chosen.effortLevels : caps.reasoningEfforts;
+  const showEffort = efforts.length > 0 && (provider !== "claude" || (chosen?.supportsEffort ?? false));
+  return showEffort ? efforts : [];
+}
+
 /**
  * What else a backend takes (U-11): reasoning effort where the chosen
  * model takes one, at its levels. The settings with one correct answer
@@ -192,11 +201,9 @@ function ProviderConfig({
     onChange(next);
   };
 
-  const chosen = models.find((entry) => entry.value === model);
-  const efforts = chosen?.supportsEffort ? chosen.effortLevels : caps.reasoningEfforts;
-  const showEffort = efforts.length > 0 && (provider !== "claude" || (chosen?.supportsEffort ?? false));
+  const efforts = reasoningLevelsFor(provider, caps, models, model);
   const options: { key: string; label: string; values: string[] }[] = [
-    ...(showEffort ? [{ key: effortKeyOf(provider), label: "Reasoning effort", values: efforts }] : []),
+    ...(efforts.length > 0 ? [{ key: effortKeyOf(provider), label: "Reasoning effort", values: efforts }] : []),
   ];
 
   if (options.length === 0) return null;

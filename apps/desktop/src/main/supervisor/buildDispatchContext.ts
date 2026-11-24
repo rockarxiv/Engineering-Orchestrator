@@ -147,10 +147,19 @@ function attribute(comment: Comment, agentsById: Map<string, Agent>): Attributed
  * rule beside it is a second reading to keep in step. The query is
  * indexed on `(item_id, created_at)` and runs once per dispatch.
  */
-function outputView(db: Db, item: Item, agentsById: Map<string, Agent>): AttributedComment | null {
+function outputView(db: Db, item: Item, agentsById: Map<string, Agent>, visible: ThreadFilter = ALL): AttributedComment | null {
   const output = currentOutputOf(db, item.id);
-  return output === undefined ? null : attribute(output, agentsById);
+  return output === undefined || !visible(output) ? null : attribute(output, agentsById);
 }
+
+/**
+ * Which of the item's comments a context may show (EO-867): all of them
+ * on every ordinary dispatch; for an isolated team member, those within
+ * its thread boundary, so its team's other reports are not part of it.
+ */
+export type ThreadFilter = (comment: Comment) => boolean;
+const ALL: ThreadFilter = () => true;
+const NONE: ReadonlySet<string> = new Set();
 
 /**
  * "What shipped" for a dependency — the structured result of its last
@@ -311,6 +320,7 @@ export async function buildDispatchContext(
    * renders the task as it always was.
    */
   role: string | null = null,
+  visible: ThreadFilter = ALL,
 ): Promise<string> {
   const agentsById = new Map(listAgents(db).map((candidate) => [candidate.id as string, candidate]));
 
@@ -378,9 +388,9 @@ export async function buildDispatchContext(
     // item. Handed to the pack's renderers and rendered by none of the
     // engine's own — how an output is worth showing is a pack's opinion,
     // and *that* it is the current one is the fact the design turned on.
-    currentOutput: outputView(db, item, agentsById),
+    currentOutput: outputView(db, item, agentsById, visible),
     parentFeature,
-    commentThread: listCommentsForItem(db, item.id).map((comment) => attribute(comment, agentsById)),
+    commentThread: listCommentsForItem(db, item.id).filter(visible).map((comment) => attribute(comment, agentsById)),
     dependencies,
     maxTokens,
   }).fullText;
@@ -549,10 +559,11 @@ export function buildFollowUpContext(
  * implementer would arrive told to "answer the most recent thing
  * addressed to you" with no idea what that was.
  */
-function triggerComment(db: Db, item: Item, agent: Agent, action: string, agentsById: Map<string, Agent>): AttributedComment | null {
+function triggerComment(db: Db, item: Item, agent: Agent, action: string, agentsById: Map<string, Agent>, visible: ThreadFilter = ALL): AttributedComment | null {
   if (action !== RESPOND_ACTION) return null;
 
   const asking = listCommentsForItem(db, item.id)
+    .filter(visible)
     .filter((comment) =>
       listMentionsForComment(db, comment.id).some(
         (mention) => mention.status === "open" && mention.targetType === "agent" && mention.targetId === agent.id,
@@ -576,9 +587,20 @@ function triggerComment(db: Db, item: Item, agent: Agent, action: string, agents
  * receive the same text. That is a real difference from the full
  * assembly and worth stating rather than discovering.
  */
-export async function buildSeedContext(db: Db, item: Item, agent: Agent, action: string, sectionRenderers: readonly SectionRenderer[] = []): Promise<string> {
+export async function buildSeedContext(
+  db: Db,
+  item: Item,
+  agent: Agent,
+  action: string,
+  sectionRenderers: readonly SectionRenderer[] = [],
+  visible: ThreadFilter = ALL,
+  /** Runs that are not the agent having looked: an isolated member's own team session's (EO-870). None on an ordinary dispatch. */
+  notLooked: ReadonlySet<string> = NONE,
+  /** Whom it is for (EO-888): the step's own agent, or a team member, whose seed leaves out what only the step's agent acts on. */
+  audience: "step" | "member" = "step",
+): Promise<string> {
   const agentsById = new Map(listAgents(db).map((candidate) => [candidate.id as string, candidate]));
-  const comments = listCommentsForItem(db, item.id);
+  const comments = listCommentsForItem(db, item.id).filter(visible);
   const runs = listRunsForItem(db, item.id);
   const attribution = createStepAttribution(item, listTransitionsForItem(db, item.id), runs);
 
@@ -606,15 +628,15 @@ export async function buildSeedContext(db: Db, item: Item, agent: Agent, action:
     comment: attribute(entry.comment, agentsById),
   }));
 
-  const humanComments = humanCommentsSince(said, lastRunOf(runs, agent.id)).map((comment) => attribute(comment, agentsById));
+  const humanComments = humanCommentsSince(said, lastRunOf(notLooked.size === 0 ? runs : runs.filter((run) => !notLooked.has(run.id)), agent.id)).map((comment) => attribute(comment, agentsById));
   // The repositories among them, because that is what this section
   // says it lists and what its fields are — a path to a checkout and a
   // description of what lives there. A folder workspace has neither,
   // and a section that named one anyway would be describing a drive as
   // though an agent could branch in it (EO-299).
   const repositories = item.projectId === null ? [] : projectWorkspaceList(db, item.projectId).flatMap((workspace) => asGitWorkspace(workspace) ?? []);
-  const trigger = triggerComment(db, item, agent, action, agentsById);
-  const currentOutput = outputView(db, item, agentsById);
+  const trigger = triggerComment(db, item, agent, action, agentsById, visible);
+  const currentOutput = outputView(db, item, agentsById, visible);
 
   const shown = new Set([
     ...stepComments.map((entry) => entry.comment.id as string),
@@ -644,6 +666,7 @@ export async function buildSeedContext(db: Db, item: Item, agent: Agent, action:
   }
 
   return assembleSeedContext({
+    audience,
     action,
     taskAppendix: await taskAppendixFor(db, item, action, agent.role),
     planMode: stepForItem(db, item)?.planMode ?? false,
@@ -722,7 +745,18 @@ export async function buildTurnContext(
   action: string,
   resumingRun: Run | null,
   sectionRenderers: readonly SectionRenderer[] = [],
+  /** Which comments it may show: all, but for an isolated team member's turn (EO-867), which never resumes a thread. */
+  visible: ThreadFilter = ALL,
+  /** Runs that are not the agent having looked: none, but for an isolated team member's turn, its own session's (EO-870). */
+  notLooked: ReadonlySet<string> = NONE,
+  /**
+   * Whom it is for (EO-888): the step's own agent, or a member of a team
+   * on the step. A member is always seeded, whatever its agent may read
+   * with a tool: its work is one assignment, never the conversation.
+   */
+  audience: "step" | "member" = "step",
 ): Promise<string> {
+  if (audience === "member") return buildSeedContext(db, item, agent, action, sectionRenderers, visible, notLooked, "member");
   if (resumingRun !== null) {
     return buildFollowUpContext(db, item, agent, action, resumingRun, {
       taskAppendix: await taskAppendixFor(db, item, action, agent.role),
@@ -756,6 +790,6 @@ export async function buildTurnContext(
   // created for: no thread, where for these actions the thread is not
   // context about the work but the work itself.
   return fullThreadEnabled(agent) || CONVERSATION_ACTIONS.has(action)
-    ? buildDispatchContext(db, item, action, sectionRenderers, undefined, agent.role)
-    : buildSeedContext(db, item, agent, action, sectionRenderers);
+    ? buildDispatchContext(db, item, action, sectionRenderers, undefined, agent.role, visible)
+    : buildSeedContext(db, item, agent, action, sectionRenderers, visible, notLooked);
 }

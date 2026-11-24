@@ -1,4 +1,7 @@
-import type { WorkspaceKindSlug } from "@eo/core";
+import { FOLDER_KIND, NONE_KIND, SCRATCH_KIND, type Item, type WorkspaceKindSlug } from "@eo/core";
+import type { Db } from "./db/client.js";
+import { getTeamAttempt } from "./db/repos/teamSessionsRepo.js";
+import { reportMemberCopy } from "./supervisor/teamSupervisor.js";
 import { describesChecks, verifiesAnything, type VerifiedStep, type WorkspaceKind } from "./supervisor/workspaceKind.js";
 import type { Workspace } from "./db/repos/workspacesRepo.js";
 
@@ -99,5 +102,45 @@ export async function forgePathOf(workspace: Workspace): Promise<string | null> 
     return await kind.forgePath(workspace);
   } catch {
     return null;
+  }
+}
+
+/**
+ * Whether a run on `slug` can give each isolated team member a copy of its
+ * own (EO-867), which is what lets a team's members be isolated there.
+ *
+ * The core's kinds are answered here, since the supervisor builds them and
+ * they are never installed: `none` gives a member an empty directory of
+ * its own, as it gives its step's agent; `folder` and `scratch` make no
+ * copy. Any other kind answers by having the capability
+ * (`evidence.copy`) — the git kind does. A kind nothing installed cannot.
+ */
+export function kindMakesMemberCopies(slug: WorkspaceKindSlug): boolean {
+  if (slug === NONE_KIND) return true;
+  if (slug === FOLDER_KIND || slug === SCRATCH_KIND) return false;
+  return current.get(slug)?.evidence?.copy !== undefined;
+}
+
+/**
+ * Removes the isolated team members' copies an item still holds on disk
+ * (EO-867), in every installed kind — when the item is archived or
+ * deleted — saying on it what any member had changed in one first. A
+ * copy whose attempt is still at work is kept: its turn removes it.
+ * Never throws; a copy it could not remove is the startup sweep's.
+ */
+export async function releaseMemberCopiesOf(db: Db, item: Pick<Item, "id" | "key">): Promise<void> {
+  for (const kind of current.values()) {
+    try {
+      await kind.evidence?.releaseCopies?.({
+        item,
+        keep: (attemptId) => {
+          const status = getTeamAttempt(db, attemptId)?.status;
+          return status === "queued" || status === "running";
+        },
+        report: (attemptId, changed) => reportMemberCopy(db, attemptId, changed),
+      });
+    } catch (error) {
+      console.error(`[eo] could not remove the team members' copies of ${item.key}: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 }

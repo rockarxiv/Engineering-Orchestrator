@@ -1,6 +1,6 @@
 import { and, asc, count, eq, inArray, isNotNull, isNull, ne } from "drizzle-orm";
 import { DEFAULT_WORKSPACE_MODE, EntryRulesSchema, SUGGESTIONS_PIPELINE_NAME, PreviewItemSchema, StepInputsSchema, StepResultsSchema, WorkspaceModeSchema, storedBrief, uuidv7 } from "@eo/core";
-import type { EntryRule, IncomingHandOff, Pipeline, PipelineStep, PipelineStepType, PreviewItem, StepHoldingItems, StepInputs, StepBrief, StepResult, StepRoute, StepWatch, Uuid, WorkspaceMode } from "@eo/core";
+import type { EntryRule, ExportedTeam, IncomingHandOff, Pipeline, PipelineStep, PipelineStepType, PreviewItem, StepHoldingItems, StepInputs, StepBrief, StepResult, StepTeam, StepRoute, StepWatch, Uuid, WorkspaceMode } from "@eo/core";
 import type { Db } from "../client.js";
 import { pipelines, pipelineSteps, projects, stepRoutes, items } from "../schema.js";
 // A cycle with `pipelineVersionsRepo`, and a deliberate one: the graph
@@ -9,6 +9,7 @@ import { pipelines, pipelineSteps, projects, stepRoutes, items } from "../schema
 // both modules have loaded, which is what makes it safe.
 import { catchUpCurrentVersion, createPipelineVersion, ensureCurrentVersion, pipelineVersionsToKeep, prunePipelineVersions, setCurrentVersion } from "./pipelineVersionsRepo.js";
 import { getSetting } from "./settingsRepo.js";
+import { settleProjectlessTeams, teamIdForCarriedTeam, teamReader } from "./teamsRepo.js";
 import { pinEntryRules, stepModuleVersion } from "./moduleVersionsRepo.js";
 
 /**
@@ -21,7 +22,7 @@ import { pinEntryRules, stepModuleVersion } from "./moduleVersionsRepo.js";
  */
 export const SHARED_UNTIL_SPLIT_SETTING = "pipelines.sharedUntilSplit";
 
-function toStep(row: typeof pipelineSteps.$inferSelect): PipelineStep {
+function toStep(row: typeof pipelineSteps.$inferSelect, teamOf: (teamId: string | null) => StepTeam | null): PipelineStep {
   return {
     id: row.id,
     pipelineId: row.pipelineId as Uuid,
@@ -78,7 +79,17 @@ function toStep(row: typeof pipelineSteps.$inferSelect): PipelineStep {
     // Parsed for `results`' reason (EO-827): a blob that is not a brief is
     // read as none, which shows the default rather than nothing.
     brief: storedBrief(row.brief),
+    // The declared team it names (EO-881), read as the role-staffed shape
+    // a session runs: none where it names none, or one EO cannot read.
+    team: teamOf(row.teamId),
+    teamId: row.teamId,
   };
+}
+
+/** Rows as steps, each team read once (EO-881). */
+function stepsOf(db: Db): (row: typeof pipelineSteps.$inferSelect) => PipelineStep {
+  const teamOf = teamReader(db);
+  return (row) => toStep(row, teamOf);
 }
 
 /** The columns a step's keep-checking settings live in (EO-456, EO-571). */
@@ -301,9 +312,16 @@ export function staysShared(db: Db, pipeline: Pick<Pipeline, "id" | "name">): bo
  * importing a twin (see `pipelineAlreadyHere`); and the upgrade that
  * stopped pipelines being shared between projects gives it to the
  * oldest project (EO-766, `splitSharedPipelines`).
+ *
+ * The teams its steps run as that were made while it was on no project
+ * come with it (EO-899, `settleProjectlessTeams`): a step may run only as
+ * a team of its own pipeline's project. One another project's pipeline, or
+ * another pipeline still on none, also names stays where it is — for the
+ * startup check to settle, or tell the person about.
  */
 export function adoptPipeline(db: Db, id: string, projectId: Uuid): void {
   db.update(pipelines).set({ projectId, updatedAt: Date.now() }).where(eq(pipelines.id, id)).run();
+  settleProjectlessTeams(db, { pipelineId: id });
 }
 
 export function archivePipeline(db: Db, id: string, at: number = Date.now()): void {
@@ -424,6 +442,22 @@ export interface CreateStepInput {
    * declares it.
    */
   brief?: StepBrief | null | undefined;
+  /**
+   * The declared team an agent step runs as (EO-881), by id, on the
+   * brief's terms: absent leaves the row alone, `null` makes it one agent
+   * again.
+   */
+  teamId?: string | null | undefined;
+  /**
+   * A team carried inline, role-staffed, as a step had one before EO-881
+   * and an exported document still does: read only where `teamId` is
+   * absent, and declared as a team of its own unless the step already
+   * names one that reads the same (`teamIdForInlineTeam`). `null` makes
+   * the step one agent again. A document of format 18 carries the
+   * declared team itself (EO-885), its agents by kind and instructions,
+   * bound or made here (`teamIdForExportedTeam`).
+   */
+  team?: StepTeam | ExportedTeam | null | undefined;
 }
 
 export function createStep(db: Db, input: CreateStepInput): PipelineStep {
@@ -449,11 +483,17 @@ export function createStep(db: Db, input: CreateStepInput): PipelineStep {
       ownerPersonId: input.ownerPersonId ?? null,
       results: input.results ?? [],
       brief: input.brief ?? null,
+      teamId:
+        input.teamId !== undefined
+          ? input.teamId
+          : input.team === undefined || input.team === null
+            ? null
+            : teamIdForCarriedTeam(db, { pipelineId: input.pipelineId, stepName: input.name, team: input.team, current: null, stepAgentIds: [input.agentId] }),
       moduleVersion: stepModuleVersion(db, { type: input.type ?? "agent", entryAction: input.entryAction, moduleVersion: input.moduleVersion }),
     })
     .returning()
     .get();
-  return toStep(row);
+  return toStep(row, teamReader(db));
 }
 
 /**
@@ -528,7 +568,7 @@ export function setStepAgent(db: Db, id: string, agentId: Uuid | null): void {
 
 export function getStep(db: Db, id: string): PipelineStep | undefined {
   const row = db.select().from(pipelineSteps).where(eq(pipelineSteps.id, id)).get();
-  return row ? toStep(row) : undefined;
+  return row ? toStep(row, teamReader(db)) : undefined;
 }
 
 /**
@@ -547,7 +587,7 @@ export function listStepsForPipeline(db: Db, pipelineId: string): PipelineStep[]
     .where(and(eq(pipelineSteps.pipelineId, pipelineId), isNull(pipelineSteps.retiredVersion)))
     .orderBy(asc(pipelineSteps.position))
     .all()
-    .map(toStep);
+    .map(stepsOf(db));
 }
 
 /**
@@ -560,13 +600,14 @@ export function listStepsForPipeline(db: Db, pipelineId: string): PipelineStep[]
  * exists — the board counts the items.
  */
 export function listRetiredStepsForPipeline(db: Db, pipelineId: string): { step: PipelineStep; retiredVersion: number }[] {
+  const read = stepsOf(db);
   return db
     .select()
     .from(pipelineSteps)
     .where(and(eq(pipelineSteps.pipelineId, pipelineId), isNotNull(pipelineSteps.retiredVersion)))
     .orderBy(asc(pipelineSteps.position))
     .all()
-    .map((row) => ({ step: toStep(row), retiredVersion: row.retiredVersion as number }));
+    .map((row) => ({ step: read(row), retiredVersion: row.retiredVersion as number }));
 }
 
 /**
@@ -583,7 +624,7 @@ export function listRetiredStepsForPipeline(db: Db, pipelineId: string): { step:
  * so what runs is the definition it entered on.
  */
 export function listPipelineSteps(db: Db): PipelineStep[] {
-  return db.select().from(pipelineSteps).orderBy(asc(pipelineSteps.pipelineId), asc(pipelineSteps.position)).all().map(toStep);
+  return db.select().from(pipelineSteps).orderBy(asc(pipelineSteps.pipelineId), asc(pipelineSteps.position)).all().map(stepsOf(db));
 }
 
 /**
@@ -905,7 +946,7 @@ export function replacePipelineGraph(
     // inserting a second one under a primary key it already holds.
     const existing = new Map(
       tx
-        .select({ id: pipelineSteps.id, name: pipelineSteps.name, retiredVersion: pipelineSteps.retiredVersion })
+        .select({ id: pipelineSteps.id, name: pipelineSteps.name, retiredVersion: pipelineSteps.retiredVersion, teamId: pipelineSteps.teamId })
         .from(pipelineSteps)
         .where(eq(pipelineSteps.pipelineId, pipelineId))
         .all()
@@ -1045,8 +1086,24 @@ export function replacePipelineGraph(
       // And the brief (EO-827), on the same terms: a draft that says
       // nothing about it leaves the step's brief where it was.
       const briefing = step.brief === undefined ? {} : { brief: step.brief };
+      // And the declared team (EO-843, EO-881), on the same terms. A
+      // caller naming it by id names it; one still carrying a team inline
+      // (an imported document, a template update) gets the team the step
+      // already names where that reads as the same team, and otherwise one
+      // declared from it (`teamIdForCarriedTeam`).
+      const teaming =
+        step.teamId !== undefined
+          ? { teamId: step.teamId }
+          : step.team === undefined
+            ? {}
+            : {
+                teamId:
+                  step.team === null
+                    ? null
+                    : teamIdForCarriedTeam(inTx, { pipelineId, stepName: step.name, team: step.team, current: existing.get(id)?.teamId ?? null, stepAgentIds: steps.map((each) => each.agentId) }),
+              };
       if (existing.has(id))
-        tx.update(pipelineSteps).set({ ...values, ...configured, ...limit, ...mode, ...disk, ...owner, ...group, ...decisions, ...watching, ...briefing }).where(eq(pipelineSteps.id, id)).run();
+        tx.update(pipelineSteps).set({ ...values, ...configured, ...limit, ...mode, ...disk, ...owner, ...group, ...decisions, ...watching, ...briefing, ...teaming }).where(eq(pipelineSteps.id, id)).run();
       else
         tx
           .insert(pipelineSteps)
@@ -1062,6 +1119,7 @@ export function replacePipelineGraph(
             ownerGroupId: step.ownerGroupId ?? null,
             results: step.results ?? [],
             brief: step.brief ?? null,
+            teamId: teaming.teamId ?? null,
           })
           .run();
     }

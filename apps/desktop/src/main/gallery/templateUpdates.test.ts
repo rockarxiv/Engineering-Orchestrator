@@ -38,7 +38,7 @@ import { agentOfKind, createTestItem, messagesFrom, openMigratedTestDb } from ".
 import { storedGraphProblems } from "../ipc/configCommands.js";
 import { pipelineVersionsCommand } from "../ipc/pipelineCommands.js";
 import { ACTIVE_PROJECT_KEY } from "../ipc/repositoryCommands.js";
-import { loadTemplateHistory, type TemplateHistory, type TemplateVersion } from "./history.js";
+import { type TemplateHistory, type TemplateVersion } from "./history.js";
 import { templateHistoryUpTo } from "./historyTestHelpers.js";
 import { backfillPipelineOrigins } from "./origins.js";
 import { applyTemplateUpdates, compareWithTemplate } from "./templateUpdates.js";
@@ -59,7 +59,10 @@ let history: TemplateHistory;
 
 beforeEach(() => {
   handle = openMigratedTestDb();
-  history = loadTemplateHistory(GALLERY_DIRECTORY);
+  // As it stood at 1.4: these are about how an update is compared, held
+  // and applied, scripted against that graph. 1.5 (EO-868), which gives
+  // Review a team, is in templateTeam.test.ts.
+  history = upTo("1.4");
 });
 
 afterEach(() => {

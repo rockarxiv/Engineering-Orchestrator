@@ -17,6 +17,7 @@ function toDomain(row: typeof agents.$inferSelect): Agent {
     archivedAt: row.archivedAt,
     deletedAt: row.deletedAt,
     projectId: row.projectId as Uuid | null,
+    teamId: row.teamId as Uuid | null,
   };
 }
 
@@ -32,6 +33,8 @@ export interface CreateAgentInput {
   enabled?: boolean;
   /** The project this agent works for; absent or null is a global agent (EO-474). */
   projectId?: Uuid | null;
+  /** The declared team that owns it (EO-897); absent or null is an ordinary agent. */
+  teamId?: string | null;
 }
 
 export function createAgent(db: Db, input: CreateAgentInput): Agent {
@@ -48,6 +51,7 @@ export function createAgent(db: Db, input: CreateAgentInput): Agent {
       config: input.config ?? {},
       enabled: input.enabled ?? true,
       projectId: input.projectId ?? null,
+      teamId: input.teamId ?? null,
       updatedAt: Date.now(),
     })
     .returning()
@@ -163,10 +167,11 @@ export function updateAgent(db: Db, id: Uuid, patch: UpdateAgentInput): Agent {
  * than it is recognised when it arrives late — see `takesRecordCopy`.
  * Null for a copy that carries no revision to order by.
  */
-export function upsertReplicaAgent(db: Db, published: PublishedAgent, scope: { projectId: Uuid | null; stamp: number | null }): void {
+export function upsertReplicaAgent(db: Db, published: PublishedAgent, scope: { projectId: Uuid | null; stamp: number | null; teamId?: string | null }): void {
   const mine = getAgent(db, published.id as Uuid);
   const now = Date.now();
-  const project = { projectId: scope.projectId, recordStamp: scope.stamp, revision: published.revision };
+  // A team's own agent stays its team's (EO-897); a published section carries ordinary agents only.
+  const project = { projectId: scope.projectId, recordStamp: scope.stamp, revision: published.revision, teamId: scope.teamId ?? null };
   if (mine === undefined) {
     db.insert(agents)
       .values({

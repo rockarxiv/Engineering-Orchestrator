@@ -1,5 +1,6 @@
 import type { Agent, Item, PipelineStep, RepositoryMcpServer, Skill, Uuid, WorkspaceKindSlug } from "@eo/core";
 import type { Workspace } from "../db/repos/workspacesRepo.js";
+import type { WorkspaceEvidenceCapability } from "./teamEvidence.js";
 
 /**
  * What a workspace *is*, as five members (EO-295, EO-297,
@@ -240,6 +241,14 @@ export interface WorkspaceKind {
    * Optional, and absent is "this kind is not on a forge".
    */
   forgePath?(workspace: Workspace): Promise<string | null>;
+  /**
+   * Capturing what a prepared workspace holds for a report-only team, and
+   * opening that capture again (EO-845, `teamEvidence.ts`): content, not a
+   * place, so every participant reads the same bytes whatever changes on
+   * disk meanwhile. Optional: a kind without it is refused for a team with
+   * the reason, never read live in its place.
+   */
+  readonly evidence?: WorkspaceEvidenceCapability;
 }
 
 /** Which repository and which branch an item is asking to read (EO-632). */

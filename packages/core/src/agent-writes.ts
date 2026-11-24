@@ -6,6 +6,7 @@ import { MODULE_CHANGE_TOOLS } from "./module-change-tools.js";
 import { REPOSITORY_CHECKOUT_TOOL_NAME } from "./repository-checkout-tool.js";
 import { SKILL_READ_TOOL_NAME } from "./skill-read-tool.js";
 import { SKILL_WRITE_TOOLS } from "./skill-write-tools.js";
+import { TEAM_EVIDENCE_TOOLS } from "./team-evidence.js";
 
 /**
  * How an agent's write reaches EO (EO-543, ARCHITECTURE.md §13.1).
@@ -38,7 +39,7 @@ import { SKILL_WRITE_TOOLS } from "./skill-write-tools.js";
  */
 
 /** The `eo` server's tools that write, or act, through the bridge. */
-export const AGENT_WRITE_TOOLS = [COMMENT_TOOL_NAME, ATTACHMENT_ADD_TOOL_NAME, MEMORY_NOTE_TOOL_NAME, REPOSITORY_CHECKOUT_TOOL_NAME, SKILL_READ_TOOL_NAME, ...SKILL_WRITE_TOOLS, ...MODULE_CHANGE_TOOLS] as const;
+export const AGENT_WRITE_TOOLS = [COMMENT_TOOL_NAME, ATTACHMENT_ADD_TOOL_NAME, MEMORY_NOTE_TOOL_NAME, REPOSITORY_CHECKOUT_TOOL_NAME, SKILL_READ_TOOL_NAME, ...SKILL_WRITE_TOOLS, ...MODULE_CHANGE_TOOLS, ...TEAM_EVIDENCE_TOOLS] as const;
 export type AgentWriteTool = (typeof AGENT_WRITE_TOOLS)[number];
 
 /**
@@ -67,6 +68,37 @@ export const AgentWriteBridgeAddressSchema = z.object({
    * comes from — but it keeps the tools off every other turn's list.
    */
   moduleChanges: z.boolean().optional(),
+  /**
+   * Whether the turn is a report-only team participant's (EO-845): the
+   * `eo` server then lists the evidence tools alone and refuses every
+   * other call it is asked, whatever the agent's grant, and fails closed
+   * on an address it cannot read. The credential beside it names those
+   * tools and the participant's attempt under its MAC, which is what the
+   * main process answers from; this is what makes the server refuse the
+   * reads it would otherwise answer itself from EO's database.
+   */
+  reportOnly: z.boolean().optional(),
+  /**
+   * Where an isolated team member's view of the item's thread ends
+   * (EO-867): the `eo` server's thread reads — `comment_read`,
+   * `comment_search`, `thread_read` and what `item_detail` says the item
+   * shipped — show a comment only where it is `exposed`, or was written
+   * at or before `visibleThrough` and is not `hidden`, the rule a
+   * report-only participant's `item_context` applies. So a member never
+   * reads its team's other reports. Set with a credential scoped to the
+   * member's attempt, whose writes leave out posting on the item. Not
+   * signed: the server fails closed on an address that names it and
+   * cannot be read.
+   */
+  teamMember: z
+    .object({
+      /** The item the boundary is on: another item's thread is read as it is. */
+      itemId: z.string(),
+      visibleThrough: z.number(),
+      exposed: z.array(z.string()),
+      hidden: z.array(z.string()),
+    })
+    .optional(),
 });
 export type AgentWriteBridgeAddress = z.infer<typeof AgentWriteBridgeAddressSchema>;
 

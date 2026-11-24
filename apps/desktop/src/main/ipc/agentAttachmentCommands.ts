@@ -1,6 +1,16 @@
-import type { IpcPayload, IpcResponse } from "@eo/core";
+import type { IpcPayload, IpcResponse, Uuid } from "@eo/core";
 import type { Db } from "../db/client.js";
-import { getAgentAttachments, listAgentAttachments, setAgentAttachment } from "../db/repos/index.js";
+import { getAgent, getAgentAttachments, listAgentAttachments, setAgentAttachment } from "../db/repos/index.js";
+
+/**
+ * Why this agent's tools cannot be changed here, or null (EO-897): a
+ * team's own agent is given tools only from its team's pool, by its team.
+ */
+export function teamOwnedToolsRefusal(db: Db, agentId: string): string | null {
+  const agent = getAgent(db, agentId as Uuid);
+  if (agent === undefined || agent.teamId === null || agent.teamId === undefined) return null;
+  return `${agent.name} is a team's own agent: its tools come only from its team's pool, through the assistant.`;
+}
 
 /**
  * Which servers and skills each agent has been given, over IPC (EO-106).
@@ -42,6 +52,8 @@ export function setAgentAttachmentCommand(
   db: Db,
   input: IpcPayload<"agentAttachments:set">,
 ): IpcResponse<"agentAttachments:set"> {
+  const owned = teamOwnedToolsRefusal(db, input.agentId);
+  if (owned !== null) return { attachments: null, problem: owned };
   const result = setAgentAttachment(db, input);
   if (!result.ok) return { attachments: null, problem: result.problem };
   return { attachments: result.attachments, problem: null };

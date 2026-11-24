@@ -1,5 +1,5 @@
 import { UNTRUSTED_PAYLOAD_PREAMBLE, type SectionRenderer } from "@eo/engine";
-import { uuidv7, HUMAN_MESSAGE_EVENT, ITEM_COMMENTS_PAGE, type Agent, type Item, type Uuid } from "@eo/core";
+import { uuidv7, HUMAN_MESSAGE_EVENT, ITEM_COMMENTS_PAGE, TEAM_PARTICIPANT_ACTION, type Agent, type Item, type Uuid } from "@eo/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createAgent, listAgents } from "../db/repos/agentsRepo.js";
 import { postComment } from "../db/repos/commentsRepo.js";
@@ -726,6 +726,20 @@ describe("buildSeedContext", () => {
     const context = await buildSeedContext(handle.db, item, implementer, "implement");
 
     expect(context).toContain("verification failed");
+  });
+
+  it("counts a team run of the agent as it having looked, except on a turn that names it as not (EO-870)", async () => {
+    postComment(handle.db, { itemId: item.id, author: { type: "human" }, body: "the 429 must say when to retry" });
+    // A team member's run of the same agent, finished after the person spoke.
+    const member = createRun(handle.db, { itemId: item.id, agentId: reviewer.id, action: TEAM_PARTICIPANT_ACTION, stepId: "review", threadId: uuidv7() });
+    updateRun(handle.db, member.id, { status: "succeeded", endedAt: Date.now() + 1 });
+    const said = (context: string) => /## What the person said\n([\s\S]*?)(?=\n## |$)/.exec(context)?.[1] ?? "";
+
+    // An ordinary dispatch: as it always was, any finished run of the agent with a thread is it having looked.
+    expect(said(await buildSeedContext(handle.db, item, reviewer, "review"))).toContain("Nothing since you last worked on this");
+    expect(said(await buildTurnContext(handle.db, item, reviewer, "review", null))).toContain("Nothing since you last worked on this");
+    // A member's turn, whose own session's runs are not.
+    expect(said(await buildTurnContext(handle.db, item, reviewer, "review", null, [], undefined, new Set([member.id])))).toContain("the 429 must say when to retry");
   });
 });
 

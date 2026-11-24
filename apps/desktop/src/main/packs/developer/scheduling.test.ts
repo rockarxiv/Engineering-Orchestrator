@@ -97,7 +97,7 @@ function step(overrides: Partial<PipelineStep> = {}): PipelineStep {
     ownerPersonId: null,
     ownerGroupId: null,
     results: [],
-    moduleVersion: null, brief: null,
+    moduleVersion: null, brief: null, team: null, teamId: null,
     ...overrides,
   };
 }

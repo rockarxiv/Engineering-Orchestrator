@@ -119,7 +119,7 @@ function withoutThreadSteps(rows: unknown[]): unknown[] {
  * later one and hold the step rows to what was there before.
  */
 function afterNeverGivingUp(rows: unknown[]): unknown[] {
-  return rows.map((row) => (typeof row === "object" && row !== null ? { ...row, watch_never_gives_up: 0, module_version: null, brief: null } : row));
+  return rows.map((row) => (typeof row === "object" && row !== null ? { ...row, watch_never_gives_up: 0, module_version: null, brief: null, team_id: null } : row));
 }
 
 /**
@@ -3442,10 +3442,13 @@ describe("0123: the pull request is watched after Merge Request opens it", () =>
     handle.db.run(sql`ALTER TABLE pipeline_steps ADD brief text`);
     // And the one 0181 adds (EO-875).
     handle.db.run(sql`ALTER TABLE pipeline_steps ADD agent_id text`);
+    // And the one 0182 adds (EO-843).
+    handle.db.run(sql`ALTER TABLE pipeline_steps ADD team_id text`);
     const before = ensureCurrentVersion(handle.db, "default")!;
     handle.db.run(sql`ALTER TABLE pipeline_steps DROP COLUMN module_version`);
     handle.db.run(sql`ALTER TABLE pipeline_steps DROP COLUMN brief`);
     handle.db.run(sql`ALTER TABLE pipeline_steps DROP COLUMN agent_id`);
+    handle.db.run(sql`ALTER TABLE pipeline_steps DROP COLUMN team_id`);
     handle.db.run(sql`ALTER TABLE pipeline_steps DROP COLUMN watch_never_gives_up`);
     handle.db.run(sql`ALTER TABLE pipelines DROP COLUMN entry_rules`);
     handle.db.run(sql`ALTER TABLE pipeline_versions DROP COLUMN entry_rules`);
@@ -3839,11 +3842,14 @@ describe("0154: follow-ups are gone", () => {
       handle.db.run(sql`ALTER TABLE pipeline_steps ADD brief text`);
       // And the one 0181 adds (EO-875).
       handle.db.run(sql`ALTER TABLE pipeline_steps ADD agent_id text`);
+      // And the one 0182 adds (EO-843).
+      handle.db.run(sql`ALTER TABLE pipeline_steps ADD team_id text`);
       const finished = createTestItem(handle.db, { type: "story", title: "A finished story", stepId: "todo" });
       const waiting = createTestItem(handle.db, { type: "story", title: "A story with a question", stepId: "todo" });
       handle.db.run(sql`ALTER TABLE pipeline_steps DROP COLUMN module_version`);
       handle.db.run(sql`ALTER TABLE pipeline_steps DROP COLUMN brief`);
       handle.db.run(sql`ALTER TABLE pipeline_steps DROP COLUMN agent_id`);
+      handle.db.run(sql`ALTER TABLE pipeline_steps DROP COLUMN team_id`);
       handle.db.run(sql`ALTER TABLE pipelines DROP COLUMN entry_rules`);
       handle.db.run(sql`ALTER TABLE pipeline_versions DROP COLUMN entry_rules`);
       handle.db.run(sql`ALTER TABLE pipeline_versions DROP COLUMN release_notes`);
@@ -3951,10 +3957,13 @@ describe("0158: an attachment owned by the item (EO-702)", () => {
       handle.db.run(sql`ALTER TABLE pipeline_steps ADD brief text`);
       // And the one 0181 adds (EO-875).
       handle.db.run(sql`ALTER TABLE pipeline_steps ADD agent_id text`);
+      // And the one 0182 adds (EO-843).
+      handle.db.run(sql`ALTER TABLE pipeline_steps ADD team_id text`);
       const item = createTestItem(handle.db, { type: "story", title: "Has a file", stepId: "todo" });
       handle.db.run(sql`ALTER TABLE pipeline_steps DROP COLUMN module_version`);
       handle.db.run(sql`ALTER TABLE pipeline_steps DROP COLUMN brief`);
       handle.db.run(sql`ALTER TABLE pipeline_steps DROP COLUMN agent_id`);
+      handle.db.run(sql`ALTER TABLE pipeline_steps DROP COLUMN team_id`);
       handle.db.run(sql`ALTER TABLE pipeline_versions DROP COLUMN release_notes`);
       handle.db.run(sql`ALTER TABLE item_types DROP COLUMN updated_at`);
       const comment = postComment(handle.db, { itemId: item.id, author: { type: "human" }, body: "Here is the mock." });
@@ -4040,10 +4049,13 @@ describe("0171: a dependency edge's wait rule (EO-776)", () => {
       handle.db.run(sql`ALTER TABLE pipeline_steps ADD brief text`);
       // And the one 0181 adds (EO-875).
       handle.db.run(sql`ALTER TABLE pipeline_steps ADD agent_id text`);
+      // And the one 0182 adds (EO-843).
+      handle.db.run(sql`ALTER TABLE pipeline_steps ADD team_id text`);
       const first = createTestItem(handle.db, { type: "story", title: "Goes first", stepId: "todo" });
       const second = createTestItem(handle.db, { type: "story", title: "Waits", stepId: "todo" });
       handle.db.run(sql`ALTER TABLE pipeline_steps DROP COLUMN brief`);
       handle.db.run(sql`ALTER TABLE pipeline_steps DROP COLUMN agent_id`);
+      handle.db.run(sql`ALTER TABLE pipeline_steps DROP COLUMN team_id`);
       handle.db.run(sql`INSERT INTO item_deps (item_id, depends_on_id) VALUES (${second.id}, ${first.id})`);
 
       runMigrations(handle.db, join(dirname(fileURLToPath(import.meta.url)), "migrations"));

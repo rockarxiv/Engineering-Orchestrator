@@ -142,7 +142,7 @@ async function turn(backend: string, label: number | "control", run: () => Async
   const reports = events.flatMap((event) => (event.type === "server_status" ? [event] : []));
   const servers = reports.flatMap((report) => report.servers);
   const admin = servers.find((server) => server.name === ADMIN_MCP_SERVER_NAME || server.name.endsWith(`:${ADMIN_MCP_SERVER_NAME}`));
-  // Every startup report this turn produced, as `processStream` reads
+  // Every startup report this turn produced, as `readTurn` reads
   // them: one note per report with anything missing. A turn that sent no
   // report at all would have no note — and no evidence either, which is
   // why `eoAdmin` is asserted separately.

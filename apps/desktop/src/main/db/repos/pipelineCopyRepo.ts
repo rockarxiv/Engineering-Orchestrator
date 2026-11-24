@@ -1,4 +1,5 @@
 import { asc, desc, eq } from "drizzle-orm";
+import { createTeam, freeTeamName, getTeam } from "./teamsRepo.js";
 import { remapStepReferences, StepBriefSchema, uuidv7, type Uuid } from "@eo/core";
 import type { Db } from "../client.js";
 import { pipelines, pipelineSteps, pipelineVersions, stepRoutes } from "../schema.js";
@@ -112,7 +113,29 @@ export function copyPipeline(db: Db, sourceId: string, projectId: Uuid, options:
       })
       .run();
 
-    for (const step of steps) tx.insert(pipelineSteps).values({ ...referencesOf(step, stepOf), id: stepOf(step.id), pipelineId: copyId }).run();
+    // A declared team the steps name goes with them where the copy lands on
+    // another project (EO-881): a step may name only its own project's
+    // team, so the copy names a copy of it there. On the same project the
+    // copy shares the team, as two pipelines may.
+    const teamCopies = new Map<string, string | null>();
+    const teamOf = (teamId: string | null): string | null => {
+      if (teamId === null) return null;
+      const known = teamCopies.get(teamId);
+      if (known !== undefined) return known;
+      const team = getTeam(tx as unknown as Db, teamId);
+      let copied: string | null = teamId;
+      if (team !== undefined && team.projectId !== projectId) {
+        if (team.definition === null) copied = null;
+        else {
+          const name = freeTeamName(tx as unknown as Db, projectId, team.name);
+          const made = createTeam(tx as unknown as Db, { projectId, definition: { ...team.definition, name }, author: { kind: "eo" }, now });
+          copied = made.ok ? made.team.id : null;
+        }
+      }
+      teamCopies.set(teamId, copied);
+      return copied;
+    };
+    for (const step of steps) tx.insert(pipelineSteps).values({ ...referencesOf(step, stepOf), id: stepOf(step.id), pipelineId: copyId, teamId: teamOf(step.teamId) }).run();
     for (const route of routes) {
       tx.insert(stepRoutes)
         .values({ ...route, id: routeOf(route.id), pipelineId: copyId, fromStepId: stepOf(route.fromStepId), target: targetOf(route.target) })
@@ -125,7 +148,14 @@ export function copyPipeline(db: Db, sourceId: string, projectId: Uuid, options:
           id: versionIds.get(version.id) as string,
           pipelineId: copyId,
           steps: arrayOf(version.steps).map((step) =>
-            isRecord(step) ? { ...referencesOf(step, stepOf), id: typeof step["id"] === "string" ? stepOf(step["id"]) : step["id"], pipelineId: copyId } : step,
+            isRecord(step)
+              ? {
+                  ...referencesOf(step, stepOf),
+                  id: typeof step["id"] === "string" ? stepOf(step["id"]) : step["id"],
+                  pipelineId: copyId,
+                  ...(typeof step["teamId"] === "string" ? { teamId: teamOf(step["teamId"]) } : {}),
+                }
+              : step,
           ),
           routes: arrayOf(version.routes).map((route) =>
             isRecord(route)

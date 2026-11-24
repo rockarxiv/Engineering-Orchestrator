@@ -18,6 +18,8 @@ import { withoutRepositoryIndex } from "../repositoryIntelligence/indexPaths.js"
 import { createWorktreeWorkspace, forgetIndexesForReleasedWorktrees, releaseStaleWorktrees, releaseWorktreeFor } from "./dispatchWorkspace.js";
 import { git, remoteUrl, statusPorcelain } from "./git.js";
 import { parseRemoteUrl } from "../forge/remote.js";
+import { gitEvidenceCapability } from "./gitEvidence.js";
+import { makeMemberCopy, releaseMemberCopies, teamCopiesRoot } from "./memberCopies.js";
 import { referenceCheckoutFor, releaseReferenceCheckouts, releaseStaleReferenceCheckouts } from "./referenceCheckouts.js";
 import { commitNamingCheck } from "./commitNaming.js";
 import { createImplementationVerifier, createVerifiedRange } from "./implementationVerifier.js";
@@ -421,6 +423,23 @@ export function gitWorkspaceKind(options: GitWorkspaceKindOptions): WorkspaceKin
       if (git === undefined) return null;
       const url = await remoteUrl(git.config.repoPath, git.config.forgeRemote);
       return url.ok ? (parseRemoteUrl(url.stdout)?.path ?? null) : null;
+    },
+
+    /**
+     * A team's evidence: the working tree's own tree object (EO-845,
+     * `gitEvidence.ts`); and an isolated member's copy of it, the item's
+     * worktree exactly, under `team-copies` beside the items' worktrees
+     * (EO-867, EO-872, `memberCopies.ts`).
+     */
+    evidence: {
+      ...gitEvidenceCapability(),
+      async copy(item: Item, workspace: PreparedWorkspace, source, request) {
+        if (source.kind !== "git") return { ok: false, problem: "That evidence was not captured from a repository, so EO cannot make a member a copy of it." };
+        const top = await git(["rev-parse", "--show-toplevel"], workspace.cwd);
+        if (!top.ok) return { ok: false, problem: `\`${workspace.cwd}\` is not in a Git repository EO can read, so EO could not make the member a copy of it.` };
+        return makeMemberCopy(top.stdout, item.key, source, request.attemptId, teamCopiesRoot(worktreeRoot));
+      },
+      releaseCopies: (request) => releaseMemberCopies(db, request, teamCopiesRoot(worktreeRoot)),
     },
   };
 }

@@ -3,13 +3,16 @@ import type { Agent, Item } from "@eo/core";
 import type { DbHandle } from "../db/client.js";
 import {
   getItem,
+  getSetting,
+  heldByCancelOf,
   listAgents,
   listCommentsForItem,
   listRunsForItem,
-  needsAttention,
 } from "../db/repos/index.js";
 import { getStep, listRoutesForPipeline, listStepsForPipeline, replacePipelineGraph } from "../db/repos/pipelineStepsRepo.js";
-import { holdItem, moveItem, postHumanComment, resumeHeldItem } from "../ipc/domainCommands.js";
+import { cancelRun, holdItem, moveItem, postHumanComment, resumeHeldItem } from "../ipc/domainCommands.js";
+import { clearHandlerRegistry, registerHandler } from "../ipc/registry.js";
+import { answerToolCall } from "../mcpHost/server.js";
 import { agentOfKind, createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import { createFakeProvider } from "../providers/fake.js";
 import { validImplementResult } from "../providers/fixtures.js";
@@ -299,35 +302,51 @@ describe("a run somebody stopped", () => {
     });
   }
 
-  it("is not dispatched again by the scheduler, and the thread says so once", async () => {
+  const HELD_NOTE = 'Run cancelled, so this ticket is on hold at "To Do". Resume it to run the step again.';
+
+  it("holds the item on its step when the run panel cancels it, and the thread says so once", async () => {
     const supervisor = slowSupervisor();
-    const cancelled = await cancelInFlight(supervisor);
+    const running = supervisor.runOnce();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const [run] = listRunsForItem(handle.db, item.id);
+    // The run panel's Cancel, through the channel it presses.
+    expect(cancelRun(supervisor, { runId: run!.id })).toEqual({ cancelled: true });
+    await running;
 
-    // Three ticks — the item has not moved, is not held and is not
-    // awaiting an answer, which is precisely the state that used to have
-    // it offered again five seconds later, and again, until the attempt
-    // limit stopped it three runs later.
+    // Held where it was, by this cancel — the board shows it held and
+    // offers Resume — and three ticks start nothing.
+    expect(getItem(handle.db, item.id)).toMatchObject({ stepId: "todo", heldAt: expect.any(Number) });
+    expect(heldByCancelOf(handle.db, item.id)).toBe(run!.id);
     await supervisor.runOnce();
     await supervisor.runOnce();
     await supervisor.runOnce();
+    expect(listRunsForItem(handle.db, item.id).map((one) => one.id)).toEqual([run!.id]);
 
-    expect(listRunsForItem(handle.db, item.id).map((run) => run.id)).toEqual([cancelled]);
-    expect(getItem(handle.db, item.id)?.stepId).toBe("todo");
-
-    // Said once, not once per tick (invariant 8) — and as a note, because
-    // EO is acknowledging an instruction, not asking for attention.
-    const stopped = engineNotes().filter((body) => body.includes("EO has stopped with it"));
-    expect(stopped).toHaveLength(1);
-    expect(stopped[0]).toContain('nothing will pick "To Do" up again on its own');
-    // And what starts it again, which is the half a person needs.
-    expect(stopped[0]).toContain("Mention Implementer to hand the step back");
-    expect(needsAttention(handle.db, item.id)).toBe(false);
+    // Said once, as a note (invariant 8), and nothing else stands off it.
+    expect(engineNotes().filter((body) => body.includes("Run cancelled"))).toEqual([HELD_NOTE]);
+    expect(getSetting(handle.db, "engine.stopped-by-hand", null)).toBeNull();
   });
 
-  it("stays stopped across a restart", async () => {
-    // A person who stops a run and quits for the day has not asked EO to
-    // start it again on the next launch, so the decision is recorded
-    // where it outlives the process that took it.
+  it("holds the item the same way when run_cancel cancels it", async () => {
+    const supervisor = slowSupervisor();
+    registerHandler("runs:cancel", (payload) => cancelRun(supervisor, payload), { exposeErrorDetails: true });
+    try {
+      const running = supervisor.runOnce();
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      const [run] = listRunsForItem(handle.db, item.id);
+      const answered = await answerToolCall({ name: "run_cancel", arguments: { runId: run!.id } }, "admin", true);
+      expect(answered.isError).toBeFalsy();
+      await running;
+
+      expect(getItem(handle.db, item.id)?.heldAt).not.toBeNull();
+      expect(heldByCancelOf(handle.db, item.id)).toBe(run!.id);
+      expect(engineNotes().filter((body) => body.includes("Run cancelled"))).toEqual([HELD_NOTE]);
+    } finally {
+      clearHandlerRegistry();
+    }
+  });
+
+  it("stays held across a restart", async () => {
     const supervisor = slowSupervisor();
     const cancelled = await cancelInFlight(supervisor);
 
@@ -335,9 +354,25 @@ describe("a run somebody stopped", () => {
     await relaunched.runOnce();
 
     expect(listRunsForItem(handle.db, item.id).map((run) => run.id)).toEqual([cancelled]);
+    expect(getItem(handle.db, item.id)?.heldAt).not.toBeNull();
   });
 
-  it("is picked up again once a person moves the item", async () => {
+  it("runs the step again once a person resumes it", async () => {
+    const supervisor = slowSupervisor();
+    const cancelled = await cancelInFlight(supervisor);
+
+    // Resume, which a held item already offers, is the whole of it: no
+    // hold-then-resume, nothing hidden left to clear.
+    resumeHeldItem(handle.db, supervisor, { itemId: item.id, cancelActiveRun: false });
+    expect(heldByCancelOf(handle.db, item.id)).toBeNull();
+    await supervisor.runOnce();
+
+    const fresh = listRunsForItem(handle.db, item.id).filter((run) => run.id !== cancelled);
+    expect(fresh).toHaveLength(1);
+    expect(fresh[0]).toMatchObject({ agentId: implementer.id, stepId: "todo" });
+  });
+
+  it("is let go by a move, and the step it is moved to runs", async () => {
     const index = indexer();
     const supervisor = slowSupervisor({ builtins: { index_repository: index.runner } });
     await cancelInFlight(supervisor);
@@ -348,39 +383,32 @@ describe("a run somebody stopped", () => {
       cancelActiveRun: false,
       comment: "",
     });
-    await supervisor.runOnce();
 
-    // A move is a person re-authorising, and it needs nothing added to
-    // say so: one entry into a step is one initiation, so the item is
-    // in an initiation the stop has never heard of.
+    // A move ends the hold a cancel set, as it ended the stop before it.
+    expect(getItem(handle.db, item.id)?.heldAt).toBeNull();
+    expect(heldByCancelOf(handle.db, item.id)).toBeNull();
+    await supervisor.runOnce();
     expect(index.ran).toBe(1);
   });
 
-  it("is picked up again once a person resumes it from a hold", async () => {
+  it("leaves a hold a person set where it is when the item is moved", async () => {
     const supervisor = slowSupervisor();
-    const cancelled = await cancelInFlight(supervisor);
-
+    await cancelInFlight(supervisor);
+    // A person holding it themselves makes the hold theirs.
     holdItem(handle.db, supervisor, { itemId: item.id, cancelActiveRun: false, comment: "" });
-    await supervisor.runOnce();
-    expect(listRunsForItem(handle.db, item.id).map((run) => run.id)).toEqual([cancelled]);
+    expect(heldByCancelOf(handle.db, item.id)).toBeNull();
 
-    // Resuming is the one re-authorisation that leaves the item exactly
-    // where it was — same step, same initiation — so it is the one that
-    // has to clear the stop outright.
-    resumeHeldItem(handle.db, supervisor, { itemId: item.id, cancelActiveRun: false });
-    await supervisor.runOnce();
+    moveItem(handle.db, supervisor, { itemId: item.id, toStepId: "review", cancelActiveRun: false, comment: "" });
 
-    expect(listRunsForItem(handle.db, item.id).length).toBeGreaterThan(1);
+    expect(getItem(handle.db, item.id)).toMatchObject({ stepId: "review", heldAt: expect.any(Number) });
   });
 
   it("still runs for a person who asks for it by name", async () => {
     const supervisor = slowSupervisor();
     const cancelled = await cancelInFlight(supervisor);
 
-    // A mention is the first of the three things the note offers, so it
-    // has to work while the stop is standing: it runs under an initiation
-    // of its own — the comment that asked — and the scheduler's stop is
-    // not about it.
+    // A mention on a held item is answered as it always was: a hold
+    // stops the scheduler, not a person asking an agent by name.
     await postHumanComment(handle.db, supervisor, {
       itemId: item.id,
       body: "@implementer what did you get through before I stopped you?",
@@ -392,10 +420,43 @@ describe("a run somebody stopped", () => {
 
     const fresh = listRunsForItem(handle.db, item.id).filter((run) => run.id !== cancelled);
     expect(fresh).toHaveLength(1);
-    // Answered as `respond`, under the asking comment's own initiation —
-    // which is why the stop, which is about the step's, does not reach it.
     expect(fresh[0]).toMatchObject({ agentId: implementer.id, action: "respond" });
     expect(fresh[0]?.initiationId).not.toBeNull();
+    // And it does not lift the hold.
+    expect(getItem(handle.db, item.id)?.heldAt).not.toBeNull();
+  });
+
+  it("holds an item on a person's terminal step when a mention's reply run there is cancelled, and says so", async () => {
+    // "Done" is the seeded pipeline's `user` step and its terminal one:
+    // nothing is dispatched at it, but a person can still ask an agent by
+    // name there and cancel the reply.
+    const done = createTestItem(handle.db, { type: "story", title: "Shipped", stepId: "ready_to_merge" });
+    const supervisor = slowSupervisor();
+    await postHumanComment(handle.db, supervisor, {
+      itemId: done.id,
+      body: "@implementer one more thing about this?",
+      mentions: [],
+      pinned: false,
+      parentId: null,
+    });
+    const running = supervisor.runOnce();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const [reply] = listRunsForItem(handle.db, done.id);
+    expect(reply).toMatchObject({ action: "respond" });
+    expect(cancelRun(supervisor, { runId: reply!.id })).toEqual({ cancelled: true });
+    await running;
+
+    expect(getItem(handle.db, done.id)).toMatchObject({ stepId: "ready_to_merge", heldAt: expect.any(Number) });
+    expect(heldByCancelOf(handle.db, done.id)).toBe(reply!.id);
+    expect(engineNotes(done.id).filter((body) => body.includes("Run cancelled"))).toEqual([
+      'Run cancelled, so this ticket is on hold at "Done". Resume it to take it off hold.',
+    ]);
+
+    // Resume takes it off hold. (The mention itself is still open, and is
+    // answered again as an open mention always was, held or not.)
+    resumeHeldItem(handle.db, supervisor, { itemId: done.id, cancelActiveRun: false });
+    expect(getItem(handle.db, done.id)?.heldAt).toBeNull();
+    expect(heldByCancelOf(handle.db, done.id)).toBeNull();
   });
 
   it("says nothing and stops nothing when the cancellation belongs to a move", async () => {
@@ -416,7 +477,7 @@ describe("a run somebody stopped", () => {
     await running;
 
     expect(moved.cancelledRunId).not.toBeNull();
-    expect(engineNotes().some((body) => body.includes("EO has stopped with it"))).toBe(false);
+    expect(engineNotes().some((body) => body.includes("Run cancelled, so this ticket is on hold"))).toBe(false);
     expect(engineNotes().some((body) => body.includes("Run cancelled: you moved this ticket"))).toBe(true);
   });
 
@@ -437,7 +498,7 @@ describe("a run somebody stopped", () => {
     await running;
 
     expect(getItem(handle.db, item.id)?.stepId).toBe("todo");
-    expect(engineNotes().some((body) => body.includes("EO has stopped with it"))).toBe(false);
+    expect(engineNotes().some((body) => body.includes("Run cancelled, so this ticket is on hold"))).toBe(false);
 
     await supervisor.runOnce();
 
@@ -462,7 +523,7 @@ describe("a run somebody stopped", () => {
     await supervisor.waitForIdle();
 
     expect(listRunsForItem(handle.db, item.id).filter((run) => run.id !== first!.id)).not.toEqual([]);
-    expect(engineNotes().some((body) => body.includes("EO has stopped with it"))).toBe(false);
+    expect(engineNotes().some((body) => body.includes("Run cancelled, so this ticket is on hold"))).toBe(false);
   });
 });
 

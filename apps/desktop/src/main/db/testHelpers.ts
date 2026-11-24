@@ -1,13 +1,14 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { Item, Message, Uuid } from "@eo/core";
+import type { Item, Message, SessionTeam, StepTeam, Uuid } from "@eo/core";
 import { asc, eq } from "drizzle-orm";
 import { openDb, type Db, type DbHandle } from "./client.js";
 import { runMigrations } from "./migrate.js";
 import { createItem, type CreateItemInput } from "./repos/itemsRepo.js";
 import { listAgents } from "./repos/agentsRepo.js";
 import { getMessage } from "./repos/messagesRepo.js";
-import { messages, pipelines } from "./schema.js";
+import { messages, pipelineSteps, pipelines } from "./schema.js";
+import { sessionTeamFor, teamIdForInlineTeam } from "./repos/teamsRepo.js";
 import { createDefaultProject } from "./repos/projectsRepo.js";
 import { createGitWorkspace, getGitWorkspace, type GitWorkspace } from "./repos/workspacesRepo.js";
 import { settleDailyBudgetNotice } from "../guardDefaultNotice.js";
@@ -173,7 +174,38 @@ export function giveSeededDelivery(db: Db, projectId: string): void {
  * to name nobody says `agentId: null`.
  */
 export function agentOfKind(db: Db, kind: string): Uuid {
-  const agent = listAgents(db).find((candidate) => candidate.role === kind && candidate.archivedAt === null);
+  // Never a team's own agent (EO-897), which no step may name.
+  const agent = listAgents(db).find((candidate) => candidate.role === kind && candidate.archivedAt === null && (candidate.teamId ?? null) === null);
   if (agent === undefined) throw new Error(`No agent of the "${kind}" kind to name on a step — create it before the step.`);
   return agent.id;
+}
+
+/**
+ * Makes a step run as `team`, or as one agent for null (EO-881): the team
+ * declared from its roles, each bound to the agent the project's staffing
+ * rule picks, and the step pointed at it — what a test wrote straight into
+ * the step's `team` column before a step named a declared team.
+ *
+ * Throws where a role of the team has no agent at all, so a test that
+ * sets a team before the agents it names finds out at the line that is
+ * wrong.
+ */
+export function setStepTeam(db: Db, stepId: string, team: StepTeam | null): void {
+  const step = db.select({ pipelineId: pipelineSteps.pipelineId, name: pipelineSteps.name }).from(pipelineSteps).where(eq(pipelineSteps.id, stepId)).get();
+  if (step === undefined) throw new Error(`No step "${stepId}" to give a team.`);
+  const teamId = team === null ? null : teamIdForInlineTeam(db, { pipelineId: step.pipelineId, stepName: step.name, team, current: null });
+  if (team !== null && teamId === null) throw new Error(`The team for "${stepId}" names a role no agent holds — create the agent before the team.`);
+  db.update(pipelineSteps).set({ teamId }).where(eq(pipelineSteps.id, stepId)).run();
+}
+
+/**
+ * The team a step's session runs (EO-882): its declared team with the
+ * agent behind each part of it, as dispatch opens a session with — for a
+ * test that opens a session by hand, as a crash would have left one.
+ */
+export function stepSessionTeam(db: Db, stepId: string): SessionTeam {
+  const teamId = db.select({ teamId: pipelineSteps.teamId }).from(pipelineSteps).where(eq(pipelineSteps.id, stepId)).get()?.teamId ?? null;
+  const team = sessionTeamFor(db, teamId);
+  if (team === null) throw new Error(`The step "${stepId}" runs as no team EO can read.`);
+  return team;
 }

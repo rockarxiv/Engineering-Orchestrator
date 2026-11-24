@@ -145,6 +145,12 @@ describe("the staffing rule — agents scoped to a project (EO-474)", () => {
     expect(staffingAgents(agents, "implementer", real(null)).map((a) => a.name)).toEqual(["global"]);
   });
 
+  it("never binds a kind to a team's own agent, which only its team runs (EO-897)", () => {
+    const member = agent("member", { projectId: P, teamId: "team" as Uuid });
+    expect(staffingAgents([agent("global"), member], "implementer", real(P)).map((a) => a.name)).toEqual(["global"]);
+    expect(staffingAgents([member], "implementer", real(P))).toEqual([]);
+  });
+
   it("falls back to the global agents when the project's own is not dispatchable, or holds another role", () => {
     for (const own of [agent("p", { projectId: P, enabled: false }), agent("p", { projectId: P, archivedAt: 1 }), agent("p", { projectId: P, role: "reviewer" })]) {
       expect(staffingAgents([agent("global"), own], "implementer", real(P)).map((a) => a.name)).toEqual(["global"]);
@@ -188,6 +194,7 @@ describe("a step's agent (EO-875)", () => {
     expect(stepAgentRefusal(agent({ enabled: false, archivedAt: 1, deletedAt: 2 }), real)).toBe("deleted");
     expect(stepAgentRefusal(agent({ projectId: "0199aa00-0000-7000-8000-0000000000a2" as Uuid }), real)).toBe("other_project");
     expect(stepAgentRefusal(agent({ config: { [PREVIEW_AGENT_KEY]: true } }), real)).toBe("preview_only");
+    expect(stepAgentRefusal(agent({ teamId: "team" as Uuid }), real)).toBe("team_member");
     expect(stepAgentRefusal(agent({ config: { [PREVIEW_AGENT_KEY]: true } }), { previewAt: 1, projectId: P })).toBeNull();
   });
 });
@@ -211,6 +218,7 @@ describe("why nothing runs on an agent step, in words (EO-876)", () => {
     expect(stepAgentProblem([{ ...agent, archivedAt: 1, enabled: false }], step("r"), "p")).toBe("Reviewer is archived, so nothing runs here until the step names another agent.");
     expect(stepAgentProblem([{ ...agent, enabled: false }], step("r"), "p")).toBe("Reviewer is disabled, so nothing runs here until it is enabled or the step names another agent.");
     expect(stepAgentProblem([{ ...agent, provider: UNBOUND_BACKEND }], step("r"), "p")).toContain("Reviewer has no backend on this machine");
+    expect(stepAgentProblem([{ ...agent, teamId: "team" }], step("r"), "p")).toBe("Reviewer belongs to a team and runs only as part of it, so nothing runs here until the step names an ordinary agent.");
   });
 
   it("says so where the agent was moved to another project after the step named it, as dispatch refuses it", () => {

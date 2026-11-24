@@ -1267,6 +1267,9 @@ export function readAssistDraftForPublish(db: Db, input: IpcPayload<"assist:draf
     // The definitions it is published with (EO-426), for the caller to
     // send on to `pipeline:save` beside the graph. Nothing here saved them.
     actions: read.actions,
+    // The declared teams it creates or changes (EO-881), for the caller to
+    // send on to `pipeline:save` beside the graph.
+    teams: read.teams,
     // What it does to the pipeline itself (EO-520), for the caller to
     // apply with the graph: the version it restores goes to
     // `pipeline:save`, and a new name or icon to `pipelines:update` once
@@ -1334,6 +1337,7 @@ function noDraftToPublish(problem: string): IpcResponse<"assist:draft"> {
     waiting: [],
     waitingProblem: null,
     actions: [],
+    teams: [],
     rename: null,
     icon: null,
     restoredFrom: null,
@@ -1377,9 +1381,9 @@ export async function publishOnRecord(
   // The record is sent the graph and nothing beside it: a name, an icon
   // or an action definition the card also carried would be half of the
   // card published, and the person pressed Publish on all of it.
-  if (read.rename !== null || read.icon !== null || read.actions.length > 0 || read.restoredFrom !== null) {
+  if (read.rename !== null || read.icon !== null || read.actions.length > 0 || read.restoredFrom !== null || read.teams.length > 0) {
     return refuse(
-      "This draft resolves a template update your organisation's record holds, and it also renames the pipeline, changes its icon, restores a version or brings action definitions. " +
+      "This draft resolves a template update your organisation's record holds, and it also renames the pipeline, changes its icon, restores a version, brings action definitions or declares a team. " +
         "Only the graph can be published on the record, so nothing was published. Ask for the draft again with the graph alone.",
     );
   }
@@ -1541,6 +1545,8 @@ interface PublishedGraph {
   entryRules?: EntryRule[] | undefined;
   actions: NonNullable<IpcPayload<"pipeline:save">["actions"]>;
   icon: string | null;
+  /** The declared teams the draft creates or changes (EO-881). */
+  teams?: NonNullable<IpcPayload<"pipeline:save">["teams"]> | undefined;
 }
 
 /** A draft's entry rules as `pipeline:save` takes them: left out where it sets none, so the pipeline keeps its own. */
@@ -1572,6 +1578,8 @@ function createAndSavePipeline(db: Db, engine: EngineHandle | undefined, project
     // same call that writes the graph — and so taken back with the
     // pipeline when it is refused.
     ...(graph.actions.length > 0 ? { actions: graph.actions } : {}),
+    // And the declared teams it creates or changes (EO-881), on the new pipeline's project.
+    ...((graph.teams ?? []).length > 0 ? { teams: graph.teams } : {}),
   });
   // Thrown, so the transaction takes the pipeline back with it.
   if (!saved.saved) throw new PublishRefused(errorsOf(saved));

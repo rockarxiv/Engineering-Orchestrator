@@ -80,6 +80,7 @@ describe("db client", () => {
         // And no module version pinned (EO-770): only a module step pins one.
         moduleVersion: null,
         brief: null,
+        teamId: null,
       },
     ]);
   });

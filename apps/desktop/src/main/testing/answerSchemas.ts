@@ -255,6 +255,8 @@ export const ASSIST_ANSWER_WITH_MAPS = {
             workspaceMode: "read",
             // Left out, which is "keep the brief it has" (EO-827).
             brief: null,
+            // And "keep the team it has" (EO-848).
+            team: null,
           },
           {
             ...DONE_STEP,
@@ -263,6 +265,7 @@ export const ASSIST_ANSWER_WITH_MAPS = {
             watch: null,
             workspaceId: null,
             workspaceMode: null,
+            team: null,
             brief: [
               { show: "comment", kind: "approval", role: null },
               { show: "output", step: "merge" },
@@ -278,6 +281,8 @@ export const ASSIST_ANSWER_WITH_MAPS = {
           { kind: "module", field: null, types: null, message: null, module: "no-reviewers", moduleVersion: 2, timeoutMs: null },
         ],
         templateStepIds: [{ name: "release_merge", value: "merge" }],
+        // Left out, which changes no team (EO-881).
+        teams: null,
       },
       modules: [
         {
@@ -485,7 +490,8 @@ export const ASSIST_ANSWER_WITH_TRIAL = {
         restoredFrom: null,
         entryRules: null,
         templateStepIds: null,
-        steps: [MERGE_STEP, DONE_STEP].map((step) => ({ ...step, timeoutMs: null, inputs: null, watch: null, workspaceId: null, workspaceMode: null })),
+        teams: null,
+        steps: [MERGE_STEP, DONE_STEP].map((step) => ({ ...step, timeoutMs: null, inputs: null, watch: null, workspaceId: null, workspaceMode: null, team: null })),
         routes: [{ ...DRAFT_ROUTE, requiresComment: null }],
       },
       modules: null,

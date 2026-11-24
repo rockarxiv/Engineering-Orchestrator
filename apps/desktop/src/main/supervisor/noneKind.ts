@@ -1,8 +1,9 @@
-import { mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { NONE_KIND, type Item } from "@eo/core";
 import { NOTHING_ATTACHED, type PrepareWorkspaceOutcome, type WorkspaceKind } from "./workspaceKind.js";
+import { NO_DISK_EVIDENCE } from "./teamEvidence.js";
 
 /** Where the empty directories live. `~/.eo/no-disk`, beside the worktrees, for the same reason they are not in the repository. */
 export function defaultNoDiskRoot(): string {
@@ -52,6 +53,8 @@ export function noneWorkspaceKind(root: string = defaultNoDiskRoot()): Workspace
    * below safe: two `none` runs at once are two directories, so there is
    * nothing for them to tread on.
    */
+  /** Where isolated team members' empty directories are made, apart from every item's own (EO-867). */
+  const copiesRoot = join(root, ".team-copies");
   const directoryFor = (item: Item): string => {
     const path = join(root, item.key);
     mkdirSync(path, { recursive: true });
@@ -116,6 +119,36 @@ export function noneWorkspaceKind(root: string = defaultNoDiskRoot()): Workspace
      */
     capacityKeyOf(): string | null {
       return null;
+    },
+
+    // No disk, so no files: a team reads the item and its attachments
+    // (EO-845). An isolated member's copy is an empty directory of its own
+    // (EO-867), as its step's agent's is: nothing in it is anyone's, so
+    // nothing done in it is said.
+    evidence: {
+      ...NO_DISK_EVIDENCE,
+      async copy(item, _workspace, _source, request) {
+        if (!/^[A-Za-z0-9_-]+$/.test(request.attemptId)) return { ok: false, problem: "EO could not name a copy for that attempt." };
+        const path = join(copiesRoot, item.key, request.attemptId);
+        rmSync(path, { recursive: true, force: true });
+        mkdirSync(path, { recursive: true });
+        return { ok: true, copy: { cwd: path, changes: async () => [], remove: async () => rmSync(path, { recursive: true, force: true }) } };
+      },
+      async releaseCopies(request) {
+        const removed: string[] = [];
+        const keys = request.item !== undefined ? [request.item.key] : existsSync(copiesRoot) ? readdirSync(copiesRoot) : [];
+        for (const key of keys) {
+          const folder = join(copiesRoot, key);
+          if (!existsSync(folder)) continue;
+          for (const attemptId of readdirSync(folder)) {
+            if (request.keep?.(attemptId) === true) continue;
+            rmSync(join(folder, attemptId), { recursive: true, force: true });
+            removed.push(join(folder, attemptId));
+          }
+          if (readdirSync(folder).length === 0) rmSync(folder, { recursive: true, force: true });
+        }
+        return removed;
+      },
     },
   };
 }

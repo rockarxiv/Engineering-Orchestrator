@@ -19,6 +19,7 @@ import {
   WEBHOOK_UNATTENDED_CARD_KIND,
   WEBHOOK_UNATTENDED_LABEL,
   type IpcRequest,
+  type TeamMemberView,
   type IpcResponse,
   type ItemReference,
   type ItemReviewers,
@@ -48,6 +49,10 @@ import {
   type JobSummary,
   type JobTrigger,
   type WebhookTrigger,
+  type TeamReading,
+  memberModeWords,
+  TEAM_ISOLATED,
+  TEAM_REPORT_ONLY,
 } from "@eo/core";
 import { describeActionUse } from "../ipc/roleActionCommands.js";
 import { isDeliverable } from "../agentAttachments/pluginDirectory.js";
@@ -863,6 +868,30 @@ export function renderAgents(data: IpcResponse<"agents:listDetailed">): string {
 }
 
 /**
+ * Every declared team (EO-897), as `teams_list` says them: each one's id,
+ * project, whether it is locked, its leader and members, and the steps
+ * that run as it. An archived team is not listed.
+ */
+export function renderTeams(data: IpcResponse<"teams:list">): string {
+  // What each member runs on (EO-900), so a reader can say what a team runs before team_member_settings_set changes it.
+  const runsOn = (member: TeamMemberView) =>
+    `${member.name ?? member.agentId}: runtime ${member.provider ?? "none"}, model ${member.model ?? "the runtime's default"}, reasoning ${member.reasoning ?? "the model's default"}${member.archived ? " (archived)" : ""}`;
+  const declared = (values: readonly string[] | undefined) => (values === undefined || values.length === 0 ? "any" : values.join(", "));
+  return list(
+    data.teams.map((team) => {
+      const where = team.projectName === null ? "on no project" : `project ${team.projectName}`;
+      const who = [...(team.leader === null ? [] : [`leader ${team.leader.name ?? team.leader.agentId}`]), `members ${team.members.map((member) => member.name ?? member.agentId).join(", ") || "none"}`].join(", ");
+      const used = team.steps.length === 0 ? "no step runs as it" : `run by ${team.steps.map((step) => `"${step.stepName}" on ${step.pipelineName}`).join(", ")}`;
+      const range = team.modelRange === null ? [] : [`  model range: runtimes ${declared(team.modelRange.runtimes)}; models ${declared(team.modelRange.models)}; reasoning ${declared(team.modelRange.reasoning)}`];
+      const leaderIsMember = team.leader !== null && team.members.some((member) => member.agentId === team.leader?.agentId);
+      const lines = [...(team.leader === null || leaderIsMember ? [] : [`  - leader ${runsOn(team.leader)}`]), ...team.members.map((member) => `  - ${team.leader?.agentId === member.agentId ? "leader and member" : "member"} ${runsOn(member)}`)];
+      return [`- ${team.name} (id: ${team.id}, ${where}, version ${String(team.version)}${team.locked ? ", locked" : ""}) — ${who}; ${used}`, ...range, ...lines].join("\n");
+    }),
+    "No teams are declared.",
+  );
+}
+
+/**
  * The registry (KAN-124): what a step may run and return, said in the
  * words a client writing a pipeline needs — a builtin step names one of
  * these functions and routes each of its results.
@@ -983,6 +1012,10 @@ export function renderPipeline(data: IpcResponse<"pipelineSteps:list">): string 
     if (step.type === "agent") {
       if (shown?.name != null) marks.push(`agent "${shown.name}" (agentId: ${step.agentId ?? "none"}; kind ${shown.kind ?? "?"}, ${shown.provider ?? "?"}, ${shown.model ?? "default model"})`);
       else marks.push(step.agentId === null ? "no agent" : `agentId: ${step.agentId}`);
+      // The declared team it runs as (EO-881), by name; its whole reading is under Teams.
+      const declared = data.teams.find((team) => team.stepId === step.id)?.declared ?? null;
+      if (declared !== null) marks.push(`runs as the team "${declared.name}"`);
+      else if (step.teamId !== null) marks.push(`names a team EO cannot read (teamId: ${step.teamId})`);
     }
     lines.push(`- ${step.name} (id: ${step.id}) [${marks.join("; ")}]`);
     if (shown?.problem != null) lines.push(`  ${shown.problem}`);
@@ -1031,6 +1064,11 @@ export function renderPipeline(data: IpcResponse<"pipelineSteps:list">): string 
   lines.push("", "## Routes", "", "A step's result key decides where its ticket goes next.", "");
   for (const route of data.routes) {
     lines.push(`- from ${route.fromStepId} on \`${route.resultKey}\` → ${route.target}${route.label ? ` (${route.label})` : ""}`);
+  }
+  // Each step that runs as a report-only team (EO-848), with its team as
+  // a draft's `team` takes it, so a draft can restate or change it.
+  if (data.teams.length > 0) {
+    lines.push("", ...renderTeamReadings(data.teams));
   }
   // As pipeline_save takes them, so what is shown can be sent back
   // (EO-610). Said only where there are any.
@@ -1173,6 +1211,16 @@ export function kindBindingLine(slot: { binding: "existing" | "choose" | "create
     case "none":
       return "no agent of this kind here and no prompt to create one from, so its steps would name no agent";
   }
+}
+
+/**
+ * How a declared team's agent binds on import (EO-885), as
+ * `pipeline_import_check` says it: to an agent here of its kind with the
+ * same instructions, or created.
+ */
+export function teamAgentBindingLine(agent: { name: string; kind: string; binding: "existing" | "create"; agent: string | null }): string {
+  if (agent.binding === "existing") return `${agent.name} (${agent.kind}): bound to ${agent.agent ?? "an agent here"}, which has the same instructions, copied for the team`;
+  return `${agent.name} (${agent.kind}): created with the document's instructions${agent.agent === null ? ", made like the agent of this kind the import creates" : `, on the runtime, model and tools of ${agent.agent}`}`;
 }
 
 export function renderModuleTestRun(run: ModuleTestRun): string {
@@ -2061,8 +2109,48 @@ export function renderPipelineProblems(data: IpcResponse<"pipeline:validate">): 
     const line = outsideReachLine(reach);
     return line === null ? [] : [`- ${stepId}: ${line}`];
   });
-  if (reaching.length === 0) return verdict.join("\n");
-  return [...verdict, "", "## Steps that act outside EO", "", ...reaching].join("\n");
+  const teams = data.teams.length === 0 ? [] : ["", ...renderTeamReadings(data.teams)];
+  if (reaching.length === 0) return [...verdict, ...teams].join("\n");
+  return [...verdict, "", "## Steps that act outside EO", "", ...reaching, ...teams].join("\n");
+}
+
+/**
+ * The teams of a graph (EO-848), as `pipeline_get` and `pipeline_validate`
+ * say them: each in a person's words, who dispatch would staff each role
+ * with, the action its single answer is held to and who writes it, the
+ * results it can end on, and what would stop it publishing. `teamOf`
+ * gives the team as a draft's `team` takes it, where the caller has it.
+ */
+function renderTeamReadings(teams: readonly TeamReading[]): string[] {
+  const lines = [
+    "## Teams",
+    "",
+    `A step runs as a declared team (EO-881): a team of its own, beside agents, whose leader and members are agents, named by the step and shareable by several pipelines. ` +
+      `A team's members work \`report_only\` (the default) or \`isolated\` (EO-867). ${TEAM_REPORT_ONLY} ${TEAM_ISOLATED} ` +
+      "A step is pointed at a team only by a draft's `team` on it (the team's name, or `none`), and a team is created or changed only by a draft's `teams` entry, which a person publishes from its card; pipeline_save can do neither. A locked team refuses every change.",
+  ];
+  for (const team of teams) {
+    const declared = team.declared === null ? "" : ` as the team "${team.declared.name}" (teamId: ${team.declared.id}; version ${String(team.declared.version)}${team.declared.locked ? "; locked" : ""})`;
+    lines.push("", `### ${team.stepName} (id: ${team.stepId})${declared} — ${team.coordination === "leader" ? "leader-led" : "independent"}, ${memberModeWords(team.members)} members`, "");
+    lines.push(`- Members: ${team.reportOnly}`);
+    lines.push(`- Coordination: ${team.facts.coordination}`);
+    for (const member of team.facts.members) lines.push(`- Member: ${member}`);
+    if (team.facts.outcomes.length > 0) lines.push(`- Outcomes a member may report: ${team.facts.outcomes.join("; ")}`);
+    for (const line of team.facts.completion) lines.push(`- Completion: ${line}`);
+    lines.push(`- Limits: ${team.facts.limits.join(", ")}`);
+    for (const staff of team.staffing) {
+      const who = staff.agents.length === 0 ? "nobody" : staff.agents.join(", ");
+      lines.push(`- Staffing: ${staff.role} (${staff.serves}) — ${who}${staff.problem === null ? "" : ` — **${staff.problem}**`}`);
+    }
+    const action = team.finalAction.action === null ? "no action" : `\`${team.finalAction.role ?? "?"} / ${team.finalAction.action}\``;
+    const writer = team.finalAction.answeredBy === "eo" ? "EO builds the answer (result and summary) from the completion table" : "the leader writes the answer, held to the action's schema";
+    lines.push(`- Final answer: ${action}; ${writer}${team.finalAction.problem === null ? " — compatible" : ` — **not compatible**: ${team.finalAction.problem}`}`);
+    lines.push(`- Can end on: ${team.results.length === 0 ? "nothing declared" : team.results.map((key) => `\`${key}\``).join(", ")}`);
+    for (const problem of team.problems) lines.push(`- Would not publish: ${problem}`);
+    // The team as a draft's `teams` entry writes it, agents by name (EO-881), so a draft can restate or change it.
+    if (team.declared !== null) lines.push(`- As a draft's \`teams\` entry: ${JSON.stringify(team.declared.draft)}`);
+  }
+  return lines;
 }
 
 /**
@@ -2510,6 +2598,14 @@ export function renderUpdateConflict(data: IpcResponse<"pipeline:updateConflict"
           "",
           "Steps of the template's other boards that this version routes to, by the ids they have here — a draft's routes into another board use these ids:",
           ...conflict.linkedSteps.map((step) => `- ${step.id}: "${step.name}" on ${step.pipelineName} (${step.pipelineId}), the template's ${step.templateStepId}`),
+        ]),
+    ...(conflict.templateTeams.length === 0
+      ? []
+      : [
+          "",
+          "The declared teams this version gives its steps, each ready for a draft (EO-898). To take one, put its entry in the draft's `teams` as it is and set the step's `team` to its `name`. " +
+            "Its leader and members are declared in `newMembers`: Publish creates each as an agent of the team's own, with the runtime, model and tools of the agent its `from` names, and its `toolPool` is those agents' tools, as this installation has them. Create no agents for it yourself.",
+          ...conflict.templateTeams.map((entry) => `- ${entry.stepName} (id: ${entry.stepId}): ${JSON.stringify(entry.team)}`),
         ]),
     "",
     "The person's edits since the base, oldest first:",

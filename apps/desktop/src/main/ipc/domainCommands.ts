@@ -89,12 +89,13 @@ import { unansweredQuestions } from "../roles/clarificationQuestions.js";
 import { actingAgentFor, standInBody, withOnYourBehalfNote } from "../trials/onBehalf.js";
 import { agentStopAnswerRefusal, answerTrialStop } from "../trials/loop.js";
 import { decisionRefusal, dispatchBlocker } from "@eo/engine";
-import { stepNotInVersionMessage } from "@eo/core";
+import { stepNotInVersionMessage, TEAM_PARTICIPANT_ACTION } from "@eo/core";
+import { currentTeamSession, endTeamSession, teamSessionOnEntry } from "../db/repos/teamSessionsRepo.js";
+import type { TeamControlSite } from "../supervisor/teamSessionView.js";
 import { resolveAndValidateMentions } from "../supervisor/escalation.js";
 import { archivedProjectBlocker, buildEligibilityInput, namedBlocker } from "../supervisor/buildTickInput.js";
 import { resumeOutlook, type ItemBlocker } from "../supervisor/dispatchBlockers.js";
 import type { Cancellation, ResumeItemOptions, SteerResult, SteeredMessage } from "../supervisor/runSupervisor.js";
-import { clearStop } from "../supervisor/stoppedByHand.js";
 import { worksOnABranch } from "../supervisor/workspaceResolution.js";
 import type { ItemLock } from "../supervisor/itemLock.js";
 import { actingCaller, actingDevice, actingPersonId, humanAuthor, type ActingCaller } from "../identity/acting.js";
@@ -111,6 +112,7 @@ import { getGroup } from "../db/repos/groupsRepo.js";
 import { emitPush } from "./push.js";
 import { withModuleEntryChecks } from "../modules/entryChecks.js";
 import { clearEnginePausePreference, isEnginePausePreferred, persistEnginePause } from "../engineActivity.js";
+import { releaseMemberCopiesOf } from "../workspaceKinds.js";
 
 /**
  * Tells every window this item changed. Returns its argument so it can
@@ -147,6 +149,10 @@ export interface EngineHandle {
    * at the default.
    */
   cancelRun: (runId: string, cancellation?: Cancellation) => void;
+  /** Stops a whole team session (EO-849); see `RunSupervisor.cancelTeamSession`. Optional, so a handle built for a test need not have it. */
+  cancelTeamSession?: (sessionId: string) => { ok: true } | { ok: false; problem: string };
+  /** This desktop and the team runs it drives (EO-849); see `RunSupervisor.teamControlSite`. Absent, no team control acts here. */
+  teamControlSite?: () => TeamControlSite;
   /**
    * Says something to a live run without stopping it (EO-176).
    *
@@ -715,7 +721,11 @@ export function moveItem(db: Db, engine: EngineHandle | undefined, input: IpcPay
   const outsideVersion = versionRefusal(db, item, input.toStepId, toPipelineId);
   if (outsideVersion !== null) return { moved: false, cancelledRunId: null, blockedByActiveRun: false, commentId: null, problem: outsideVersion };
 
-  const activeRun = listRunsForItem(db, itemId).find((run) => run.status === "running" || run.status === "queued");
+  // The item's own run, never a team participant's (EO-849): a team works
+  // through the run holding the item, and stopping that one stops every
+  // participant with it — a participant's run alone would leave the rest
+  // of the session working on an item that has left.
+  const activeRun = listRunsForItem(db, itemId).find((run) => run.action !== TEAM_PARTICIPANT_ACTION && (run.status === "running" || run.status === "queued"));
 
   if (busy(engine, itemId, activeRun) && !input.cancelActiveRun) {
     return { moved: false, cancelledRunId: null, blockedByActiveRun: true, commentId: null, problem: null };
@@ -769,6 +779,11 @@ export function moveItem(db: Db, engine: EngineHandle | undefined, input: IpcPay
     ...actingDevice(acting),
     reason: "moved on the project",
   });
+  // A team session on the step it left is over, whole (EO-849): ended here
+  // rather than left open with nobody to run it, so nothing it did can
+  // read as running and nothing late can complete it.
+  const session = currentTeamSession(db, itemId);
+  if (session !== undefined && !teamSessionOnEntry(db, session)) endTeamSession(db, { sessionId: session.id, status: "cancelled" });
   engine?.notifyStateChange(); // the new column may be dispatchable right now
 
   return announceItem(itemId, { moved: true, cancelledRunId: activeRun?.id ?? null, blockedByActiveRun: false, commentId, problem: null });
@@ -1086,14 +1101,9 @@ export function resumeHeldItem(db: Db, engine: EngineHandle | undefined, input: 
   }
 
   if (activeRun) engine?.cancelRun(activeRun.id, "superseded");
+  // A hold a cancel set (EO-891) is resumed exactly as a person's is:
+  // the step runs again.
   setItemHeld(db, itemId, null);
-  // Resuming is a person handing the item back to the scheduler, and
-  // it is the one re-authorisation that leaves the item exactly where
-  // it stood — same step, same initiation — so a cancellation taken
-  // before the hold would otherwise still be standing off it (EO-175).
-  // A move needs nothing of the sort: it puts the item in a new
-  // initiation by being a move.
-  clearStop(db, itemId);
 
   const stepName = item.stepId === null ? "no pipeline" : (getStep(db, item.stepId)?.name ?? item.stepId);
   // What happens next, checked rather than assumed (EO-135, invariant #8).
@@ -2269,8 +2279,8 @@ function whoAsked(db: Db, actingDeviceId: string | null | undefined): string {
  * Stop this run, and nothing else.
  *
  * Which is why it leaves `cancellation` at its default: this channel is
- * the whole of what was asked for, so EO stops with it rather than
- * offering the same step again on the next tick (EO-175). It carries no
+ * the whole of what was asked for, so EO holds the item rather than
+ * offering the same step again on the next tick (EO-175, EO-891). It carries no
  * item and no destination — the item stays exactly where it is — and
  * that is the difference between it and every other caller of
  * `cancelRun`.
@@ -2339,6 +2349,11 @@ export function setArchived(db: Db, input: IpcPayload<"items:setArchived">): Ipc
   if (!getItem(db, itemId)) return { archived: false, problem: "That ticket no longer exists." };
 
   setItemArchived(db, itemId, input.archived ? Date.now() : null);
+  // An archived item's team members' copies go with it (EO-867).
+  if (input.archived) {
+    const item = getItem(db, itemId);
+    if (item) void releaseMemberCopiesOf(db, item);
+  }
   return { archived: input.archived, problem: null };
 }
 

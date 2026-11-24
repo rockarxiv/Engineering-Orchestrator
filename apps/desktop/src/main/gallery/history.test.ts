@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
+import { isExportedTeam } from "@eo/core";
 import { compareTemplateVersions, loadTemplateHistory, readVersion, templateHistoryDirectory, type TemplateVersion } from "./history.js";
 import { bundledTemplates } from "./templates.js";
 
@@ -65,7 +66,7 @@ describe("Software feature to merge", () => {
   const versions = () => loadTemplateHistory(GALLERY_DIRECTORY).get(SOFTWARE)!;
 
   it("has the graph from before EO-461, the one that gave up after a week, and the current one", () => {
-    expect(versions().map((version) => version.version)).toEqual(["1.0", "1.1", "1.2", "1.3", "1.4"]);
+    expect(versions().map((version) => version.version)).toEqual(["1.0", "1.1", "1.2", "1.3", "1.4", "1.5", "1.6", "1.7", "1.8"]);
   });
 
   it("1.0 opens the pull request and waits at Done, with no step watching it", () => {
@@ -181,6 +182,114 @@ describe("Software feature to merge", () => {
     expect(strip(current!.document)).toEqual(strip(before!.document));
   });
 
+  /**
+   * 1.5 (EO-868): Review runs as a leader-led team of focused reviewers,
+   * in isolated mode, and the template's description says a review is
+   * now several runs.
+   */
+  it("differs between 1.4 and 1.5 only in Review's team and the template's description, and says so for the person (EO-868)", () => {
+    const [, , , , before, current] = versions();
+    expect(current!.document.steps.find((step) => step.id === "review")?.team).toMatchObject({ coordination: "leader", members: "isolated", leader: { role: "reviewer" }, roles: ["reviewer"] });
+    expect(current!.document.template.description).toContain("several agent runs");
+    expect(current!.notes).toContain("Review now runs as a team");
+    expect(current!.notes).toContain("several agent runs");
+    // The export format too: a document with a team is format 17 (EO-843).
+    const strip = (document: TemplateVersion["document"]) => ({
+      ...document,
+      eoPipelineExport: 0,
+      template: { ...document.template, version: "", description: "" },
+      steps: document.steps.map((step) => ({ ...step, team: undefined })),
+    });
+    expect(strip(current!.document)).toEqual(strip(before!.document));
+  });
+
+  /**
+   * 1.6 (EO-873): Review's team declares that a pass reporting a blocking
+   * issue, or something only a person can decide, rules out an approval.
+   */
+  it("differs between 1.5 and 1.6 only in what Review's outcomes rule out, and says so for the person (EO-873)", () => {
+    const [, , , , , before, current] = versions();
+    expect(current!.version).toBe("1.6");
+    const outcomesOf = (document: TemplateVersion["document"]) => (document.steps.find((step) => step.id === "review")?.team?.outcomes ?? []).map((outcome) => [outcome.key, outcome.rulesOut]);
+    expect(outcomesOf(before!.document)).toEqual([
+      ["clear", undefined],
+      ["blocking", undefined],
+      ["needs_decision", undefined],
+    ]);
+    expect(outcomesOf(current!.document)).toEqual([
+      ["clear", undefined],
+      ["blocking", ["approved"]],
+      ["needs_decision", ["approved"]],
+    ]);
+    expect(current!.notes).toContain("rules out an approval");
+    const strip = (document: TemplateVersion["document"]) => ({
+      ...document,
+      template: { ...document.template, version: "" },
+      steps: document.steps.map((step) => (step.team === undefined || step.team === null ? step : { ...step, team: { ...step.team, outcomes: step.team.outcomes.map(({ rulesOut: _rulesOut, ...outcome }) => outcome) } })),
+    });
+    expect(strip(current!.document)).toEqual(strip(before!.document));
+  });
+
+  /**
+   * 1.7 (EO-888): Review's lead says what each pass covers, and only the
+   * acceptance-criteria pass is given the whole change.
+   */
+  it("differs between 1.6 and 1.7 only in what Review's lead is told, which names what each pass covers (EO-888)", () => {
+    const all = versions();
+    const before = all.find((version) => version.version === "1.6")!;
+    const current = all.find((version) => version.version === "1.7")!;
+    const leaderOf = (document: TemplateVersion["document"]) => {
+      const team = document.steps.find((step) => step.id === "review")?.team;
+      return team?.coordination === "leader" ? team.leader.instructions : "";
+    };
+    const told = leaderOf(current.document);
+    expect(told).not.toBe(leaderOf(before.document));
+    // Every pass's line says what it covers, and only the criteria pass covers the whole change.
+    const passLines = told.split("\n").filter((line) => /^(\d+\. `\w+`:|- `\w+`, when )/.test(line));
+    expect(passLines.map((line) => /`(\w+)`/.exec(line)![1])).toEqual(["criteria", "impact", "tests", "rules", "security", "user_facing"]);
+    for (const line of passLines) expect(line, line).toContain("It covers");
+    expect(passLines.filter((line) => line.includes("the whole change")).map((line) => /`(\w+)`/.exec(line)![1])).toEqual(["criteria"]);
+    expect(current.notes).toContain("what each pass covers");
+    const strip = (document: TemplateVersion["document"]) => ({
+      ...document,
+      template: { ...document.template, version: "" },
+      steps: document.steps.map((step) => (step.team?.coordination === "leader" ? { ...step, team: { ...step.team, leader: { ...step.team.leader, instructions: "" } } } : step)),
+    });
+    expect(strip(current.document)).toEqual(strip(before.document));
+  });
+
+  /**
+   * 1.8 (EO-885): Review's team is a declared team carried whole, a lead
+   * reviewer and one reviewer per pass, each with its own instructions —
+   * a format-18 document, and nothing else about the template changed.
+   */
+  it("differs between 1.7 and 1.8 only in Review's team, now a declared team of a reviewer per pass, and its description (EO-885)", () => {
+    const all = versions();
+    const before = all.find((version) => version.version === "1.7")!;
+    const current = all.find((version) => version.version === "1.8")!;
+    const team = current.document.steps.find((step) => step.id === "review")?.team;
+    if (team === undefined || !isExportedTeam(team) || team.coordination !== "leader") throw new Error("1.8's Review names no declared team");
+    expect(team.leader).toMatchObject({ name: "Lead reviewer", kind: "reviewer" });
+    expect(team.members.map((member) => [member.name, member.kind])).toEqual([
+      ["Criteria reviewer", "reviewer"],
+      ["Impact reviewer", "reviewer"],
+      ["Tests reviewer", "reviewer"],
+      ["Rules reviewer", "reviewer"],
+      ["Security reviewer", "reviewer"],
+      ["User-facing reviewer", "reviewer"],
+    ]);
+    expect(current.document.eoPipelineExport).toBe(18);
+    expect(before.document.eoPipelineExport).toBe(17);
+    expect(current.notes).toContain("one reviewer per pass");
+    const strip = (document: TemplateVersion["document"]) => ({
+      ...document,
+      eoPipelineExport: 0,
+      template: { ...document.template, version: "", description: "" },
+      steps: document.steps.map(({ team: _team, ...step }) => step),
+    });
+    expect(strip(current.document)).toEqual(strip(before.document));
+  });
+
   it("differs between 1.0 and 1.1 only in what EO-461 changed", () => {
     const [before, current] = versions();
     const strip = (document: TemplateVersion["document"]) => ({
@@ -238,7 +347,7 @@ describe("reading the history", () => {
   it("skips a damaged file and keeps the versions around it", () => {
     const directory = copyOfHistory();
     writeFileSync(join(templateHistoryDirectory(directory), SOFTWARE, "1.0.json"), "{ not json");
-    expect(loadTemplateHistory(directory).get(SOFTWARE)?.map((version) => version.version)).toEqual(["1.1", "1.2", "1.3", "1.4"]);
+    expect(loadTemplateHistory(directory).get(SOFTWARE)?.map((version) => version.version)).toEqual(["1.1", "1.2", "1.3", "1.4", "1.5", "1.6", "1.7", "1.8"]);
   });
 
   it("skips a file whose path disagrees with the version it carries", () => {
@@ -250,7 +359,7 @@ describe("reading the history", () => {
 
     const history = loadTemplateHistory(directory);
     expect(history.has("somebody-else")).toBe(false);
-    expect(history.get(SOFTWARE)?.map((version) => version.version)).toEqual(["1.0", "1.1", "1.2", "1.3", "1.4"]);
+    expect(history.get(SOFTWARE)?.map((version) => version.version)).toEqual(["1.0", "1.1", "1.2", "1.3", "1.4", "1.5", "1.6", "1.7", "1.8"]);
   });
 
   it("refuses a pack that asks for the admin grant, as every other door does", () => {

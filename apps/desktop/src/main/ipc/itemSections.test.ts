@@ -273,7 +273,8 @@ describe("the query path", () => {
     // flight — which is what says its content may not change (EO-779).
     expect(reads(ownOnly, "runs")).toHaveLength(2);
     expect(reads(ownOnly, "runs")[0]).toMatch(/where "runs"\."item_id" = \? order by coalesce\("runs"\."started_at", 0\) desc, "runs"\."id" desc limit \?/);
-    expect(reads(ownOnly, "runs")[1]).toMatch(/where \("runs"\."item_id" = \? and "runs"\."status" in \(\?, \?\)\) limit \?/);
+    // The item's own run, never a team participant's (EO-846).
+    expect(reads(ownOnly, "runs")[1]).toMatch(/where \("runs"\."item_id" = \? and "runs"\."status" in \(\?, \?\) and "runs"\."action" <> \?\) limit \?/);
     expect(reads(ownOnly, "dependsOn")).toHaveLength(1);
     expect(reads(ownOnly, "dependsOn")[0]).toMatch(/where "item_deps"\."item_id" = \?/);
     // When it entered its step is the one read of `transitions`: its

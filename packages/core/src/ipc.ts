@@ -1,5 +1,8 @@
 import { z } from "zod";
 import { NONE_KIND } from "./schemas/workspaces.js";
+import { TeamReadingSchema } from "./team.js";
+import { TeamSessionViewSchema } from "./teamSessionView.js";
+import { TeamViewSchema } from "./declaredTeam.js";
 import { StepVerificationSchema } from "./schemas/verification.js";
 import { GalleryNeedSchema, GalleryTemplateViewSchema } from "./schemas/gallery.js";
 import {
@@ -74,6 +77,7 @@ import {
   StepHoldSchema,
   PipelineStepViewSchema,
   PipelineStepSaveSchema,
+  TeamSaveSchema,
   PipelineViewSchema,
   StepRouteViewSchema,
   CreateRepositoryInputSchema,
@@ -675,6 +679,23 @@ export const ImportPreflightViewSchema = z.object({
    * import is refused or changed because of one.
    */
   machineSpecific: z.array(z.object({ where: z.string(), warnings: z.array(MachineSpecificWarningSchema) })).default([]),
+  /**
+   * The declared teams the document's steps run as (EO-885), and how each
+   * of a team's agents would be bound here: to an agent of its kind with
+   * the same instructions (`existing`, named in `agent`), or created
+   * (`create`), made like the kind's agent named in `agent` where there is
+   * one. Every member is the team's own (EO-897), so a bound agent is
+   * copied for the team.
+   */
+  teams: z
+    .array(
+      z.object({
+        stepName: z.string(),
+        teamName: z.string(),
+        agents: z.array(z.object({ name: z.string(), kind: z.string(), binding: z.enum(["existing", "create"]), agent: z.string().nullable() })),
+      }),
+    )
+    .default([]),
   moduleCount: z.number(),
 });
 export type ImportPreflightView = z.infer<typeof ImportPreflightViewSchema>;
@@ -1014,6 +1035,17 @@ export const PipelineSaveInputSchema = z.object({
    * `role_action_save`, and a third way would be one nobody reads first.
    */
   actions: z.array(ActionDefinitionDraftSchema).optional(),
+  /**
+   * The declared teams this graph is published with (EO-881): each
+   * created, or written as a new version of the project's team of that
+   * id, in the transaction that writes the graph — so a refused pipeline
+   * leaves no team behind and a refused team no pipeline. The graph is
+   * judged against the project's teams with these laid over them. A
+   * locked team refuses the save. Not offered to MCP clients
+   * (`pipeline_save` omits it): only the assistant's draft, which a
+   * person publishes, changes a team this way.
+   */
+  teams: z.array(TeamSaveSchema).optional(),
 });
 
 /** One assistant chat, as `assist:list` answers with it. */
@@ -2219,6 +2251,153 @@ export const recordContract = {
    */
   "runs:live": channel(z.object({ runId: z.string() }), z.object({ turn: LiveTurnSchema.nullable() })),
   "runs:cancel": channel(z.object({ runId: z.string() }), z.object({ cancelled: z.boolean() })),
+  /**
+   * An item's team sessions as a person reads them (EO-849,
+   * `TeamSessionViewSchema`), newest first: each with its participants,
+   * their attempts, reports, baselines, timing and spending, why it is
+   * waiting, what produced its result, and which of its controls may be
+   * pressed and why not. Derived from what is stored on every read, so a
+   * reload or a reconnect draws the same thing. Empty for an item no team
+   * has worked.
+   */
+  "items:teamSessions": channel(z.object({ itemId: z.string() }), z.object({ sessions: z.array(TeamSessionViewSchema) })),
+  /**
+   * A person stopping a team session (EO-849): the team's run and every
+   * participant with it, and the session ended `cancelled`, so nothing it
+   * did after can read as running or as a finding. The item stays where it
+   * is and is not offered again until a person moves it or replies. Only
+   * the item's current session; a refusal is `problem`, never a throw.
+   */
+  "teams:cancel": channel(z.object({ sessionId: z.string(), ...ACTING_DEVICE }), z.object({ cancelled: z.boolean(), problem: z.string().nullable() })),
+  /**
+   * A person asking a parked team to try again what failed (EO-849),
+   * keeping every report already accepted: posted on the thread as theirs
+   * and answered as a reply would be. Only the item's current session, on
+   * its step entry, parked with failed work and no open question; a
+   * settled or historical session never runs again.
+   */
+  "teams:retry": channel(z.object({ sessionId: z.string(), ...ACTING_DEVICE }), z.object({ retried: z.boolean(), keys: z.array(z.string()), problem: z.string().nullable() })),
+  /**
+   * Every declared team, as the Teams tab in the Agents section shows it
+   * (EO-884): its leader and members as the agents they are, its pool,
+   * range, limits and cap, the steps that name it, and its versions with
+   * who made each. A trial's own copies of a draft's teams are left out.
+   */
+  "teams:list": channel(z.void(), z.object({ teams: z.array(TeamViewSchema) })),
+  /**
+   * A person putting an earlier version of a team back (EO-881, EO-884):
+   * itself a new version, made by the person asking and recording the one
+   * it restored. Refused, as `problem`, for a locked team or a version the
+   * team does not have.
+   */
+  "teams:restore": channel(
+    z.object({ teamId: z.string(), version: z.number().int().positive(), ...ACTING_DEVICE }),
+    z.object({ restored: z.boolean(), problem: z.string().nullable() }),
+  ),
+  /**
+   * A person changing one member's runtime, model and reasoning effort from
+   * the Teams tab (EO-884), the leader's included: written on the member's
+   * agent, which is the team's own, and recorded as a new version of the
+   * team made by whoever asked. Refused, as `problem`, for a locked team,
+   * an agent that is not on it, or a backend the organisation does not
+   * allow. Never the member's instructions, kind or tools, which this
+   * cannot express (invariant 11).
+   */
+  "teams:setMemberSettings": channel(
+    z.object({
+      teamId: z.string(),
+      agentId: z.string(),
+      provider: z.string().min(1),
+      /** Null is the runtime's default model. */
+      model: z.string().nullable().default(null),
+      /** Null is the model's default reasoning effort. */
+      reasoning: z.string().nullable().default(null),
+      ...ACTING_DEVICE,
+    }),
+    z.object({ saved: z.boolean(), problem: z.string().nullable() }),
+  ),
+  /**
+   * One or more members of a declared team set to a runtime, model and
+   * reasoning effort through EO's tools (EO-900): by EO's system agent on
+   * `eo_admin`, or by an outside client over EO's MCP server. The members
+   * are named by their names within the team, the leader's included. The
+   * Teams tab's bulk change (EO-901) is this channel too, naming them by
+   * `agentIds`. What the Teams tab's change does, under its rules, as one
+   * version of the team made by whoever asked — the system agent
+   * (`actingAgentId`, which only EO's administrative host stamps), an
+   * outside client
+   * (`throughClient`, which only the MCP tool sets) or the person. Refused
+   * whole, as `problem`, for a locked team, a name that is no member of it,
+   * a runtime EO has none of, or a backend the organisation does not
+   * allow. The team's model range is not asked, as the tab does not ask it:
+   * it bounds only the members a leader adds. A runtime this machine has
+   * not installed or is not signed in to is saved, and said as `note`, as
+   * the tab says it. Never a member's instructions, kind, tools or the
+   * team's membership (invariant 11).
+   */
+  "teams:setMembersSettings": channel(
+    z.object({
+      teamId: z.string(),
+      /** The members' names within the team, as EO's tools name them. */
+      members: z.array(z.string().trim().min(1)).max(64).default([]),
+      /**
+       * The members by agent id, as the Teams tab's bulk change picks them
+       * (EO-901): exact where two members share a name. Either this or
+       * `members`, not both; neither is refused, nothing written.
+       */
+      agentIds: z.array(z.string().min(1)).max(64).default([]),
+      provider: z.string().min(1),
+      /** Null is the runtime's default model. */
+      model: z.string().nullable().default(null),
+      /** Null is the model's default reasoning effort. */
+      reasoning: z.string().nullable().default(null),
+      /** Set by the MCP tool on EO's outside listener alone: the version is the client's. */
+      throughClient: z.boolean().optional(),
+      ...ACTING_DEVICE,
+      ...ACTING_AGENT,
+    }),
+    z.object({
+      saved: z.boolean(),
+      /** The members whose settings changed, by name; empty where each already ran on them. */
+      changed: z.array(z.string()),
+      /** The team's version after the call, or null where there is no such team. */
+      version: z.number().int().positive().nullable(),
+      problem: z.string().nullable(),
+      /** Where it saved: what this machine says of the runtime, as the Teams tab says it under the picker — not installed, turned off or not signed in — or null. */
+      note: z.string().nullable(),
+    }),
+  ),
+  /**
+   * A person locking a team against every change, the leader's additions
+   * included, or unlocking it (EO-881, EO-884). A guard, not a change to
+   * what the team is: it writes no version.
+   */
+  "teams:setLocked": channel(z.object({ teamId: z.string(), locked: z.boolean() }), z.object({ changed: z.boolean(), problem: z.string().nullable() })),
+  /**
+   * A person archiving one declared team (EO-897): one-way, as archiving an
+   * agent is, so nothing brings it back. Its own agents — leader and
+   * members — are archived with it; it leaves the Teams tab and no step may
+   * name it after. Refused, as `problem`, while any step names it, in its
+   * pipeline's current version or an older one items still run on (the
+   * refusal names those steps), and while it is locked. Nothing is archived
+   * until `confirm` is true: an unconfirmed call answers with `members`,
+   * the names of the agents that would go with it.
+   */
+  "teams:archive": channel(
+    z.object({ teamId: z.string(), confirm: z.boolean().default(false) }),
+    z.object({ archived: z.boolean(), problem: z.string().nullable(), members: z.array(z.string()).default([]) }),
+  ),
+  /**
+   * A person deleting one declared team (EO-897), archived ones included,
+   * the way deleting a project deletes its teams: the team and its versions
+   * go, and its own agents stay only as tombstones its runs, reports and
+   * comments still name. Refused as `teams:archive` is, and confirmed the
+   * same way.
+   */
+  "teams:delete": channel(
+    z.object({ teamId: z.string(), confirm: z.boolean().default(false) }),
+    z.object({ deleted: z.boolean(), problem: z.string().nullable(), members: z.array(z.string()).default([]) }),
+  ),
   "engine:pause": channel(z.object({ cancelRunning: z.boolean().default(false) }), EngineStatusSchema),
   "engine:resume": channel(z.void(), EngineStatusSchema),
   "engine:status": channel(z.void(), EngineStatusSchema),
@@ -2755,6 +2934,8 @@ export const recordContract = {
       waitingProblem: z.string().nullable().default(null),
       /** The action definitions the draft is published with (EO-426), sent on to `pipeline:save` beside the graph. */
       actions: z.array(ActionDefinitionDraftSchema).default([]),
+      /** The declared teams the draft creates or changes (EO-881), sent on to `pipeline:save` beside the graph. */
+      teams: z.array(TeamSaveSchema).default([]),
       /** The name the draft renames the pipeline to (EO-520), applied with `pipelines:update` once the graph has saved. Null when it keeps the name. */
       rename: z.string().nullable().default(null),
       /** The icon the draft gives the pipeline (EO-520), applied with the name. Null when it leaves the icon alone. */
@@ -3528,6 +3709,12 @@ export const recordContract = {
       /** The same rules in the words a refusal would use, or null for a pipeline with none. */
       entrySentence: z.string().nullable().default(null),
       /**
+       * Each step that runs as a report-only team (EO-848), read as
+       * dispatch would act on it: staffing, restrictions, the action its
+       * answer is held to and the results it can end on.
+       */
+      teams: z.array(TeamReadingSchema).default([]),
+      /**
        * Each rule as one line, in the order the pipeline lists them, for a
        * person reading what the pipeline asks (EO-736): its words, a module
        * rule's module by name and its time limit, and the types it applies to.
@@ -3879,6 +4066,8 @@ export const recordContract = {
       entryRules: EntryRulesSchema.optional(),
       /** The definitions it would be published with (EO-426), so this says what `pipeline:save` would. */
       actions: z.array(ActionDefinitionDraftSchema).optional(),
+      /** The declared teams it would be published with (EO-881), so this says what `pipeline:save` would. */
+      teams: z.array(TeamSaveSchema).optional(),
     }),
     z.object({
       problems: z.array(WorkflowProblemSchema),
@@ -3889,6 +4078,8 @@ export const recordContract = {
        * mode on a trial.
        */
       outsideReach: OutsideReachByStepSchema.default({}),
+      /** Each step of the graph sent that runs as a team (EO-848), as `pipelineSteps:list` reads a published one. */
+      teams: z.array(TeamReadingSchema).default([]),
     }),
   ),
 
@@ -6954,6 +7145,7 @@ export const recordContract = {
         watches: { ts: 0, id: "" },
         memories: { ts: 0, id: "" },
         skills: { ts: 0, id: "" },
+        teamSessions: { ts: 0, id: "" },
       }),
       limit: z.number().int().positive().max(1000).default(500),
       /**
@@ -8194,6 +8386,14 @@ export const ACTOR_SCOPED_CHANNELS = [
   "items:move",
   // EO-567. The comment it posts names who asked, which only the door knows.
   "items:moveToVersion",
+  // EO-849. Cancelling or retrying a team session posts in the person's name.
+  "teams:cancel",
+  "teams:retry",
+  // EO-884. A restore or a member's new settings is a version made by whoever asked, which only the door knows.
+  "teams:restore",
+  "teams:setMemberSettings",
+  // EO-900. The same change through EO's tools, a version made by whoever asked.
+  "teams:setMembersSettings",
   "items:decide",
   "items:claim",
   "items:assign",
@@ -8270,6 +8470,8 @@ export const AGENT_ACTED_CHANNELS = [
   "skills:setEnabled",
   "skills:archive",
   "skills:restoreVersion",
+  // A team's version is filed with its author: the system agent setting its members' runtime, model and reasoning (EO-900).
+  "teams:setMembersSettings",
 ] as const satisfies readonly IpcChannel[];
 
 /** The field EO's administrative MCP host stamps, spelled once. */

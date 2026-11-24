@@ -8,7 +8,9 @@ import { createPipeline, createStep, getPipelineOrigin, getSetting, listAgents, 
 import { withKind } from "../stepAgents.js";
 import { openMigratedTestDb } from "../db/testHelpers.js";
 import { loadTemplateHistory, type TemplateHistory } from "./history.js";
+import { templateHistoryUpTo } from "./historyTestHelpers.js";
 import { backfillPipelineOrigins, matchTemplateVersion, ORIGINS_BACKFILLED_KEY } from "./origins.js";
+import { applyTemplateUpdates } from "./templateUpdates.js";
 
 /**
  * Origins for pipelines that predate them (EO-531): matched once, by
@@ -66,6 +68,64 @@ describe("matching step ids against the history", () => {
 
     const neverGivesUp = steps.map((step) => (step.id === "pull_request_watch" ? { ...step, watch: { everyMinutes: 5, giveUpAfterHours: 168, neverGivesUp: true } } : step));
     expect(matchTemplateVersion(ids, history, neverGivesUp)?.version.version).toBe("1.3");
+  });
+
+  /**
+   * 1.4 and 1.5 have the same steps, set the same way but for Review's
+   * team (EO-868), so the team is what tells them apart: a Delivery
+   * without it is on 1.4, and is brought to 1.5 by the update.
+   */
+  it("tells 1.4 from 1.5 by Review's team", () => {
+    const onFourteen = templateHistoryUpTo(GALLERY_DIRECTORY, SOFTWARE, "1.4");
+    backfillPipelineOrigins(handle.db, onFourteen);
+    applyTemplateUpdates(handle.db, onFourteen, { isTheRecord: false });
+    const agents = listAgents(handle.db);
+    const steps = listStepsForPipeline(handle.db, "default").map((step) => withKind(agents, step));
+    const ids = steps.map((step) => step.id);
+    expect(steps.find((step) => step.id === "review")?.team).toBeNull();
+    expect(matchTemplateVersion(ids, history, steps)?.version.version).toBe("1.4");
+
+    const team = history.get(SOFTWARE)!.find((version) => version.version === "1.5")!.document.steps.find((step) => step.id === "review")!.team!;
+    const withTeam = steps.map((step) => (step.id === "review" ? { ...step, team } : step));
+    expect(matchTemplateVersion(ids, history, withTeam)?.version.version).toBe("1.5");
+  });
+
+  /**
+   * 1.5 and 1.6 differ only in what Review's team's outcomes rule out
+   * (EO-873): a Delivery whose team rules nothing out is on 1.5, and is
+   * brought to 1.6 by the update.
+   */
+  it("tells 1.5 from 1.6 by what Review's team rules out", () => {
+    const onFifteen = templateHistoryUpTo(GALLERY_DIRECTORY, SOFTWARE, "1.5");
+    backfillPipelineOrigins(handle.db, onFifteen);
+    applyTemplateUpdates(handle.db, onFifteen, { isTheRecord: false });
+    const agents = listAgents(handle.db);
+    const steps = listStepsForPipeline(handle.db, "default").map((step) => withKind(agents, step));
+    const ids = steps.map((step) => step.id);
+    const teamOf = (version: string) => history.get(SOFTWARE)!.find((entry) => entry.version === version)!.document.steps.find((step) => step.id === "review")!.team!;
+    const withTeam = (version: string) => steps.map((step) => (step.id === "review" ? { ...step, team: teamOf(version) } : step));
+    expect(teamOf("1.5")).not.toEqual(teamOf("1.6"));
+    expect(matchTemplateVersion(ids, history, withTeam("1.5"))?.version.version).toBe("1.5");
+    expect(matchTemplateVersion(ids, history, withTeam("1.6"))?.version.version).toBe("1.6");
+  });
+
+  /**
+   * 1.6 and 1.7 differ only in what Review's lead is told (EO-888): a
+   * Delivery whose team's lead names no scope for its passes is on 1.6,
+   * and is brought to 1.7 by the update.
+   */
+  it("tells 1.6 from 1.7 by what Review's lead is told", () => {
+    const onSixteen = templateHistoryUpTo(GALLERY_DIRECTORY, SOFTWARE, "1.6");
+    backfillPipelineOrigins(handle.db, onSixteen);
+    applyTemplateUpdates(handle.db, onSixteen, { isTheRecord: false });
+    const agents = listAgents(handle.db);
+    const steps = listStepsForPipeline(handle.db, "default").map((step) => withKind(agents, step));
+    const ids = steps.map((step) => step.id);
+    const teamOf = (version: string) => history.get(SOFTWARE)!.find((entry) => entry.version === version)!.document.steps.find((step) => step.id === "review")!.team!;
+    const withTeam = (version: string) => steps.map((step) => (step.id === "review" ? { ...step, team: teamOf(version) } : step));
+    expect(teamOf("1.6")).not.toEqual(teamOf("1.7"));
+    expect(matchTemplateVersion(ids, history, withTeam("1.6"))?.version.version).toBe("1.6");
+    expect(matchTemplateVersion(ids, history, withTeam("1.7"))?.version.version).toBe("1.7");
   });
 
   it("still matches a pipeline the person removed a step from, and leaves that step out of the map", () => {
