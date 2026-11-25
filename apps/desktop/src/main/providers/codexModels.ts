@@ -68,9 +68,18 @@ function isPresent<T>(value: T | null): value is T {
  * EO-372), which is where the spawn — and its `windowsHide`, which this
  * exchange was the first to need (EO-204) — now lives.
  */
-async function readModelsFromAppServer(executablePath: string, signal?: AbortSignal): Promise<CodexModel[]> {
+export async function readModelsFromAppServer(
+  executablePath: string,
+  signal?: AbortSignal,
+  /**
+   * The app-server's environment; undefined inherits. A side call's sets
+   * `CODEX_HOME` to the side calls' own home (EO-907), because asking
+   * there is what makes Codex write that home's `models_cache.json`.
+   */
+  env?: Record<string, string>,
+): Promise<CodexModel[]> {
   if (signal?.aborted) throw new Error("model discovery was cancelled");
-  const connection = new AppServerConnection({ executablePath });
+  const connection = new AppServerConnection({ executablePath, ...(env ? { env } : {}) });
   let timer: ReturnType<typeof setTimeout> | undefined;
   let onAbort: () => void = () => {};
   const timeout = new Promise<never>((_, reject) => {

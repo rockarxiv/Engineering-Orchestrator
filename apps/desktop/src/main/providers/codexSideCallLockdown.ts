@@ -102,7 +102,10 @@ export const CODEX_SIDE_CALL_SWITCHES = {
 /** The catalogue keys that hand a model tools whatever the features say. */
 const TOOL_BEARING_KEYS = ["tool_mode", "multi_agent_version", "apply_patch_tool_type"] as const;
 
-export type SideCallCatalog = { ok: true; path: string; remove: () => void } | { ok: false; problem: string };
+export type SideCallCatalog =
+  | { ok: true; path: string; remove: () => void }
+  /** `unlisted`: no cache named the model — the one a fresh listing can change (EO-907). */
+  | { ok: false; reason: "no_model" | "unlisted"; problem: string };
 
 function readCatalogEntry(cachePath: string, model: string): Record<string, unknown> | null {
   let parsed: unknown;
@@ -122,15 +125,25 @@ function readCatalogEntry(cachePath: string, model: string): Record<string, unkn
  * directory of its own (never the empty one the call runs in).
  *
  * `caches` are the `models_cache.json` files to copy the entry from, in
- * order: the side calls' own Codex home, then the person's — Codex
- * writes one into every home it runs in, so the second is what a first
- * side call on a fresh home reads. Where no cache names the model, the
- * call is refused rather than run with the tools on: a side call that
- * could read the disk is not one EO was asked to make.
+ * order — in production only the side calls' own Codex home's, which EO's
+ * managed Codex writes when it is asked for its models there (`codex.ts`,
+ * EO-907). Never the person's `~/.codex`: that one is written by whatever
+ * Codex they installed themselves, which may not know the model or may
+ * describe it differently from the runtime the call runs on.
+ *
+ * Where no cache names the model, the call is refused rather than run
+ * with the tools on: a side call that could read the disk is not one EO
+ * was asked to make. `listingFailed` is why EO's runtime could not be
+ * asked for its catalogue, when it could not; the sentence then says so,
+ * since choosing another model would not help.
  */
-export function writeSideCallCatalog(model: string | null, caches: readonly string[]): SideCallCatalog {
+export function writeSideCallCatalog(model: string | null, caches: readonly string[], listingFailed?: string): SideCallCatalog {
   if (model === null) {
-    return { ok: false, problem: "A Codex side call needs a model EO can name, to switch that model's tools off, and none was named: set the small model on the Runtimes tab, or a model on the system agent for its consolidation." };
+    return {
+      ok: false,
+      reason: "no_model",
+      problem: "A Codex side call needs a model EO can name, to switch that model's tools off, and none was named: set the small model on the Runtimes tab, or a model on the system agent for its consolidation.",
+    };
   }
   let entry: Record<string, unknown> | null = null;
   for (const cache of caches) {
@@ -140,7 +153,11 @@ export function writeSideCallCatalog(model: string | null, caches: readonly stri
   if (!entry) {
     return {
       ok: false,
-      problem: `Codex's model catalogue does not name ${model} on this machine, so EO cannot switch its tools off and did not make the call. Run any Codex agent once, or choose another model: the small model on the Runtimes tab, or the system agent's for its consolidation.`,
+      reason: "unlisted",
+      problem:
+        listingFailed === undefined
+          ? `EO's Codex runtime does not list ${model} in its model catalogue for this sign-in, so EO cannot switch its tools off and did not make the call. Choose a model the Runtimes tab lists for Codex: as the small model there, or as the system agent's model for its consolidation.`
+          : `EO could not ask its Codex runtime for its model catalogue (${listingFailed}), so it cannot switch the tools of ${model} off and did not make the call. Check that Codex is installed and signed in on the Runtimes tab, then try again.`,
     };
   }
   const locked: Record<string, unknown> = { ...entry, experimental_supported_tools: [] };
