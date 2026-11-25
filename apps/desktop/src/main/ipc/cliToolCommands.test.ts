@@ -1,6 +1,8 @@
-import { dirname } from "node:path";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { ipcContract, McpServerDraftSchema, type Agent, type IpcChannel, type Uuid } from "@eo/core";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DbHandle } from "../db/client.js";
 import { openMigratedTestDb } from "../db/testHelpers.js";
 import { deleteAgent, listAgents, resolveAgentAttachments, saveMcpServer, setAgentAttachment } from "../db/repos/index.js";
@@ -16,6 +18,7 @@ import {
   setAgentCliToolCommand,
 } from "./cliToolCommands.js";
 import { handleIpcRequest } from "./handleRequest.js";
+import { resetSearchPathForTests, resolveSearchPath } from "../process/searchPath.js";
 
 /**
  * The command-line tool catalogue over IPC (EO-819), against the real
@@ -219,6 +222,25 @@ describe("the contract", () => {
     const refused = await handleIpcRequest("cliTools:save", { name: "", command: "" }, (payload) => saveCliToolCommand(handle.db, payload), options);
     expect(refused.ok && refused.data.problem).toContain("needs a name");
     expect(ipcContract["cliTools:save"].request.safeParse({ name: "x", command: "x" }).success).toBe(true);
+  });
+
+  // Windows searches the inherited PATH, as `cliTools.test.ts` holds.
+  it.skipIf(process.platform === "win32")("answers detect found for a CLI only the login shell's PATH has, as an app started from the Dock inherits launchd's PATH (EO-906)", async () => {
+    const bin = mkdtempSync(join(tmpdir(), "eo-cli-detect-"));
+    writeFileSync(join(bin, "foo"), "#!/bin/sh\necho foo\n");
+    chmodSync(join(bin, "foo"), 0o755);
+    vi.stubEnv("PATH", "/usr/bin:/bin:/usr/sbin:/sbin");
+    try {
+      await resolveSearchPath({ shell: "/bin/zsh", run: async () => ({ code: 0, stdout: `__EO_LOGIN_SHELL_PATH_START__\n${bin}:/usr/bin\n__EO_LOGIN_SHELL_PATH_END__\n`, timedOut: false }) });
+
+      const answer = await handleIpcRequest("cliTools:detect", { command: "foo" }, (payload) => detectCliToolCommand(payload), options);
+
+      expect(answer.ok && answer.data).toEqual({ detection: { found: true, path: join(bin, "foo") } });
+    } finally {
+      resetSearchPathForTests();
+      vi.unstubAllEnvs();
+      rmSync(bin, { recursive: true, force: true });
+    }
   });
 
   it("answers detect and draft for this machine, and never throws for a command that is not there", async () => {

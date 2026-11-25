@@ -223,7 +223,9 @@ describe("a Codex run with no index", () => {
     // trust state — and nothing of the listener's in its environment.
     const options = buildCodexOptions({ ...wired, executablePath: "/opt/eo/runtimes/codex/bin/codex" });
     expect(serializeConfigOverrides(options.config ?? {}).filter((override) => override.startsWith("hooks"))).toEqual([]);
-    expect(options).not.toHaveProperty("env");
+    // (An environment it may still have: EO's search PATH is in every
+    // one off Windows, EO-906.)
+    expect(Object.keys(options.env ?? {}).filter((name) => name.startsWith("EO_SEARCH_HOOK"))).toEqual([]);
   });
 
   it("is configured with none when the index names its tools but cannot be asked what it holds (EO-173)", async () => {

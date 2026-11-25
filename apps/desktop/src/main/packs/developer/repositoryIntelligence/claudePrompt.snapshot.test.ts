@@ -3,6 +3,7 @@ import type { AgentEvent } from "@eo/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { repositorySearchNudge } from "./broadSearch.js";
 import { createClaudeProvider } from "../../../providers/claude.js";
+import { agentSpawnPath } from "../../../process/searchPath.js";
 
 /**
  * What the Claude adapter puts on the wire, pinned byte for byte (KAN-126).
@@ -102,10 +103,14 @@ function printableOptions(options: Record<string, unknown> | undefined): unknown
  * The CLI's environment as what EO sets over the parent's: since EO-453
  * every turn passes one (for `CLAUDE_CODE_FORK_SUBAGENT`), and the
  * parent's own variables are this machine's rather than the contract's.
+ * PATH too, while it is EO's search PATH (EO-906): this machine's
+ * folders, and `searchPath.test.ts` and `providerParity.test.ts` hold
+ * the rule. Any other PATH is printed.
  */
 function printableEnv(env: unknown): unknown {
   if (env === null || typeof env !== "object") return printable(env);
-  const own = Object.entries(env as Record<string, unknown>).filter(([key, entry]) => process.env[key] !== entry);
+  const spawnPath = agentSpawnPath() ?? process.env["PATH"];
+  const own = Object.entries(env as Record<string, unknown>).filter(([key, entry]) => process.env[key] !== entry && !(key === "PATH" && entry === spawnPath));
   return { "[process.env]": true, ...Object.fromEntries(own) };
 }
 

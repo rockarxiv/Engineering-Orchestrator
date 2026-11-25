@@ -7,9 +7,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { answersTurn, buildSideCallOptions, createClaudeProvider, mapSdkMessage, normaliseToolName, stripSchemaDialect, type SearchNudge } from "./claude.js";
 import { writeToolDirectory } from "../agentAttachments/pluginDirectory.js";
 import { capturingProvider } from "./sentCapture.js";
+import { agentSpawnPath, resetSearchPathForTests, resolveSearchPath, searchPath, type ShellRunner } from "../process/searchPath.js";
 import { CLAUDE_AUTH_ERRORS } from "../testing/authErrorFixtures.js";
 
 /** No settings files at all, so a test does not read the developer's own (EO-599). */
+/** The PATH the CLI is spawned with (EO-906): EO's search PATH, or the inherited one on Windows. */
+const spawnPath = (): string | undefined => agentSpawnPath() ?? process.env["PATH"];
+
 const NO_SETTINGS = { readText: () => null, listDir: () => [] };
 
 // The real SDK spawns the `claude` CLI and spends money, so these drive
@@ -1211,7 +1215,7 @@ describe("an API key EO is holding", () => {
     // The SDK documents that `env` REPLACES the subprocess environment
     // rather than merging with it, so a child given only the key would
     // lose PATH and HOME — and `claude` needs both.
-    expect(env["PATH"]).toBe(process.env["PATH"]);
+    expect(env["PATH"]).toBe(spawnPath());
   });
 
   it("is spent on a resumed turn too", async () => {
@@ -1467,7 +1471,7 @@ describe("attachments", () => {
     // Spread over `process.env`, never replacing it: the SDK documents
     // that `env` replaces the subprocess environment entirely, and a
     // child given one variable loses PATH and HOME.
-    expect(env["PATH"]).toBe(process.env["PATH"]);
+    expect(env["PATH"]).toBe(spawnPath());
     // Neither the value nor the name is in the arguments: what is there
     // is the path to the file that holds the name. A secret must not be
     // readable out of `/proc/<pid>/cmdline`, and here nothing about the
@@ -1552,7 +1556,7 @@ describe("attachments", () => {
       expect(env).not.toHaveProperty("GITHUB_TOKEN");
       // Only the withheld name: the rest of both layers is untouched.
       expect(env["REGION"]).toBe("eu-west-1");
-      expect(env["PATH"]).toBe(process.env["PATH"]);
+      expect(env["PATH"]).toBe(spawnPath());
     } finally {
       vi.unstubAllEnvs();
     }
@@ -2133,7 +2137,7 @@ describe("the words of a turn as they are generated", () => {
       const held = await envFor();
       expect(held["CLAUDE_CODE_FORK_SUBAGENT"]).toBe("0");
       // Spread over the parent's environment, not instead of it.
-      expect(held["PATH"]).toBe(process.env["PATH"]);
+      expect(held["PATH"]).toBe(spawnPath());
 
       process.env["CLAUDE_CODE_FORK_SUBAGENT"] = "1";
       expect((await envFor())["CLAUDE_CODE_FORK_SUBAGENT"]).toBe("1");
@@ -2304,7 +2308,7 @@ describe("the words of a turn as they are generated", () => {
     expect(calls).toHaveLength(6);
     expect(calls.map(spawnedWith)).toEqual(Array(6).fill("1"));
     // Over what the CLI inherits, never instead of it.
-    expect(calls.map((options) => childEnv(options)["PATH"])).toEqual(Array(6).fill(process.env["PATH"]));
+    expect(calls.map((options) => childEnv(options)["PATH"])).toEqual(Array(6).fill(spawnPath()));
   });
 
   it("asks the CLI for partial messages on every turn, for the answer's input streamed eagerly only where the answer is being read, and for thinking only when it is shown", async () => {
@@ -2854,5 +2858,36 @@ describe("a suggested next message", () => {
     // the suggestion is still being made.
     await expect(turn.return?.(undefined)).resolves.toEqual({ done: true, value: undefined });
     release();
+  });
+});
+
+describe("the PATH the CLI is spawned with (EO-906)", () => {
+  /** A login shell that answers with `path`, between the markers `readLoginShellPath` reads. */
+  const loginShell =
+    (path: string): ShellRunner =>
+    async () => ({ code: 0, stdout: `__EO_LOGIN_SHELL_PATH_START__\n${path}\n__EO_LOGIN_SHELL_PATH_END__\n`, timedOut: false });
+
+  afterEach(() => {
+    resetSearchPathForTests();
+    vi.unstubAllEnvs();
+  });
+
+  // Windows keeps the inherited PATH, which every other test here holds.
+  it.skipIf(process.platform === "win32")("is EO's search PATH at spawn time, the login shell's folders included, and no run's variable replaces it", async () => {
+    // What an app started from Finder or the Dock inherits.
+    vi.stubEnv("PATH", "/usr/bin:/bin:/usr/sbin:/sbin");
+    const { runQuery, calls } = fakeQuery([init()]);
+    const provider = createClaudeProvider({ runQuery, enableCommentTool: false });
+
+    const searchPathBefore = searchPath();
+    await collect(provider.start(startOpts));
+    await resolveSearchPath({ shell: "/bin/zsh", run: loginShell("/from/the/login/shell:/usr/bin") });
+    await collect(provider.start({ ...startOpts, environmentVariables: { PATH: "/from/a/variable" } }));
+
+    const [before, after] = calls.map((options) => (options.options["env"] as Record<string, string | undefined>)["PATH"]);
+    expect(before).toBe(searchPathBefore);
+    expect(before?.split(":")).toContain("/opt/homebrew/bin");
+    expect(after).toBe(searchPath());
+    expect(after?.split(":")[0]).toBe("/from/the/login/shell");
   });
 });

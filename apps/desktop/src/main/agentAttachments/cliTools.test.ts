@@ -1,8 +1,9 @@
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, delimiter, dirname, join, relative } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { type CliToolProbeOptions, agentSpawnSearchDirectories, describeFromHelp, detectCliTool, draftCliToolDescription, helpInvocation, resolveCliToolPath } from "./cliTools.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { resetSearchPathForTests, resolveSearchPath, searchPath } from "../process/searchPath.js";
+import { type CliToolProbeOptions, agentSpawnEnvironment, agentSpawnSearchDirectories, describeFromHelp, detectCliTool, draftCliToolDescription, helpInvocation, resolveCliToolPath } from "./cliTools.js";
 
 /**
  * Whether a CLI is installed, and a description drafted from it (EO-819).
@@ -53,6 +54,30 @@ async function gone(pid: number): Promise<boolean> {
   }
   return false;
 }
+
+describe("with no environment given: the PATH both backends spawn an agent with (EO-906)", () => {
+  afterEach(() => {
+    resetSearchPathForTests();
+    vi.unstubAllEnvs();
+  });
+
+  // Windows searches the PATH EO inherited, which the PATHEXT tests hold.
+  it.skipIf(process.platform === "win32")("finds a CLI only the login shell's PATH has, where EO inherited launchd's", async () => {
+    script(join("brew", "foo"), "echo foo");
+    // What an app started from Finder or the Dock inherits.
+    vi.stubEnv("PATH", "/usr/bin:/bin:/usr/sbin:/sbin");
+    expect(await detectCliTool("foo")).toEqual({ found: false });
+
+    await resolveSearchPath({ shell: "/bin/zsh", run: async () => ({ code: 0, stdout: `__EO_LOGIN_SHELL_PATH_START__\n${join(scratch, "brew")}:/usr/bin\n__EO_LOGIN_SHELL_PATH_END__\n`, timedOut: false }) });
+
+    expect(await detectCliTool("foo")).toEqual({ found: true, path: join(scratch, "brew", "foo") });
+    expect(agentSpawnEnvironment()["PATH"]).toBe(searchPath());
+  });
+
+  it("is EO's own environment on Windows, the PATH as inherited", () => {
+    expect(agentSpawnEnvironment("win32")).toBe(process.env);
+  });
+});
 
 describe("detectCliTool", () => {
   it("reports found, with the absolute path, for a command on the agent's PATH", async () => {

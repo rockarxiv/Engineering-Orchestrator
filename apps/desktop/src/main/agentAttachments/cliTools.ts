@@ -5,6 +5,7 @@ import { extname, join, resolve as resolvePath } from "node:path";
 import { cliToolCommandProblem, type CliToolDescriptionDraft, type CliToolDetection } from "@eo/core";
 import { launchablePath } from "../modules/readiness.js";
 import { killTree } from "../process/killTree.js";
+import { agentSpawnPath } from "../process/searchPath.js";
 
 /**
  * Whether a command-line tool is installed here, and a description
@@ -16,12 +17,17 @@ import { killTree } from "../process/killTree.js";
  * `cliTools:detect`, and a dispatch asks before it names the CLI to an
  * agent.
  *
- * Both backends spawn their CLI over EO's own environment, and PATH is a
- * name a run's variables may never replace (`withoutReservedEnvironment
- * Variables`), so the agent's PATH is EO's inherited one. Not the login
- * shell's (`process/searchPath.ts`): that is where EO looks for the tools
- * *it* runs, and a CLI found only there would be named to an agent that
- * cannot start it.
+ * Both backends spawn their CLI with EO's search PATH (EO-906,
+ * `agentSpawnPath` in `process/searchPath.ts`): the login shell's PATH,
+ * then the one EO inherited, then the fixed folders — where EO looks for
+ * the tools it runs itself. PATH is a name a run's variables may never
+ * replace (`withoutReservedEnvironmentVariables`), so that is the agent's
+ * PATH, and detection searches the same one, read from the same function
+ * at the moment it asks: what is found is what the agent can start. An
+ * app started from Finder or the Dock inherits launchd's PATH, without
+ * Homebrew, which is why the inherited PATH alone is not enough. On
+ * Windows the agent keeps the PATH EO inherited, and that is what is
+ * searched there.
  *
  * Detection only looks the command up: it starts nothing, so a dispatch
  * never runs an attached CLI (EO-858). The one program started here is
@@ -33,7 +39,10 @@ import { killTree } from "../process/killTree.js";
  */
 
 export interface CliToolProbeOptions {
-  /** The environment the agent is spawned with. Defaults to EO's own, which both backends inherit. */
+  /**
+   * The environment the agent is spawned with. Defaults to the one both
+   * backends spawn it with: EO's own, with PATH set to `agentSpawnPath()`.
+   */
   env?: NodeJS.ProcessEnv;
   platform?: NodeJS.Platform;
   /**
@@ -71,6 +80,16 @@ export function agentSpawnSearchDirectories(env: NodeJS.ProcessEnv = process.env
   return value.split(":").map((entry) => (entry === "" ? "." : entry));
 }
 
+/**
+ * The environment both backends spawn an agent's CLI with, as far as a
+ * lookup cares (EO-906): EO's own, with PATH set to `agentSpawnPath()` —
+ * read now, so a login shell that answered since the last ask counts.
+ */
+export function agentSpawnEnvironment(platform: NodeJS.Platform = process.platform): NodeJS.ProcessEnv {
+  const path = agentSpawnPath(platform);
+  return path === null ? process.env : { ...process.env, PATH: path };
+}
+
 /** The one directory a probe both looks up from and runs in: absolute. */
 function probeDirectory(options: CliToolProbeOptions): string {
   // Not EO's working directory: a program that writes beside itself on
@@ -103,9 +122,10 @@ export function resolveCliToolPath(command: string, options: CliToolProbeOptions
   const trimmed = command.trim();
   if (cliToolCommandProblem(trimmed) !== null) return null;
   const platform = options.platform ?? process.platform;
-  const directories = agentSpawnSearchDirectories(options.env, platform);
+  const env = options.env ?? agentSpawnEnvironment(platform);
+  const directories = agentSpawnSearchDirectories(env, platform);
   const cwd = probeDirectory(options);
-  if (platform === "win32") return windowsShellLookup(trimmed, options.env ?? process.env, directories, cwd);
+  if (platform === "win32") return windowsShellLookup(trimmed, env, directories, cwd);
   return launchablePath(trimmed, { directories, platform, cwd });
 }
 
@@ -230,7 +250,9 @@ function runBounded(invocation: ProbeInvocation, options: CliToolProbeOptions): 
         shell: false,
         windowsVerbatimArguments: invocation.windowsVerbatimArguments,
         stdio: ["ignore", "pipe", "pipe"],
-        env: { ...(options.env ?? process.env), NO_COLOR: "1" },
+        // The agent's PATH, as the lookup searched: a `#!/usr/bin/env node`
+        // script Homebrew installed needs Homebrew's `node` to answer.
+        env: { ...(options.env ?? agentSpawnEnvironment(options.platform)), NO_COLOR: "1" },
         cwd: probeDirectory(options),
         // Its own process group, for `killTree`'s negative pid.
         detached: process.platform !== "win32",

@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   SHELL_PATH_ARGS,
+  agentSpawnPath,
   composeSearchDirectories,
   describeSearchedDirectories,
   fixedDirectories,
@@ -188,6 +189,27 @@ describe("where EO looks", () => {
 
     expect(result.ok).toBe(false);
     expect(searchDirectories({ env: { PATH: FINDER_PATH }, home: HOME, platform: "darwin" })).toEqual([...FINDER_PATH.split(":"), ...fixedDirectories(HOME, "darwin")]);
+  });
+});
+
+describe("agentSpawnPath (EO-906)", () => {
+  it("is the search PATH, read now, so the login shell's answer counts once it is in", async () => {
+    vi.stubEnv("PATH", FINDER_PATH);
+    try {
+      expect(agentSpawnPath("darwin")).toBe(searchPath({ platform: "darwin" }));
+      expect(agentSpawnPath("darwin")?.split(":")).toContain("/opt/homebrew/bin");
+
+      await resolveSearchPath({ platform: "darwin", shell: "/bin/zsh", run: shellSaying({ stdout: marked("/from/the/login/shell:/usr/bin") }) });
+
+      expect(agentSpawnPath("darwin")?.split(":")[0]).toBe("/from/the/login/shell");
+      expect(agentSpawnPath("linux")).toBe(searchPath({ platform: "linux" }));
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("is nothing on Windows, where an agent keeps the PATH EO inherited", () => {
+    expect(agentSpawnPath("win32")).toBeNull();
   });
 });
 

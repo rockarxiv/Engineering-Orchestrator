@@ -1,6 +1,6 @@
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import type { SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import {
   ADMIN_MCP_SERVER_NAME,
@@ -36,6 +36,7 @@ import {
 } from "@eo/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { assembleSeedContext, type ContextRepositoryInput } from "@eo/engine";
+import { agentSpawnEnvironment, resolveCliToolPath } from "../agentAttachments/cliTools.js";
 import { readToolDirectoryServers, TOOL_PLUGIN_NAME, writeToolDirectory } from "../agentAttachments/pluginDirectory.js";
 import { attachmentEnvironment } from "../agentAttachments/serverEnvironment.js";
 import { attachmentsForRun } from "../db/repos/agentAttachmentsRepo.js";
@@ -45,6 +46,7 @@ import { codexServerSecretReader } from "../engine.js";
 import { storeMcpServerSecret } from "../mcp/serverSecrets.js";
 import { startAgentWriteBridge } from "../mcp/writeBridge.js";
 import { windowsTreeKill } from "../process/processTree.js";
+import { agentSpawnPath, resetSearchPathForTests, resolveSearchPath } from "../process/searchPath.js";
 import { setRunScopes, type RunScopes } from "../process/runScope.js";
 import { agentRunVariables, storeVariable } from "../modules/secrets.js";
 import { readOrganisationSecretEntry, storeOrganisationSecret } from "../policy/organisationSecrets.js";
@@ -172,10 +174,13 @@ const RUN_VARIABLES = (region: string) => ({
   GITHUB_TOKEN: "token-from-a-variable",
 });
 
+/** The PATH an agent's CLI is spawned with (EO-906): EO's search PATH, or the inherited one on Windows. */
+const spawnPath = (): string | undefined => agentSpawnPath() ?? process.env["PATH"];
+
 /** What the launch environment says about EO's own names, given `RUN_VARIABLES` — one shape for both backends. */
 function keepsItsOwn(env: Record<string, string | undefined> | undefined, backendCredentialOrHome: boolean) {
   return {
-    PATH: env?.["PATH"] === process.env["PATH"],
+    PATH: env?.["PATH"] === spawnPath(),
     HOME: env?.["HOME"] === process.env["HOME"],
     backendCredentialOrHome,
     adminBearer: env?.["EO_ADMIN_TOKEN"]?.startsWith("turn-bearer-") === true,
@@ -983,6 +988,14 @@ const CAPABILITIES = [
       // turn is in neither layer the CLI would read it from, inherited or
       // given, while the rest of what it inherits is still there.
       withheld: { inheritedGone: true, givenGone: true, restInherited: true },
+    },
+  },
+  {
+    name: "the PATH an agent is spawned with",
+    what: "the CLI is spawned with EO's search PATH, read at spawn time, and CLI detection searches the same one: once the login shell answers with a folder, an agent's next spawn has it and a CLI in it is found; on Windows both keep the PATH EO inherited (EO-906)",
+    same: {
+      beforeTheShellAnswers: { whatDetectionSearches: true, cliFound: false },
+      afterTheShellAnswers: { whatDetectionSearches: true, holdsTheShellsFolder: process.platform !== "win32", cliFound: process.platform !== "win32" },
     },
   },
   {
@@ -2366,6 +2379,41 @@ function recordingRunScopes(expectedCommand: (command: string, args: readonly st
   return { scopes, handedOver, observation: () => ({ planned, plannedTheBackend }) };
 }
 
+/**
+ * The PATH an agent is spawned with (EO-906), over the PATH an app
+ * started from the Dock inherits: `spawn` starts one turn and answers
+ * with the PATH its CLI was spawned with, once before the login shell
+ * answers and once after it answered with a folder holding a CLI. What
+ * each turn is compared with is what CLI detection searches at the same
+ * moment, so the two are held to one function rather than to a value.
+ */
+async function spawnPathObserved(spawn: () => Promise<string | undefined>): Promise<unknown> {
+  const bin = scratchDirectory();
+  const cli = "eo-parity-cli";
+  writeFileSync(join(bin, process.platform === "win32" ? `${cli}.cmd` : cli), process.platform === "win32" ? "@echo off\r\n" : "#!/bin/sh\n");
+  chmodSync(join(bin, process.platform === "win32" ? `${cli}.cmd` : cli), 0o755);
+  // Windows keeps what it inherited, and is left it.
+  if (process.platform !== "win32") vi.stubEnv("PATH", "/usr/bin:/bin:/usr/sbin:/sbin");
+  /** What detection searches now: the PATH of the environment it defaults to. */
+  const searched = () => agentSpawnEnvironment()["PATH"];
+  try {
+    const before = { spawned: await spawn(), searched: searched(), found: resolveCliToolPath(cli) };
+    await resolveSearchPath({ shell: "/bin/zsh", run: async () => ({ code: 0, stdout: `__EO_LOGIN_SHELL_PATH_START__\n${bin}:/usr/bin\n__EO_LOGIN_SHELL_PATH_END__\n`, timedOut: false }) });
+    const after = { spawned: await spawn(), searched: searched(), found: resolveCliToolPath(cli) };
+    return {
+      beforeTheShellAnswers: { whatDetectionSearches: before.spawned === before.searched, cliFound: before.found !== null },
+      afterTheShellAnswers: {
+        whatDetectionSearches: after.spawned === after.searched,
+        holdsTheShellsFolder: (after.spawned ?? "").split(delimiter).includes(bin),
+        cliFound: after.found === join(bin, cli),
+      },
+    };
+  } finally {
+    resetSearchPathForTests();
+    vi.unstubAllEnvs();
+  }
+}
+
 const CLAUDE: Record<CapabilityName, Proof> = {
   "a suggested next message": async () => {
     const suggested = { type: "prompt_suggestion", suggestion: "run the tests", uuid: "u-p", session_id: "sess-1" } as unknown as SDKMessage;
@@ -2794,7 +2842,7 @@ const CLAUDE: Record<CapabilityName, Proof> = {
       serverHandedToTheBackend: argumentsOf.extraArgs?.["mcp-config"] === configFile,
       serverReads: reads,
       whatItFindsThere: reads.map((name) => env?.[name] === SECRET),
-      keepsWhatItInherits: env?.["PATH"] === process.env["PATH"],
+      keepsWhatItInherits: env?.["PATH"] === spawnPath(),
       inTheArguments: JSON.stringify(argumentsOf, (_key, value: unknown) => (value instanceof AbortController ? undefined : value)).includes(SECRET),
       inTheServerConfiguration: readFileSync(configFile, "utf8").includes(SECRET),
     };
@@ -3224,6 +3272,14 @@ const CLAUDE: Record<CapabilityName, Proof> = {
       vi.unstubAllEnvs();
     }
   },
+
+  "the PATH an agent is spawned with": async () =>
+    // The SDK's `env`, which is the whole of the CLI's environment.
+    spawnPathObserved(async () => {
+      const { runQuery, calls } = scripted([sdk.init(), sdk.result()]);
+      await collect(createClaudeProvider({ runQuery, enableCommentTool: false }).start(startOpts));
+      return (calls[0]?.options["env"] as Record<string, string | undefined> | undefined)?.["PATH"];
+    }),
 
   "environment variables filling server names": async () => {
     // Claude's delivery (EO-107, EO-488): the generated `.mcp.json` binds
@@ -4215,7 +4271,7 @@ const CODEX: Record<CapabilityName, Proof> = {
       serverHandedToTheBackend: configured("command") === JSON.stringify("/usr/bin/github-mcp"),
       serverReads: reads,
       whatItFindsThere: reads.map((name) => env?.[name] === SECRET),
-      keepsWhatItInherits: env?.["PATH"] === process.env["PATH"],
+      keepsWhatItInherits: env?.["PATH"] === spawnPath(),
       inTheArguments: [launch?.command, ...(launch?.args ?? [])].join("\0").includes(SECRET) || JSON.stringify(fake.sent).includes(SECRET),
       inTheServerConfiguration: serverConfiguration.join("\n").includes(SECRET),
     };
@@ -4673,6 +4729,17 @@ const CODEX: Record<CapabilityName, Proof> = {
       vi.unstubAllEnvs();
     }
   },
+
+  "the PATH an agent is spawned with": async () =>
+    // The app-server's spawn environment, on the ordinary turn: no home,
+    // no server, no variable — the case that once handed no environment
+    // at all, which inherits EO's own when there still is none.
+    spawnPathObserved(async () => {
+      const { fake, provider } = codexOver({ after: { "turn/start": [note.turnStarted(), note.agentMessage("ok"), note.turnCompleted()] } });
+      await collect(provider.start(startOpts));
+      const env = fake.launches[0]?.options.env as Record<string, string | undefined> | undefined;
+      return env === undefined ? process.env["PATH"] : env["PATH"];
+    }),
 
   "environment variables filling server names": async () => {
     // Codex's delivery (EO-377, EO-488): the server is configured inline,
@@ -5240,7 +5307,7 @@ describe.each(CAPABILITIES)("$name: $what", (capability) => {
 });
 
 describe("the shared list", () => {
-  it("is the twelve capabilities EO-380 names and the ones EO-385, EO-387, EO-392, EO-395, EO-412, EO-421, EO-444, EO-468, EO-470, EO-477, EO-478, EO-479, EO-487, EO-488, EO-490, EO-493, EO-494, EO-534, EO-543, EO-578, EO-587, EO-597, EO-633, EO-700, EO-703, EO-716, EO-717, EO-718, EO-732, EO-738 (two), EO-797, EO-807, EO-820 and the streaming chat added, each once", () => {
+  it("is the twelve capabilities EO-380 names and the ones EO-385, EO-387, EO-392, EO-395, EO-412, EO-421, EO-444, EO-468, EO-470, EO-477, EO-478, EO-479, EO-487, EO-488, EO-490, EO-493, EO-494, EO-534, EO-543, EO-578, EO-587, EO-597, EO-633, EO-700, EO-703, EO-716, EO-717, EO-718, EO-732, EO-738 (two), EO-797, EO-807, EO-820, EO-906 and the streaming chat added, each once", () => {
     // Pinned so that taking one off the list is a decision somebody
     // made in this file rather than a line that went missing.
     expect(CAPABILITIES.map((capability) => capability.name)).toEqual([
@@ -5299,6 +5366,7 @@ describe("the shared list", () => {
       "repository_checkout",
       "reading the item's own files",
       "environment variables",
+      "the PATH an agent is spawned with",
       "a resumed run's own usage",
       "a fork's own usage",
       "environment variables filling server names",

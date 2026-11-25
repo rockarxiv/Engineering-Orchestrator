@@ -6,6 +6,7 @@ import type { HookInput, HookJSONOutput, Options, SDKMessage, SDKRateLimitInfo, 
 import { loadClaudeSdk, type ClaudeSdkModule } from "./claudeSdk.js";
 import { claudeProcesses, withStderr, type ClaudeProcesses } from "./claudeProcess.js";
 import { adoptWarmScope, warmScopeKey } from "../process/runScope.js";
+import { agentSpawnPath } from "../process/searchPath.js";
 import { claudeCompatibilityHolds, type ClaudeSettingSources, type ClaudeSettingsReader } from "./claudeCompatibility.js";
 import {
   ThreadNotFoundError,
@@ -1753,8 +1754,12 @@ function buildOptions(opts: ClaudeTurn, adapter: ClaudeAdapter): Options {
   // everything above, so none of them can displace a value EO sets for
   // the run — an attached server's, the key, the pins, the admin bearer.
   // The names EO always owns are dropped outright, because PATH and HOME
-  // come from the inherited environment and a variable spread over it
-  // would replace them.
+  // come from EO and a variable spread over them would replace them.
+  //
+  // PATH is EO's search PATH rather than the one it inherited (EO-906):
+  // an app started from Finder or the Dock inherits launchd's, without
+  // Homebrew, and the CLIs an agent is told it has were found on the
+  // search PATH (`agentSpawnPath`). Windows keeps the inherited one.
   //
   // A withheld name (EO-488) is taken out of both layers beneath: an
   // organisation value that cannot be read must not be stood in for by a
@@ -1763,8 +1768,10 @@ function buildOptions(opts: ClaudeTurn, adapter: ClaudeAdapter): Options {
   // And so is a name a redirected step on a trial withholds (EO-584): the
   // step's own value is not given, and neither is whatever EO inherited.
   const withheld = new Set([...(adapter.withheld ?? []), ...(opts.withheldEnvironmentVariables ?? [])]);
+  const path = agentSpawnPath();
   options.env = {
     ...withoutNames(process.env, withheld),
+    ...(path === null ? {} : { PATH: path }),
     ...withoutNames(withoutReservedEnvironmentVariables(opts.environmentVariables ?? {}), withheld),
     ...injected,
   };
