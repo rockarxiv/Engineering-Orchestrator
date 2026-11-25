@@ -92,6 +92,7 @@ import { toolResultEvent, toolResultText } from "./toolResult.js";
 import { withAttachmentNote } from "./attachmentNote.js";
 import { withSkillsSection } from "../agentAttachments/skillsPrompt.js";
 import { openingPrompt } from "../agentAttachments/cliToolsPrompt.js";
+import { agentSpawnPath } from "../process/searchPath.js";
 
 /**
  * What a Codex-backed agent's `agents.config` may carry. Everything is
@@ -1453,9 +1454,16 @@ function inheritedEnvironment(): Record<string, string> {
  * needs both, which is the identical trap `providers/claude.ts`
  * documents for the Claude SDK.
  *
- * Undefined when there is nothing to add and nothing to take away, so
- * the ordinary case leaves the app-server inheriting the environment
- * itself rather than being handed a copy this file took. A `withheld`
+ * **PATH is EO's search PATH** (EO-906, `agentSpawnPath`), set over the
+ * inherited one and under everything else, so the ordinary case hands
+ * the app-server an environment too: an app started from Finder or the
+ * Dock inherits launchd's PATH, without Homebrew, and the CLIs an agent
+ * is told it has were found on the search PATH.
+ *
+ * Undefined only when there is nothing to add and nothing to take away —
+ * on Windows, which keeps the inherited PATH — so that case leaves the
+ * app-server inheriting the environment itself rather than being handed
+ * a copy this file took. A `withheld`
  * name is the one thing taken away: an organisation value that could
  * not be read must not be stood in for by a variable of the same name
  * the person's shell happened to export (EO-328, EO-377).
@@ -1503,8 +1511,9 @@ function codexSpawnEnvironment(
   // catalogue entry that declared a variable of the same name must not
   // be able to point EO's own hook somewhere else.
   const spawn = { ...declared.values, ...headers, ...admin, ...searchHook, ...(home === undefined ? {} : { CODEX_HOME: home }) };
-  if (Object.keys(spawn).length === 0 && Object.keys(variables).length === 0 && declared.withheld.size === 0) return undefined;
-  return { ...withoutNames({ ...inherited, ...variables }, declared.withheld), ...spawn };
+  const path = agentSpawnPath();
+  if (path === null && Object.keys(spawn).length === 0 && Object.keys(variables).length === 0 && declared.withheld.size === 0) return undefined;
+  return { ...withoutNames({ ...inherited, ...(path === null ? {} : { PATH: path }), ...variables }, declared.withheld), ...spawn };
 }
 
 /**

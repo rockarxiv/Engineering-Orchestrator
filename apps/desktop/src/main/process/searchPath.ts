@@ -15,8 +15,10 @@ import { posix } from "node:path";
  * reads the answer at the moment it spawns: a runner made before the
  * shell answered uses the answer once there is one.
  *
- * Deliberately not written into `process.env.PATH`: EO's own git calls
- * and agent spawns keep the environment they had.
+ * Agents are spawned with it too (EO-906, `agentSpawnPath`), so a CLI
+ * EO finds for an agent is one the agent can start. Deliberately not
+ * written into `process.env.PATH`: EO's own git calls keep the
+ * environment they had.
  *
  * Windows runs no shell and adds nothing; PATH there is used as
  * inherited.
@@ -209,6 +211,24 @@ export function searchDirectories(options: SearchPathOptions = {}): string[] {
 /** The PATH to hand a child EO spawns a person's tool through, read now. */
 export function searchPath(options: SearchPathOptions = {}): string {
   return searchDirectories(options).join(delimiterFor(options.platform ?? process.platform));
+}
+
+/**
+ * The PATH both backends spawn an agent's CLI with, read now (EO-906),
+ * and the one CLI detection searches (`agentAttachments/cliTools.ts`):
+ * one function, so what the CLIs panel and a dispatch report found is
+ * what the agent can start. `searchPath()` — the login shell's PATH, the
+ * inherited one, the fixed folders — set over the inherited environment's
+ * PATH, which a run's variables may never replace
+ * (`withoutReservedEnvironmentVariables`).
+ *
+ * Null on Windows, where the agent's CLI keeps the PATH EO inherited, as
+ * it always has: `searchPath()` there is that PATH anyway, and leaving
+ * the environment alone keeps a child from being handed both the `Path`
+ * Windows spells and a `PATH` EO added.
+ */
+export function agentSpawnPath(platform: NodeJS.Platform = process.platform): string | null {
+  return platform === "win32" ? null : searchPath({ platform });
 }
 
 /** A sentence for an error about a tool EO did not find. */

@@ -33,6 +33,7 @@ import { CodexClient, serializeConfigOverrides, type CodexClientOptions, type Co
 import { fakeAppServer, note, type FakeAppServerScenario } from "../testing/fakeCodexAppServer.js";
 import { filesUnder } from "../testing/tree.js";
 import { CODEX_AUTH_ERRORS } from "../testing/authErrorFixtures.js";
+import { agentSpawnPath, resetSearchPathForTests, resolveSearchPath, searchPath } from "../process/searchPath.js";
 import { answerActions, ASSIST_ANSWER_WITH_MAPS, ASSIST_ANSWERS_WITH_CARDS, openAiStrictViolations } from "../testing/answerSchemas.js";
 
 // The real client spawns `codex app-server` and talks to a paid API.
@@ -41,6 +42,19 @@ import { answerActions, ASSIST_ANSWER_WITH_MAPS, ASSIST_ANSWERS_WITH_CARDS, open
 // — so every case below goes through the transport EO ships (EO-372).
 // Whether Codex itself behaves is not something a unit test can establish;
 // the `*.live.test.ts` files beside this one are the live check.
+
+/** The PATH the app-server is spawned with (EO-906): EO's search PATH, or the inherited one on Windows. */
+const spawnPath = (): string | undefined => agentSpawnPath() ?? process.env["PATH"];
+
+/**
+ * What the app-server is spawned with when EO adds nothing else
+ * (EO-906): the inherited environment with EO's search PATH — or
+ * nothing at all on Windows, where it inherits the environment itself.
+ */
+function ordinarySpawnEnvironment(): NodeJS.ProcessEnv | undefined {
+  const path = agentSpawnPath();
+  return path === null ? undefined : { ...process.env, PATH: path };
+}
 
 const STUB_EXECUTABLE = "/opt/eo/runtimes/codex/bin/codex";
 
@@ -865,7 +879,7 @@ describe("createCodexProvider", () => {
       expect(JSON.stringify(options)).not.toContain("bypass_hook_trust");
       // In the environment, over what the CLI inherits and never on its
       // command line.
-      expect(options.env).toMatchObject({ ...hook.env, PATH: process.env["PATH"] });
+      expect(options.env).toMatchObject({ ...hook.env, PATH: spawnPath() });
       expect(JSON.stringify(options.config)).not.toContain("minted");
     });
 
@@ -880,7 +894,7 @@ describe("createCodexProvider", () => {
         features: { memories: false },
         memories: { generate_memories: false, use_memories: false },
       });
-      expect(options).not.toHaveProperty("env");
+      expect(options.env).toEqual(ordinarySpawnEnvironment());
     });
 
     it("does not let a catalogue server's declared variable stand in for the listener's address", () => {
@@ -2110,6 +2124,30 @@ describe("createCodexProvider over a stubbed app-server", () => {
     expect(launch?.options.env).toMatchObject({ GITHUB_TOKEN: "ghp_launch_secret", [headerVariable as string]: "Bearer lin_launch_secret" });
   });
 
+  // Windows keeps the inherited PATH, which the ordinary-case tests here hold.
+  it.skipIf(process.platform === "win32")("launches the app-server with EO's search PATH at spawn time, even when nothing else is added to its environment (EO-906)", async () => {
+    // What an app started from Finder or the Dock inherits.
+    vi.stubEnv("PATH", "/usr/bin:/bin:/usr/sbin:/sbin");
+    try {
+      // No home, no server, no variable: the case that handed no
+      // environment at all before.
+      const { fake, provider } = providerOver({ after: { "turn/start": [note.turnStarted(), note.agentMessage("ok"), note.turnCompleted()] } });
+      const searchPathBefore = searchPath();
+      await collect(provider.start(startOpts));
+      await resolveSearchPath({ shell: "/bin/zsh", run: async () => ({ code: 0, stdout: "__EO_LOGIN_SHELL_PATH_START__\n/from/the/login/shell:/usr/bin\n__EO_LOGIN_SHELL_PATH_END__\n", timedOut: false }) });
+      await collect(provider.start({ ...startOpts, environmentVariables: { PATH: "/from/a/variable" } }));
+
+      const [before, after] = fake.launches.map((launch) => (launch.options.env as Record<string, string | undefined> | undefined)?.["PATH"]);
+      expect(before).toBe(searchPathBefore);
+      expect(before?.split(":")).toContain("/opt/homebrew/bin");
+      expect(after).toBe(searchPath());
+      expect(after?.split(":")[0]).toBe("/from/the/login/shell");
+    } finally {
+      resetSearchPathForTests();
+      vi.unstubAllEnvs();
+    }
+  });
+
   /**
    * The lockdown, on the launch itself (EO-378): a Codex agent runs in a
    * Codex home of its own unless it is ticked over to the person's own
@@ -2139,7 +2177,7 @@ describe("createCodexProvider over a stubbed app-server", () => {
 
     const home = join(root, "019fb8c6-0000-7000-8000-00000000c0de", turnItem);
     expect(codexHome).toHaveBeenLastCalledWith(turnItem);
-    expect(fake.launches[0]?.options.env).toMatchObject({ CODEX_HOME: home, PATH: "/probe/bin:/usr/bin" });
+    expect(fake.launches[0]?.options.env).toMatchObject({ CODEX_HOME: home, PATH: spawnPath() });
     // The home, whole: two links and nothing else EO put there.
     expect(readdirSync(home).sort()).toEqual(["auth.json", "sessions"]);
     // A symlink on every platform (EO-774): the person's own file rather
@@ -2174,7 +2212,7 @@ describe("createCodexProvider over a stubbed app-server", () => {
     // EO's own environment, which is the app-server inheriting it — and
     // with it whatever `CODEX_HOME` the person set, or none — with only
     // the process tree's mark on top (EO-494).
-    expect(fake.launches[0]?.options.env).toEqual({ ...process.env, EO_PROCESS_TREE: expect.any(String) });
+    expect(fake.launches[0]?.options.env).toEqual({ ...(ordinarySpawnEnvironment() ?? process.env), EO_PROCESS_TREE: expect.any(String) });
   });
 
   /**
@@ -2258,7 +2296,7 @@ describe("createCodexProvider over a stubbed app-server", () => {
     await collect(provider.start({ ...startOpts, cwd: worktree() }));
 
     // EO's own, as for an agent on the person's setup, and the tree's mark (EO-494).
-    expect(fake.launches[0]?.options.env).toEqual({ ...process.env, EO_PROCESS_TREE: expect.any(String) });
+    expect(fake.launches[0]?.options.env).toEqual({ ...(ordinarySpawnEnvironment() ?? process.env), EO_PROCESS_TREE: expect.any(String) });
   });
 
   it("fails the turn rather than running it in the person's own home when the agent's cannot be made ready", async () => {
@@ -3014,7 +3052,7 @@ describe("buildCodexOptions with attached servers", () => {
     });
 
     expect(mcpServersIn(built)["github"]).toMatchObject({ env_vars: ["GITHUB_TOKEN"] });
-    expect(built).not.toHaveProperty("env");
+    expect(built.env).toEqual(ordinarySpawnEnvironment());
   });
 
   it("writes no `env_vars` for a stdio server that declares nothing", () => {
@@ -3215,7 +3253,7 @@ describe("buildCodexOptions with attached servers", () => {
       vi.stubEnv("PATH", "/probe/bin:/usr/bin");
       const built = buildCodexOptions({ eoMcp, attachedServers: [stdio()], serverSecret: () => SECRET_WITHHELD });
 
-      expect(built["env"]).toMatchObject({ PATH: "/probe/bin:/usr/bin" });
+      expect(built["env"]).toMatchObject({ PATH: spawnPath() });
       expect(built["env"]).not.toHaveProperty("GITHUB_TOKEN");
     });
 
@@ -3254,7 +3292,7 @@ describe("buildCodexOptions with attached servers", () => {
 
     const built = buildCodexOptions({ eoMcp, attachedServers: [server], serverSecret: () => "ghp_supersecret" });
 
-    expect(built["env"]).toMatchObject({ PATH: "/probe/bin:/usr/bin", GITHUB_TOKEN: "ghp_supersecret" });
+    expect(built["env"]).toMatchObject({ PATH: spawnPath(), GITHUB_TOKEN: "ghp_supersecret" });
   });
 
   it("passes no environment at all when no attached server declares one", () => {
@@ -3268,8 +3306,8 @@ describe("buildCodexOptions with attached servers", () => {
       serverSecret: () => null,
     });
 
-    expect(withoutNames).not.toHaveProperty("env");
-    expect(unsetSecret).not.toHaveProperty("env");
+    expect(withoutNames.env).toEqual(ordinarySpawnEnvironment());
+    expect(unsetSecret.env).toEqual(ordinarySpawnEnvironment());
   });
 
   /**
@@ -3323,7 +3361,7 @@ describe("buildCodexOptions with attached servers", () => {
 
     const built = buildCodexOptions({ eoMcp, attachedServers: [server], serverSecret: () => "lin_api_supersecret" });
 
-    expect(built["env"]).toMatchObject({ PATH: "/probe/bin:/usr/bin", LINEAR_TOKEN: "lin_api_supersecret" });
+    expect(built["env"]).toMatchObject({ PATH: spawnPath(), LINEAR_TOKEN: "lin_api_supersecret" });
   });
 
   it("names no bearer variable for a server that has none", () => {
@@ -3422,7 +3460,7 @@ describe("buildCodexOptions and EO's administrative server", () => {
 
     const built = buildCodexOptions({ eoMcp, admin });
 
-    expect(built["env"]).toMatchObject({ PATH: "/probe/bin:/usr/bin", EO_ADMIN_TOKEN: ADMIN_TOKEN });
+    expect(built["env"]).toMatchObject({ PATH: spawnPath(), EO_ADMIN_TOKEN: ADMIN_TOKEN });
   });
 
   it("cannot have its credential displaced by a catalogue server declaring the same variable", () => {
@@ -3464,7 +3502,7 @@ describe("buildCodexOptions and EO's administrative server", () => {
       const built = buildCodexOptions(options);
 
       expect(mcpServersIn(built)).not.toHaveProperty(ADMIN_MCP_SERVER_NAME);
-      expect(built).not.toHaveProperty("env");
+      expect(built.env).toEqual(ordinarySpawnEnvironment());
       expect(configArguments(built).join("\n")).not.toContain(ADMIN_MCP_SERVER_NAME);
     }
   });
