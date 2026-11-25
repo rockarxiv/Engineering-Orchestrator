@@ -7,11 +7,13 @@ import {
   commitsAhead,
   composeGitArgs,
   currentBranch,
+  destinationKey,
   fetchBranch,
   git,
   globalUserEmail,
   isAncestor,
   pushBranch,
+  pushDestination,
   pushUpdated,
   rebaseOntoBase,
   statusPorcelain,
@@ -283,6 +285,75 @@ describe("pushBranch (EO-910)", () => {
     const leased = await pushBranch(repoPath, "bare", "eo/APP-1", { forceWithLease: { expect: old } });
     expect(leased).toMatchObject({ ok: true, updated: true });
     expect(await remoteTip("eo/APP-1")).toBe(leased.ok ? leased.head : "");
+  });
+  it("pushes only the branch, so a tag the remote refuses cannot fail a push whose branch went through", async () => {
+    await run(["config", "push.followTags", "true"], repoPath);
+    await run(["tag", "-a", "v1", "-m", "a tag push.followTags would send"], repoPath);
+    const hook = join(barePath, "hooks", "pre-receive");
+    writeFileSync(hook, "#!/bin/sh\nwhile read old new ref; do case \"$ref\" in refs/tags/*) echo \"no tags here\" >&2; exit 1;; esac; done\n", { mode: 0o755 });
+
+    const pushed = await pushBranch(repoPath, "bare", "eo/APP-1");
+
+    expect(pushed).toMatchObject({ ok: true, updated: true });
+    expect(await remoteTip("eo/APP-1")).toBe(pushed.ok ? pushed.head : "");
+    expect(await run(["tag", "--list"], barePath)).toBe("");
+  });
+
+  it("says where it pushed: the push URL, and none where that is several", async () => {
+    const pushed = await pushBranch(repoPath, "bare", "eo/APP-1");
+    expect(pushed).toMatchObject({ ok: true, destination: barePath });
+
+    await run(["config", "--add", "remote.bare.pushurl", barePath], repoPath);
+    await run(["config", "--add", "remote.bare.pushurl", barePath], repoPath);
+    await commit(repoPath, "more.ts", "// more\n");
+    expect(await pushBranch(repoPath, "bare", "eo/APP-1")).toMatchObject({ ok: true, updated: true, destination: null });
+  });
+
+  it("pushes to the URL it is given rather than the remote's", async () => {
+    const other = join(scratch, "other.git");
+    await run(["init", "--bare", other], scratch);
+
+    const pushed = await pushBranch(repoPath, "bare", "eo/APP-1", { to: other });
+
+    expect(pushed).toMatchObject({ ok: true, updated: true, destination: other });
+    expect(await remoteTip("eo/APP-1")).toBeNull();
+    expect(await run(["rev-parse", "eo/APP-1"], other)).toBe(pushed.ok ? pushed.head : "");
+  });
+});
+
+describe("pushDestination (EO-910)", () => {
+  beforeEach(async () => {
+    await run(["remote", "add", "elsewhere", "https://example.com/acme/api.git"], repoPath);
+  });
+
+  it("is the remote's URL where no push URL is set", async () => {
+    expect(await pushDestination(repoPath, "elsewhere")).toBe("https://example.com/acme/api.git");
+  });
+
+  it("is the push URL where one is, which is not where fetches read", async () => {
+    await run(["config", "remote.elsewhere.pushurl", "git@example.com:acme/api.git"], repoPath);
+    expect(await pushDestination(repoPath, "elsewhere")).toBe("git@example.com:acme/api.git");
+  });
+
+  it("applies pushInsteadOf, as the push itself does", async () => {
+    await run(["config", "url.ssh://git@example.com/.pushInsteadOf", "https://example.com/"], repoPath);
+    expect(await pushDestination(repoPath, "elsewhere")).toBe("ssh://git@example.com/acme/api.git");
+  });
+
+  it("is none for several push URLs, or a remote that does not exist", async () => {
+    await run(["config", "--add", "remote.elsewhere.pushurl", "https://a.example.com/api.git"], repoPath);
+    await run(["config", "--add", "remote.elsewhere.pushurl", "https://b.example.com/api.git"], repoPath);
+    expect(await pushDestination(repoPath, "elsewhere")).toBeNull();
+    expect(await pushDestination(repoPath, "nowhere")).toBeNull();
+  });
+});
+
+describe("destinationKey", () => {
+  it("drops credentials from a URL, and leaves everything else as it is", () => {
+    expect(destinationKey("https://user:ghp_secret@github.com/acme/api.git")).toBe("https://github.com/acme/api.git");
+    expect(destinationKey("https://github.com/acme/api.git")).toBe("https://github.com/acme/api.git");
+    expect(destinationKey("git@github.com:acme/api.git")).toBe("git@github.com:acme/api.git");
+    expect(destinationKey("/srv/git/api.git")).toBe("/srv/git/api.git");
   });
 });
 

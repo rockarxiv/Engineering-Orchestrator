@@ -76,13 +76,14 @@ export interface OpenPullRequestInput {
    */
   reviewers?: readonly string[];
   /**
-   * Told the commit the push published, the moment it moves the remote's
-   * branch (EO-910) — before anything else here can fail, since a pull
-   * request the forge then refuses to create does not unpush the branch.
+   * Told the commit the push published and where it went, the moment
+   * it moves the remote's branch (EO-910) — before anything else here
+   * can fail, since a pull request the forge then refuses to create
+   * does not unpush the branch.
    * Not told of a push that found the branch already there: that commit
    * may be somebody else's.
    */
-  onPushed?: (head: string) => void;
+  onPushed?: (pushed: { head: string; destination: string | null }) => void;
   /**
    * Asked when the push is rejected as diverged, before that is reported
    * (EO-910). True means the caller has published the branch itself — EO
@@ -204,7 +205,7 @@ export async function openPullRequest(input: OpenPullRequestInput): Promise<Open
       return { ...fail(classified.message, classified.final), diverged: classified.diverged };
     }
   } else if (pushed.updated) {
-    input.onPushed?.(pushed.head);
+    input.onPushed?.(pushed);
   }
 
   // 5. Is one already open? Covers the crash the database cannot see.

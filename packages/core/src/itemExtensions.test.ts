@@ -294,12 +294,15 @@ describe("where a stacked branch was cut (EO-780)", () => {
 });
 
 describe("the head EO last pushed (EO-910)", () => {
-  it("reads it back, and absent is none", () => {
-    expect(gitStateOf({ extensions: gitExtension({ branch: "eo/EO-2", pushedHead: "a1b2c3" }) }).pushedHead).toBe("a1b2c3");
+  const pushedHead = { commit: "a1b2c3", ref: "refs/heads/eo/EO-2", destination: "git@github.com:acme/api.git" };
+
+  it("reads it back, where it went with it, and absent is none", () => {
+    expect(gitStateOf({ extensions: gitExtension({ branch: "eo/EO-2", pushedHead }) }).pushedHead).toEqual(pushedHead);
+    expect(gitStateOf({ extensions: gitExtension({ branch: "eo/EO-2", pushedHead: { ...pushedHead, destination: null } }) }).pushedHead?.destination).toBeNull();
     expect(gitStateOf({ extensions: { git: { branch: "eo/EO-2" } } }).pushedHead).toBeNull();
   });
 
   it("is part of what makes git state worth a row", () => {
-    expect(isDefaultGitState({ ...NO_GIT_STATE, pushedHead: "a1b2c3" })).toBe(false);
+    expect(isDefaultGitState({ ...NO_GIT_STATE, pushedHead })).toBe(false);
   });
 });

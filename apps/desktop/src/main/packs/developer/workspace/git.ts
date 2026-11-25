@@ -176,13 +176,20 @@ export async function listTree(repoPath: string, ref: string, path: string): Pro
  * The commit is read first and pushed by name — `<commit>:refs/heads/
  * <branch>` — so what is reported as `head` is exactly what git sent, and
  * exactly to that ref, whatever a `remote.<name>.push` would otherwise
- * map the branch to (EO-910). The branch's upstream is then set as
- * `--set-upstream` would have.
+ * map the branch to (EO-910). Only that ref: `--no-follow-tags`, so a tag
+ * the destination refuses cannot fail a push whose branch went through.
+ * The branch's upstream is then set as `--set-upstream` would have.
  *
  * `updated` is whether the remote's branch actually moved to `head`, read
  * off `--porcelain`: an up-to-date push changes nothing, and its `head`
  * may be a commit somebody else put there — so it is not EO's to record
- * as its own.
+ * as its own. `destination` is the one URL the push went to, as
+ * `pushDestination` names it, or null where git pushed to several or
+ * could not say.
+ *
+ * `to` sends the push to that URL rather than to the remote's push URL
+ * as it reads now, for a push that must reach exactly the server it was
+ * checked against.
  *
  * `forceWithLease` is the one exception to never forcing, and it is
  * always EO's own push it replaces: the head EO itself last pushed for
@@ -193,15 +200,16 @@ export async function pushBranch(
   repoPath: string,
   remote: string,
   branch: string,
-  options: NetworkGitOptions & { forceWithLease?: { expect: string } } = {},
+  options: NetworkGitOptions & { forceWithLease?: { expect: string }; to?: string } = {},
 ): Promise<PushOutcome> {
   const head = await git(["rev-parse", "--verify", `refs/heads/${branch}^{commit}`], repoPath);
   if (!head.ok) return head;
+  const destination = options.to !== undefined ? options.to : await pushDestination(repoPath, remote);
   const ref = `refs/heads/${branch}`;
   const refspec = `${head.stdout}:${ref}`;
   const lease = options.forceWithLease ? [`--force-with-lease=${branch}:${options.forceWithLease.expect}`] : [];
   try {
-    const { stdout } = await execFileAsync("git", composeGitArgs(["push", "--porcelain", ...lease, remote, refspec], process.platform), {
+    const { stdout } = await execFileAsync("git", composeGitArgs(["push", "--porcelain", "--no-follow-tags", ...lease, options.to ?? remote, refspec], process.platform), {
       cwd: repoPath,
       windowsHide: true,
       maxBuffer: 32 * 1024 * 1024,
@@ -213,7 +221,13 @@ export async function pushBranch(
     // person's `git status` its ahead/behind, nothing of EO's.
     await git(["config", `branch.${branch}.remote`, remote], repoPath);
     await git(["config", `branch.${branch}.merge`, ref], repoPath);
-    return { ok: true, stdout: stdout.trim(), head: head.stdout, updated: pushUpdated(stdout, refspec) };
+    return {
+      ok: true,
+      stdout: stdout.trim(),
+      head: head.stdout,
+      updated: pushUpdated(stdout, refspec),
+      destination: destination === null ? null : destinationKey(destination),
+    };
   } catch (error) {
     // `--porcelain` prints the `[rejected] (fetch first)` line on stdout,
     // and that line is what tells divergence from any other refusal.
@@ -233,22 +247,49 @@ export function pushUpdated(porcelain: string, refspec: string): boolean {
   return line !== undefined && [" ", "+", "*"].includes(line[0] ?? "");
 }
 
-/** A push that went through says which commit it sent, and whether that moved the remote's branch. */
-export type PushOutcome = { ok: true; stdout: string; head: string; updated: boolean } | { ok: false; error: string };
+/**
+ * A push that went through says which commit it sent, whether that moved
+ * the remote's branch, and where it went (`destinationKey`, or null).
+ */
+export type PushOutcome = { ok: true; stdout: string; head: string; updated: boolean; destination: string | null } | { ok: false; error: string };
 
 /**
- * Where `branch` stands on `remote` right now, asked of the remote itself
+ * The one URL a push to `remote` goes to right now — `remote.<name>.
+ * pushurl` where set, else its URL, `insteadOf` rewrites applied — or
+ * null where that is not one place: a remote with several push URLs, or
+ * one git cannot name (EO-910). A fetch can read from somewhere else
+ * entirely, which is why a push is never checked against the remote's
+ * fetch URL.
+ */
+export async function pushDestination(repoPath: string, remote: string): Promise<string | null> {
+  const listed = await git(["remote", "get-url", "--push", "--all", remote], repoPath);
+  if (!listed.ok) return null;
+  const urls = listed.stdout.split("\n").filter((url) => url.length > 0);
+  return urls.length === 1 ? urls[0]! : null;
+}
+
+/**
+ * A push URL as EO keeps it on an item: without any credentials written
+ * into it (`https://user:token@host/…`), which are nobody's business in
+ * the database, and which do not change which server it names.
+ */
+export function destinationKey(url: string): string {
+  return url.replace(/^([a-z][a-z0-9+.-]*:\/\/)[^/@]*@/i, "$1");
+}
+
+/**
+ * Where `branch` stands at `url` right now, asked of that server itself
  * rather than read off a tracking ref that may be stale (EO-910). `null`
- * is a remote with no such branch.
+ * is a server with no such branch.
  */
 export async function remoteHead(
   repoPath: string,
-  remote: string,
+  url: string,
   branch: string,
   options: NetworkGitOptions = {},
 ): Promise<{ ok: true; head: string | null } | { ok: false; error: string }> {
   const ref = `refs/heads/${branch}`;
-  const listed = await git(["ls-remote", remote, ref], repoPath, {
+  const listed = await git(["ls-remote", url, ref], repoPath, {
     env: NON_INTERACTIVE_GIT_ENV,
     timeoutMs: options.timeoutMs ?? NETWORK_TIMEOUT_MS,
     ...(options.signal ? { signal: options.signal } : {}),
