@@ -177,6 +177,32 @@ describe("role_action_save", () => {
     expect(second?.results.map((result) => result.key)).toEqual(["aligned", "gaps_found", "unclear"]);
   });
 
+  it("turns a definition's learning review off and on again, keeps it through an edit that says nothing of it, and registry_get says so (EO-911)", async () => {
+    const created = answered(await tool("role_action_save").run(dispatch, ALIGNMENT));
+    expect(getActionDefinition(handle.db, "qa", "alignment")?.learningReview).toBe(true);
+    expect(created.text).toContain("Each run of it is followed by a learning review.");
+
+    const off = answered(await tool("role_action_save").run(dispatch, { ...ALIGNMENT, learningReview: false }));
+    expect(off.refused).toBe(false);
+    expect(off.text).toContain("Its runs get no learning review.");
+    expect(getActionDefinition(handle.db, "qa", "alignment")?.learningReview).toBe(false);
+
+    // An edit that leaves it out is not a person turning it back on.
+    answered(await tool("role_action_save").run(dispatch, { ...ALIGNMENT, description: "Holds the work to the brief." }));
+    expect(getActionDefinition(handle.db, "qa", "alignment")).toMatchObject({ description: "Holds the work to the brief.", learningReview: false });
+
+    const read = answered(await tool("registry_get").run(dispatch, {}));
+    expect((read.data as IpcResponse<"registry:get">).roleActions?.[0]?.actions[0]?.learningReview).toBe(false);
+    expect(read.text).toContain("learning review: off");
+    // The shipped review is off too, and the shipped implement is not.
+    const shipped = (read.data as IpcResponse<"registry:get">).roles.flatMap((role) => role.actions ?? []);
+    expect(shipped.find((action) => action.action === "review")?.learningReview).toBe(false);
+    expect(shipped.find((action) => action.action === "implement")?.learningReview).toBeUndefined();
+
+    answered(await tool("role_action_save").run(dispatch, { ...ALIGNMENT, learningReview: true }));
+    expect(getActionDefinition(handle.db, "qa", "alignment")?.learningReview).toBe(true);
+  });
+
   it.each([
     ["no results", { ...ALIGNMENT, results: [] }, "at least one result"],
     ["a repeated key", { ...ALIGNMENT, results: [{ key: "aligned" }, { key: "aligned" }] }, '"aligned" is declared more than once'],

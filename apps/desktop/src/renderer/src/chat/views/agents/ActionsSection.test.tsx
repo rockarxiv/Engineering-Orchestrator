@@ -44,12 +44,22 @@ function mockIpc(options: Options = {}): Call[] {
         };
       case "roleActions:save": {
         if (options.refuse) return { ok: true, data: { saved: false, definition: null, problems: options.refuse } };
-        const draft = payload as { role: string; action: string; description: string; results: ActionView["results"]; fields: Record<string, unknown> };
+        const draft = payload as { role: string; action: string; description: string; results: ActionView["results"]; fields: Record<string, unknown>; learningReview?: boolean };
         const previous = defined.get(draft.role) ?? [];
         const kept = previous.find((entry) => entry.action === draft.action);
-        const saved: ActionView = { action: draft.action, description: draft.description, results: draft.results, fields: draft.fields, packShipped: false, usedBy: kept?.usedBy ?? [] };
+        // As the registry sends it: absent is on (EO-911).
+        const learningReview = draft.learningReview ?? kept?.learningReview !== false;
+        const saved: ActionView = {
+          action: draft.action,
+          description: draft.description,
+          results: draft.results,
+          fields: draft.fields,
+          packShipped: false,
+          usedBy: kept?.usedBy ?? [],
+          ...(learningReview ? {} : { learningReview: false }),
+        };
         defined.set(draft.role, [...previous.filter((entry) => entry.action !== draft.action), saved]);
-        return { ok: true, data: { saved: true, definition: { id: "d1", ...draft, createdAt: 1, updatedAt: 1 }, problems: [] } };
+        return { ok: true, data: { saved: true, definition: { id: "d1", ...draft, learningReview, createdAt: 1, updatedAt: 1 }, problems: [] } };
       }
       case "roleActions:delete": {
         const { role, action } = payload as { role: string; action: string };
@@ -179,6 +189,17 @@ describe("the list", () => {
     expect(within(uses).getByText('"Check" (Quality)')).toBeInTheDocument();
   });
 
+  it("says the shipped review's runs get no learning review, and the shipped implement's do (EO-911)", async () => {
+    renderSections({}, "reviewer", "implementer");
+    const review = await row("review", screen.getByTestId("agent-0"));
+    fireEvent.click(within(review).getByRole("button", { name: "View review" }));
+    expect(within(review).getByText(/Its runs get no learning review/)).toBeInTheDocument();
+
+    const implement = await row("implement", screen.getByTestId("agent-1"));
+    fireEvent.click(within(implement).getByRole("button", { name: "View implement" }));
+    expect(within(implement).getByText(/Each run is followed by a learning review/)).toBeInTheDocument();
+  });
+
   it("says so where a role has no actions at all", async () => {
     renderSections({}, "qa");
     expect(await screen.findByText(/This role defines no actions yet/)).toBeInTheDocument();
@@ -213,6 +234,7 @@ describe("creating and reopening", () => {
         { key: "gaps_found", label: "Gaps found", meaning: "" },
       ],
       fields: { type: "object", properties: { notes: { type: "string" } }, required: ["notes"] },
+      learningReview: true,
     });
 
     // Closed on a save, and read back from the registry rather than from what was typed.
@@ -229,6 +251,25 @@ describe("creating and reopening", () => {
     expect(within(reopened).getByLabelText("Field 1 name")).toHaveValue("notes");
     expect(within(reopened).getByLabelText("Field 1 type")).toHaveValue("text");
     expect(within(reopened).getByLabelText("Field 1 required")).toBeChecked();
+  });
+
+  it("is reviewed by default, saves the learning review turned off, and shows it off when reopened (EO-911)", async () => {
+    const calls = renderSections({ defined: { qa: [ALIGNMENT] } }, "qa");
+    const alignment = await row("alignment");
+    fireEvent.click(within(alignment).getByRole("button", { name: "Edit alignment" }));
+    const form = within(alignment).getByRole("region", { name: "Action alignment" });
+    const setting = within(form).getByLabelText("Learning review after each run");
+    expect(setting).toBeChecked();
+
+    fireEvent.click(setting);
+    await press(form, "Save action");
+
+    await waitFor(() => expect(saves(calls)).toHaveLength(1));
+    expect(saves(calls)[0]).toMatchObject({ role: "qa", action: "alignment", learningReview: false });
+    const saved = await row("alignment");
+    await waitFor(() => expect(within(saved).queryByRole("region", { name: "Action alignment" })).toBeNull());
+    fireEvent.click(within(saved).getByRole("button", { name: "Edit alignment" }));
+    expect(within(within(saved).getByRole("region", { name: "Action alignment" })).getByLabelText("Learning review after each run")).not.toBeChecked();
   });
 
   it("shows two agents sharing a role the same actions, and an edit from either on the other", async () => {

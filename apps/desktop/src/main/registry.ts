@@ -257,6 +257,9 @@ export function withProposedActions(base: Registry, proposed: readonly ActionDef
       description: read.description,
       results: read.results,
       fields: read.fields,
+      // What the save would keep (EO-911): a proposal that says nothing
+      // about it leaves the installed definition's setting as it is.
+      learningReview: read.learningReview ?? byRole.get(read.role)?.get(read.action)?.definition.learningReview ?? true,
       createdAt: 0,
       updatedAt: 0,
     };

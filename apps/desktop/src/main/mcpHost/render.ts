@@ -929,6 +929,8 @@ export function renderRegistry(data: IpcResponse<"registry:get">): string {
         }),
       ];
       if (action.fields !== undefined && Object.keys(action.fields).length > 0) lines.push(`  - fields: ${JSON.stringify(action.fields)}`);
+      // Said only where it is off (EO-911): on is every action nobody changed.
+      if (action.learningReview === false) lines.push("  - learning review: off (its runs get no learning review)");
       const usedBy = action.usedBy ?? [];
       lines.push(
         usedBy.length === 0 ? "  - used by no step" : `  - used by ${usedBy.map(describeActionUse).join(", ")}`,

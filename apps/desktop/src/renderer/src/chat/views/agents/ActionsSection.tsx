@@ -66,6 +66,8 @@ interface Draft {
   text: string;
   /** Why the text is not the schema yet, in the parser's words. */
   textProblem: string | null;
+  /** Whether a run of it is followed by a learning review (EO-911). */
+  learningReview: boolean;
 }
 
 const NEW = "\u0000new";
@@ -83,6 +85,7 @@ function draftOf(action: ActionView | null): Draft {
     rows: rowsFromFields(fields),
     text: fieldsToText(fields),
     textProblem: null,
+    learningReview: action?.learningReview !== false,
   };
 }
 
@@ -97,6 +100,7 @@ function savedContent(action: ActionView | null): string | null {
     description: action.description,
     results: action.results.map((result) => [result.key, result.label, result.meaning ?? ""]),
     fields: action.fields ?? {},
+    learningReview: action.learningReview !== false,
   });
 }
 
@@ -308,6 +312,24 @@ function FieldList({ rows, onChange }: { rows: FieldRow[]; onChange: (rows: Fiel
   );
 }
 
+/**
+ * Whether a run of the action is followed by a learning review (EO-911):
+ * the fork EO opens once a run ends, to write memory notes and skills
+ * from what the run did. Worth turning off for an action whose reviews
+ * keep writing nothing, since each one costs a turn on the run's backend.
+ */
+function LearningReviewSetting({ checked, onChange }: { checked: boolean; onChange: (next: boolean) => void }) {
+  return (
+    <div className="flex min-w-0 flex-col gap-1">
+      <Checkbox checked={checked} onChange={onChange} label="Review each run for what to remember" ariaLabel="Learning review after each run" />
+      <p className="text-[11.5px] leading-snug text-ink-subtle">
+        After a run of this action ends, EO forks its session to write memory notes and skills from what it did. Each review is a turn on the run&apos;s backend:
+        turn it off for an action whose runs rarely teach anything.
+      </p>
+    </div>
+  );
+}
+
 /** One of the role's own actions, open: what it is for, its results, its fields in either view, where it is used and what the provider gets. */
 function ActionEditor({
   role,
@@ -376,7 +398,14 @@ function ActionEditor({
   const impact = impactNeeded && !impactPending && !impactFailed ? inspection.data : undefined;
 
   const save = useMutation({
-    mutationFn: () => ipcQuery("roleActions:save", { role, action: name, description: draft.description, results: draft.results, fields: draft.fields }),
+    mutationFn: () => ipcQuery("roleActions:save", {
+        role,
+        action: name,
+        description: draft.description,
+        results: draft.results,
+        fields: draft.fields,
+        learningReview: draft.learningReview,
+      }),
     onSuccess: (result) => {
       // A refusal keeps the draft, and says why in the save's own words — the compiler's, where it was the schema.
       if (!result.saved) {
@@ -468,6 +497,8 @@ function ActionEditor({
         </Field>
 
         <ResultRows results={draft.results} onChange={(results) => edit((current) => ({ ...current, results }))} />
+
+        <LearningReviewSetting checked={draft.learningReview} onChange={(learningReview) => edit((current) => ({ ...current, learningReview }))} />
       </ReadOnlyFence>
 
       <div className="flex min-w-0 flex-col gap-1.5">
@@ -607,6 +638,11 @@ function ShippedAction({ role, action, onClose }: { role: string; action: Action
           ))}
         </ul>
       </div>
+      <p className="text-[12.5px] leading-snug text-ink-muted">
+        {action.learningReview === false
+          ? "Its runs get no learning review: the pack turns it off for this action."
+          : "Each run is followed by a learning review, which may write memory notes and skills from what it did."}
+      </p>
       <UsedBy uses={action.usedBy ?? []} />
       <div className="flex min-w-0 flex-col gap-1">
         <span className="text-[12px] font-medium text-ink-muted">What the provider is handed</span>

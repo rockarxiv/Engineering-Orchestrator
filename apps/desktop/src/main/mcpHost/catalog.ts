@@ -2684,7 +2684,11 @@ const ROLE_ACTION_SAVE_TOOL: ToolSpec = channelTool({
     "step's routes name), a `label` a person reads, and a `meaning` saying when to return it — the agent is shown that " +
     "sentence beside the key. `fields` is a JSON Schema object for any extra answer properties (`properties`, and " +
     "`required` for the ones that must arrive); leave it out for an action that answers with a result and a summary " +
-    "alone. EO generates the answer shape from this: `result` as exactly the declared keys, a required `summary` it posts " +
+    "alone. `learningReview` says whether each run of the action is followed by a learning review — EO forking the run's " +
+    "session to write memory notes and skills from it, which costs a turn on the run's backend; leave it out to keep what " +
+    "is saved (on for a new definition), and set it false for an action whose runs rarely teach anything. registry_get " +
+    "says `learning review: off` on an action where it is off. " +
+    "EO generates the answer shape from this: `result` as exactly the declared keys, a required `summary` it posts " +
     "to the thread, then the fields — so no field may be named `result` or `summary`. Refused, with every reason and " +
     "nothing written: no results, a repeated key, fields that are not a schema EO can read, an action EO runs for " +
     "itself (respond, interpret, discuss, configure, assist, scenario, clarify), and a pack's own role redefining the " +
@@ -2698,7 +2702,8 @@ const ROLE_ACTION_SAVE_TOOL: ToolSpec = channelTool({
     data.definition === null
       ? "Nothing was saved."
       : `Saved the ${data.definition.role} role's "${data.definition.action}" action. It can return: ` +
-        `${data.definition.results.map((result) => result.key).join(", ")}. Every step that uses it must route each of those keys.`,
+        `${data.definition.results.map((result) => result.key).join(", ")}. Every step that uses it must route each of those keys. ` +
+        (data.definition.learningReview ? "Each run of it is followed by a learning review." : "Its runs get no learning review."),
   refusal: (data) => (data.saved ? null : `Nothing was saved: ${data.problems.length > 0 ? data.problems.join(" ") : "it refused."} Nothing has changed.`),
 });
 

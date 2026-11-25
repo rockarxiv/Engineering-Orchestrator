@@ -543,8 +543,9 @@ export const CHAT_IDLE_BEFORE_REVIEW_MS = 10 * 60_000;
  * The run event that records how a run's learning review ended (EO-717),
  * appended to the run's log once the review — or the extraction it fell
  * back to — has returned. Not written for a run the review was never
- * asked about: one cancelled, interrupted, on a preview, or with no
- * memory scope. A run that called `memory_note` itself is asked about
+ * asked about: one cancelled, interrupted, on a preview, with no
+ * memory scope, or of an action whose learning review a person turned
+ * off (EO-911). A run that called `memory_note` itself is asked about
  * skills alone (EO-731), and its event says so.
  */
 export const LEARNING_REVIEW_EVENT = "learning_review";

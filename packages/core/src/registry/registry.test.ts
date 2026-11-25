@@ -7,6 +7,7 @@ import {
   FAILED_RESULT,
   PER_CONVERSATION,
   actionFactsFor,
+  actionLearningReviewed,
   actionsAvailableTo,
   builtinInputs,
   builtinLabel,
@@ -429,6 +430,7 @@ describe("the actions a registry declares (EO-423)", () => {
       description: `What ${action} is for.`,
       results: keys.map((key) => ({ key, label: key.toUpperCase(), meaning: "" })),
       fields: {},
+      learningReview: true,
       createdAt: 0,
       updatedAt: 0,
     },
@@ -458,6 +460,30 @@ describe("the actions a registry declares (EO-423)", () => {
         expect(facts.results.every((result) => result.label !== "")).toBe(true);
       }
     }
+  });
+
+  it("ships the reviewer's review with its learning review off, and the implementer's implement with it on (EO-911)", () => {
+    expect(actionFactsFor(registry, "reviewer", "review")?.learningReview).toBe(false);
+    expect(actionLearningReviewed(actionFactsFor(registry, "reviewer", "review"))).toBe(false);
+    expect(actionLearningReviewed(actionFactsFor(registry, "implementer", "implement"))).toBe(true);
+    // A role with no review of its own is held to the pack's, setting and all.
+    expect(actionLearningReviewed(actionFactsFor(registry, "qa", "review"))).toBe(false);
+    // An action nothing declares is reviewed, as every run was.
+    expect(actionLearningReviewed(actionFactsFor(registry, "qa", "nothing_declares_this"))).toBe(true);
+  });
+
+  it("carries a role's own learning review setting into its facts and across IPC, saying it only where it is off (EO-911)", () => {
+    const base = definition("qa", "alignment", ["aligned"]);
+    const off = new Map([["qa", new Map([["alignment", { ...base, definition: { ...base.definition, learningReview: false } }], ["smoke", definition("qa", "smoke", ["passed"])]])]]);
+    const facts = roleActionFactsOf(off);
+    expect(facts.get("qa")?.get("alignment")?.learningReview).toBe(false);
+    expect(facts.get("qa")?.get("smoke")).not.toHaveProperty("learningReview");
+
+    const view = RegistryViewSchema.parse(JSON.parse(JSON.stringify(toRegistryView({ ...registry, roleActions: facts }))));
+    const back = fromRegistryView(view);
+    expect(back.roleActions?.get("qa")?.get("alignment")?.learningReview).toBe(false);
+    expect(back.roleActions?.get("qa")?.get("smoke")).not.toHaveProperty("learningReview");
+    expect(back.roles.get("reviewer")?.actions?.get("review")?.learningReview).toBe(false);
   });
 
   it("lists every key refine can report on the types the pack ships", () => {

@@ -5,6 +5,7 @@ import {
   actionAnswerDocument,
   actionAnswerSummary,
   actionDefinitionOutputSchema,
+  ActionDefinitionSchema,
   actionShapeFromSchema,
   fieldsFromList,
   keptDefinitionsNote,
@@ -31,7 +32,7 @@ const ALIGNMENT = {
 function definition(draft: Parameters<typeof readActionDefinitionDraft>[0]): ActionDefinition {
   const read = readActionDefinitionDraft(draft);
   if (!read.ok) throw new Error(read.problems.join(" "));
-  return { id: `${read.role}:${read.action}`, role: read.role, action: read.action, description: read.description, results: read.results, fields: read.fields, createdAt: 1, updatedAt: 1 };
+  return { id: `${read.role}:${read.action}`, role: read.role, action: read.action, description: read.description, results: read.results, fields: read.fields, learningReview: read.learningReview ?? true, createdAt: 1, updatedAt: 1 };
 }
 
 /** The developer pack's registry, plus these definitions — what `registryForProject` hands the supervisor. */
@@ -55,7 +56,7 @@ describe("what a save is held to", () => {
   it("takes a well-formed draft, and fills in a label nobody wrote from the key", () => {
     const read = readActionDefinitionDraft({ role: "qa", action: "alignment", results: [{ key: "gaps_found" }] });
 
-    expect(read).toEqual({ ok: true, role: "qa", action: "alignment", description: "", results: [{ key: "gaps_found", label: "Gaps found", meaning: "" }], fields: {} });
+    expect(read).toEqual({ ok: true, role: "qa", action: "alignment", description: "", results: [{ key: "gaps_found", label: "Gaps found", meaning: "" }], fields: {}, learningReview: null });
   });
 
   it("refuses an action or a result key that is not lowercase letters, digits and underscores", () => {
@@ -103,6 +104,24 @@ describe("what a save is held to", () => {
     const read = readActionDefinitionDraft({ role: " ", action: "ok", results: [], fields: { properties: { result: {} } } });
 
     expect(!read.ok && read.problems).toHaveLength(3);
+  });
+});
+
+describe("the learning review setting (EO-911)", () => {
+  it("is carried where the draft says it, and null where it says nothing, so a save keeps what is saved", () => {
+    const off = readActionDefinitionDraft({ ...ALIGNMENT, learningReview: false });
+    const unsaid = readActionDefinitionDraft(ALIGNMENT);
+    expect(off.ok && off.learningReview).toBe(false);
+    expect(unsaid.ok && unsaid.learningReview).toBeNull();
+  });
+
+  it("is refused when it is not a boolean", () => {
+    const read = readActionDefinitionDraft({ ...ALIGNMENT, learningReview: "off" });
+    expect(read.ok).toBe(false);
+  });
+
+  it("defaults to on for a definition sent without it", () => {
+    expect(ActionDefinitionSchema.parse({ id: "d", role: "qa", action: "a", description: "", results: [], fields: {}, createdAt: 1, updatedAt: 1 }).learningReview).toBe(true);
   });
 });
 

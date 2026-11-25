@@ -1,4 +1,5 @@
 import {
+  actionLearningReviewed,
   DEFAULT_SKILL_MAX_BODY_CHARS,
   eoToolName,
   LEARNING_REVIEW_EVENT,
@@ -12,6 +13,7 @@ import {
   SKILL_FILE_WRITE_TOOL_NAME,
   SKILL_PATCH_TOOL_NAME,
   SKILL_VIEW_TOOL_NAME,
+  type ActionFacts,
   type ForkCopy,
   type Item,
   type LearningReviewEvent,
@@ -55,7 +57,7 @@ import { scopeLines } from "./writing.js";
  * one it skips for a short answer and the one that wrote its own notes,
  * which still gets the skill half (EO-731).
  */
-export type LearningReviewSkip = Exclude<ExtractionSkip, "little_prose" | "noted_itself">;
+export type LearningReviewSkip = Exclude<ExtractionSkip, "little_prose" | "noted_itself"> | "action_off";
 
 /**
  * Which review a run gets, or why it gets none. Pure. The runs
@@ -65,15 +67,23 @@ export type LearningReviewSkip = Exclude<ExtractionSkip, "little_prose" | "noted
  * which is what the fork sees. A run that called `memory_note` itself
  * gets the skill half alone (EO-731): the skip that extraction made for
  * it is about memory, so only memory is skipped.
+ *
+ * And a run of an action a person turned the review off for (EO-911,
+ * `ActionFacts.learningReview`) gets none, for `action_off` — `action`
+ * is what `actionFactsFor` answers for the run's role and action, and an
+ * action nothing declares is reviewed. Asked after the others, so a run
+ * they skip is skipped for the reason it always was.
  */
 export function learningReviewFor(
   run: Run,
   item: Pick<Item, "previewAt">,
   produce: RunProduce,
   scopes: readonly MemoryScopeInfo[],
+  action: Pick<ActionFacts, "learningReview"> | undefined,
 ): { review: LearningReviewKind } | { skip: LearningReviewSkip } {
   const skip = extractionSkip(run, item, { ...produce, calledMemoryNote: false }, scopes);
   if (skip !== null && skip !== "little_prose" && skip !== "noted_itself") return { skip };
+  if (!actionLearningReviewed(action)) return { skip: "action_off" };
   return { review: produce.calledMemoryNote ? "skills_only" : "full" };
 }
 

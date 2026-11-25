@@ -3200,6 +3200,8 @@ export const actionDefinitions = sqliteTable(
     results: text("results", { mode: "json" }).notNull().default([]),
     /** A JSON Schema object for the answer's extra properties. */
     fields: text("fields", { mode: "json" }).notNull().default({}),
+    /** Whether a run of it is followed by a learning review (EO-911, migration 0184). On unless a person turned it off. */
+    learningReview: integer("learning_review", { mode: "boolean" }).notNull().default(true),
     createdAt: integer("created_at").notNull(),
     updatedAt: integer("updated_at").notNull(),
   },

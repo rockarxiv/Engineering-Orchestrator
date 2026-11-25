@@ -90,6 +90,7 @@ import {
   type LearningReviewKind,
   actionAnswerSummary,
   actionSchemaName,
+  actionFactsFor,
   definedActionFor,
   INTERPRET_ACTION,
   builtinResults,
@@ -3216,7 +3217,9 @@ export function createRunSupervisor(
       if (!run) return;
       const current = getItem(db, item.id) ?? item;
       const scopes = turnMemoryScopes(item);
-      const asked = learningReviewFor(run, current, runProduce(db, run), scopes);
+      // Whether a person turned the review off for this action (EO-911),
+      // asked of the registry the run was held to, as its schema was.
+      const asked = learningReviewFor(run, current, runProduce(db, run), scopes, actionFactsFor(registryFor(item), definingRole(item, agent), action));
       if ("skip" in asked) return;
       review = asked.review;
       outcome = await reviewOnFork(run, current, agent, scopes, review, { item, action, toolDirectory: runTurns?.toolDirectory, attachment: runTurns?.attachment });
@@ -3647,7 +3650,8 @@ export function createRunSupervisor(
           idleMs: CHAT_IDLE_BEFORE_REVIEW_MS,
           reviewFor: (run) => {
             if (runEventDevices(db, run.id).size > 0) return null;
-            const asked = learningReviewFor(run, item, runProduce(db, run), scopes);
+            const ranAs = run.agentId === null ? undefined : getAgent(db, run.agentId);
+            const asked = learningReviewFor(run, item, runProduce(db, run), scopes, actionFactsFor(registryFor(item), ranAs ? definingRole(item, ranAs) : null, run.action));
             return "skip" in asked ? null : asked.review;
           },
         });

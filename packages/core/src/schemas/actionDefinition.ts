@@ -112,6 +112,16 @@ export const ActionDefinitionSchema = z.object({
    * `{}` for an action that answers with `result` and `summary` alone.
    */
   fields: z.record(z.string(), z.unknown()),
+  /**
+   * Whether a run of this action is followed by a learning review
+   * (EO-911): the fork EO opens after a run to write memory and skills
+   * (EO-717, EO-718). On unless a person turned it off, because most of
+   * what an action costs to review is worth it only where its runs teach
+   * something — a person who has watched an action's reviews write
+   * nothing is the one who can say so. Defaulted for a definition sent
+   * before there was a choice.
+   */
+  learningReview: z.boolean().default(true),
   createdAt: z.number(),
   updatedAt: z.number(),
 });
@@ -129,6 +139,13 @@ export const ActionDefinitionDraftSchema = z.object({
   description: z.string().default(""),
   results: z.array(z.object({ key: z.string(), label: z.string().default(""), meaning: z.string().default("") })),
   fields: z.record(z.string(), z.unknown()).default({}),
+  /**
+   * Whether its runs get a learning review (EO-911). **Absent leaves what
+   * is saved** — on, for a definition that is new — rather than turning
+   * it back on: an import, a published draft and an older caller say
+   * nothing about it, and none of them is a person changing it.
+   */
+  learningReview: z.boolean().optional(),
 });
 
 export type ActionDefinitionDraft = z.input<typeof ActionDefinitionDraftSchema>;
@@ -137,7 +154,16 @@ export type ParsedActionDefinitionDraft = z.output<typeof ActionDefinitionDraftS
 
 /** A draft that may be written, normalised, or the sentences saying why it may not. */
 export type ActionDefinitionDraftResult =
-  | { ok: true; role: string; action: string; description: string; results: ActionResult[]; fields: JsonSchema }
+  | {
+      ok: true;
+      role: string;
+      action: string;
+      description: string;
+      results: ActionResult[];
+      fields: JsonSchema;
+      /** Null where the draft said nothing about it, which leaves what is saved (EO-911). */
+      learningReview: boolean | null;
+    }
   | { ok: false; problems: string[] };
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -254,6 +280,7 @@ export function readActionDefinitionDraft(input: unknown, context: ActionDefinit
       meaning: result.meaning.trim(),
     })),
     fields: draft.fields,
+    learningReview: draft.learningReview ?? null,
   };
 }
 

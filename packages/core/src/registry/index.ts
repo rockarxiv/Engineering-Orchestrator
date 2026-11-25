@@ -128,6 +128,22 @@ export interface ActionFacts {
    * its shape is the pack's schema, which stays in the main process.
    */
   fields?: Readonly<Record<string, unknown>> | undefined;
+  /**
+   * Whether a run of it is followed by a learning review (EO-911). Only
+   * `false` turns it off: absent is on, which is every action nobody said
+   * otherwise of. A pack says it for an action it ships; a role's own
+   * definition carries what a person set on it.
+   */
+  learningReview?: boolean | undefined;
+}
+
+/**
+ * Whether a run of this action gets a learning review (EO-911), from
+ * what `actionFactsFor` answers for it: on unless the action says
+ * otherwise, so an action nothing declared is reviewed as it always was.
+ */
+export function actionLearningReviewed(facts: Pick<ActionFacts, "learningReview"> | undefined): boolean {
+  return facts?.learningReview !== false;
 }
 
 /** By role slug, then by action. Maps for the reason the registry is maps throughout. */
@@ -806,6 +822,7 @@ export function roleActionFactsOf(definitions: ActionDefinitions): RoleActionFac
         results: definition.results.map((result) => ({ key: result.key, label: result.label, meaning: result.meaning })),
         packShipped: false,
         fields: definition.fields,
+        ...(definition.learningReview ? {} : { learningReview: false }),
       });
     }
     byRole.set(role, facts);
@@ -1213,6 +1230,8 @@ const ActionFactsViewSchema = z.object({
    * a view built from a registry alone leaves it out.
    */
   usedBy: z.array(ActionUseSchema).optional(),
+  /** False where the action's runs get no learning review (EO-911); absent is on. */
+  learningReview: z.boolean().optional(),
 });
 
 type ActionFactsView = z.infer<typeof ActionFactsViewSchema>;
@@ -1306,6 +1325,7 @@ function toActionViews(actions: ReadonlyMap<string, ActionFacts> | undefined): A
     results: facts.results.map((result) => ({ key: result.key, label: result.label, ...(result.meaning === undefined ? {} : { meaning: result.meaning }) })),
     packShipped: facts.packShipped,
     ...(facts.fields === undefined ? {} : { fields: { ...facts.fields } }),
+    ...(facts.learningReview === undefined ? {} : { learningReview: facts.learningReview }),
   }));
 }
 
@@ -1313,7 +1333,13 @@ function fromActionViews(views: readonly ActionFactsView[] | undefined): Map<str
   return new Map(
     (views ?? []).map((view) => [
       view.action,
-      { description: view.description, results: view.results, packShipped: view.packShipped, ...(view.fields === undefined ? {} : { fields: view.fields }) },
+      {
+        description: view.description,
+        results: view.results,
+        packShipped: view.packShipped,
+        ...(view.fields === undefined ? {} : { fields: view.fields }),
+        ...(view.learningReview === undefined ? {} : { learningReview: view.learningReview }),
+      },
     ]),
   );
 }

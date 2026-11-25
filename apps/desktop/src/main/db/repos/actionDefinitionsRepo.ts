@@ -41,6 +41,7 @@ function toDefinition(row: typeof actionDefinitions.$inferSelect): ActionDefinit
     description: row.description,
     results: toResults(row.results),
     fields: toFields(row.fields),
+    learningReview: row.learningReview,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -93,8 +94,12 @@ export function saveActionDefinition(db: Db, draft: ActionDefinitionDraft, now: 
   const read = readActionDefinitionDraft(draft, { shipsAction: installedRoleShips });
   if (!read.ok) return { ok: false, problems: read.problems };
 
-  const values = { description: read.description, results: read.results, fields: read.fields, updatedAt: now };
   const existing = getActionDefinition(db, read.role, read.action);
+  // A draft that says nothing about the learning review leaves what is
+  // saved (EO-911): an import or a published draft is not a person
+  // turning it back on.
+  const learningReview = read.learningReview ?? existing?.learningReview ?? true;
+  const values = { description: read.description, results: read.results, fields: read.fields, learningReview, updatedAt: now };
 
   if (existing) {
     db.update(actionDefinitions).set(values).where(eq(actionDefinitions.id, existing.id)).run();
