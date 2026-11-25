@@ -23,6 +23,7 @@ import {
   fromStrictCodexAnswer,
   EO_MCP_SERVER,
   SECRET_WITHHELD,
+  sideCallModelCachePaths,
   suggestionForkOptions,
 } from "./codex.js";
 import { AppServerExitedError } from "./codexAppServer.js";
@@ -3805,6 +3806,8 @@ describe("a side call", () => {
       executablePath: STUB_EXECUTABLE,
       codexHome: () => "/tmp/codex-homes/side-calls",
       sideCallModelCaches: () => [join(caches, "absent.json"), join(caches, "models_cache.json")],
+      // Never the real app-server: a test that wants a listing hands one in.
+      listSideCallModels: async () => null,
       ...options,
       createSideCallCodex: (catalogPath) => {
         catalogs.push({ path: catalogPath, content: JSON.parse(readFileSync(catalogPath, "utf8")) as unknown });
@@ -3895,6 +3898,116 @@ describe("a side call", () => {
 
     expect(events).toEqual([{ type: "error", message: expect.stringContaining("cannot switch its tools off"), retryable: false }]);
     expect(fake.launches).toEqual([]);
+  });
+
+  it("reads its model's catalogue entry from the side calls' own home only, never the person's ~/.codex (EO-907)", () => {
+    expect(sideCallModelCachePaths("/tmp/codex-homes/side-calls")).toEqual([join("/tmp/codex-homes/side-calls", "models_cache.json")]);
+  });
+
+  describe("and the catalogue EO's runtime knows (EO-907)", () => {
+    const priorCodexHome = process.env["CODEX_HOME"];
+    let home: string;
+    let person: string;
+
+    beforeEach(() => {
+      home = mkdtempSync(join(tmpdir(), "eo-side-call-home-"));
+      // The person's own home, as `personCodexHome` reads it, written by an
+      // older Codex of theirs: it names the model, with an entry of its own.
+      person = mkdtempSync(join(tmpdir(), "eo-person-codex-"));
+      writeFileSync(join(person, "models_cache.json"), JSON.stringify({ models: [{ slug: "gpt-6-luna", context_window: 1, written_by: "the person's codex" }] }));
+      process.env["CODEX_HOME"] = person;
+    });
+
+    afterEach(() => {
+      if (priorCodexHome === undefined) delete process.env["CODEX_HOME"];
+      else process.env["CODEX_HOME"] = priorCodexHome;
+      rmSync(home, { recursive: true, force: true });
+      rmSync(person, { recursive: true, force: true });
+    });
+
+    /** EO's runtime, asked for its models in a home: writes that home's cache, as `model/list` does. */
+    function runtimeListing(models: unknown[]) {
+      const asked: string[] = [];
+      const list = async (at: string) => {
+        asked.push(at);
+        writeFileSync(join(at, "models_cache.json"), JSON.stringify({ models }));
+        return null;
+      };
+      return { asked, list };
+    }
+
+    it("carries EO's runtime's entry for the model where the person's cache holds a different one", async () => {
+      writeFileSync(join(home, "models_cache.json"), JSON.stringify({ models: [{ ...LUNA, written_by: "eo's runtime" }] }));
+      const { asked, list } = runtimeListing([]);
+      // No `sideCallModelCaches`: the default list is what is under test.
+      const { provider, catalogs } = sideCallCodex({ codexHome: () => home, sideCallModelCaches: undefined as never, listSideCallModels: list });
+
+      const events = await collect(provider.sideCall!(sideCallOpts));
+
+      expect(events.find((event) => event.type === "result")).toEqual({ type: "result", data: { picked: ["e1"] } });
+      expect(catalogs[0]!.content).toEqual({ models: [{ slug: "gpt-6-luna", context_window: 272_000, experimental_supported_tools: [], written_by: "eo's runtime" }] });
+      // Named in the home already, so the runtime was not asked again.
+      expect(asked).toEqual([]);
+    });
+
+    it("has EO's runtime write the side calls' home's cache when there is none, and is not refused though the person's does not name the model", async () => {
+      writeFileSync(join(person, "models_cache.json"), JSON.stringify({ models: [{ slug: "gpt-6-sol" }] }));
+      const { asked, list } = runtimeListing([{ slug: "gpt-6-sol" }, LUNA]);
+      const { fake, provider, catalogs } = sideCallCodex({ codexHome: () => home, sideCallModelCaches: undefined as never, listSideCallModels: list });
+
+      const events = await collect(provider.sideCall!(sideCallOpts));
+
+      expect(asked).toEqual([home]);
+      expect(events.find((event) => event.type === "result")).toEqual({ type: "result", data: { picked: ["e1"] } });
+      expect(catalogs[0]!.content).toEqual({ models: [{ slug: "gpt-6-luna", context_window: 272_000, experimental_supported_tools: [] }] });
+      expect(fake.launches).toHaveLength(1);
+    });
+
+    it("asks EO's runtime again when the home's cache predates the model", async () => {
+      writeFileSync(join(home, "models_cache.json"), JSON.stringify({ models: [{ slug: "gpt-6-sol" }] }));
+      const { asked, list } = runtimeListing([{ slug: "gpt-6-sol" }, LUNA]);
+      const { provider, catalogs } = sideCallCodex({ codexHome: () => home, sideCallModelCaches: undefined as never, listSideCallModels: list });
+
+      await collect(provider.sideCall!(sideCallOpts));
+
+      expect(asked).toEqual([home]);
+      expect(catalogs[0]!.content).toMatchObject({ models: [{ slug: "gpt-6-luna" }] });
+    });
+
+    it("is still refused, with nothing launched, when EO's runtime does not know the model, and says which models to choose from", async () => {
+      // The person's cache names it; that is not what the call runs on.
+      const { asked, list } = runtimeListing([{ slug: "gpt-6-sol" }]);
+      const { fake, provider } = sideCallCodex({ codexHome: () => home, sideCallModelCaches: undefined as never, listSideCallModels: list });
+
+      const events = await collect(provider.sideCall!(sideCallOpts));
+
+      expect(asked).toEqual([home]);
+      expect(events).toEqual([
+        {
+          type: "error",
+          message:
+            "EO's Codex runtime does not list gpt-6-luna in its model catalogue for this sign-in, so EO cannot switch its tools off and did not make the call. Choose a model the Runtimes tab lists for Codex: as the small model there, or as the system agent's model for its consolidation.",
+          retryable: false,
+        },
+      ]);
+      expect(fake.launches).toEqual([]);
+    });
+
+    it("is refused, with nothing launched, when EO's runtime could not be asked, and says so rather than to choose another model", async () => {
+      const { fake, provider } = sideCallCodex({ codexHome: () => home, sideCallModelCaches: undefined as never, listSideCallModels: async () => "model discovery timed out" });
+
+      const events = await collect(provider.sideCall!(sideCallOpts));
+
+      expect(events).toEqual([
+        {
+          type: "error",
+          message:
+            "EO could not ask its Codex runtime for its model catalogue (model discovery timed out), so it cannot switch the tools of gpt-6-luna off and did not make the call. Check that Codex is installed and signed in on the Runtimes tab, then try again.",
+          retryable: false,
+        },
+      ]);
+      expect(fake.launches).toEqual([]);
+    });
   });
 
   it("is refused, with nothing launched, when it has no Codex home of its own — never run in the person's, whose config.toml would start their MCP servers", async () => {

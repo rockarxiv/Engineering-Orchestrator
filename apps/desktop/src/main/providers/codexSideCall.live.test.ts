@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -16,8 +16,10 @@ import { personCodexHome } from "./codexHome.js";
  * No credit is spent: Codex's model provider is pointed at a server on
  * 127.0.0.1 that keeps the request body and refuses it, so the turn fails
  * after the request has been written. The catalogue entry is copied from
- * the person's own `models_cache.json`, which any earlier Codex run on
- * this machine leaves.
+ * the side calls' own home's `models_cache.json`, which EO's runtime is
+ * asked to write there (`model/list`) when the home has none — never
+ * from the person's own (EO-907). The person's sign-in is linked into
+ * each fresh home, as `prepareCodexHome` links it.
  *
  * Opt in with `EO_LIVE_CODEX=1`, and `EO_CODEX_BIN` naming the binary.
  */
@@ -26,6 +28,17 @@ const CODEX = process.env["EO_CODEX_BIN"] ?? "codex";
 
 let server: Server | null = null;
 const cleanup: string[] = [];
+/** The person's sign-in, read before any test points `CODEX_HOME` elsewhere. */
+const PERSON_AUTH = join(personCodexHome(), "auth.json");
+
+/** A side calls' home as EO makes one: the sign-in linked, a sessions directory, nothing else — no `models_cache.json`. */
+function freshSideCallHome(): string {
+  const home = mkdtempSync(join(homedir(), ".eo-side-call-home-"));
+  cleanup.push(home);
+  mkdirSync(join(home, "sessions"), { recursive: true });
+  if (existsSync(PERSON_AUTH)) symlinkSync(PERSON_AUTH, join(home, "auth.json"));
+  return home;
+}
 
 afterEach(() => {
   server?.close();
@@ -71,14 +84,12 @@ function toolsOf(body: unknown): string[] {
 describe.skipIf(!OPTED_IN)("a Codex side call, against the real app-server (live, no credit)", () => {
   it("is offered no tool that reaches the disk, the shell or another agent, and no skills catalogue", async () => {
     const capture = await captureServer();
-    const home = mkdtempSync(join(homedir(), ".eo-side-call-home-"));
+    const home = freshSideCallHome();
     const cwd = mkdtempSync(join(tmpdir(), "eo-side-call-"));
-    cleanup.push(home, cwd);
-    mkdirSync(join(home, "sessions"), { recursive: true });
+    cleanup.push(cwd);
     const options = {
       executablePath: CODEX,
       codexHome: () => home,
-      sideCallModelCaches: () => [join(personCodexHome(), "models_cache.json")],
       createSideCallCodex: (catalogPath: string) => {
         const built = codexSideCallClientOptions({ executablePath: CODEX, codexHome: () => home }, catalogPath);
         return new CodexClient({
@@ -119,6 +130,63 @@ describe.skipIf(!OPTED_IN)("a Codex side call, against the real app-server (live
     expect(prompt).not.toContain(".agents/skills");
     // And the system prompt is the question's own.
     expect(prompt).toContain("Answer with the entries that matter.");
+  }, 90_000);
+
+  it("is made from a fresh side calls' home with no person's models_cache.json anywhere: EO's runtime writes the home's catalogue first (EO-907)", async () => {
+    const priorHome = process.env["CODEX_HOME"];
+    // The person's own home, as `personCodexHome` reads it, holds no cache.
+    const person = mkdtempSync(join(homedir(), ".eo-side-call-person-"));
+    cleanup.push(person);
+    process.env["CODEX_HOME"] = person;
+    try {
+      const capture = await captureServer();
+      const home = freshSideCallHome();
+      const cwd = mkdtempSync(join(tmpdir(), "eo-side-call-"));
+      cleanup.push(cwd);
+      let catalogue: unknown = null;
+      const provider = createCodexProvider({
+        executablePath: CODEX,
+        codexHome: () => home,
+        createSideCallCodex: (catalogPath: string) => {
+          catalogue = JSON.parse(readFileSync(catalogPath, "utf8")) as unknown;
+          const built = codexSideCallClientOptions({ executablePath: CODEX, codexHome: () => home }, catalogPath);
+          return new CodexClient({
+            ...built,
+            config: {
+              ...built.config,
+              model_provider: "capture",
+              model_providers: { capture: { name: "capture", base_url: `http://127.0.0.1:${capture.port}/v1`, wire_api: "responses", request_max_retries: 0, stream_max_retries: 0 } },
+            },
+          });
+        },
+      });
+      expect(existsSync(join(home, "models_cache.json"))).toBe(false);
+
+      const errors: string[] = [];
+      for await (const event of provider.sideCall!({
+        model: "gpt-6-luna",
+        system: "Answer the question.",
+        input: "Return an empty list.",
+        outputSchema: { type: "object", properties: { picked: { type: "array", items: { type: "string" } } }, required: ["picked"] },
+        cwd,
+        signal: AbortSignal.timeout(60_000),
+      })) {
+        if (event.type === "error") errors.push(event.message);
+      }
+
+      // Not refused for a missing catalogue entry: the entry came from the
+      // cache EO's runtime wrote into the side calls' home, and the request
+      // reached the model provider on that model.
+      expect(errors.join("\n")).not.toContain("cannot switch");
+      expect(existsSync(join(home, "models_cache.json"))).toBe(true);
+      expect(existsSync(join(person, "models_cache.json"))).toBe(false);
+      expect(catalogue).toMatchObject({ models: [{ slug: "gpt-6-luna" }] });
+      expect(capture.bodies.length).toBeGreaterThan(0);
+      expect(capture.bodies[0]).toMatchObject({ model: "gpt-6-luna" });
+    } finally {
+      if (priorHome === undefined) delete process.env["CODEX_HOME"];
+      else process.env["CODEX_HOME"] = priorHome;
+    }
   }, 90_000);
 });
 
@@ -162,7 +230,6 @@ describe.skipIf(!OPTED_IN)("the person's Codex configuration and a side call (li
     const provider = createCodexProvider({
       executablePath: CODEX,
       codexHome,
-      sideCallModelCaches: () => [join(personCodexHome(), "models_cache.json")],
       createSideCallCodex: (catalogPath: string) => {
         launched = true;
         const built = codexSideCallClientOptions({ executablePath: CODEX, codexHome }, catalogPath);
@@ -213,9 +280,7 @@ describe.skipIf(!OPTED_IN)("the person's Codex configuration and a side call (li
   it("in a home of its own, with the person's CODEX_HOME inherited, the person's server never starts", async () => {
     const person = personsHome();
     process.env["CODEX_HOME"] = person.home;
-    const own = mkdtempSync(join(homedir(), ".eo-side-call-home-"));
-    cleanup.push(own);
-    mkdirSync(join(own, "sessions"), { recursive: true });
+    const own = freshSideCallHome();
 
     const outcome = await sideCallIn(() => own);
 

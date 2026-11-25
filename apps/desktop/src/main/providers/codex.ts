@@ -63,11 +63,28 @@ import { openedFork } from "./threadFork.js";
 import { isSuggestionAnswer, judgeSuggestionAnswer, lastRequestMostlyUncached, PROMPT_SUGGESTION_PROMPT, SUGGESTION_MIN_COMPLETED_TURNS, SUGGESTION_NEAR_LIMIT_PERCENT, SUGGESTION_TIMEOUT_MS } from "./promptSuggestion.js";
 import { agentMcpStdioConfig, eoMcpStdioConfig, type EoMcpServiceConfig } from "../mcp/serviceConfig.js";
 import { codexModelPrice, codexTurnCostCents, codexTurnCostMicrocents } from "./codexPricing.js";
-import { personCodexHome } from "./codexHome.js";
 import { CODEX_SIDE_CALL_SWITCHES, writeSideCallCatalog } from "./codexSideCallLockdown.js";
+import { readModelsFromAppServer } from "./codexModels.js";
 
 /** The catalogue Codex caches in every home it runs in, which a side call copies its model's entry from. */
 const CODEX_MODELS_CACHE = "models_cache.json";
+
+/**
+ * The caches a Codex side call copies its model's catalogue entry from
+ * (EO-477): the side calls' own home's, and nothing else (EO-907).
+ *
+ * Not the person's `~/.codex/models_cache.json`, which until EO-907 was
+ * the fallback and in practice the only one read — nothing had run in
+ * the side calls' home to write its own. That file is written by
+ * whatever Codex the person installed, which on a Mac with an older one
+ * did not name a model EO's runtime runs every agent on, and the call
+ * was refused for good. The side calls' home's is written by EO's
+ * managed runtime, asked for its models there when the cache is missing
+ * or does not name the model (`listModelsInSideCallHome`).
+ */
+export function sideCallModelCachePaths(home: string): string[] {
+  return [join(home, CODEX_MODELS_CACHE)];
+}
 import { REFUSED_CALL_EVENTS, refusedCall } from "./callRefusal.js";
 import { CODEX_SEARCH_TOOL_MATCHER, openCodexSearchHook, probeHookTrust, type CodexHookTrust, type CodexSearchHook } from "./codexSearchHook.js";
 import type { SearchNudge } from "./searchNudge.js";
@@ -335,10 +352,19 @@ export interface CodexProviderOptions {
   createSideCallCodex?: (catalogPath: string) => Pick<CodexClient, "startThread">;
   /**
    * Where a side call copies its model's catalogue entry from (EO-477),
-   * in order. Absent: the side calls' own home's `models_cache.json`,
-   * then the person's (`personCodexHome`). A seam for tests.
+   * in order. Absent: the side calls' own home's `models_cache.json`
+   * (`sideCallModelCachePaths`), never the person's (EO-907). A seam for tests.
    */
   sideCallModelCaches?: (home: string | null) => string[];
+  /**
+   * Asks EO's Codex runtime for its models in the side calls' home
+   * (EO-907), which is what writes that home's `models_cache.json`: run
+   * when no cache names a side call's model, before the call is refused.
+   * Answers null when it was asked, or why it could not be. Absent:
+   * `model/list` on the app-server of `executablePath`, with `CODEX_HOME`
+   * the side calls' home. A seam for tests.
+   */
+  listSideCallModels?: (home: string, signal: AbortSignal) => Promise<string | null>;
   /**
    * The `codex` executable to run (A-08).
    *
@@ -1911,6 +1937,26 @@ export function codexSideCallClientOptions(options: CodexProviderOptions, catalo
 }
 
 /**
+ * EO's runtime's models, asked for in the side calls' Codex home
+ * (EO-907): `model/list` makes the app-server write the home's
+ * `models_cache.json` — measured at 0.171.0, where an empty home with
+ * the sign-in linked held the cache a second later, the account's
+ * server-side catalogue and not only the binary's. `CODEX_HOME` is set
+ * over the inherited environment exactly as a side call's own launch
+ * sets it (`buildCodexOptions`). Null when it was asked; otherwise why not.
+ */
+async function listModelsInSideCallHome(executablePath: string | null, home: string, signal: AbortSignal): Promise<string | null> {
+  if (!executablePath) return "the Codex CLI is not installed";
+  const env = buildCodexOptions({ executablePath, codexHome: () => home }).env;
+  try {
+    await readModelsFromAppServer(executablePath, signal, env);
+    return null;
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+}
+
+/**
  * The thread a side call opens (EO-477): ephemeral, so nothing is kept to
  * resume; on the model and reasoning effort it was given (EO-578); in the
  * empty directory it was given; read-only, where a turn
@@ -2837,10 +2883,16 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
         return;
       }
       const sideCallOptions: CodexProviderOptions = { ...options, codexHome: () => home };
-      const caches = options.sideCallModelCaches
-        ? options.sideCallModelCaches(home)
-        : [join(home, CODEX_MODELS_CACHE), join(personCodexHome(), CODEX_MODELS_CACHE)];
-      const catalog = writeSideCallCatalog(opts.model, caches);
+      const caches = options.sideCallModelCaches ? options.sideCallModelCaches(home) : sideCallModelCachePaths(home);
+      let catalog = writeSideCallCatalog(opts.model, caches);
+      // Codex writes a home's cache only once it has run there, so the
+      // first side call on a fresh home — or one on a model the cache
+      // predates — has EO's runtime list its models in that home first
+      // (EO-907), and reads the cache again.
+      if (!catalog.ok && catalog.reason === "unlisted") {
+        const listing = await (options.listSideCallModels ?? ((at, signal) => listModelsInSideCallHome(options.executablePath ?? null, at, signal)))(home, opts.signal);
+        catalog = writeSideCallCatalog(opts.model, caches, listing ?? undefined);
+      }
       // Refused rather than run with the tools on (`writeSideCallCatalog`).
       if (!catalog.ok) {
         yield { type: "error", message: catalog.problem, retryable: false } satisfies AgentEvent;
