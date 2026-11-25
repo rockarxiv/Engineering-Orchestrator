@@ -130,7 +130,7 @@ import { EntryRulesSchema } from "./entryRules.js";
 import { ItemBriefSchema } from "./stepBrief.js";
 import { JobMachineSchema, JobPlacementSchema, JobRunsOnSchema } from "./placement.js";
 import { ActionRouteUseSchema, ActionUseSchema, RegistryViewSchema } from "./registry/index.js";
-import { ActionDefinitionDraftSchema, ActionDefinitionSchema } from "./schemas/actionDefinition.js";
+import { ActionDefinitionDraftSchema, ActionDefinitionSchema, RoleActionSaveSchema } from "./schemas/actionDefinition.js";
 import { UpdateStatusSchema } from "./updates.js";
 import { SideCallSpendLineSchema, SmallModelViewSchema } from "./side-calls.js";
 import {
@@ -3176,10 +3176,22 @@ export const recordContract = {
    * shared save refuses comes back as `problems` with nothing written —
    * a refusal rather than an error, since the request was well formed
    * and the answer is "no".
+   *
+   * With `results` left out it changes the pair's learning review
+   * setting alone (EO-911, `RoleActionSaveSchema`) — the one change a
+   * pack's action or one EO runs for itself takes — and `definition` is
+   * then the role's own where it has one, null otherwise.
+   * `learningReview` is whether the pair's runs are reviewed once the
+   * save is written.
    */
   "roleActions:save": channel(
-    ActionDefinitionDraftSchema,
-    z.object({ saved: z.boolean(), definition: ActionDefinitionSchema.nullable(), problems: z.array(z.string()) }),
+    RoleActionSaveSchema,
+    z.object({
+      saved: z.boolean(),
+      definition: ActionDefinitionSchema.nullable(),
+      problems: z.array(z.string()),
+      learningReview: z.boolean().optional(),
+    }),
   ),
   /**
    * Removes a role's definition of an action (EO-425).

@@ -90,7 +90,7 @@ import {
   type LearningReviewKind,
   actionAnswerSummary,
   actionSchemaName,
-  actionFactsFor,
+  actionLearningReviewed,
   definedActionFor,
   INTERPRET_ACTION,
   builtinResults,
@@ -346,7 +346,7 @@ import type { AgentWriteBridge, AgentWriteHandler } from "../mcp/writeBridge.js"
 import { writeAgentComment } from "./agentComments.js";
 import { projectMovedToTheRecord } from "../db/repos/projectsRepo.js";
 import { extractionEvent, extractMemory, runProduce } from "../memory/extraction.js";
-import { learningReviewEvent, learningReviewFor, learningReviewPrompt, learningReviewSkillsPrompt, type LearningReviewOutcome } from "../memory/learningReview.js";
+import { learningReviewEvent, learningReviewFor, learningReviewSkippedEvent, learningReviewPrompt, learningReviewSkillsPrompt, type LearningReviewOutcome } from "../memory/learningReview.js";
 import { answerReviewSkillTool, commitHeldSkillWrites, reviewableSkills, reviewSkillState, type ReviewSkillState } from "../memory/reviewSkills.js";
 import { runSubject } from "../modules/runName.js";
 import { createSideCallSlots } from "../sideCalls/slots.js";
@@ -3217,10 +3217,13 @@ export function createRunSupervisor(
       if (!run) return;
       const current = getItem(db, item.id) ?? item;
       const scopes = turnMemoryScopes(item);
-      // Whether a person turned the review off for this action (EO-911),
-      // asked of the registry the run was held to, as its schema was.
-      const asked = learningReviewFor(run, current, runProduce(db, run), scopes, actionFactsFor(registryFor(item), definingRole(item, agent), action));
-      if ("skip" in asked) return;
+      const asked = learningReviewAsked(run, current, agent, action, scopes);
+      if ("skip" in asked) {
+        // Off for this action (EO-911): said on the run, and nothing is
+        // asked of its backend — no fork, no extraction in its place.
+        if (asked.skip === "action_off") recordReviewSkipped(runId, asked.review, agent, action);
+        return;
+      }
       review = asked.review;
       outcome = await reviewOnFork(run, current, agent, scopes, review, { item, action, toolDirectory: runTurns?.toolDirectory, attachment: runTurns?.attachment });
     } catch (error) {
@@ -3238,6 +3241,45 @@ export function createRunSupervisor(
       record.appendRunEvent(runId, LEARNING_REVIEW_EVENT, learningReviewEvent(outcome, review));
     } catch (error) {
       console.warn(`[eo] how the learning review of run ${runId} ended could not be recorded: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  /**
+   * Which review a run gets, or why none (`learningReviewFor`), with
+   * whether its action's learning review is on (EO-911) asked of the
+   * registry the run was held to, as its schema was — so for the role
+   * that defined the action, or the pack's where it is a preview.
+   */
+  function learningReviewAsked(run: Run, item: Item, agent: Agent, action: string, scopes: readonly MemoryScopeInfo[]): ReturnType<typeof learningReviewFor> {
+    return learningReviewFor(run, item, runProduce(db, run), scopes, actionLearningReviewed(registryFor(item), definingRole(item, agent), action));
+  }
+
+  /** A run's `learning_review` event for a review its action's setting skipped (EO-911). Never throws. */
+  function recordReviewSkipped(runId: Uuid, review: LearningReviewKind, agent: Agent, action: string): void {
+    try {
+      record.appendRunEvent(runId, LEARNING_REVIEW_EVENT, learningReviewSkippedEvent(review, agent.role, action));
+    } catch (error) {
+      console.warn(`[eo] that the learning review of run ${runId} was skipped could not be recorded: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  /**
+   * An assistant chat's run, as it ends (EO-911): where the `assist`
+   * action's learning review is off, its skip is recorded now, as a step
+   * run's is — which is also what tells `reviewQuietChats` the chat owes
+   * nothing for it. Where it is on, nothing is done here: the chat is
+   * reviewed once it has gone quiet (EO-788).
+   */
+  function recordChatReviewSkip(runId: Uuid, item: Item, agent: Agent): void {
+    if (shuttingDown) return;
+    try {
+      const run = getRun(db, runId);
+      if (!run) return;
+      const current = getItem(db, item.id) ?? item;
+      const asked = learningReviewAsked(run, current, agent, ASSIST_ACTION, turnMemoryScopes(current));
+      if ("skip" in asked && asked.skip === "action_off") recordReviewSkipped(runId, asked.review, agent, ASSIST_ACTION);
+    } catch (error) {
+      console.warn(`[eo] EO could not ask whether the chat run ${runId} is reviewed: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
@@ -3651,7 +3693,8 @@ export function createRunSupervisor(
           reviewFor: (run) => {
             if (runEventDevices(db, run.id).size > 0) return null;
             const ranAs = run.agentId === null ? undefined : getAgent(db, run.agentId);
-            const asked = learningReviewFor(run, item, runProduce(db, run), scopes, actionFactsFor(registryFor(item), ranAs ? definingRole(item, ranAs) : null, run.action));
+            if (!ranAs) return null;
+            const asked = learningReviewAsked(run, item, ranAs, run.action, scopes);
             return "skip" in asked ? null : asked.review;
           },
         });
@@ -6203,6 +6246,7 @@ export function createRunSupervisor(
       // would hold the slot a quick reply waits for. The chat is reviewed
       // once it has gone quiet (`reviewQuietChats`).
       if (args[3] !== ASSIST_ACTION) await reviewAfterRun(run.id, item, agent, args[3], args[7]);
+      else recordChatReviewSkip(run.id, item, agent);
       // The run moved the counts of the skills it was given (EO-720).
       await archiveAfterRun(item);
     } finally {

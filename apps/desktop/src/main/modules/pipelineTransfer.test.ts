@@ -6,6 +6,7 @@ import { eq } from "drizzle-orm";
 import type { ModuleManifest, PipelineExport, StepWatch, Uuid } from "@eo/core";
 import { resetSearchPathForTests, resolveSearchPath } from "../process/searchPath.js";
 import {
+  actionLearningReviewed,
   actionShapeFromSchema,
   ADMIN_GRANT_REFUSAL,
   CONNECTOR_SETUP_REFUSAL,
@@ -29,6 +30,7 @@ import {
   getActionDefinition,
   listActionDefinitions,
   saveActionDefinition,
+  getActionLearningReview,
   archiveAgent,
   createAgent,
   createDisconnectedConnector,
@@ -2387,6 +2389,59 @@ describe("the pack", () => {
       const registry = registryForProject(fresh.db, project.id);
       expect(validateActionResult(registry, "sort", { outcome: { result: "urgent", summary: "Blocked.", queue: "billing" } }, UNKNOWN_ITEM_TYPE, "triager").ok).toBe(true);
       expect(validateActionResult(registry, "sort", { outcome: { result: "done", summary: "Blocked.", queue: "billing" } }, UNKNOWN_ITEM_TYPE, "triager").ok).toBe(false);
+    } finally {
+      fresh.close();
+    }
+  });
+
+  it("carries a definition's learning review where it is off, gives it to the definition a clean database makes, and leaves one already there as it is (EO-911)", () => {
+    const { pipeline } = packInstallation(handle.db);
+    expect(saveActionDefinition(handle.db, { role: "triager", ...SORT_DEFINITION, learningReview: false }).ok).toBe(true);
+    const built = exportPipeline(handle.db, pipeline.id);
+    if (!built.ok) throw new Error(built.reason);
+    expect(built.document.roles.find((role) => role.slug === "triager")?.actions).toContainEqual({ ...SORT_DEFINITION, learningReview: false });
+    const text = JSON.stringify(built.document);
+
+    const fresh = openMigratedTestDb();
+    try {
+      const project = createProject(fresh.db, { name: "Support", keyPrefix: "SUP" });
+      const parsed = parseExport(text);
+      if (!parsed.ok) throw new Error(parsed.reason);
+      const imported = importPipeline(fresh.db, { document: parsed.document, projectId: project.id, signedInBackends: ["claude"] });
+      if (!imported.ok) throw new Error(imported.reason);
+      expect(getActionLearningReview(fresh.db, "triager", "sort")).toBe(false);
+    } finally {
+      fresh.close();
+    }
+
+    // A definition this installation already has keeps its own setting.
+    const already = openMigratedTestDb();
+    try {
+      const project = createProject(already.db, { name: "Support", keyPrefix: "SUP" });
+      expect(saveActionDefinition(already.db, { role: "triager", ...SORT_DEFINITION }).ok).toBe(true);
+      const parsed = parseExport(text);
+      if (!parsed.ok) throw new Error(parsed.reason);
+      const imported = importPipeline(already.db, { document: parsed.document, projectId: project.id, signedInBackends: ["claude"] });
+      if (!imported.ok) throw new Error(imported.reason);
+      expect(getActionLearningReview(already.db, "triager", "sort")).toBeUndefined();
+    } finally {
+      already.close();
+    }
+  });
+
+  it("writes nothing about the learning review of a definition nobody turned off, and reads a file that says nothing as on (EO-911)", () => {
+    const document = exportedWithSort();
+    expect(document.roles.find((role) => role.slug === "triager")?.actions).toContainEqual(SORT_DEFINITION);
+
+    const fresh = openMigratedTestDb();
+    try {
+      const project = createProject(fresh.db, { name: "Support", keyPrefix: "SUP" });
+      const parsed = parseExport(JSON.stringify(document));
+      if (!parsed.ok) throw new Error(parsed.reason);
+      const imported = importPipeline(fresh.db, { document: parsed.document, projectId: project.id, signedInBackends: ["claude"] });
+      if (!imported.ok) throw new Error(imported.reason);
+      expect(getActionLearningReview(fresh.db, "triager", "sort")).toBeUndefined();
+      expect(actionLearningReviewed(registryForProject(fresh.db, project.id), "triager", "sort")).toBe(true);
     } finally {
       fresh.close();
     }

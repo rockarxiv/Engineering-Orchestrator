@@ -284,6 +284,14 @@ export const ExportedActionSchema = z.object({
   results: z.array(ActionResultSchema),
   /** The extra answer properties, as a JSON Schema describing an object. `{}` for none. */
   fields: z.record(z.string(), z.unknown()).default({}),
+  /**
+   * Whether its runs get a learning review (EO-911). Written only where
+   * it is off, so a file of definitions nobody changed is the document it
+   * always was; absent — every file written before this — is on. An
+   * import gives it to the definition it creates, and never to one this
+   * installation already has.
+   */
+  learningReview: z.boolean().optional(),
 });
 
 /**

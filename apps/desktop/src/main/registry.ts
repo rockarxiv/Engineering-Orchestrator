@@ -1,5 +1,6 @@
 import {
   actionDefinitionOutputSchema,
+  actionSettingsOf,
   developerRegistry,
   isUndispatchedAction,
   packActionInForce,
@@ -19,6 +20,7 @@ import {
 } from "@eo/core";
 import type { Db } from "./db/client.js";
 import { listActionDefinitions } from "./db/repos/actionDefinitionsRepo.js";
+import { listActionSettings } from "./db/repos/actionSettingsRepo.js";
 import { itemTypesFor } from "./db/repos/itemTypesRepo.js";
 import { readTrialActions } from "./db/repos/trialsRepo.js";
 
@@ -130,6 +132,10 @@ export function registryForProject(db: Db, projectId: Uuid | null): Registry {
     // `validatePipeline` holds an agent step's routes to, and what
     // `registry:get` sends so the renderer's validator is told the same.
     roleActions: roleActionFactsOf(actionDefinitions),
+    // What people set on the roles' actions (EO-911): read like the
+    // definitions, on every call, so a setting saved takes effect on the
+    // next run it is asked about.
+    actionSettings: actionSettingsOf(listActionSettings(db)),
   };
 }
 
@@ -257,9 +263,6 @@ export function withProposedActions(base: Registry, proposed: readonly ActionDef
       description: read.description,
       results: read.results,
       fields: read.fields,
-      // What the save would keep (EO-911): a proposal that says nothing
-      // about it leaves the installed definition's setting as it is.
-      learningReview: read.learningReview ?? byRole.get(read.role)?.get(read.action)?.definition.learningReview ?? true,
       createdAt: 0,
       updatedAt: 0,
     };

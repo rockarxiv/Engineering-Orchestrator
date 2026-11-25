@@ -1988,7 +1988,6 @@ const QA_ALIGNMENT = {
     { key: "gaps_found", label: "Gaps found", meaning: "Something asked for is missing." },
   ],
   fields: { type: "object", properties: { gaps: { type: "array", items: { type: "string" } } } },
-  learningReview: true,
   createdAt: 1,
   updatedAt: 1,
 };

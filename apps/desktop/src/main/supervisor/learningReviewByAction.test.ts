@@ -2,15 +2,31 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
-import { FOLDER_KIND, LEARNING_REVIEW_EVENT, type AgentProvider, type Item, type Uuid } from "@eo/core";
+import { CHAT_IDLE_BEFORE_REVIEW_MS, FOLDER_KIND, LEARNING_REVIEW_EVENT, SYSTEM_ROLE, type AgentProvider, type Item, type Uuid } from "@eo/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DbHandle } from "../db/client.js";
-import { createProject, createRoute, createStep, createWorkspace, getItem, listAgents, listRunEvents, listRunsForItem, listSideCalls, saveActionDefinition, updateAgent } from "../db/repos/index.js";
+import {
+  createProject,
+  createRoute,
+  createStep,
+  createWorkspace,
+  getItem,
+  listAgents,
+  listRunEvents,
+  listRunsForItem,
+  listSideCalls,
+  postComment,
+  saveActionDefinition,
+  setActionLearningReview,
+  updateAgent,
+} from "../db/repos/index.js";
 import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import { createClaudeProvider } from "../providers/claude.js";
 import { createCodexProvider } from "../providers/codex.js";
 import { CodexClient, dropWarmCodexThread } from "../providers/codexClient.js";
 import { startTestWriteBridge, type TestWriteBridge } from "../testing/agentWrites.js";
+import { openAssistConversation, postAssistReply } from "../roles/assist.js";
+import { ASSIST_ACTION } from "../roles/conversationSteps.js";
 import { fakeAppServer, note } from "../testing/fakeCodexAppServer.js";
 import { createRunSupervisor } from "./runSupervisor.js";
 
@@ -28,7 +44,9 @@ import { createRunSupervisor } from "./runSupervisor.js";
  * The action is one the implementer defines for itself, on a step of
  * its own, so the setting is the one a person saves; the same run with
  * the setting on is the case that shows the count can be other than
- * zero.
+ * zero. And an assistant chat's `assist`, which EO runs for itself and
+ * reviews once the chat has gone quiet (EO-788): the setting is on the
+ * system agent's role, and it is said on the run as the turn ends.
  */
 const LIMITS = { globalConcurrency: 1, perAgentConcurrency: 1, perRepositoryConcurrency: 1 };
 const EXECUTABLE = "/opt/eo/runtimes/codex/bin/codex";
@@ -44,11 +62,14 @@ interface Backend {
   turns: () => number;
 }
 
-function backend(name: BackendName): Backend {
+/** What an assistant chat's turn answers in: a reply, and nothing to ask or propose. */
+const CHAT_ANSWER = { message: "The export is a CSV of the ledger.", questions: [], proposals: [] };
+
+function backend(name: BackendName, answer: Record<string, unknown> = ANSWER): Backend {
   if (name === "codex") {
     const fake = fakeAppServer({
       model: "gpt-6.1-sol",
-      after: { "turn/start": [note.turnStarted(), note.agentMessage(JSON.stringify(ANSWER)), note.tokenUsage({ input: 10, output: 10 }), note.turnCompleted()] },
+      after: { "turn/start": [note.turnStarted(), note.agentMessage(JSON.stringify(answer)), note.tokenUsage({ input: 10, output: 10 }), note.turnCompleted()] },
     });
     return {
       provider: createCodexProvider({
@@ -65,7 +86,7 @@ function backend(name: BackendName): Backend {
   const calls: { forkSession?: boolean }[] = [];
   const messages = [
     { type: "system", subtype: "init", session_id: "sess_1" },
-    { type: "result", subtype: "success", result: JSON.stringify(ANSWER), structured_output: ANSWER, total_cost_usd: 0.01, usage: { input_tokens: 10, output_tokens: 10 }, session_id: "sess_1" },
+    { type: "result", subtype: "success", result: JSON.stringify(answer), structured_output: answer, total_cost_usd: 0.01, usage: { input_tokens: 10, output_tokens: 10 }, session_id: "sess_1" },
   ] as unknown as SDKMessage[];
   const runQuery = ((args: { options?: { forkSession?: boolean } }) => {
     calls.push({ ...(args.options?.forkSession === undefined ? {} : { forkSession: args.options.forkSession }) });
@@ -135,7 +156,18 @@ describe.each<BackendName>(["claude", "codex"])("the learning review after a run
   const reviewEvents = () => listRunEvents(handle.db, onlyRun().id).filter((event) => event.type === LEARNING_REVIEW_EVENT);
   const reviewCalls = () => listSideCalls(handle.db).filter((call) => call.purpose === "learning_review");
 
-  it("forks no thread and records no review for an action whose learning review is off", async () => {
+  const skippedEvent = (role: string, action: string) => ({
+    type: LEARNING_REVIEW_EVENT,
+    outcome: "skipped",
+    review: "full",
+    entryIds: [],
+    skillIds: [],
+    reason: `The learning review is off for the ${role} role's "${action}" action, so this run was not reviewed.`,
+    forkThreadId: null,
+    skip: "action_off",
+  });
+
+  it("forks no thread, makes no side call, and records the skip and why for an action whose learning review is off", async () => {
     define(false);
     const over = backend(name);
 
@@ -147,8 +179,20 @@ describe.each<BackendName>(["claude", "codex"])("the learning review after a run
     expect(over.turns()).toBe(1);
     expect(over.forks()).toBe(0);
     expect(reviewCalls()).toEqual([]);
-    // Skipped as the other skips are: no event, as for a cancelled run.
-    expect(reviewEvents()).toEqual([]);
+    // No extraction in its place either.
+    expect(listSideCalls(handle.db)).toEqual([]);
+    expect(reviewEvents().map((event) => event.payload)).toEqual([skippedEvent("implementer", "check")]);
+  });
+
+  it("takes a setting made after the definition, as the next run asks it", async () => {
+    define(undefined);
+    setActionLearningReview(handle.db, "implementer", "check", false);
+    const over = backend(name);
+
+    await runOnceOn(over);
+
+    expect(over.forks()).toBe(0);
+    expect(reviewEvents().map((event) => event.payload)).toEqual([skippedEvent("implementer", "check")]);
   });
 
   it("forks the run's thread for its review when the setting is on, and when nobody set it", async () => {
@@ -160,6 +204,82 @@ describe.each<BackendName>(["claude", "codex"])("the learning review after a run
     expect(onlyRun().status).toBe("succeeded");
     expect(over.forks()).toBe(1);
     expect(reviewCalls()).toEqual([expect.objectContaining({ runId: onlyRun().id })]);
-    expect(reviewEvents()).toHaveLength(1);
+    expect(reviewEvents()).toEqual([expect.objectContaining({ payload: expect.objectContaining({ outcome: "nothing_to_save" }) })]);
+  });
+});
+
+describe.each<BackendName>(["claude", "codex"])("the learning review of an assistant chat, on %s (EO-911)", (name) => {
+  let handle: DbHandle;
+  let folder: string;
+  let chat: Item;
+  let writes: TestWriteBridge;
+  let clock: number;
+
+  beforeEach(async () => {
+    writes = await startTestWriteBridge();
+    handle = openMigratedTestDb();
+    folder = mkdtempSync(join(tmpdir(), "eo-911-chat-"));
+    const workspace = createWorkspace(handle.db, { kind: FOLDER_KIND, config: { path: folder } });
+    const project = createProject(handle.db, { name: "Payments", keyPrefix: "PAY", workspaceIds: [workspace.id] });
+    chat = openAssistConversation(handle.db, project.id as Uuid);
+    clock = Date.now();
+  });
+
+  afterEach(async () => {
+    dropWarmCodexThread();
+    await writes.close();
+    handle.close();
+    rmSync(folder, { recursive: true, force: true });
+  });
+
+  /** The person's message to the system agent, the turn it starts, and then the chat left quiet past the idle time. */
+  async function chatThenQuiet(over: Backend): Promise<void> {
+    const system = listAgents(handle.db).find((agent) => agent.role === SYSTEM_ROLE)!;
+    updateAgent(handle.db, system.id, { provider: name });
+    const supervisor = createRunSupervisor({
+      db: handle.db,
+      provider: over.provider,
+      limits: LIMITS,
+      now: () => clock,
+      agentWriteBridge: writes.agentWriteBridge,
+      sideCalls: { provider: () => over.provider, smallModel: async () => null },
+      onRunSucceeded: (item, agent, action, parsedResult, runId) => {
+        if (action === ASSIST_ACTION) postAssistReply(handle.db, item, agent.id, runId, parsedResult);
+      },
+    });
+    writes.serve(supervisor);
+    postComment(handle.db, { itemId: chat.id, author: { type: "human" }, body: "What does the export hold?", mentions: [{ type: "agent", agentId: system.id }] });
+    await supervisor.runOnce();
+    clock += CHAT_IDLE_BEFORE_REVIEW_MS + 1_000;
+    await supervisor.runOnce();
+    for (let i = 0; i < 20; i += 1) await new Promise((resolve) => setTimeout(resolve, 5));
+    await supervisor.runOnce();
+    await supervisor.shutdown();
+  }
+
+  const chatRuns = () => listRunsForItem(handle.db, chat.id).filter((run) => run.action === ASSIST_ACTION);
+  const reviewEvents = () => chatRuns().flatMap((run) => listRunEvents(handle.db, run.id).filter((event) => event.type === LEARNING_REVIEW_EVENT).map((event) => event.payload));
+
+  it("records the skip as the turn ends and forks nothing once the chat is quiet, where assist's learning review is off", async () => {
+    setActionLearningReview(handle.db, SYSTEM_ROLE, ASSIST_ACTION, false);
+    const over = backend(name, CHAT_ANSWER);
+
+    await chatThenQuiet(over);
+
+    expect(chatRuns().map((run) => run.status)).toEqual(["succeeded"]);
+    expect(over.turns()).toBe(1);
+    expect(over.forks()).toBe(0);
+    expect(listSideCalls(handle.db)).toEqual([]);
+    expect(reviewEvents()).toEqual([expect.objectContaining({ outcome: "skipped", skip: "action_off", forkThreadId: null })]);
+  });
+
+  it("reviews the quiet chat on a fork where nobody set anything", async () => {
+    const over = backend(name, CHAT_ANSWER);
+
+    await chatThenQuiet(over);
+
+    expect(chatRuns().map((run) => run.status)).toEqual(["succeeded"]);
+    expect(over.forks()).toBe(1);
+    expect(reviewEvents()).toEqual([expect.objectContaining({ outcome: "nothing_to_save" })]);
   });
 });

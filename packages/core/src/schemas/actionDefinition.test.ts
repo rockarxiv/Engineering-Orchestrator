@@ -5,7 +5,8 @@ import {
   actionAnswerDocument,
   actionAnswerSummary,
   actionDefinitionOutputSchema,
-  ActionDefinitionSchema,
+  ActionDefinitionDraftSchema,
+  RoleActionSaveSchema,
   actionShapeFromSchema,
   fieldsFromList,
   keptDefinitionsNote,
@@ -32,7 +33,7 @@ const ALIGNMENT = {
 function definition(draft: Parameters<typeof readActionDefinitionDraft>[0]): ActionDefinition {
   const read = readActionDefinitionDraft(draft);
   if (!read.ok) throw new Error(read.problems.join(" "));
-  return { id: `${read.role}:${read.action}`, role: read.role, action: read.action, description: read.description, results: read.results, fields: read.fields, learningReview: read.learningReview ?? true, createdAt: 1, updatedAt: 1 };
+  return { id: `${read.role}:${read.action}`, role: read.role, action: read.action, description: read.description, results: read.results, fields: read.fields, createdAt: 1, updatedAt: 1 };
 }
 
 /** The developer pack's registry, plus these definitions — what `registryForProject` hands the supervisor. */
@@ -120,8 +121,10 @@ describe("the learning review setting (EO-911)", () => {
     expect(read.ok).toBe(false);
   });
 
-  it("defaults to on for a definition sent without it", () => {
-    expect(ActionDefinitionSchema.parse({ id: "d", role: "qa", action: "a", description: "", results: [], fields: {}, createdAt: 1, updatedAt: 1 }).learningReview).toBe(true);
+  it("lets roleActions:save leave the results out, which is a change to the setting alone, and holds a full draft as before", () => {
+    expect(RoleActionSaveSchema.parse({ role: "reviewer", action: "review", learningReview: true })).toMatchObject({ role: "reviewer", action: "review", learningReview: true });
+    expect(RoleActionSaveSchema.parse({ role: "reviewer", action: "review", learningReview: true }).results).toBeUndefined();
+    expect(ActionDefinitionDraftSchema.safeParse({ role: "qa", action: "a", learningReview: true }).success).toBe(false);
   });
 });
 

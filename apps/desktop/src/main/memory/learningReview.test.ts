@@ -1,6 +1,6 @@
 import { LEARNING_REVIEW_EVENT, LearningReviewEventSchema, MEMORY_NOTE_DEFINITION, type Run } from "@eo/core";
 import { describe, expect, it } from "vitest";
-import { learningReviewEvent, learningReviewFor, learningReviewPrompt, learningReviewSkillsPrompt } from "./learningReview.js";
+import { learningReviewEvent, learningReviewFor, learningReviewPrompt, learningReviewSkippedEvent, learningReviewSkillsPrompt } from "./learningReview.js";
 import type { RunProduce } from "./extraction.js";
 import type { MemoryScopeInfo } from "./selection.js";
 
@@ -44,43 +44,53 @@ describe("which runs are reviewed (EO-717)", () => {
   const NOTED = { ...PRODUCE, calledMemoryNote: true };
 
   it("skips the runs extraction skips, but for the one that wrote its own notes", () => {
-    expect(learningReviewFor({ ...RUN, status: "cancelled" } as Run, ITEM, PRODUCE, SCOPES, undefined)).toEqual({ skip: "not_ended" });
-    expect(learningReviewFor({ ...RUN, interruption: "quit" } as unknown as Run, ITEM, PRODUCE, SCOPES, undefined)).toEqual({ skip: "interrupted" });
-    expect(learningReviewFor(RUN, { previewAt: 1 }, PRODUCE, SCOPES, undefined)).toEqual({ skip: "preview" });
-    expect(learningReviewFor(RUN, ITEM, PRODUCE, [], undefined)).toEqual({ skip: "no_scopes" });
+    expect(learningReviewFor({ ...RUN, status: "cancelled" } as Run, ITEM, PRODUCE, SCOPES, true)).toEqual({ skip: "not_ended" });
+    expect(learningReviewFor({ ...RUN, interruption: "quit" } as unknown as Run, ITEM, PRODUCE, SCOPES, true)).toEqual({ skip: "interrupted" });
+    expect(learningReviewFor(RUN, { previewAt: 1 }, PRODUCE, SCOPES, true)).toEqual({ skip: "preview" });
+    expect(learningReviewFor(RUN, ITEM, PRODUCE, [], true)).toEqual({ skip: "no_scopes" });
   });
 
   it("reviews a run with a short answer, which extraction would have skipped: the fork sees what the run did, not only what it said", () => {
-    expect(learningReviewFor(RUN, ITEM, PRODUCE, SCOPES, undefined)).toEqual({ review: "full" });
-    expect(learningReviewFor({ ...RUN, status: "failed" } as Run, ITEM, PRODUCE, SCOPES, undefined)).toEqual({ review: "full" });
-    expect(learningReviewFor({ ...RUN, status: "awaiting_input" } as Run, ITEM, PRODUCE, SCOPES, undefined)).toEqual({ review: "full" });
+    expect(learningReviewFor(RUN, ITEM, PRODUCE, SCOPES, true)).toEqual({ review: "full" });
+    expect(learningReviewFor({ ...RUN, status: "failed" } as Run, ITEM, PRODUCE, SCOPES, true)).toEqual({ review: "full" });
+    expect(learningReviewFor({ ...RUN, status: "awaiting_input" } as Run, ITEM, PRODUCE, SCOPES, true)).toEqual({ review: "full" });
   });
 
   it("gives a run that called memory_note the skill half alone (EO-731)", () => {
-    expect(learningReviewFor(RUN, ITEM, NOTED, SCOPES, undefined)).toEqual({ review: "skills_only" });
+    expect(learningReviewFor(RUN, ITEM, NOTED, SCOPES, true)).toEqual({ review: "skills_only" });
   });
 
   it("still skips the whole review of a run that called memory_note for every other reason (EO-731)", () => {
-    expect(learningReviewFor({ ...RUN, status: "cancelled" } as Run, ITEM, NOTED, SCOPES, undefined)).toEqual({ skip: "not_ended" });
-    expect(learningReviewFor({ ...RUN, interruption: "quit" } as unknown as Run, ITEM, NOTED, SCOPES, undefined)).toEqual({ skip: "interrupted" });
-    expect(learningReviewFor(RUN, { previewAt: 1 }, NOTED, SCOPES, undefined)).toEqual({ skip: "preview" });
-    expect(learningReviewFor(RUN, ITEM, NOTED, [], undefined)).toEqual({ skip: "no_scopes" });
+    expect(learningReviewFor({ ...RUN, status: "cancelled" } as Run, ITEM, NOTED, SCOPES, true)).toEqual({ skip: "not_ended" });
+    expect(learningReviewFor({ ...RUN, interruption: "quit" } as unknown as Run, ITEM, NOTED, SCOPES, true)).toEqual({ skip: "interrupted" });
+    expect(learningReviewFor(RUN, { previewAt: 1 }, NOTED, SCOPES, true)).toEqual({ skip: "preview" });
+    expect(learningReviewFor(RUN, ITEM, NOTED, [], true)).toEqual({ skip: "no_scopes" });
   });
 
-  it("skips a run of an action a person turned the review off for, and reviews one the action leaves on (EO-911)", () => {
-    expect(learningReviewFor(RUN, ITEM, PRODUCE, SCOPES, { learningReview: false })).toEqual({ skip: "action_off" });
-    expect(learningReviewFor(RUN, ITEM, NOTED, SCOPES, { learningReview: false })).toEqual({ skip: "action_off" });
-    expect(learningReviewFor(RUN, ITEM, PRODUCE, SCOPES, { learningReview: true })).toEqual({ review: "full" });
-    // An action that says nothing, and one nothing declares, are reviewed as before.
-    expect(learningReviewFor(RUN, ITEM, PRODUCE, SCOPES, {})).toEqual({ review: "full" });
-    expect(learningReviewFor(RUN, ITEM, NOTED, SCOPES, undefined)).toEqual({ review: "skills_only" });
+  it("skips a run of an action whose learning review is off, saying which review it would have had (EO-911)", () => {
+    expect(learningReviewFor(RUN, ITEM, PRODUCE, SCOPES, false)).toEqual({ skip: "action_off", review: "full" });
+    expect(learningReviewFor(RUN, ITEM, NOTED, SCOPES, false)).toEqual({ skip: "action_off", review: "skills_only" });
+    expect(learningReviewFor(RUN, ITEM, PRODUCE, SCOPES, true)).toEqual({ review: "full" });
+  });
+
+  it("records the skip as an event of its own, with why, and no fork (EO-911)", () => {
+    const event = learningReviewSkippedEvent("full", "reviewer", "review");
+    expect(LearningReviewEventSchema.parse(event)).toEqual({
+      type: LEARNING_REVIEW_EVENT,
+      outcome: "skipped",
+      review: "full",
+      entryIds: [],
+      skillIds: [],
+      reason: 'The learning review is off for the reviewer role\'s "review" action, so this run was not reviewed.',
+      forkThreadId: null,
+      skip: "action_off",
+    });
   });
 
   it("skips for the reasons it always did before asking the action (EO-911)", () => {
-    const off = { learningReview: false };
-    expect(learningReviewFor({ ...RUN, status: "cancelled" } as Run, ITEM, PRODUCE, SCOPES, off)).toEqual({ skip: "not_ended" });
-    expect(learningReviewFor(RUN, { previewAt: 1 }, PRODUCE, SCOPES, off)).toEqual({ skip: "preview" });
-    expect(learningReviewFor(RUN, ITEM, PRODUCE, [], off)).toEqual({ skip: "no_scopes" });
+    expect(learningReviewFor({ ...RUN, status: "cancelled" } as Run, ITEM, PRODUCE, SCOPES, false)).toEqual({ skip: "not_ended" });
+    expect(learningReviewFor(RUN, { previewAt: 1 }, PRODUCE, SCOPES, false)).toEqual({ skip: "preview" });
+    expect(learningReviewFor(RUN, ITEM, PRODUCE, [], false)).toEqual({ skip: "no_scopes" });
   });
 });
 

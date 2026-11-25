@@ -5,7 +5,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import { adminDeliveryFor, adminDispatchFor } from "../agentAttachments/adminDelivery.js";
 import type { DbHandle } from "../db/client.js";
 import { markReplica } from "../db/recordRole.js";
-import { createAgent, createPipeline, createStep, currentVersion, getActionDefinition, listActionDefinitions, listAgents, listRetiredStepsForPipeline, publishSection, setItemArchived } from "../db/repos/index.js";
+import { createAgent, createPipeline, createStep, currentVersion, getActionDefinition, getActionLearningReview, listActionDefinitions, listAgents, listRetiredStepsForPipeline, publishSection, setItemArchived } from "../db/repos/index.js";
 import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import { TOOLS, type Dispatch, type ToolOutcome } from "../mcpHost/catalog.js";
 import { toolsFor } from "../mcpHost/gate.js";
@@ -179,28 +179,73 @@ describe("role_action_save", () => {
 
   it("turns a definition's learning review off and on again, keeps it through an edit that says nothing of it, and registry_get says so (EO-911)", async () => {
     const created = answered(await tool("role_action_save").run(dispatch, ALIGNMENT));
-    expect(getActionDefinition(handle.db, "qa", "alignment")?.learningReview).toBe(true);
+    expect(getActionLearningReview(handle.db, "qa", "alignment")).toBeUndefined();
     expect(created.text).toContain("Each run of it is followed by a learning review.");
 
     const off = answered(await tool("role_action_save").run(dispatch, { ...ALIGNMENT, learningReview: false }));
     expect(off.refused).toBe(false);
     expect(off.text).toContain("Its runs get no learning review.");
-    expect(getActionDefinition(handle.db, "qa", "alignment")?.learningReview).toBe(false);
+    expect(getActionLearningReview(handle.db, "qa", "alignment")).toBe(false);
 
     // An edit that leaves it out is not a person turning it back on.
     answered(await tool("role_action_save").run(dispatch, { ...ALIGNMENT, description: "Holds the work to the brief." }));
-    expect(getActionDefinition(handle.db, "qa", "alignment")).toMatchObject({ description: "Holds the work to the brief.", learningReview: false });
+    expect(getActionDefinition(handle.db, "qa", "alignment")?.description).toBe("Holds the work to the brief.");
+    expect(getActionLearningReview(handle.db, "qa", "alignment")).toBe(false);
 
     const read = answered(await tool("registry_get").run(dispatch, {}));
-    expect((read.data as IpcResponse<"registry:get">).roleActions?.[0]?.actions[0]?.learningReview).toBe(false);
+    expect((read.data as IpcResponse<"registry:get">).actionSettings).toEqual([{ role: "qa", action: "alignment", learningReview: false }]);
     expect(read.text).toContain("learning review: off");
-    // The shipped review is off too, and the shipped implement is not.
-    const shipped = (read.data as IpcResponse<"registry:get">).roles.flatMap((role) => role.actions ?? []);
-    expect(shipped.find((action) => action.action === "review")?.learningReview).toBe(false);
-    expect(shipped.find((action) => action.action === "implement")?.learningReview).toBeUndefined();
 
     answered(await tool("role_action_save").run(dispatch, { ...ALIGNMENT, learningReview: true }));
-    expect(getActionDefinition(handle.db, "qa", "alignment")?.learningReview).toBe(true);
+    expect(getActionLearningReview(handle.db, "qa", "alignment")).toBe(true);
+  });
+
+  it("changes the learning review alone on a pack's own action, which keeps its shape, and says the shipped defaults (EO-911)", async () => {
+    const before = answered(await tool("registry_get").run(dispatch, {}));
+    const shipped = (before.data as IpcResponse<"registry:get">).roles.flatMap((role) => role.actions ?? []);
+    expect(shipped.find((action) => action.action === "review")?.learningReview).toBe(false);
+    expect(shipped.find((action) => action.action === "implement")?.learningReview).toBeUndefined();
+    expect(before.text).toMatch(/reviewer \/ review [^\n]*\n(?: {2}- [^\n]*\n)* {2}- learning review: off/);
+
+    const on = answered(await tool("role_action_save").run(dispatch, { role: "reviewer", action: "review", learningReview: true }));
+    expect(on.refused).toBe(false);
+    expect(on.text).toBe('Saved the reviewer role\'s "review" learning review setting; nothing else about the action changed. Each run of it is followed by a learning review.');
+    expect(getActionLearningReview(handle.db, "reviewer", "review")).toBe(true);
+    // Nothing was defined: the pack's review is the reviewer's still.
+    expect(getActionDefinition(handle.db, "reviewer", "review")).toBeUndefined();
+    expect(listActionDefinitions(handle.db)).toEqual([]);
+    const after = answered(await tool("registry_get").run(dispatch, {}));
+    expect(after.text).not.toContain("learning review: off");
+
+    // The full form is refused for that pair, as it always was.
+    const redefined = answered(await tool("role_action_save").run(dispatch, { role: "reviewer", action: "review", results: [{ key: "ok" }], learningReview: false }));
+    expect(redefined.refused).toBe(true);
+    expect(getActionLearningReview(handle.db, "reviewer", "review")).toBe(true);
+  });
+
+  it("changes the learning review of an action EO runs for itself, and refuses a setting on a pair nothing makes an action (EO-911)", async () => {
+    const off = answered(await tool("role_action_save").run(dispatch, { role: "system", action: "assist", learningReview: false }));
+    expect(off.refused).toBe(false);
+    expect(off.text).toContain("Its runs get no learning review.");
+    expect(getActionLearningReview(handle.db, "system", "assist")).toBe(false);
+    const read = answered(await tool("registry_get").run(dispatch, {}));
+    expect(read.text).toContain("- system / assist: learning review off");
+
+    const nothing = answered(await tool("role_action_save").run(dispatch, { role: "qa", action: "nothing_here", learningReview: false }));
+    expect(nothing.refused).toBe(true);
+    expect(nothing.text).toContain('The qa role has no "nothing_here" action');
+    const unsaid = answered(await tool("role_action_save").run(dispatch, { role: "reviewer", action: "review" }));
+    expect(unsaid.refused).toBe(true);
+    const more = answered(await tool("role_action_save").run(dispatch, { role: "reviewer", action: "review", description: "Mine now.", learningReview: true }));
+    expect(more.refused).toBe(true);
+    expect(getActionLearningReview(handle.db, "qa", "nothing_here")).toBeUndefined();
+    expect(getActionLearningReview(handle.db, "reviewer", "review")).toBeUndefined();
+  });
+
+  it("forgets a definition's setting with the definition (EO-911)", async () => {
+    answered(await tool("role_action_save").run(dispatch, { ...ALIGNMENT, learningReview: false }));
+    answered(await tool("role_action_delete").run(dispatch, { role: "qa", action: "alignment" }));
+    expect(getActionLearningReview(handle.db, "qa", "alignment")).toBeUndefined();
   });
 
   it.each([
@@ -530,10 +575,11 @@ describe("both backends' system agent", () => {
     for (const name of ["registry_get", "role_action_save", "role_action_delete"]) expect(served, name).toContain(name);
   });
 
-  it("advertises role_action_save's arguments as a schema, results and fields included", () => {
+  it("advertises role_action_save's arguments as a schema, results, fields and the learning review included", () => {
     const schema = tool("role_action_save").inputSchema as { properties?: Record<string, unknown>; required?: string[] };
 
-    expect(Object.keys(schema.properties ?? {})).toEqual(expect.arrayContaining(["role", "action", "description", "results", "fields"]));
-    expect(schema.required).toEqual(expect.arrayContaining(["role", "action", "results"]));
+    expect(Object.keys(schema.properties ?? {})).toEqual(expect.arrayContaining(["role", "action", "description", "results", "fields", "learningReview"]));
+    // `results` may be left out to change the learning review alone (EO-911); the save says when it is missing.
+    expect(schema.required).toEqual(expect.arrayContaining(["role", "action"]));
   });
 });

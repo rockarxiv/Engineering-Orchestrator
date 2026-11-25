@@ -3200,12 +3200,36 @@ export const actionDefinitions = sqliteTable(
     results: text("results", { mode: "json" }).notNull().default([]),
     /** A JSON Schema object for the answer's extra properties. */
     fields: text("fields", { mode: "json" }).notNull().default({}),
-    /** Whether a run of it is followed by a learning review (EO-911, migration 0184). On unless a person turned it off. */
-    learningReview: integer("learning_review", { mode: "boolean" }).notNull().default(true),
     createdAt: integer("created_at").notNull(),
     updatedAt: integer("updated_at").notNull(),
   },
   (table) => [uniqueIndex("idx_action_definitions_role_action").on(table.role, table.action)],
+);
+
+/**
+ * What a person set on a role's action (EO-911, migration 0184): whether
+ * a run of it is followed by a learning review.
+ *
+ * Its own table rather than a column on `action_definitions`, because
+ * the pairs it is set on are mostly not definitions: a pack's own action
+ * (the reviewer's `review`, which the pack ships with it off) and one EO
+ * runs for itself (`assist`) have no row there and may not have one, and
+ * a setting changes nothing about what the action answers in. Keyed by
+ * role and action as a definition is. A pair with no row is as its pack
+ * ships it, and on where nothing ships it (`actionLearningReviewed`).
+ *
+ * Written only through `setActionLearningReview`.
+ */
+export const actionSettings = sqliteTable(
+  "action_settings",
+  {
+    id: text("id").primaryKey(), // uuidv7
+    role: text("role").notNull(),
+    action: text("action").notNull(),
+    learningReview: integer("learning_review", { mode: "boolean" }).notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (table) => [uniqueIndex("idx_action_settings_role_action").on(table.role, table.action)],
 );
 
 /**

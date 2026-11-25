@@ -34,32 +34,39 @@ const QUALITY: ActionUse = { pipelineId: "p1", pipelineName: "Quality", stepId: 
 function mockIpc(options: Options = {}): Call[] {
   const calls: Call[] = [];
   const defined = new Map(Object.entries(options.defined ?? {}).map(([role, actions]) => [role, [...actions]]));
+  // A person's learning review settings (EO-911), by `role action`: what a save that says one writes, and `registry:get` then sends.
+  const settings = new Map<string, boolean>();
   window.eo.ipc.invoke = vi.fn(async (channel: string, payload: unknown) => {
     calls.push({ channel, payload });
     switch (channel) {
       case "registry:get":
         return {
           ok: true,
-          data: { ...toRegistryView(developerRegistry()), roleActions: [...defined].map(([role, actions]) => ({ role, actions })) } satisfies RegistryView,
+          data: {
+            ...toRegistryView(developerRegistry()),
+            roleActions: [...defined].map(([role, actions]) => ({ role, actions })),
+            ...(settings.size === 0
+              ? {}
+              : {
+                  actionSettings: [...settings].map(([pair, learningReview]) => {
+                    const [role = "", action = ""] = pair.split(" ");
+                    return { role, action, learningReview };
+                  }),
+                }),
+          } satisfies RegistryView,
         };
       case "roleActions:save": {
         if (options.refuse) return { ok: true, data: { saved: false, definition: null, problems: options.refuse } };
-        const draft = payload as { role: string; action: string; description: string; results: ActionView["results"]; fields: Record<string, unknown>; learningReview?: boolean };
+        const draft = payload as { role: string; action: string; description: string; results?: ActionView["results"]; fields: Record<string, unknown>; learningReview?: boolean };
+        if (draft.learningReview !== undefined) settings.set(`${draft.role} ${draft.action}`, draft.learningReview);
+        const learningReview = settings.get(`${draft.role} ${draft.action}`) ?? true;
+        // No results: the setting alone, and nothing defined (EO-911).
+        if (draft.results === undefined) return { ok: true, data: { saved: true, definition: null, problems: [], learningReview } };
         const previous = defined.get(draft.role) ?? [];
         const kept = previous.find((entry) => entry.action === draft.action);
-        // As the registry sends it: absent is on (EO-911).
-        const learningReview = draft.learningReview ?? kept?.learningReview !== false;
-        const saved: ActionView = {
-          action: draft.action,
-          description: draft.description,
-          results: draft.results,
-          fields: draft.fields,
-          packShipped: false,
-          usedBy: kept?.usedBy ?? [],
-          ...(learningReview ? {} : { learningReview: false }),
-        };
+        const saved: ActionView = { action: draft.action, description: draft.description, results: draft.results, fields: draft.fields, packShipped: false, usedBy: kept?.usedBy ?? [] };
         defined.set(draft.role, [...previous.filter((entry) => entry.action !== draft.action), saved]);
-        return { ok: true, data: { saved: true, definition: { id: "d1", ...draft, learningReview, createdAt: 1, updatedAt: 1 }, problems: [] } };
+        return { ok: true, data: { saved: true, definition: { id: "d1", ...draft, results: draft.results, createdAt: 1, updatedAt: 1 }, problems: [], learningReview } };
       }
       case "roleActions:delete": {
         const { role, action } = payload as { role: string; action: string };
@@ -189,15 +196,44 @@ describe("the list", () => {
     expect(within(uses).getByText('"Check" (Quality)')).toBeInTheDocument();
   });
 
-  it("says the shipped review's runs get no learning review, and the shipped implement's do (EO-911)", async () => {
-    renderSections({}, "reviewer", "implementer");
+  it("shows the shipped review's learning review off and the shipped implement's on, and changes either alone (EO-911)", async () => {
+    const calls = renderSections({}, "reviewer", "implementer");
     const review = await row("review", screen.getByTestId("agent-0"));
     fireEvent.click(within(review).getByRole("button", { name: "View review" }));
-    expect(within(review).getByText(/Its runs get no learning review/)).toBeInTheDocument();
+    const reviewSetting = within(review).getByLabelText("Learning review after each run of review");
+    expect(reviewSetting).not.toBeChecked();
+    expect(within(review).getByText("The pack ships it with the learning review off.")).toBeInTheDocument();
+
+    fireEvent.click(reviewSetting);
+    await waitFor(() => expect(saves(calls)).toEqual([{ role: "reviewer", action: "review", learningReview: true }]));
+    await waitFor(() => expect(within(review).getByLabelText("Learning review after each run of review")).toBeChecked());
 
     const implement = await row("implement", screen.getByTestId("agent-1"));
     fireEvent.click(within(implement).getByRole("button", { name: "View implement" }));
-    expect(within(implement).getByText(/Each run is followed by a learning review/)).toBeInTheDocument();
+    expect(within(implement).getByLabelText("Learning review after each run of implement")).toBeChecked();
+  });
+
+  it("changes the learning review of an action EO runs for itself, such as assist (EO-911)", async () => {
+    const calls = renderSections({}, "system");
+    const own = await screen.findByRole("list", { name: "Actions EO runs for itself" });
+    const assist = within(own).getByRole("listitem", { name: "assist" });
+    const setting = within(assist).getByLabelText("Learning review after each run of assist");
+    expect(setting).toBeChecked();
+
+    fireEvent.click(setting);
+    await waitFor(() => expect(saves(calls)).toEqual([{ role: "system", action: "assist", learningReview: false }]));
+    await waitFor(() => expect(within(assist).getByLabelText("Learning review after each run of assist")).not.toBeChecked());
+    // Another of EO's own is untouched.
+    expect(within(within(own).getByRole("listitem", { name: "respond" })).getByLabelText("Learning review after each run of respond")).toBeChecked();
+  });
+
+  it("offers no setting that would do nothing under a lock (EO-911)", async () => {
+    renderSections({ locked: true }, "reviewer");
+    const review = await row("review");
+    fireEvent.click(within(review).getByRole("button", { name: "View review" }));
+    expect(within(review).getByLabelText("Learning review after each run of review")).toBeDisabled();
+    const own = await screen.findByRole("list", { name: "Actions EO runs for itself" });
+    expect(within(own).getByLabelText("Learning review after each run of assist")).toBeDisabled();
   });
 
   it("says so where a role has no actions at all", async () => {

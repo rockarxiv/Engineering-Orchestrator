@@ -1,4 +1,4 @@
-import { outputSchemaFor, stepAgentKind, type ActionRouteUse, type ActionUse, type IpcPayload, type IpcResponse, type PipelineStep, type RegistryView, type StepRoute, type Uuid } from "@eo/core";
+import { ACTION_KEY_PATTERN, actionFactsFor, actionLearningReviewed, isUndispatchedAction, outputSchemaFor, stepAgentKind, type ActionRouteUse, type ActionUse, type IpcPayload, type IpcResponse, type PipelineStep, type RegistryView, type StepRoute, type Uuid } from "@eo/core";
 import type { Db } from "../db/client.js";
 import {
   deleteActionDefinition,
@@ -9,6 +9,7 @@ import {
   listStepsForPipeline,
   olderVersionsInUse,
   saveActionDefinition,
+  setActionLearningReview,
 } from "../db/repos/index.js";
 import { registryForProject } from "../registry.js";
 
@@ -204,9 +205,47 @@ export function withActionUses(db: Db, view: RegistryView): RegistryView {
  * what the agent screen's and an import's do.
  */
 export function saveRoleActionCommand(db: Db, payload: IpcPayload<"roleActions:save">): IpcResponse<"roleActions:save"> {
-  const saved = saveActionDefinition(db, payload);
+  const { results } = payload;
+  if (results === undefined) return saveLearningReviewSetting(db, payload);
+  const saved = saveActionDefinition(db, { ...payload, results });
   if (!saved.ok) return { saved: false, definition: null, problems: saved.problems };
-  return { saved: true, definition: saved.definition, problems: [] };
+  return { saved: true, definition: saved.definition, problems: [], learningReview: learningReviewInForce(db, saved.definition.role, saved.definition.action) };
+}
+
+/** Whether `role`'s runs of `action` are reviewed, as a run's would be asked (EO-911). */
+function learningReviewInForce(db: Db, role: string, action: string): boolean {
+  return actionLearningReviewed(registryForProject(db, null), role, action);
+}
+
+/**
+ * A save with no `results` (EO-911): the pair's learning review setting,
+ * and nothing else. The one change a pack's own action or one EO runs for
+ * itself takes, so it writes no definition and touches none — what the
+ * action answers in, and what EO does with the answer, stay the pack's or
+ * the role's own.
+ *
+ * Refused for a pair nothing makes an action of the role — no definition
+ * of its own, no pack's action of that name, not one EO runs — since a
+ * setting there would be a typo kept as a row; and for a payload that
+ * says something besides the setting, which a save of a definition is
+ * for.
+ */
+function saveLearningReviewSetting(db: Db, payload: IpcPayload<"roleActions:save">): IpcResponse<"roleActions:save"> {
+  const role = payload.role.trim();
+  const problems: string[] = [];
+  if (role === "") problems.push("A setting needs the role it is set for.");
+  if (!ACTION_KEY_PATTERN.test(payload.action)) problems.push(`The action "${payload.action}" must be lowercase letters, digits and underscores only.`);
+  if (payload.learningReview === undefined) problems.push("Send `results` to save a definition, or `learningReview` alone to change whether the action's runs get a learning review.");
+  if ((payload.description ?? "") !== "" || Object.keys(payload.fields ?? {}).length > 0) {
+    problems.push("A save without `results` changes `learningReview` alone: send the whole definition, results and all, to change its description or fields.");
+  }
+  if (problems.length === 0 && actionFactsFor(registryForProject(db, null), role, payload.action) === undefined && !isUndispatchedAction(payload.action)) {
+    problems.push(`The ${role} role has no "${payload.action}" action: nothing defines it, and no pack ships one of that name. Define it first, with its results.`);
+  }
+  if (problems.length > 0 || payload.learningReview === undefined) return { saved: false, definition: null, problems };
+
+  setActionLearningReview(db, role, payload.action, payload.learningReview);
+  return { saved: true, definition: getActionDefinition(db, role, payload.action) ?? null, problems: [], learningReview: learningReviewInForce(db, role, payload.action) };
 }
 
 /**

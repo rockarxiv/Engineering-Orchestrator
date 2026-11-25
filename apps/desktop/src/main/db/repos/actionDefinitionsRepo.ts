@@ -3,6 +3,7 @@ import { ActionResultSchema, readActionDefinitionDraft, uuidv7, type ActionDefin
 import { z } from "zod";
 import type { Db } from "../client.js";
 import { actionDefinitions } from "../schema.js";
+import { clearActionSetting, setActionLearningReview } from "./actionSettingsRepo.js";
 import { installedRoleShips } from "../../registry.js";
 
 /**
@@ -41,7 +42,6 @@ function toDefinition(row: typeof actionDefinitions.$inferSelect): ActionDefinit
     description: row.description,
     results: toResults(row.results),
     fields: toFields(row.fields),
-    learningReview: row.learningReview,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -94,15 +94,18 @@ export function saveActionDefinition(db: Db, draft: ActionDefinitionDraft, now: 
   const read = readActionDefinitionDraft(draft, { shipsAction: installedRoleShips });
   if (!read.ok) return { ok: false, problems: read.problems };
 
-  const existing = getActionDefinition(db, read.role, read.action);
-  // A draft that says nothing about the learning review leaves what is
-  // saved (EO-911): an import or a published draft is not a person
-  // turning it back on.
-  const learningReview = read.learningReview ?? existing?.learningReview ?? true;
-  const values = { description: read.description, results: read.results, fields: read.fields, learningReview, updatedAt: now };
+  const values = { description: read.description, results: read.results, fields: read.fields, updatedAt: now };
+  // The role's setting on the pair, where the draft says it (EO-911). A
+  // draft that says nothing leaves what is set: a published draft is not
+  // a person turning it back on.
+  const setLearningReview = () => {
+    if (read.learningReview !== null) setActionLearningReview(db, read.role, read.action, read.learningReview, now);
+  };
 
+  const existing = getActionDefinition(db, read.role, read.action);
   if (existing) {
     db.update(actionDefinitions).set(values).where(eq(actionDefinitions.id, existing.id)).run();
+    setLearningReview();
     return { ok: true, definition: { ...existing, ...values } };
   }
 
@@ -111,6 +114,7 @@ export function saveActionDefinition(db: Db, draft: ActionDefinitionDraft, now: 
     .values({ id: uuidv7(), role: read.role, action: read.action, createdAt: now, ...values })
     .returning()
     .get();
+  setLearningReview();
   return { ok: true, definition: toDefinition(row) };
 }
 
@@ -125,6 +129,9 @@ export function saveActionDefinition(db: Db, draft: ActionDefinitionDraft, now: 
 export function deleteActionDefinition(db: Db, role: string, action: string): boolean {
   const existing = getActionDefinition(db, role, action);
   if (existing === undefined) return false;
+  // Its learning review setting goes with it (EO-911): a definition made
+  // again later is a new one, and starts as nothing was set.
   db.delete(actionDefinitions).where(eq(actionDefinitions.id, existing.id)).run();
+  clearActionSetting(db, role, action);
   return true;
 }

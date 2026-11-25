@@ -112,16 +112,6 @@ export const ActionDefinitionSchema = z.object({
    * `{}` for an action that answers with `result` and `summary` alone.
    */
   fields: z.record(z.string(), z.unknown()),
-  /**
-   * Whether a run of this action is followed by a learning review
-   * (EO-911): the fork EO opens after a run to write memory and skills
-   * (EO-717, EO-718). On unless a person turned it off, because most of
-   * what an action costs to review is worth it only where its runs teach
-   * something — a person who has watched an action's reviews write
-   * nothing is the one who can say so. Defaulted for a definition sent
-   * before there was a choice.
-   */
-  learningReview: z.boolean().default(true),
   createdAt: z.number(),
   updatedAt: z.number(),
 });
@@ -140,12 +130,26 @@ export const ActionDefinitionDraftSchema = z.object({
   results: z.array(z.object({ key: z.string(), label: z.string().default(""), meaning: z.string().default("") })),
   fields: z.record(z.string(), z.unknown()).default({}),
   /**
-   * Whether its runs get a learning review (EO-911). **Absent leaves what
-   * is saved** — on, for a definition that is new — rather than turning
-   * it back on: an import, a published draft and an older caller say
-   * nothing about it, and none of them is a person changing it.
+   * Whether its runs get a learning review (EO-911): the role's setting
+   * on the pair (`action_settings`), written beside the definition.
+   * **Absent leaves what is set** — on, where nothing is — rather than
+   * turning it back on: a published draft and an older caller say
+   * nothing about it, and neither is a person changing it.
    */
   learningReview: z.boolean().optional(),
+});
+
+/**
+ * What `roleActions:save` is handed (EO-911): a draft, or — with
+ * `results` left out — a change to the pair's learning review setting
+ * alone. The second is how the setting is changed on an action the role
+ * cannot define: one a pack ships for it, such as the reviewer's
+ * `review`, or one EO runs for itself, such as `assist`. It writes the
+ * setting and nothing else, so neither the action's shape nor what EO
+ * does with its answer can be changed through it.
+ */
+export const RoleActionSaveSchema = ActionDefinitionDraftSchema.extend({
+  results: ActionDefinitionDraftSchema.shape.results.optional(),
 });
 
 export type ActionDefinitionDraft = z.input<typeof ActionDefinitionDraftSchema>;

@@ -660,6 +660,7 @@ export {
   saveActionDefinition,
   type SaveActionDefinitionResult,
 } from "./actionDefinitionsRepo.js";
+export { clearActionSetting, getActionLearningReview, listActionSettings, setActionLearningReview, type ActionSettingRow } from "./actionSettingsRepo.js";
 export {
   deleteTrialPipelineRows,
   getTrialPipeline,
