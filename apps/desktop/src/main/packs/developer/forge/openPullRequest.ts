@@ -75,6 +75,12 @@ export interface OpenPullRequestInput {
    * is adopted rather than created is left as it is.
    */
   reviewers?: readonly string[];
+  /**
+   * Told the commit the push published, the moment it goes through
+   * (EO-910) — before anything else here can fail, since a pull request
+   * the forge then refuses to create does not unpush the branch.
+   */
+  onPushed?: (head: string) => void;
 }
 
 /** What came of asking for reviewers, on a pull request this created. */
@@ -186,6 +192,7 @@ export async function openPullRequest(input: OpenPullRequestInput): Promise<Open
     const classified = classifyForgeError(pushed.error);
     return { ...fail(classified.message, classified.final), diverged: classified.diverged };
   }
+  input.onPushed?.(pushed.head);
 
   // 5. Is one already open? Covers the crash the database cannot see.
   const existing = await run(cli, commands.find(branch), repoPath, input.signal ? { signal: input.signal } : {});

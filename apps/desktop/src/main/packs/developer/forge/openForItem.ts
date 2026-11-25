@@ -25,6 +25,7 @@ import {
   NON_INTERACTIVE_GIT_ENV,
   pushBranch,
   rebaseOntoBase,
+  remoteHead,
   statusPorcelain,
 } from "../workspace/git.js";
 import { resolveStackTargetWithAnswer } from "../workspace/stackAnswer.js";
@@ -354,6 +355,7 @@ async function openNew(
   options: OpenForItemOptions,
   ended?: OpenTarget,
   adopted = false,
+  forced = false,
 ): Promise<Attempt> {
   const { signal, onProgress } = options;
 
@@ -419,6 +421,7 @@ async function openNew(
     ...(signal ? { signal } : {}),
     ...(ended ? { onlyAdoptOpen: true } : {}),
     reviewers: reviewers.value,
+    onPushed: (head) => recordPushed(db, item, head),
   });
 
   if (!result.ok) {
@@ -427,7 +430,15 @@ async function openNew(
     // not equal. Here the cost of being wrong is smaller than it was in
     // the outbox: a retry is seconds away rather than half an hour, and
     // whichever way it ends the step reports it.
-    if (result.diverged && !gitStateOf(item).namedBranch) return diverged(db, item, workspace.config.forgeRemote, branch, target.baseRef);
+    if (result.diverged && !gitStateOf(item).namedBranch) {
+      // Once per attempt, like the adoption below: the pass after a
+      // forced push finds the remote where EO just put it, and goes on to
+      // look for and create the pull request exactly as after any push.
+      if (!forced && (await replaceOwnPush(db, workspace, item, branch, options))) {
+        return openNew(db, workspace, item, branch, run, options, ended, adopted, true);
+      }
+      return diverged(db, item, workspace.config.forgeRemote, branch, target.baseRef);
+    }
     // Once per attempt: a remote that moves again in the seconds between
     // is answered as it always was, rather than chased.
     if (result.diverged && !adopted && (await adoptRemoteHead(db, workspace, item, branch, options))) {
@@ -638,12 +649,14 @@ async function pushAlreadyOpen(
   );
   const pushed = await pushBranch(repoPath, remote, branch, { ...(signal ? { signal } : {}), ...(restacked ? { forceWithLease: true } : {}) });
   if (pushed.ok) {
+    recordPushed(db, item, pushed.head);
     if (restacked) updateItem(db, item.id, { git: { restacked: false } });
     return alreadyOpen;
   }
 
   const classified = classifyForgeError(pushed.error);
   if (classified.diverged && !gitStateOf(item).namedBranch) {
+    if (await replaceOwnPush(db, workspace, item, branch, options)) return alreadyOpen;
     const target = await resolveSendTarget(db, workspace, item, run, signal);
     if (target.kind === "escalate") {
       return { kind: "failed", reason: target.reason, ...(target.options ? { options: target.options } : {}) };
@@ -731,6 +744,73 @@ async function adoptRemoteHead(db: Db, workspace: GitWorkspace, item: Item, bran
     body: `\`${branch}\` moved on \`${remote}\` since EO checked it out, from \`${attachedAt}\` to \`${theirs.stdout}\`, and nothing had been committed on it locally since. So EO moved the local branch to \`${theirs.stdout}\` and carried on; only commits after it count as this ticket's work.`,
   });
   onProgress?.(`"${branch}" moved on ${remote} from ${attachedAt.slice(0, 12)} to ${theirs.stdout.slice(0, 12)} with nothing of EO's on it, so EO took the remote's.`);
+  return true;
+}
+
+/** The commit EO just published for `item`, kept as the item's own record of it (EO-910). */
+function recordPushed(db: Db, item: Item, head: string): void {
+  updateItem(db, item.id, { git: { pushedHead: head } });
+}
+
+/**
+ * Replaces EO's own last push of a branch EO cut, after the push was
+ * rejected as diverged, and says whether it did (EO-910).
+ *
+ * An implementer that rebases its branch onto the base leaves the remote
+ * holding the commits EO pushed before the rebase, and nothing else. That
+ * is no reason to send the item back for a run whose only job is the
+ * push. So when the remote's head is exactly the head EO last pushed for
+ * this item, EO pushes over it with `--force-with-lease=<branch>:<that
+ * head>`: the lease is that commit, so a push by anybody in between makes
+ * git refuse rather than lose it.
+ *
+ * Anything else is a no, and the caller refuses as it always has: no
+ * recorded head, a remote that has moved to any other commit — a
+ * person's push above all — or a remote that cannot be asked. Never
+ * reached for a branch a person named, which EO never force-pushes.
+ */
+async function replaceOwnPush(db: Db, workspace: GitWorkspace, item: Item, branch: string, options: OpenForItemOptions): Promise<boolean> {
+  const { signal, onProgress } = options;
+  const { repoPath, forgeRemote: remote } = workspace.config;
+  // Read fresh: the attempt's item predates the push this run may have
+  // recorded a moment ago.
+  const { pushedHead } = gitStateOf(getItem(db, item.id) ?? item);
+  if (pushedHead === null) {
+    onProgress?.(`"${branch}" has diverged on ${remote}, and EO has no record of pushing it before, so it will not force-push.`);
+    return false;
+  }
+
+  const network = signal ? { signal } : {};
+  const theirs = await remoteHead(repoPath, remote, branch, network);
+  if (!theirs.ok) {
+    onProgress?.(`Could not ask ${remote} where "${branch}" stands, so EO will not force-push: ${theirs.error}`);
+    return false;
+  }
+  if (theirs.head !== pushedHead) {
+    onProgress?.(
+      `"${branch}" on ${remote} is at ${theirs.head?.slice(0, 12) ?? "nothing"}, not ${pushedHead.slice(0, 12)} where EO last pushed it, so somebody else has pushed there and EO will not force-push.`,
+    );
+    return false;
+  }
+
+  onProgress?.(`"${branch}" on ${remote} is still exactly where EO last pushed it, ${pushedHead.slice(0, 12)}, so pushing over it with --force-with-lease.`);
+  const pushed = await pushBranch(repoPath, remote, branch, { ...network, forceWithLease: { expect: pushedHead } });
+  if (!pushed.ok) {
+    onProgress?.(`The push with --force-with-lease was refused, so nothing was overwritten: ${pushed.error}`);
+    return false;
+  }
+
+  recordPushed(db, item, pushed.head);
+  // The rewrite a restack was waiting to force is published as well.
+  if (gitStateOf(getItem(db, item.id) ?? item).restacked) updateItem(db, item.id, { git: { restacked: false } });
+  postComment(db, {
+    itemId: item.id,
+    author: { type: "engine" },
+    kind: "note",
+    body:
+      `\`${branch}\` had been rewritten since EO last pushed it, and \`${remote}\` still held exactly what EO had pushed, \`${pushedHead}\`. ` +
+      `So EO replaced it with \`${pushed.head}\`, pushing with \`--force-with-lease=${branch}:${pushedHead}\`: anything anybody else had pushed there would have been refused rather than overwritten.`,
+  });
   return true;
 }
 

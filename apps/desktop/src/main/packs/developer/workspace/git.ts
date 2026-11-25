@@ -173,23 +173,61 @@ export async function listTree(repoPath: string, ref: string, path: string): Pro
  * did not write. Re-pushing an unchanged branch is a no-op that exits 0,
  * which is what makes a retry safe.
  *
- * `forceWithLease` is the one exception, and it is EO's own rewrite it
- * replaces (EO-780): a restack carried the branch onto its dependency's
- * new tip, so the remote holds the history from before, and nothing else.
- * The lease is the remote-tracking ref — the remote as EO last saw it —
- * so a commit somebody else pushed since is refused rather than lost.
+ * `forceWithLease` is the one exception, and it is always EO's own
+ * history it replaces. `true` is a restack's (EO-780): the branch was
+ * carried onto its dependency's new tip, so the remote holds the history
+ * from before, and the lease is the remote-tracking ref — the remote as
+ * EO last saw it. `{ expect }` is the head EO itself last pushed for the
+ * item (EO-910), so the lease is that exact commit: anything anybody else
+ * pushed since is refused rather than lost.
+ *
+ * What went through is reported as `head`: the local branch's commit,
+ * read just before the push. Read before rather than after so that a
+ * branch moved in between is recorded as the older commit, which only
+ * ever makes EO refuse a force-push it could have made — never make one
+ * it should not.
  */
 export async function pushBranch(
   repoPath: string,
   remote: string,
   branch: string,
-  options: NetworkGitOptions & { forceWithLease?: boolean } = {},
-): Promise<GitOutcome> {
-  return git(["push", ...(options.forceWithLease ? ["--force-with-lease"] : []), "--set-upstream", remote, branch], repoPath, {
+  options: NetworkGitOptions & { forceWithLease?: boolean | { expect: string } } = {},
+): Promise<PushOutcome> {
+  const head = await git(["rev-parse", "--verify", `refs/heads/${branch}^{commit}`], repoPath);
+  if (!head.ok) return head;
+  const { forceWithLease } = options;
+  const lease = !forceWithLease ? [] : forceWithLease === true ? ["--force-with-lease"] : [`--force-with-lease=${branch}:${forceWithLease.expect}`];
+  const pushed = await git(["push", ...lease, "--set-upstream", remote, branch], repoPath, {
     env: NON_INTERACTIVE_GIT_ENV,
     timeoutMs: options.timeoutMs ?? NETWORK_TIMEOUT_MS,
     ...(options.signal ? { signal: options.signal } : {}),
   });
+  return pushed.ok ? { ...pushed, head: head.stdout } : pushed;
+}
+
+/** A push that went through says which commit it published. */
+export type PushOutcome = { ok: true; stdout: string; head: string } | { ok: false; error: string };
+
+/**
+ * Where `branch` stands on `remote` right now, asked of the remote itself
+ * rather than read off a tracking ref that may be stale (EO-910). `null`
+ * is a remote with no such branch.
+ */
+export async function remoteHead(
+  repoPath: string,
+  remote: string,
+  branch: string,
+  options: NetworkGitOptions = {},
+): Promise<{ ok: true; head: string | null } | { ok: false; error: string }> {
+  const ref = `refs/heads/${branch}`;
+  const listed = await git(["ls-remote", remote, ref], repoPath, {
+    env: NON_INTERACTIVE_GIT_ENV,
+    timeoutMs: options.timeoutMs ?? NETWORK_TIMEOUT_MS,
+    ...(options.signal ? { signal: options.signal } : {}),
+  });
+  if (!listed.ok) return listed;
+  const line = listed.stdout.split("\n").find((entry) => entry.split("\t")[1] === ref);
+  return { ok: true, head: line?.split("\t")[0] ?? null };
 }
 
 /**

@@ -31,7 +31,8 @@
         "reference": null,
         "reviewers": null,
         "stackedOn": null,
-        "restacked": false
+        "restacked": false,
+        "pushedHead": null
       },
       "workspace": {
         "kind": "git-worktree",
@@ -84,7 +85,8 @@
         "reference": null,
         "reviewers": null,
         "stackedOn": null,
-        "restacked": false
+        "restacked": false,
+        "pushedHead": null
       },
       "workspace": {
         "kind": "git-worktree",
@@ -137,7 +139,8 @@
         "reference": null,
         "reviewers": null,
         "stackedOn": null,
-        "restacked": false
+        "restacked": false,
+        "pushedHead": null
       },
       "workspace": {
         "kind": "git-worktree",
@@ -193,7 +196,8 @@
         "reference": null,
         "reviewers": null,
         "stackedOn": null,
-        "restacked": false
+        "restacked": false,
+        "pushedHead": null
       },
       "workspace": {
         "kind": "git-worktree",
@@ -246,7 +250,8 @@
         "reference": null,
         "reviewers": null,
         "stackedOn": null,
-        "restacked": false
+        "restacked": false,
+        "pushedHead": null
       },
       "workspace": {
         "kind": "git-worktree",
@@ -302,7 +307,8 @@
         "reference": null,
         "reviewers": null,
         "stackedOn": null,
-        "restacked": false
+        "restacked": false,
+        "pushedHead": null
       },
       "workspace": {
         "kind": "git-worktree",
@@ -355,7 +361,8 @@
         "reference": null,
         "reviewers": null,
         "stackedOn": null,
-        "restacked": false
+        "restacked": false,
+        "pushedHead": null
       },
       "workspace": {
         "kind": "git-worktree",
@@ -408,7 +415,8 @@
         "reference": null,
         "reviewers": null,
         "stackedOn": null,
-        "restacked": false
+        "restacked": false,
+        "pushedHead": null
       },
       "workspace": {
         "kind": "git-worktree",

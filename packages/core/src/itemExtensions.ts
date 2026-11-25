@@ -250,6 +250,20 @@ export const GitItemStateSchema = z.object({
    * push that follows.
    */
   restacked: z.boolean().default(false),
+  /**
+   * The commit EO last pushed to `branch` for this item (EO-910), null
+   * until EO first pushes it. Written by every push EO makes that goes
+   * through, and by nothing else.
+   *
+   * What lets EO tell its own history on the remote from anybody
+   * else's. When the item's agent rebases a branch EO cut, the remote
+   * still holds what EO pushed before, and the push is rejected as
+   * diverged; if the remote's head is still exactly this commit, nothing
+   * but EO's own push is there to replace, so EO pushes with
+   * `--force-with-lease=<branch>:<this>` — a lease git refuses if anyone
+   * pushed in between. Any other remote head is refused as divergence.
+   */
+  pushedHead: z.string().nullable().default(null),
 });
 
 export type GitItemState = z.infer<typeof GitItemStateSchema>;
@@ -307,7 +321,7 @@ export function readGitState(data: unknown): GitItemState {
  * no row already says.
  */
 export function isDefaultGitState(state: GitItemState): boolean {
-  const { branch, pullRequest, baseBranch, namedBranch, attachedAt, reference, reviewers, stackedOn, restacked } = state;
+  const { branch, pullRequest, baseBranch, namedBranch, attachedAt, reference, reviewers, stackedOn, restacked, pushedHead } = state;
   return (
     branch === null &&
     pullRequest === null &&
@@ -317,7 +331,8 @@ export function isDefaultGitState(state: GitItemState): boolean {
     reference === null &&
     reviewers === null &&
     stackedOn === null &&
-    !restacked
+    !restacked &&
+    pushedHead === null
   );
 }
 

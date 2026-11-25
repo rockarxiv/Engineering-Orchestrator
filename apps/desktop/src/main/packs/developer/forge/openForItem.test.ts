@@ -714,7 +714,9 @@ describe("when it cannot", () => {
     // sends it is the pipeline's business, not this function's.
     const saved = getItem(handle.db, item.id)!;
     expect(saved.stepId).toBe("review");
-    expect(gitStateOf(saved)).toEqual({ branch: "eo/API-4", pullRequest: null, baseBranch: null, namedBranch: false, attachedAt: null, reference: null, reviewers: null, stackedOn: null, restacked: false });
+    // The push went through before the forge was asked, so it is recorded (EO-910).
+    const pushedHead = git(["rev-parse", "eo/API-4"], repoPath).trim();
+    expect(gitStateOf(saved)).toEqual({ branch: "eo/API-4", pullRequest: null, baseBranch: null, namedBranch: false, attachedAt: null, reference: null, reviewers: null, stackedOn: null, restacked: false, pushedHead });
   });
 });
 
@@ -1401,6 +1403,140 @@ describe("before it opens or reuses one (EO-429)", () => {
         expect(remoteTip("feature/limits")).toBe(remote);
         // The refusal is the supervisor's to comment on, as it was.
         expect(notes(item)).toEqual(before);
+      }
+    });
+  });
+
+  /**
+   * The implementer rebased the branch in its worktree after EO had
+   * pushed it (EO-910): the remote holds EO's own earlier push and nothing
+   * else, so EO replaces it rather than sending the item back for a run
+   * whose only job is the push.
+   */
+  describe("a branch rewritten since EO last pushed it (EO-910)", () => {
+    /** What the implementer's rebase leaves: the same work, as a different commit. */
+    function rewriteIn(worktree: string): void {
+      git(["commit", "--amend", "-m", "the work, rebased by the implementer"], worktree);
+    }
+
+    it("records the head of every push it makes, on the first open and with the pull request already open", async () => {
+      const item = story();
+      const worktree = worktreeFor(item);
+
+      await mergeRequestStep(item, recorder([noneYet, created, found]).run);
+      expect(gitStateOf(getItem(handle.db, item.id)!).pushedHead).toBe(localTip());
+
+      commitIn(worktree, "more.ts", "review feedback");
+      await mergeRequestStep(item, onlyFinds(found));
+      expect(remoteTip()).toBe(localTip());
+      expect(gitStateOf(getItem(handle.db, item.id)!).pushedHead).toBe(localTip());
+    });
+
+    it("pushes over its own last push with --force-with-lease when the remote still holds exactly it, answers opened, and names both heads", async () => {
+      const item = story({ git: { branch: "eo/API-4", pullRequest: PULL_REQUEST } });
+      const worktree = worktreeFor(item);
+      await mergeRequestStep(item, onlyFinds(found));
+      const old = remoteTip()!;
+      expect(gitStateOf(getItem(handle.db, item.id)!).pushedHead).toBe(old);
+
+      rewriteIn(worktree);
+      const rewritten = localTip();
+      expect(rewritten).not.toBe(old);
+      const progress: string[] = [];
+
+      const result = await mergeRequestStep(item, onlyFinds(found), (text) => progress.push(text));
+
+      expect(result).toMatchObject({ ok: true, result: "opened", detail: `Already open: ${PULL_REQUEST}` });
+      expect(remoteTip()).toBe(rewritten);
+      expect(gitStateOf(getItem(handle.db, item.id)!).pushedHead).toBe(rewritten);
+      expect(progress.some((line) => line.includes("--force-with-lease"))).toBe(true);
+      const note = notes(item).at(-1)!;
+      expect(note).toContain(old);
+      expect(note).toContain(rewritten);
+      expect(note).toContain(`--force-with-lease=eo/API-4:${old}`);
+      expect(notes(item).some((body) => body.includes("has diverged"))).toBe(false);
+    });
+
+    it("carries on to open the pull request when none is recorded yet", async () => {
+      // EO pushed, then the forge refused to create the pull request: the
+      // push is recorded all the same, because it happened.
+      const item = story();
+      const worktree = worktreeFor(item);
+      const refused: CliResult = { ok: false, stdout: "", error: "HTTP 422: Validation Failed", notFound: false };
+      await mergeRequestStep(item, async () => refused);
+      const old = remoteTip()!;
+      expect(gitStateOf(getItem(handle.db, item.id)!).pullRequest).toBeNull();
+      expect(gitStateOf(getItem(handle.db, item.id)!).pushedHead).toBe(old);
+
+      rewriteIn(worktree);
+      const rewritten = localTip();
+      const { run, calls } = recorder([noneYet, created, found]);
+
+      const result = await mergeRequestStep(item, run);
+
+      expect(result).toMatchObject({ ok: true, result: "opened" });
+      expect(remoteTip()).toBe(rewritten);
+      expect(gitStateOf(getItem(handle.db, item.id)!).pullRequest).toBe(PULL_REQUEST);
+      expect(gitStateOf(getItem(handle.db, item.id)!).pushedHead).toBe(rewritten);
+      expect(calls.filter((args) => args.includes("create"))).toHaveLength(1);
+      expect(notes(item).some((body) => body.includes(`--force-with-lease=eo/API-4:${old}`) && body.includes(rewritten))).toBe(true);
+      expect(notes(item).some((body) => body.includes("has diverged"))).toBe(false);
+    });
+
+    it("refuses exactly as before when the remote's head is a commit somebody else pushed", async () => {
+      const item = story({ git: { branch: "eo/API-4", pullRequest: PULL_REQUEST } });
+      const worktree = worktreeFor(item);
+      await mergeRequestStep(item, onlyFinds(found));
+      const ours = remoteTip()!;
+
+      // A person pushes on top of EO's push from their own clone.
+      const clone = join(scratch, "person");
+      git(["clone", remotePath, clone], scratch);
+      git(["config", "user.email", "person@example.com"], clone);
+      git(["config", "user.name", "A Person"], clone);
+      git(["config", "commit.gpgsign", "false"], clone);
+      git(["checkout", "eo/API-4"], clone);
+      writeFileSync(join(clone, "theirs.ts"), "// a person's commit\n");
+      git(["add", "theirs.ts"], clone);
+      git(["commit", "-m", "a person's commit"], clone);
+      git(["push", "origin", "eo/API-4"], clone);
+      const theirs = remoteTip()!;
+      expect(theirs).not.toBe(ours);
+
+      rewriteIn(worktree);
+      const { run, calls } = recorder([found]);
+
+      const result = await mergeRequestStep(item, run);
+
+      expect(result).toMatchObject({ ok: true, result: "remote_diverged" });
+      expect(remoteTip()).toBe(theirs);
+      expect(calls).toHaveLength(1);
+      expect(gitStateOf(getItem(handle.db, item.id)!).pushedHead).toBe(ours);
+      const note = notes(item).at(-1)!;
+      expect(note).toContain("has diverged");
+      expect(note).toContain("did not force-push");
+      expect(note).toContain("Remote: `origin`");
+      expect(note).toContain("Branch: `eo/API-4`");
+      expect(note).toContain("`origin/main`");
+    });
+
+    it("refuses exactly as before when EO has no record of pushing the branch", async () => {
+      // `diverge` pushes with git directly, so EO recorded nothing.
+      const item = story();
+      const { remote } = diverge();
+      expect(gitStateOf(getItem(handle.db, item.id)!).pushedHead).toBeNull();
+
+      for (const pullRequest of [null, PULL_REQUEST]) {
+        updateItem(handle.db, item.id, { git: { pullRequest } });
+
+        const result = await mergeRequestStep(item, onlyFinds(found));
+
+        expect(result).toMatchObject({ ok: true, result: "remote_diverged" });
+        expect(remoteTip()).toBe(remote);
+        expect(gitStateOf(getItem(handle.db, item.id)!).pushedHead).toBeNull();
+        const note = notes(item).at(-1)!;
+        expect(note).toContain("has diverged");
+        expect(note).toContain("did not force-push");
       }
     });
   });
