@@ -173,40 +173,68 @@ export async function listTree(repoPath: string, ref: string, path: string): Pro
  * did not write. Re-pushing an unchanged branch is a no-op that exits 0,
  * which is what makes a retry safe.
  *
- * `forceWithLease` is the one exception, and it is always EO's own
- * history it replaces. `true` is a restack's (EO-780): the branch was
- * carried onto its dependency's new tip, so the remote holds the history
- * from before, and the lease is the remote-tracking ref — the remote as
- * EO last saw it. `{ expect }` is the head EO itself last pushed for the
- * item (EO-910), so the lease is that exact commit: anything anybody else
- * pushed since is refused rather than lost.
+ * The commit is read first and pushed by name — `<commit>:refs/heads/
+ * <branch>` — so what is reported as `head` is exactly what git sent, and
+ * exactly to that ref, whatever a `remote.<name>.push` would otherwise
+ * map the branch to (EO-910). The branch's upstream is then set as
+ * `--set-upstream` would have.
  *
- * What went through is reported as `head`: the local branch's commit,
- * read just before the push. Read before rather than after so that a
- * branch moved in between is recorded as the older commit, which only
- * ever makes EO refuse a force-push it could have made — never make one
- * it should not.
+ * `updated` is whether the remote's branch actually moved to `head`, read
+ * off `--porcelain`: an up-to-date push changes nothing, and its `head`
+ * may be a commit somebody else put there — so it is not EO's to record
+ * as its own.
+ *
+ * `forceWithLease` is the one exception to never forcing, and it is
+ * always EO's own push it replaces: the head EO itself last pushed for
+ * the item (EO-910), so the lease is that exact commit and anything
+ * anybody else pushed since is refused rather than lost.
  */
 export async function pushBranch(
   repoPath: string,
   remote: string,
   branch: string,
-  options: NetworkGitOptions & { forceWithLease?: boolean | { expect: string } } = {},
+  options: NetworkGitOptions & { forceWithLease?: { expect: string } } = {},
 ): Promise<PushOutcome> {
   const head = await git(["rev-parse", "--verify", `refs/heads/${branch}^{commit}`], repoPath);
   if (!head.ok) return head;
-  const { forceWithLease } = options;
-  const lease = !forceWithLease ? [] : forceWithLease === true ? ["--force-with-lease"] : [`--force-with-lease=${branch}:${forceWithLease.expect}`];
-  const pushed = await git(["push", ...lease, "--set-upstream", remote, branch], repoPath, {
-    env: NON_INTERACTIVE_GIT_ENV,
-    timeoutMs: options.timeoutMs ?? NETWORK_TIMEOUT_MS,
-    ...(options.signal ? { signal: options.signal } : {}),
-  });
-  return pushed.ok ? { ...pushed, head: head.stdout } : pushed;
+  const ref = `refs/heads/${branch}`;
+  const refspec = `${head.stdout}:${ref}`;
+  const lease = options.forceWithLease ? [`--force-with-lease=${branch}:${options.forceWithLease.expect}`] : [];
+  try {
+    const { stdout } = await execFileAsync("git", composeGitArgs(["push", "--porcelain", ...lease, remote, refspec], process.platform), {
+      cwd: repoPath,
+      windowsHide: true,
+      maxBuffer: 32 * 1024 * 1024,
+      env: { ...process.env, ...NON_INTERACTIVE_GIT_ENV },
+      timeout: options.timeoutMs ?? NETWORK_TIMEOUT_MS,
+      ...(options.signal ? { signal: options.signal } : {}),
+    });
+    // Best effort: the push has happened, and a missing upstream costs a
+    // person's `git status` its ahead/behind, nothing of EO's.
+    await git(["config", `branch.${branch}.remote`, remote], repoPath);
+    await git(["config", `branch.${branch}.merge`, ref], repoPath);
+    return { ok: true, stdout: stdout.trim(), head: head.stdout, updated: pushUpdated(stdout, refspec) };
+  } catch (error) {
+    // `--porcelain` prints the `[rejected] (fetch first)` line on stdout,
+    // and that line is what tells divergence from any other refusal.
+    const stdout = typeof error === "object" && error !== null ? (error as { stdout?: string }).stdout?.trim() : undefined;
+    const stderr = extractGitError(error);
+    return { ok: false, error: stdout ? `${stderr}\n${stdout}` : stderr };
+  }
 }
 
-/** A push that went through says which commit it published. */
-export type PushOutcome = { ok: true; stdout: string; head: string } | { ok: false; error: string };
+/**
+ * Did the porcelain push move the remote ref? Its line for `refspec` is
+ * flagged ` ` (fast-forward), `+` (forced) or `*` (new) when it did, and
+ * `=` when it was already there.
+ */
+export function pushUpdated(porcelain: string, refspec: string): boolean {
+  const line = porcelain.split("\n").find((entry) => entry.split("\t")[1] === refspec);
+  return line !== undefined && [" ", "+", "*"].includes(line[0] ?? "");
+}
+
+/** A push that went through says which commit it sent, and whether that moved the remote's branch. */
+export type PushOutcome = { ok: true; stdout: string; head: string; updated: boolean } | { ok: false; error: string };
 
 /**
  * Where `branch` stands on `remote` right now, asked of the remote itself

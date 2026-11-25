@@ -355,7 +355,6 @@ async function openNew(
   options: OpenForItemOptions,
   ended?: OpenTarget,
   adopted = false,
-  forced = false,
 ): Promise<Attempt> {
   const { signal, onProgress } = options;
 
@@ -422,6 +421,10 @@ async function openNew(
     ...(ended ? { onlyAdoptOpen: true } : {}),
     reviewers: reviewers.value,
     onPushed: (head) => recordPushed(db, item, head),
+    // At the publish step itself, so a replaced push carries on to look
+    // for and create the pull request exactly as after any push, with no
+    // second push (EO-910). Never for a branch a person named.
+    ...(gitStateOf(item).namedBranch ? {} : { onDiverged: () => replaceOwnPush(db, workspace, item, branch, options) }),
   });
 
   if (!result.ok) {
@@ -430,15 +433,7 @@ async function openNew(
     // not equal. Here the cost of being wrong is smaller than it was in
     // the outbox: a retry is seconds away rather than half an hour, and
     // whichever way it ends the step reports it.
-    if (result.diverged && !gitStateOf(item).namedBranch) {
-      // Once per attempt, like the adoption below: the pass after a
-      // forced push finds the remote where EO just put it, and goes on to
-      // look for and create the pull request exactly as after any push.
-      if (!forced && (await replaceOwnPush(db, workspace, item, branch, options))) {
-        return openNew(db, workspace, item, branch, run, options, ended, adopted, true);
-      }
-      return diverged(db, item, workspace.config.forgeRemote, branch, target.baseRef);
-    }
+    if (result.diverged && !gitStateOf(item).namedBranch) return diverged(db, item, workspace.config.forgeRemote, branch, target.baseRef);
     // Once per attempt: a remote that moves again in the seconds between
     // is answered as it always was, rather than chased.
     if (result.diverged && !adopted && (await adoptRemoteHead(db, workspace, item, branch, options))) {
@@ -636,21 +631,15 @@ async function pushAlreadyOpen(
     return alreadyOpen;
   }
 
-  // A restack since the last push rewrote the branch (EO-780): the remote
-  // holds the history it replaced, so this push replaces it in turn —
-  // with a lease, so anything pushed there since EO last looked is refused
-  // rather than lost. Read fresh, since the restack is a dispatch's doing
-  // and this item may predate it.
-  const { restacked } = gitStateOf(getItem(db, item.id) ?? item);
-  onProgress?.(
-    restacked
-      ? `The pull request is already open and "${branch}" was restacked since it was last pushed, so pushing it to ${remote} with --force-with-lease.`
-      : `The pull request is already open, so pushing "${branch}" to ${remote}.`,
-  );
-  const pushed = await pushBranch(repoPath, remote, branch, { ...(signal ? { signal } : {}), ...(restacked ? { forceWithLease: true } : {}) });
+  // Never forced first, even after a restack (EO-780) rewrote the branch:
+  // the rejection that follows goes through the same check as any other
+  // rewrite of EO's own push (EO-910), so a person's commit that reached
+  // the remote in between is refused rather than lost.
+  onProgress?.(`The pull request is already open, so pushing "${branch}" to ${remote}.`);
+  const pushed = await pushBranch(repoPath, remote, branch, signal ? { signal } : {});
   if (pushed.ok) {
-    recordPushed(db, item, pushed.head);
-    if (restacked) updateItem(db, item.id, { git: { restacked: false } });
+    if (pushed.updated) recordPushed(db, item, pushed.head);
+    if (gitStateOf(getItem(db, item.id) ?? item).restacked) updateItem(db, item.id, { git: { restacked: false } });
     return alreadyOpen;
   }
 
@@ -799,9 +788,12 @@ async function replaceOwnPush(db: Db, workspace: GitWorkspace, item: Item, branc
     onProgress?.(`The push with --force-with-lease was refused, so nothing was overwritten: ${pushed.error}`);
     return false;
   }
+  // The local branch came back to the commit the remote holds: there was
+  // nothing to replace after all, and nothing is recorded or said.
+  if (!pushed.updated) return true;
 
   recordPushed(db, item, pushed.head);
-  // The rewrite a restack was waiting to force is published as well.
+  // A restack's rewrite, if that is what this was, is published now.
   if (gitStateOf(getItem(db, item.id) ?? item).restacked) updateItem(db, item.id, { git: { restacked: false } });
   postComment(db, {
     itemId: item.id,

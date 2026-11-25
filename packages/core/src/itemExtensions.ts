@@ -243,11 +243,14 @@ export const GitItemStateSchema = z.object({
    */
   stackedOn: z.object({ itemId: z.string(), commit: z.string() }).nullable().default(null),
   /**
-   * A restack rewrote this branch since it was last pushed (EO-780), so
-   * the next push to a pull request already open has to replace the
-   * remote's history: `--force-with-lease`. False — the ordinary state —
-   * for every branch whose history EO has not rewritten. Cleared by the
-   * push that follows.
+   * A restack rewrote this branch since it was last pushed (EO-780).
+   * False — the ordinary state — for every branch whose history EO has
+   * not rewritten. Cleared by the push that follows.
+   *
+   * A record only, no longer a licence to force: the push after a
+   * restack is an ordinary one, and its rejection replaces the remote's
+   * history only through `pushedHead`'s check (EO-910), like any other
+   * rewrite of EO's own push.
    */
   restacked: z.boolean().default(false),
   /**

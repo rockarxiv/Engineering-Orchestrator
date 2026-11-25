@@ -76,11 +76,20 @@ export interface OpenPullRequestInput {
    */
   reviewers?: readonly string[];
   /**
-   * Told the commit the push published, the moment it goes through
-   * (EO-910) — before anything else here can fail, since a pull request
-   * the forge then refuses to create does not unpush the branch.
+   * Told the commit the push published, the moment it moves the remote's
+   * branch (EO-910) — before anything else here can fail, since a pull
+   * request the forge then refuses to create does not unpush the branch.
+   * Not told of a push that found the branch already there: that commit
+   * may be somebody else's.
    */
   onPushed?: (head: string) => void;
+  /**
+   * Asked when the push is rejected as diverged, before that is reported
+   * (EO-910). True means the caller has published the branch itself — EO
+   * replacing its own last push — and this carries on exactly as after a
+   * push that went through, without pushing again.
+   */
+  onDiverged?: () => Promise<boolean>;
 }
 
 /** What came of asking for reviewers, on a pull request this created. */
@@ -186,13 +195,17 @@ export async function openPullRequest(input: OpenPullRequestInput): Promise<Open
   const cli = CLI_FOR[forge];
   const commands = FORGE_COMMANDS[forge];
 
-  // 4. Publish. Never forced: a diverged remote branch is a human's call.
+  // 4. Publish. Never forced here: a diverged remote branch is a human's
+  //    call, unless the caller can show it holds only EO's own last push.
   const pushed = await pushBranch(repoPath, remote, branch, input.signal ? { signal: input.signal } : {});
   if (!pushed.ok) {
     const classified = classifyForgeError(pushed.error);
-    return { ...fail(classified.message, classified.final), diverged: classified.diverged };
+    if (!(classified.diverged && input.onDiverged && (await input.onDiverged()))) {
+      return { ...fail(classified.message, classified.final), diverged: classified.diverged };
+    }
+  } else if (pushed.updated) {
+    input.onPushed?.(pushed.head);
   }
-  input.onPushed?.(pushed.head);
 
   // 5. Is one already open? Covers the crash the database cannot see.
   const existing = await run(cli, commands.find(branch), repoPath, input.signal ? { signal: input.signal } : {});

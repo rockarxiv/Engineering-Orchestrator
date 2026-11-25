@@ -2,7 +2,20 @@ import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { canonicalPath, commitsAhead, composeGitArgs, currentBranch, fetchBranch, git, globalUserEmail, isAncestor, rebaseOntoBase, statusPorcelain } from "./git.js";
+import {
+  canonicalPath,
+  commitsAhead,
+  composeGitArgs,
+  currentBranch,
+  fetchBranch,
+  git,
+  globalUserEmail,
+  isAncestor,
+  pushBranch,
+  pushUpdated,
+  rebaseOntoBase,
+  statusPorcelain,
+} from "./git.js";
 import { run, initRepo } from "../../../testing/git.js";
 
 // Real repositories in a temp dir, same discipline as worktrees.test.ts:
@@ -201,6 +214,92 @@ describe("a git command that reaches the network", () => {
     // returning promptly can only have been killed.
     expect((await fetching).ok).toBe(false);
     expect(Date.now() - started).toBeLessThan(3_000);
+  });
+});
+
+describe("pushBranch (EO-910)", () => {
+  let barePath: string;
+  const remoteTip = async (branch: string): Promise<string | null> => {
+    const tip = await git(["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], barePath);
+    return tip.ok ? tip.stdout : null;
+  };
+
+  beforeEach(async () => {
+    barePath = join(scratch, "bare.git");
+    await run(["init", "--bare", barePath], scratch);
+    await run(["remote", "add", "bare", barePath], repoPath);
+    await run(["checkout", "-b", "eo/APP-1"], repoPath);
+    await commit(repoPath, "work.ts", "// the work\n");
+  });
+
+  it("says which commit it sent, that it moved the remote's branch, and sets the upstream", async () => {
+    const head = await run(["rev-parse", "eo/APP-1"], repoPath);
+
+    const pushed = await pushBranch(repoPath, "bare", "eo/APP-1");
+
+    expect(pushed).toMatchObject({ ok: true, head, updated: true });
+    expect(await remoteTip("eo/APP-1")).toBe(head);
+    expect(await run(["config", "branch.eo/APP-1.remote"], repoPath)).toBe("bare");
+    expect(await run(["config", "branch.eo/APP-1.merge"], repoPath)).toBe("refs/heads/eo/APP-1");
+  });
+
+  it("says it moved nothing when the remote already held the commit — which may be somebody else's", async () => {
+    await pushBranch(repoPath, "bare", "eo/APP-1");
+
+    const again = await pushBranch(repoPath, "bare", "eo/APP-1");
+
+    expect(again).toMatchObject({ ok: true, updated: false });
+  });
+
+  it("pushes to the branch of the same name whatever remote.<name>.push would map it to", async () => {
+    await run(["config", "remote.bare.push", "refs/heads/eo/APP-1:refs/heads/elsewhere"], repoPath);
+
+    const pushed = await pushBranch(repoPath, "bare", "eo/APP-1");
+
+    expect(pushed.ok).toBe(true);
+    expect(await remoteTip("eo/APP-1")).toBe(pushed.ok ? pushed.head : "");
+    expect(await remoteTip("elsewhere")).toBeNull();
+  });
+
+  it("reports a rejection as diverged, from the line --porcelain prints on stdout", async () => {
+    await pushBranch(repoPath, "bare", "eo/APP-1");
+    await run(["commit", "--amend", "-m", "rewritten"], repoPath);
+
+    const pushed = await pushBranch(repoPath, "bare", "eo/APP-1");
+
+    expect(pushed.ok).toBe(false);
+    expect(pushed.ok ? "" : pushed.error).toMatch(/non-fast-forward|fetch first/);
+  });
+
+  it("forces only over the exact commit it is leased to", async () => {
+    const first = await pushBranch(repoPath, "bare", "eo/APP-1");
+    const old = first.ok ? first.head : "";
+    await run(["commit", "--amend", "-m", "rewritten"], repoPath);
+
+    const wrongLease = await pushBranch(repoPath, "bare", "eo/APP-1", { forceWithLease: { expect: await run(["rev-parse", "main"], repoPath) } });
+    expect(wrongLease.ok).toBe(false);
+    expect(await remoteTip("eo/APP-1")).toBe(old);
+
+    const leased = await pushBranch(repoPath, "bare", "eo/APP-1", { forceWithLease: { expect: old } });
+    expect(leased).toMatchObject({ ok: true, updated: true });
+    expect(await remoteTip("eo/APP-1")).toBe(leased.ok ? leased.head : "");
+  });
+});
+
+describe("pushUpdated", () => {
+  const refspec = "abc:refs/heads/eo/APP-1";
+  it.each([
+    [" ", true],
+    ["+", true],
+    ["*", true],
+    ["=", false],
+    ["!", false],
+  ])("reads the %j flag as moved: %s", (flag, moved) => {
+    expect(pushUpdated(`To ../bare.git\n${flag}\t${refspec}\tsummary\nDone`, refspec)).toBe(moved);
+  });
+
+  it("is false when its refspec has no line", () => {
+    expect(pushUpdated("To ../bare.git\n \tother:refs/heads/other\tsummary\nDone", refspec)).toBe(false);
   });
 });
 
