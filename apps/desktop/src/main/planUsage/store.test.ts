@@ -49,4 +49,78 @@ describe("the plan usage store", () => {
       ["claude", false, 0],
     ]);
   });
+
+  describe("a refusal on a window the backend did not name (EO-920)", () => {
+    const unnamed = (provider: string): QuotaEvent => ({ type: "quota", provider, window: "unknown", status: "rejected" });
+    const windowsOf = (store: ReturnType<typeof createPlanUsageStore>, provider: string) =>
+      store.view().backends.find((backend) => backend.provider === provider)?.windows.map((window) => [window.window, window.status]);
+
+    it("is cleared by the same backend's next reading that is not a refusal, from a run or a read", () => {
+      for (const provider of ["codex", "claude"]) {
+        const store = createPlanUsageStore(() => NOW);
+        store.record(reading({ provider, window: "5_hour", utilization: 100, status: "rejected", resetsAt: (NOW + HOUR) / 1000 }));
+        store.record(unnamed(provider));
+        // Another backend's reading says nothing about this one.
+        store.record(reading({ provider: "other", window: "5_hour", utilization: 8 }));
+        expect(windowsOf(store, provider)).toEqual([
+          ["5_hour", "rejected"],
+          ["unknown", "rejected"],
+        ]);
+
+        store.record(reading({ provider, window: "7_day", utilization: 40 }));
+        expect(windowsOf(store, provider)).toEqual([
+          ["5_hour", "rejected"],
+          ["7_day", "allowed"],
+        ]);
+      }
+
+      const read = createPlanUsageStore(() => NOW);
+      read.record(unnamed("codex"));
+      read.recordRead("codex", { limitsApply: true, readings: [reading({ window: "5_hour", utilization: 8 })] });
+      expect(windowsOf(read, "codex")).toEqual([["5_hour", "allowed"]]);
+    });
+
+    it("is not cleared by another refusal", () => {
+      const store = createPlanUsageStore(() => NOW);
+      store.record(unnamed("codex"));
+      store.record(reading({ provider: "codex", window: "5_hour", utilization: 100, status: "rejected" }));
+      expect(windowsOf(store, "codex")).toEqual([
+        ["unknown", "rejected"],
+        ["5_hour", "rejected"],
+      ]);
+    });
+
+    it("stands while nothing else arrives, and is cleared when the backend's limit hold lifts", () => {
+      const store = createPlanUsageStore(() => NOW);
+      const changed = vi.fn();
+      store.onChange(changed);
+      store.record(reading({ provider: "codex", window: "5_hour", utilization: 30 }));
+      store.record(unnamed("codex"));
+      expect(windowsOf(store, "codex")).toEqual([
+        ["5_hour", "allowed"],
+        ["unknown", "rejected"],
+      ]);
+      changed.mockClear();
+
+      store.limitLifted("claude");
+      expect(changed).not.toHaveBeenCalled();
+      store.limitLifted("codex");
+      expect(windowsOf(store, "codex")).toEqual([["5_hour", "allowed"]]);
+      expect(changed).toHaveBeenCalledWith("codex");
+    });
+  });
+
+  it("says a backend is allowed only when every window it holds is allowed and below 100% now", () => {
+    const store = createPlanUsageStore(() => NOW);
+    expect(store.allowed("codex", NOW)).toBe(false); // nothing held is no evidence
+    store.record(reading({ provider: "codex", window: "5_hour", utilization: 100, status: "rejected", resetsAt: (NOW + HOUR) / 1000 }));
+    store.record(reading({ provider: "codex", window: "7_day", utilization: 40 }));
+    expect(store.allowed("codex", NOW)).toBe(false);
+    // Past its reset the refusal is over, read or no read.
+    expect(store.allowed("codex", NOW + HOUR)).toBe(true);
+    store.record(reading({ provider: "codex", window: "5_hour", utilization: 0 }));
+    expect(store.allowed("codex", NOW)).toBe(true);
+    store.record({ type: "quota", provider: "codex", window: "7_day", utilization: 100, status: "allowed" });
+    expect(store.allowed("codex", NOW)).toBe(false);
+  });
 });
