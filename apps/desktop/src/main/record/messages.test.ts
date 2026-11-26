@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HANDLED_MESSAGE_RETENTION_MS, type IpcPayload, type Job, type Message, type MessageSend, type Uuid } from "@eo/core";
 import { eq } from "drizzle-orm";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AttachmentStorage } from "../attachments/storage.js";
 import type { DbHandle } from "../db/client.js";
 import { issueDevice } from "../db/repos/devicesRepo.js";
@@ -34,6 +34,7 @@ import { pauseForBudget } from "../jobs/budget.js";
 import { catchUpJob } from "../jobs/catchUp.js";
 import { createJob } from "../jobs/jobs.js";
 import { JOB_MESSAGE_SOURCE } from "../jobs/ownerMessage.js";
+import { answerToolCall } from "../mcpHost/server.js";
 import { fakePlatform } from "../testing/platform.js";
 import { createDeviceRecord, type DeviceRecord } from "./deviceRecord.js";
 import { createLocalRecord } from "./localRecord.js";
@@ -231,6 +232,32 @@ describe("a message about a project the organisation's record holds", () => {
     expect(listInbox(annaLaptop.handle.db).messages).toEqual([]);
     // Ben's own copy is his to answer, and still open.
     expect(onTheRecord().find((message) => message.recipientId === benId)?.handledAt).toBeNull();
+  });
+
+  it("is answered and dismissed on the record through EO's MCP tools, through ItemRecord.handleMessage, saying who pressed (EO-918)", async () => {
+    const projectId = await organisationProject();
+    await carl.record.sendMessage(question(projectId, "local"));
+    await carl.record.sendMessage(question(projectId, "local"));
+    await syncAll();
+    const [first, second] = onTheRecord().filter((message) => message.recipientId === annaId) as [Message, Message];
+    const { registerAllHandlers } = await import("../ipc/handlers.js");
+    registerAllHandlers(annaDesk.handle.db, undefined, { platform: fakePlatform(), record: annaDesk.record });
+    const handled = vi.spyOn(annaDesk.record, "handleMessage");
+
+    const answered = await answerToolCall({ name: "message_answer", arguments: { messageId: first.id, answer: "Take theirs" } }, "external", false);
+    const dismissed = await answerToolCall({ name: "message_dismiss", arguments: { messageId: second.id } }, "admin", false, undefined, undefined, "the-assistant");
+
+    expect([answered.isError, dismissed.isError]).toEqual([false, false]);
+    expect(handled.mock.calls.map(([request]) => request)).toEqual([
+      expect.objectContaining({ messageId: first.id, how: "answered", answer: "Take theirs", by: { kind: "mcp_client" } }),
+      expect.objectContaining({ messageId: second.id, how: "dismissed", by: { kind: "assistant", agentId: "the-assistant" } }),
+    ]);
+    expect(getMessage(recordDb.db, first.id)).toMatchObject({ handledHow: "answered", answer: "Take theirs", handledBy: { kind: "mcp_client" } });
+    expect(getMessage(recordDb.db, second.id)).toMatchObject({ handledHow: "dismissed", handledBy: { kind: "assistant", agentId: "the-assistant" } });
+    // And the other desktop hears who it was.
+    await annaLaptop.record.sync();
+    expect(getMessage(annaLaptop.handle.db, first.id)?.handledBy).toEqual({ kind: "mcp_client" });
+    expect(getMessage(annaLaptop.handle.db, second.id)?.handledBy).toEqual({ kind: "assistant", agentId: "the-assistant" });
   });
 
   it("is dismissed on the record from a desktop, through the record", async () => {

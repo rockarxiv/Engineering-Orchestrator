@@ -4,6 +4,7 @@ import { delimiter, join } from "node:path";
 import type { SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import {
   ADMIN_MCP_SERVER_NAME,
+  LOCAL_PERSON_ID,
   actionDefinitionOutputSchema,
   ATTACHMENT_ADD_TOOL_NAME,
   developerRegistry,
@@ -40,7 +41,7 @@ import { agentSpawnEnvironment, resolveCliToolPath } from "../agentAttachments/c
 import { readToolDirectoryServers, TOOL_PLUGIN_NAME, writeToolDirectory } from "../agentAttachments/pluginDirectory.js";
 import { attachmentEnvironment } from "../agentAttachments/serverEnvironment.js";
 import { attachmentsForRun } from "../db/repos/agentAttachmentsRepo.js";
-import { insertAttachments, listAgents, saveMcpServer, setAgentAttachment } from "../db/repos/index.js";
+import { getMessage, insertAttachments, insertMessage, listAgents, saveMcpServer, setAgentAttachment } from "../db/repos/index.js";
 import { createTestItem, openMigratedTestDb, openMigratedTestDbAt } from "../db/testHelpers.js";
 import { codexServerSecretReader } from "../engine.js";
 import { storeMcpServerSecret } from "../mcp/serverSecrets.js";
@@ -56,7 +57,11 @@ import type { SecretStore } from "../secrets/store.js";
 import { createEoMcpService, parseMemoryScopes } from "../mcp/eoServer.mjs";
 import { renderMemorySection } from "../memory/selection.js";
 import { renderMemoryWritingSection } from "../memory/writing.js";
+import { clearHandlerRegistry } from "../ipc/registry.js";
 import { TOOLS } from "../mcpHost/catalog.js";
+import { toolsFor } from "../mcpHost/gate.js";
+import { answerToolCall } from "../mcpHost/server.js";
+import { fakePlatform } from "../testing/platform.js";
 import { adminToolOf } from "../roles/pipelineRead.js";
 import { answerActions, ASSIST_ANSWER_WITH_MAPS, ASSIST_ANSWER_WITH_TRIAL, ASSIST_ANSWERS_WITH_CARDS, claudeViolations, openAiStrictViolations } from "../testing/answerSchemas.js";
 import { allGone, descendantPids, DESCENDANTS_SNIPPET, owed, sweepUp } from "../testing/escapingDescendants.js";
@@ -668,6 +673,18 @@ const CAPABILITIES = [
       readAs: "pipeline_update_conflict",
       args: { pipelineId: "default" },
       answers: [{ joinedToTheCall: true, toldWhatEoSaid: true }],
+      outcome: { kind: "result", data: "done" },
+    },
+  },
+  {
+    name: "answering EO's messages",
+    what:
+      "a system agent's call to message_answer on EO's administrative server (EO-918) — `mcp__eo_admin__message_answer` on Claude, " +
+      "`eo_admin/message_answer` on Codex — is read by EO as that tool, which both of EO's MCP servers offer, and reaches `messages:answer` as the assistant",
+    same: {
+      offered: { kind: "write", external: true, admin: true },
+      readAs: "message_answer",
+      reached: { handledHow: "answered", answer: "Carry on now", handledBy: { kind: "assistant", agentId: "system-agent-918" } },
       outcome: { kind: "result", data: "done" },
     },
   },
@@ -1920,6 +1937,46 @@ function updateConflictCalls(events: readonly AgentEvent[]): unknown {
     answers: answers.map((answer) => ({ joinedToTheCall: answer.callId !== undefined && ids.has(answer.callId), toldWhatEoSaid: answer.output.includes(UPDATE_CONFLICT_ANSWER) })),
     outcome: outcomeOf(events),
   };
+}
+
+/** The usage-limit message a system agent answers (EO-918), by an id the turn's call names. */
+const LIMIT_MESSAGE_ID = "019a0000-0000-7000-8000-000000000918";
+const MESSAGE_ANSWER_ARGS = { messageId: LIMIT_MESSAGE_ID, answer: "Carry on now" };
+const MESSAGE_ANSWERED = "Answered Carry on now · by the assistant";
+const ANSWERING_AGENT = "system-agent-918";
+
+/**
+ * A call to `message_answer` read out of a turn (EO-918), and then made:
+ * the tool the backend's spelling names, by `adminToolOf`, called on the
+ * administrative listener as the turn's system agent against a database
+ * holding the message, with the IPC handlers the app registers — so what
+ * the observation says reached `messages:answer` did, through the command
+ * the Inbox presses.
+ */
+async function messageAnswerReached(events: readonly AgentEvent[]): Promise<unknown> {
+  const call = events.find((event): event is Extract<AgentEvent, { type: "tool_call" }> => event.type === "tool_call" && adminToolOf(event.name) !== null);
+  const tool = TOOLS.find((entry) => entry.name === "message_answer");
+  const handle = openMigratedTestDb();
+  try {
+    const { registerAllHandlers } = await import("../ipc/handlers.js");
+    registerAllHandlers(handle.db, undefined, { platform: fakePlatform() });
+    insertMessage(handle.db, { recipientId: LOCAL_PERSON_ID, source: "runtime_limit", body: "Claude's plan limit was reached.", options: ["Carry on now"] }, Date.now(), LIMIT_MESSAGE_ID);
+    const readAs = call ? adminToolOf(call.name) : null;
+    if (call && readAs !== null) await answerToolCall({ name: readAs, arguments: call.args }, "admin", false, undefined, undefined, ANSWERING_AGENT);
+    const message = getMessage(handle.db, LIMIT_MESSAGE_ID);
+    return {
+      offered:
+        tool === undefined
+          ? null
+          : { kind: tool.kind, external: toolsFor(false, "external").includes(tool), admin: toolsFor(false, "admin").includes(tool) },
+      readAs,
+      reached: message === undefined ? null : { handledHow: message.handledHow, answer: message.answer, handledBy: message.handledBy },
+      outcome: outcomeOf(events),
+    };
+  } finally {
+    clearHandlerRegistry();
+    handle.close();
+  }
 }
 
 function cost(events: readonly AgentEvent[]): unknown {
@@ -3321,6 +3378,17 @@ const CLAUDE: Record<CapabilityName, Proof> = {
       sdk.result(),
     ]);
     return updateConflictCalls(events);
+  },
+
+  "answering EO's messages": async () => {
+    // Claude's spelling, as for the held template update above.
+    const events = await claudeTurn([
+      sdk.init(),
+      sdk.calls("call-1", `mcp__${ADMIN_MCP_SERVER_NAME}__message_answer`, MESSAGE_ANSWER_ARGS),
+      sdk.answers("call-1", MESSAGE_ANSWERED),
+      sdk.result(),
+    ]);
+    return messageAnswerReached(events);
   },
 
   "memory_note": async () => {
@@ -4784,6 +4852,23 @@ const CODEX: Record<CapabilityName, Proof> = {
     return updateConflictCalls(await collect(started.provider.start(startOpts)));
   },
 
+  "answering EO's messages": async () => {
+    // Codex's spelling: one completed `mcpToolCall` item under `eo_admin`.
+    const call = note.item({
+      type: "mcpToolCall",
+      id: "call-1",
+      server: ADMIN_MCP_SERVER_NAME,
+      tool: "message_answer",
+      status: "completed",
+      arguments: MESSAGE_ANSWER_ARGS,
+      result: { content: [{ type: "text", text: MESSAGE_ANSWERED }], structuredContent: null },
+      error: null,
+      durationMs: 1,
+    });
+    const started = codexOver({ after: { "turn/start": [note.turnStarted(), call, note.agentMessage("done"), note.turnCompleted()] } });
+    return messageAnswerReached(await collect(started.provider.start(startOpts)));
+  },
+
   "memory_note": async () => {
     // Codex's delivery: the grant and the scopes are `mcp_servers.eo.env.<NAME>`
     // overrides on the app-server's command line, read back off the
@@ -5307,7 +5392,7 @@ describe.each(CAPABILITIES)("$name: $what", (capability) => {
 });
 
 describe("the shared list", () => {
-  it("is the twelve capabilities EO-380 names and the ones EO-385, EO-387, EO-392, EO-395, EO-412, EO-421, EO-444, EO-468, EO-470, EO-477, EO-478, EO-479, EO-487, EO-488, EO-490, EO-493, EO-494, EO-534, EO-543, EO-578, EO-587, EO-597, EO-633, EO-700, EO-703, EO-716, EO-717, EO-718, EO-732, EO-738 (two), EO-797, EO-807, EO-820, EO-906 and the streaming chat added, each once", () => {
+  it("is the twelve capabilities EO-380 names and the ones EO-385, EO-387, EO-392, EO-395, EO-412, EO-421, EO-444, EO-468, EO-470, EO-477, EO-478, EO-479, EO-487, EO-488, EO-490, EO-493, EO-494, EO-534, EO-543, EO-578, EO-587, EO-597, EO-633, EO-700, EO-703, EO-716, EO-717, EO-718, EO-732, EO-738 (two), EO-797, EO-807, EO-820, EO-906, EO-918 and the streaming chat added, each once", () => {
     // Pinned so that taking one off the list is a decision somebody
     // made in this file rather than a line that went missing.
     expect(CAPABILITIES.map((capability) => capability.name)).toEqual([
@@ -5331,6 +5416,7 @@ describe("the shared list", () => {
       "assistant cards",
       "a trial plan beside a draft",
       "reading a held template update",
+      "answering EO's messages",
       "cost reported",
       "instructions outside the user turn",
       "debug capture",

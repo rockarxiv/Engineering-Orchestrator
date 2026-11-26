@@ -68,6 +68,7 @@ import {
   renderGuards,
   renderGuardsWritten,
   renderInbox,
+  renderMessageHandled,
   renderJiraCheck,
   renderJiraConnections,
   renderJiraFields,
@@ -2057,11 +2058,47 @@ const READ_TOOLS: readonly ToolSpec[] = [
       "answers. Re-read this after anything that might have finished; it is the fastest way to see whether the " +
       "pipeline is moving. Takes the same optional projectId as tickets_list. Beside the tickets' questions, messages " +
       "lists what EO itself needs the person to answer or act on that is about no ticket — each marked as a message " +
-      "with no ticket, and answered or dismissed by the person in EO's Inbox rather than by a comment.",
+      "with no ticket, with its id and the answers it offers. Answer one for the person with message_answer, or close " +
+      "it unanswered with message_dismiss — never with comment_post, since it has no ticket. handledMessages lists the " +
+      "last few handled, each with how it ended and who handled it: the person, the assistant, or an outside MCP client.",
     kind: "read",
     list: "items",
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     render: renderInbox,
+  }),
+  // EO's messages to the person (EO-918, ARCHITECTURE.md §7.1): answered
+  // or dismissed for them, through the commands the Inbox presses, with
+  // the same checks. On both listeners: an outside client and the
+  // assistant act with the person's authority. A step-owning agent is
+  // served neither, so none reaches them.
+  channelTool({
+    name: "message_answer",
+    channel: "messages:answer",
+    description:
+      "Answer one of EO's messages to the person (listed under messages by inbox_list) with one of the answers it " +
+      "offers, as the person pressing it in EO's Inbox would — for instance Carry on now on a usage-limit message, " +
+      "which lifts the hold on the next dispatch. Takes messageId and answer, which must be one of the message's offered " +
+      "answers exactly. The message must be open and addressed to the person; otherwise nothing is answered and the " +
+      "answer says why. The message records that you answered it, as the assistant or an outside MCP client.",
+    input: z.object({ messageId: z.string().min(1), answer: z.string().min(1) }),
+    kind: "write",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    render: renderMessageHandled,
+    refusal: (data) => data.problem,
+  }),
+  channelTool({
+    name: "message_dismiss",
+    channel: "messages:dismiss",
+    description:
+      "Close one of EO's messages to the person (listed under messages by inbox_list) without answering it, as the " +
+      "person's Dismiss in EO's Inbox would. Takes messageId. What it offered is not done; a usage-limit message dismissed " +
+      "leaves its work waiting until EO is next started. The message must be open and addressed to the person; otherwise " +
+      "nothing is dismissed and the answer says why. The message records that you dismissed it.",
+    input: z.object({ messageId: z.string().min(1) }),
+    kind: "write",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    render: renderMessageHandled,
+    refusal: (data) => data.problem,
   }),
   RUN_EVENTS_TOOL,
   channelTool({

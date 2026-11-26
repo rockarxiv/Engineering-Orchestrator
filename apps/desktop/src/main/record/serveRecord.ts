@@ -516,7 +516,9 @@ export function serveHandleMessage(context: ServeRecordContext, payload: IpcPayl
   const person = personOfDevice(db, payload.deviceId);
   const held = getMessage(db, payload.messageId);
   const theirs = person !== undefined && held !== undefined && held.recipientId === person.id ? held : null;
-  const handled = handleMessageHere(db, { messageId: payload.messageId, how: payload.how, answer: payload.answer, actingDeviceId: payload.deviceId });
+  // Who pressed is the asking device's word (EO-918): its person, or the
+  // assistant or an outside MCP client acting for them there.
+  const handled = handleMessageHere(db, { messageId: payload.messageId, how: payload.how, answer: payload.answer, actingDeviceId: payload.deviceId, by: payload.by });
   if (handled.ok) return { message: handled.message, problem: null };
   return { message: theirs === null ? null : (getMessage(db, theirs.id) ?? null), problem: handled.problem };
 }

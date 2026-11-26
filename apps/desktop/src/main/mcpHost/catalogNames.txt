@@ -9,6 +9,8 @@ tickets_list_archived [read, takes ticket] → items_list_archived (deprecated)
 item_get [read, takes item]
 ticket_get [read, takes ticket] → item_get (deprecated)
 inbox_list [read, takes ticket]
+message_answer [write, takes ticket]
+message_dismiss [write, takes ticket]
 run_events [read, takes ticket]
 runs_list [read, takes item]
 runs_summary [read, takes item]

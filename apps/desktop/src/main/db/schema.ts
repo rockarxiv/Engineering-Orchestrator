@@ -3533,8 +3533,10 @@ export const skillProposals = sqliteTable(
  * Comments stay an item's conversation (invariant 4). When EO needs a
  * person to answer or act on something that belongs to no item — a
  * template update it could not apply, a job guard — it sends a message
- * here instead of posting on a made-up thread. Agents never send or read
- * one.
+ * here instead of posting on a made-up thread. No agent sends one; its
+ * recipient answers or dismisses it, in the Inbox or through an outside
+ * MCP client or EO's assistant acting for them (EO-918), and a
+ * step-owning agent never reads or handles one.
  *
  * Open while `handledAt` is null. Handled is one of `answered` (with the
  * option chosen in `answer`), `dismissed` or `resolved` by EO, and a
@@ -3560,6 +3562,13 @@ export const messages = sqliteTable(
     handledHow: text("handled_how"),
     /** The option an answer chose. */
     answer: text("answer"),
+    /**
+     * `MessageHandledBy` as JSON (EO-918, migration 0183): who answered or
+     * dismissed it — the person, the assistant, or an outside MCP client.
+     * Null while open, on one EO resolved, and on every message handled
+     * before the column, which reads as the person.
+     */
+    handledBy: text("handled_by", { mode: "json" }),
     /**
      * What it is about within its source, so EO can resolve it once that
      * is settled (EO-727): a conflict's id, a memory scope's key. Kept only

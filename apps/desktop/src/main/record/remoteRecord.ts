@@ -470,6 +470,8 @@ export function createRemoteRecord(options: RemoteRecordOptions): RemoteRecord {
         messageId: request.messageId,
         how: request.how,
         answer: request.answer,
+        // Who pressed for this desktop's person (EO-918), for the record's copy to say.
+        ...(request.by === undefined ? {} : { by: request.by }),
       });
       if (!answer.ok) {
         return {

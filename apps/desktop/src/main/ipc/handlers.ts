@@ -251,7 +251,7 @@ import { connectJira, disconnectJira, jiraFields, listJiraConnectionsCommand, re
 import { importJiraIssue, previewJiraIssue, searchJira } from "./jiraImportCommands.js";
 import { detectForge } from "./forgeCommands.js";
 import { actingCaller, actingReader, scopedProjectId } from "../identity/acting.js";
-import { messageRecipientsFor, type MessageHandling } from "../messages/messages.js";
+import { messageHandlerOf, messageRecipientsFor, type MessageHandling } from "../messages/messages.js";
 import { emitPush } from "./push.js";
 import { recordFor } from "../record/localRecord.js";
 import type { ItemRecord } from "../record/record.js";
@@ -628,17 +628,23 @@ export function registerAllHandlers(db: Db, engine: EngineHandle | undefined, re
   // On whichever installation holds the message (EO-726): the
   // organisation's record for one about a project it holds, so the
   // recipient's other desktops hear of it.
-  const handleMessage = async (request: MessageHandling): Promise<{ message: Message }> => {
+  // A refusal is answered in its words rather than thrown (EO-918).
+  const handleMessage = async (request: MessageHandling): Promise<{ message: Message | null; problem: string | null }> => {
     const handled = await (resources.record ?? recordFor(db)).handleMessage(request);
-    if (!handled.ok) throw new Error(handled.problem);
-    return { message: handled.message };
+    return handled.ok ? { message: handled.message, problem: null } : { message: null, problem: handled.problem };
   };
+  // Pressed in the Inbox, or for its person by EO's assistant or an
+  // outside MCP client (EO-918), as the door stamped it.
   registerHandler(
     "messages:answer",
-    (payload) => handleMessage({ messageId: payload.messageId, how: "answered", answer: payload.answer, actingDeviceId: payload.actingDeviceId }),
+    (payload) => handleMessage({ messageId: payload.messageId, how: "answered", answer: payload.answer, actingDeviceId: payload.actingDeviceId, by: messageHandlerOf(payload) }),
     opts,
   );
-  registerHandler("messages:dismiss", (payload) => handleMessage({ messageId: payload.messageId, how: "dismissed", answer: null, actingDeviceId: payload.actingDeviceId }), opts);
+  registerHandler(
+    "messages:dismiss",
+    (payload) => handleMessage({ messageId: payload.messageId, how: "dismissed", answer: null, actingDeviceId: payload.actingDeviceId, by: messageHandlerOf(payload) }),
+    opts,
+  );
   registerHandler("mentions:open", (payload) => openMentionsCommand(db, payload), opts);
   registerHandler("agents:list", () => listAgentViews(db), opts);
   registerHandler("pipelineSteps:list", (payload) => listPipelineStepViews(db, payload), opts);

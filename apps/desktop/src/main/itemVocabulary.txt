@@ -152,7 +152,7 @@ apps/desktop/src/main/mcpHost/dispatch.test.ts: expect(outcome.text).toContain("
 apps/desktop/src/main/mcpHost/guides.test.ts: expect(flat).toContain("takes its key as well: `EO-486` names the same ticket as its UUID");
 apps/desktop/src/main/mcpHost/guides.test.ts: expect(guide).toContain("Left out, a ticket is 0.");
 apps/desktop/src/main/mcpHost/guides.test.ts: it("says a key is accepted wherever a ticket's id is, and that no list has to be read for one (EO-539)", () => {
-apps/desktop/src/main/mcpHost/guides.ts: ## 4. If a specific ticket is stuck
+apps/desktop/src/main/mcpHost/guides.ts: ## 5. If a specific ticket is stuck
 apps/desktop/src/main/mcpHost/guides.ts: ## Naming a ticket
 apps/desktop/src/main/mcpHost/guides.ts: ## Reading part of a ticket
 apps/desktop/src/main/mcpHost/guides.ts: - **Run** — one execution of a step against a ticket. Its transcript is in
@@ -174,6 +174,7 @@ apps/desktop/src/main/mcpHost/guides.ts: every run and every move. On a long-liv
 apps/desktop/src/main/mcpHost/guides.ts: makes a ticket from a title. \`work_submit_plan\` takes a decomposition
 apps/desktop/src/main/mcpHost/guides.ts: name it in \`repository\`, per story in a plan. A ticket filed under a
 apps/desktop/src/main/mcpHost/guides.ts: out, a ticket is 0. On \`work_submit_plan\` the plan's own \`priority\` is
+apps/desktop/src/main/mcpHost/guides.ts: person — about no ticket, so nothing on a thread clears them. Each comes
 apps/desktop/src/main/mcpHost/guides.ts: person, or a run with its \`runId\` and ticket key), \`extracted\`, \`state\`
 apps/desktop/src/main/mcpHost/guides.ts: role-based coding agents against a dependency-ordered ticket graph. You are
 apps/desktop/src/main/mcpHost/guides.ts: route never taken, and a result nothing routes parks the ticket and ends
@@ -256,7 +257,7 @@ apps/desktop/src/main/mcpHost/render.ts: lines.push(`- Branch: ${branch === null
 apps/desktop/src/main/mcpHost/render.ts: lines.push(`- ticket ${report.item.itemId}, every run against it: ${money(report.item.costCents)}${sideCallShare(report.item.sideCalls)}${nothing}`);
 apps/desktop/src/main/mcpHost/render.ts: return [`${done}. ${project.name} (id: ${project.id}, key prefix: ${project.keyPrefix}) — ${project.itemCount} ticket(s).`, repositories].join("\n");
 apps/desktop/src/main/mcpHost/render.ts: return `${repository.name} (id: ${repository.id}, base branch ${repository.baseBranch}${jira})${description}\n  ${repository.repoPath} — ${repository.itemCount} ticket(s)\n  ${commands}${jiraSettings(repository.jira)}`;
-apps/desktop/src/main/mcpHost/render.ts: return `- MESSAGE from EO (no ticket; ${message.source}, ${stamp(message.createdAt)}): ${first}${options}\n  Answered or dismissed by the person in EO's Inbox, not with comment_post. Message id ${message.id}.`;
+apps/desktop/src/main/mcpHost/render.ts: return `- MESSAGE from EO (no ticket; ${message.source}, ${stamp(message.createdAt)}): ${first}${options}\n  ${messageHandling(message)}`;
 apps/desktop/src/main/mcpHost/render.ts: return `Decision recorded. The ticket moved ${where}.${comment}`;
 apps/desktop/src/main/mcpHost/render.ts: return `Hold cleared. The ticket is dispatchable again from the step it was already on.${cancelled}`;
 apps/desktop/src/main/mcpHost/render.ts: return `Ticket held where it is. The scheduler will not pick it up until it is resumed.${cancelled}`;

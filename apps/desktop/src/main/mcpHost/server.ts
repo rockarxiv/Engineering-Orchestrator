@@ -7,7 +7,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { Db } from "../db/client.js";
 import { dispatchIpc } from "../ipc/registry.js";
 import { gateRefusal, readMcpConfig, toolAllowed, toolOffered, toolsFor, type McpAudience } from "./gate.js";
-import { canonicalToolName, withActingAgent, withPathsFrom, type PathsFrom } from "@eo/core";
+import { canonicalToolName, withActingAgent, withMcpClient, withPathsFrom, type PathsFrom } from "@eo/core";
 import { TOOLS, type Dispatch, type ToolSpec } from "./catalog.js";
 import { GUIDES, guideNamed } from "./guides.js";
 import { toLegacyShape } from "./legacyNames.js";
@@ -282,11 +282,17 @@ const dispatch: Dispatch = (channel, payload) => {
  * dispatches (`spelledTool`), and this is the one place that knows which
  * turn the call arrived on.
  */
-function dispatchAs(actingAgentId: string | null, pathsFrom: PathsFrom): Dispatch {
+function dispatchAs(actingAgentId: string | null, pathsFrom: PathsFrom, audience: McpAudience): Dispatch {
   // And where this caller may name files from (EO-700), stamped here for
   // the same reason: the tool has taken off whatever a client sent under
-  // that name, and only the host knows who is at the other end.
-  return (channel, payload) => dispatch(channel, withPathsFrom(channel, actingAgentId === null ? payload : withActingAgent(channel, payload, actingAgentId), pathsFrom));
+  // that name, and only the host knows who is at the other end. So is
+  // that an outside client is pressing (EO-918), which a handled message
+  // records.
+  return (channel, payload) => {
+    const asAgent = actingAgentId === null ? payload : withActingAgent(channel, payload, actingAgentId);
+    const asClient = audience === "external" ? withMcpClient(channel, asAgent) : asAgent;
+    return dispatch(channel, withPathsFrom(channel, asClient, pathsFrom));
+  };
 }
 
 /**
@@ -331,7 +337,7 @@ export async function answerToolCall(
   // round through an alias of it (KAN-162).
   const refused = refuseCall?.(canonicalToolName(tool.name), call.arguments ?? {}) ?? null;
   if (refused !== null) return { isError: true, content: [{ type: "text", text: refused }] };
-  return callTool(tool, call.arguments ?? {}, dangerousOperations, observeCall, dispatchAs(actingAgentId, pathsFrom), audience);
+  return callTool(tool, call.arguments ?? {}, dangerousOperations, observeCall, dispatchAs(actingAgentId, pathsFrom, audience), audience);
 }
 
 /** What one tool call answers with, in MCP's shape. */

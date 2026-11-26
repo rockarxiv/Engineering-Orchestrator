@@ -8,8 +8,10 @@ import { CommentOptionSchema } from "./schemas/commentOptions.js";
  * says, or is told, about an item. A message is the one other channel, for
  * exactly one case — EO needs a person to answer or act on something that
  * belongs to no item: a template update it could not apply, a job guard.
- * Agents never send or read one, so an item's thread stays the whole
- * context the next agent gets.
+ * Its recipient answers or dismisses it — in the Inbox, or through an
+ * outside MCP client or EO's assistant acting for them (EO-918). A
+ * step-owning agent never sends, reads or handles one, so an item's thread
+ * stays the whole context the next agent gets.
  *
  * Open until handled — answered with one of its options, dismissed, or
  * resolved by EO when what it asked about was settled some other way —
@@ -20,6 +22,39 @@ import { CommentOptionSchema } from "./schemas/commentOptions.js";
 export const MESSAGE_HANDLED_HOW = ["answered", "dismissed", "resolved"] as const;
 export const MessageHandledHowSchema = z.enum(MESSAGE_HANDLED_HOW);
 export type MessageHandledHow = z.infer<typeof MessageHandledHowSchema>;
+
+/**
+ * Who answered or dismissed a message (EO-918): its recipient in the
+ * Inbox, EO's assistant acting for them (a system agent, by id, over
+ * `eo_admin`), or an outside client of EO's MCP server acting on the
+ * credential the person gave it. All three act with the person's
+ * authority; this says only which of them pressed.
+ */
+export const MessageHandledBySchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("person") }),
+  z.object({ kind: z.literal("assistant"), agentId: z.string() }),
+  z.object({ kind: z.literal("mcp_client") }),
+]);
+export type MessageHandledBy = z.infer<typeof MessageHandledBySchema>;
+
+/** The person pressing in the Inbox: what a handled message with no recorded handler reads as. */
+export const HANDLED_BY_PERSON: MessageHandledBy = { kind: "person" };
+
+/**
+ * Who handled it, as EO's MCP tools say it — "the person", "the
+ * assistant", "an outside MCP client" — or as the Inbox says it to that
+ * person (`toThePerson`), where they are "you".
+ */
+export function handledByWords(by: MessageHandledBy, toThePerson = false): string {
+  switch (by.kind) {
+    case "person":
+      return toThePerson ? "you" : "the person";
+    case "assistant":
+      return "the assistant";
+    case "mcp_client":
+      return "an outside MCP client";
+  }
+}
 
 /** One message, as it is stored and as it crosses IPC. */
 export const MessageSchema = z.object({
@@ -42,8 +77,34 @@ export const MessageSchema = z.object({
   handledHow: MessageHandledHowSchema.nullable(),
   /** The option an answer chose; null otherwise. */
   answer: z.string().nullable(),
+  /**
+   * Who answered or dismissed it (EO-918); null while open and on one EO
+   * resolved. Defaulted so a message from a record built before it still
+   * parses.
+   */
+  handledBy: MessageHandledBySchema.nullable().default(null),
 });
 export type Message = z.infer<typeof MessageSchema>;
+
+/**
+ * How a handled message ended and who ended it, as the Inbox and EO's MCP
+ * tools say it (EO-918): "Answered Carry on now · by the assistant",
+ * "Dismissed · by the person" ("by you" `toThePerson`), "Resolved by EO".
+ * Null while it is open.
+ */
+export function messageHandledWords(message: Pick<Message, "handledHow" | "answer" | "handledBy">, toThePerson = false): string | null {
+  switch (message.handledHow) {
+    case null:
+      return null;
+    case "resolved":
+      return "Resolved by EO";
+    case "answered":
+    case "dismissed": {
+      const how = message.handledHow === "answered" ? `Answered ${message.answer ?? ""}`.trimEnd() : "Dismissed";
+      return `${how} · by ${handledByWords(message.handledBy ?? HANDLED_BY_PERSON, toThePerson)}`;
+    }
+  }
+}
 
 /** What EO code hands the sender (`sendMessage` in main). */
 export const MessageSendSchema = z.object({
@@ -62,6 +123,9 @@ export const MessageSendSchema = z.object({
   subject: z.string().min(1).nullable().optional(),
 });
 export type MessageSend = z.input<typeof MessageSendSchema>;
+
+/** How many recently handled messages the Inbox and `inbox_list` show beside the open ones (EO-918). */
+export const INBOX_HANDLED_MESSAGES_SHOWN = 10;
 
 /** How long a handled message is kept. */
 export const HANDLED_MESSAGE_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;

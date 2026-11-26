@@ -1,12 +1,15 @@
-import { and, asc, desc, eq, inArray, isNotNull, isNull, lte, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
 import {
   HANDLED_MESSAGE_RETENTION_MS,
+  HANDLED_BY_PERSON,
   HANDLED_MESSAGES_KEPT_PER_PERSON,
+  MessageHandledBySchema,
   MessageHandledHowSchema,
   MessageSendSchema,
   parseStoredCommentOptions,
   uuidv7,
   type Message,
+  type MessageHandledBy,
   type MessageHandledHow,
   type MessageSend,
 } from "@eo/core";
@@ -23,8 +26,20 @@ import { jobs, messages, projects, queuedMessageReceipts } from "../schema.js";
 
 type Row = typeof messages.$inferSelect;
 
+/**
+ * Who handled it (EO-918). A message answered or dismissed before the
+ * column existed, or by a build that does not write it, was the person's:
+ * nobody else could. One EO resolved, or still open, has nobody.
+ */
+function handledByOf(row: Row, handledHow: MessageHandledHow | null): MessageHandledBy | null {
+  if (handledHow !== "answered" && handledHow !== "dismissed") return null;
+  const recorded = MessageHandledBySchema.safeParse(row.handledBy);
+  return recorded.success ? recorded.data : HANDLED_BY_PERSON;
+}
+
 function toDomain(row: Row): Message {
-  const handledHow = MessageHandledHowSchema.safeParse(row.handledHow);
+  const parsedHow = MessageHandledHowSchema.safeParse(row.handledHow);
+  const handledHow = parsedHow.success ? parsedHow.data : null;
   return {
     id: row.id,
     recipientId: row.recipientId,
@@ -37,8 +52,9 @@ function toDomain(row: Row): Message {
     options: parseStoredCommentOptions(row.options),
     createdAt: row.createdAt,
     handledAt: row.handledAt,
-    handledHow: handledHow.success ? handledHow.data : null,
+    handledHow,
     answer: row.answer,
+    handledBy: handledByOf(row, handledHow),
   };
 }
 
@@ -58,6 +74,7 @@ export function insertMessage(db: Db, input: MessageSend, now: number = Date.now
     handledAt: null,
     handledHow: null,
     answer: null,
+    handledBy: null,
     subject: parsed.subject ?? null,
   };
   db.insert(messages).values(row).run();
@@ -82,8 +99,28 @@ export function listOpenMessages(db: Db, recipientIds: readonly string[]): Messa
 }
 
 /**
+ * The most recently handled messages addressed to any of these people,
+ * newest handled first (EO-918). Given a project, only those about it and
+ * those about none, as the inbox scopes its open ones.
+ */
+export function listRecentlyHandledMessages(db: Db, recipientIds: readonly string[], limit: number, projectId?: string | null): Message[] {
+  if (recipientIds.length === 0) return [];
+  const inProject = projectId === undefined ? undefined : projectId === null ? isNull(messages.projectId) : or(isNull(messages.projectId), eq(messages.projectId, projectId));
+  return db
+    .select()
+    .from(messages)
+    .where(and(inArray(messages.recipientId, [...recipientIds]), isNotNull(messages.handledAt), inProject))
+    .orderBy(desc(messages.handledAt), desc(messages.id))
+    .limit(limit)
+    .all()
+    .map(toDomain);
+}
+
+/**
  * Closes an open message: `answered` with the option chosen, `dismissed`,
- * or `resolved` by EO.
+ * or `resolved` by EO. `by` is who answered or dismissed it (EO-918) —
+ * the person unless said otherwise; a resolution is EO's and records
+ * nobody.
  *
  * Only an open one. Answers undefined when the message is gone or was
  * already handled, so a second press — or EO resolving what a person has
@@ -95,10 +132,11 @@ export function markMessageHandled(
   how: MessageHandledHow,
   answer: string | null = null,
   now: number = Date.now(),
+  by: MessageHandledBy = HANDLED_BY_PERSON,
 ): Message | undefined {
   const row = db
     .update(messages)
-    .set({ handledAt: now, handledHow: how, answer: how === "answered" ? answer : null })
+    .set({ handledAt: now, handledHow: how, answer: how === "answered" ? answer : null, handledBy: how === "resolved" ? null : by })
     .where(and(eq(messages.id, id), isNull(messages.handledAt)))
     .returning()
     .get();
@@ -181,7 +219,7 @@ export function openSubjectsOf(db: Db, source: string): string[] {
 export function markMessagesAboutResolved(db: Db, source: string, subject: string, now: number = Date.now()): Message[] {
   return db
     .update(messages)
-    .set({ handledAt: now, handledHow: "resolved", answer: null })
+    .set({ handledAt: now, handledHow: "resolved", answer: null, handledBy: null })
     .where(and(eq(messages.source, source), eq(messages.subject, subject), isNull(messages.handledAt)))
     .returning()
     .all()
@@ -267,6 +305,7 @@ export function upsertReplicaMessage(db: Db, message: Message): "written" | "wai
     handledAt: message.handledAt,
     handledHow: message.handledHow,
     answer: message.answer,
+    handledBy: message.handledBy,
     // The record's to resolve, never a replica's.
     subject: null,
   };
@@ -285,6 +324,7 @@ export function upsertReplicaMessage(db: Db, message: Message): "written" | "wai
         handledAt: row.handledAt,
         handledHow: row.handledHow,
         answer: row.answer,
+        handledBy: row.handledBy,
       },
     })
     .run();

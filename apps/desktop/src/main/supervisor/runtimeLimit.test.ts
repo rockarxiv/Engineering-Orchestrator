@@ -16,10 +16,13 @@ import {
   updateRun,
 } from "../db/repos/index.js";
 import { createTestItem, messagesFrom, openMigratedTestDb, REVIEWABLE_SPEC } from "../db/testHelpers.js";
+import { clearHandlerRegistry } from "../ipc/registry.js";
+import { answerToolCall } from "../mcpHost/server.js";
 import { answerMessageCommand, dismissMessageCommand } from "../messages/messages.js";
 import { validImplementResult } from "../providers/fixtures.js";
 import type { RuntimeAuthCheck } from "../runtimes/auth.js";
 import { openAssistConversation } from "../roles/assist.js";
+import { fakePlatform } from "../testing/platform.js";
 import { createRunSupervisor, type RunSupervisor, type RunSupervisorOptions } from "./runSupervisor.js";
 import { CARRY_ON_NOW_OPTION, LIMIT_RESUME_MESSAGE, RUNTIME_BLOCK_RECHECK_MS, RUNTIME_LIMIT_SOURCE, RUNTIME_SIGN_IN_SOURCE } from "./runtimeBlocks.js";
 
@@ -257,6 +260,37 @@ describe("a Claude run that hits its plan limit", () => {
     for (let pass = 0; pass < 5; pass++) await supervisor.runOnce();
 
     expect(resumed.filter((turn) => turn.agent === implementer.name).map((turn) => turn.threadId)).toEqual(["thread-1"]);
+    expect(listRunsForItem(handle.db, first.id).map((run) => run.status)).toContain("succeeded");
+    expect(listRunsForItem(handle.db, second.id).map((run) => run.status)).toContain("succeeded");
+  });
+
+  it("lifts on Carry on now answered through message_answer, as the Inbox press does (EO-918)", async () => {
+    const first = forImplementer("Hits the limit", 10);
+    const second = forImplementer("Queued behind it", 5);
+    const { provider, resumed } = backend([null]);
+    const supervisor = supervising({ provider });
+    await supervisor.runOnce();
+    clock = START + 24 * HOUR;
+    await supervisor.runOnce();
+    expect(listRunsForItem(handle.db, second.id)).toEqual([]);
+    const [message] = limitMessages();
+
+    // The channels as the app registers them, reached the way the
+    // assistant reaches them: a tool call on eo_admin.
+    const { registerAllHandlers } = await import("../ipc/handlers.js");
+    registerAllHandlers(handle.db, undefined, { platform: fakePlatform() });
+    try {
+      const answered = await answerToolCall({ name: "message_answer", arguments: { messageId: message!.id, answer: CARRY_ON_NOW_OPTION } }, "admin", false, undefined, undefined, "the-assistant");
+      expect(answered.isError).toBe(false);
+    } finally {
+      clearHandlerRegistry();
+    }
+    expect(limitMessages()[0]).toMatchObject({ handledHow: "answered", answer: CARRY_ON_NOW_OPTION, handledBy: { kind: "assistant", agentId: "the-assistant" } });
+
+    // The next tick lifts it: the cut-off run carries on in its thread first.
+    await supervisor.runOnce();
+    expect(resumed.filter((turn) => turn.agent === implementer.name).map((turn) => turn.threadId)).toEqual(["thread-1"]);
+    for (let pass = 0; pass < 5; pass++) await supervisor.runOnce();
     expect(listRunsForItem(handle.db, first.id).map((run) => run.status)).toContain("succeeded");
     expect(listRunsForItem(handle.db, second.id).map((run) => run.status)).toContain("succeeded");
   });

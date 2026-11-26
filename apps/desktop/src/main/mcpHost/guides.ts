@@ -524,7 +524,23 @@ Mention an agent by name to hand it work. Mention the human to ask
 something. There is no other channel — no inbox to write to, no side
 message.
 
-## 4. If a specific ticket is stuck
+## 4. EO's own messages
+
+Beside the tickets' questions, \`inbox_list\` lists EO's messages to the
+person — about no ticket, so nothing on a thread clears them. Each comes
+with its id and the answers it offers. \`message_answer\` answers one for
+the person with one of those answers, and \`message_dismiss\` closes one
+unanswered; either is refused, with the reason, if the message is not
+open or not the person's. The message records who handled it.
+
+A usage-limit hold is one of these: when a backend's plan window is
+full, work on it waits, and where EO cannot tell when the window
+refreshes it waits until somebody says it is back. \`message_answer\`
+with Carry on now on that message lifts the hold on the next dispatch,
+exactly as the person's press in the Inbox does. Dismissing it leaves
+the work waiting until EO is next started.
+
+## 5. If a specific ticket is stuck
 
 \`ticket_get\` on it, and read in this order:
 

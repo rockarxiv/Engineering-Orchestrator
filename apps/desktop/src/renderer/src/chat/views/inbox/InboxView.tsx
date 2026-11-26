@@ -2,7 +2,7 @@ import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { AtSign, BellOff, Clock, GitBranch, GitPullRequest, HelpCircle, Inbox, MessageSquare, UserCheck } from "lucide-react";
-import { answerOptions, matchesInboxFilter, waitingOnLabel, type ChromeVocabulary, type InboxItem, type IpcRequest, type Message, type ViewFilter } from "@eo/core";
+import { answerOptions, matchesInboxFilter, messageHandledWords, waitingOnLabel, type ChromeVocabulary, type InboxItem, type IpcRequest, type Message, type ViewFilter } from "@eo/core";
 import { Markdown, cn } from "@eo/ui";
 import { inboxViewFilter } from "../../../shared/inbox/inbox";
 import { PREVIEW_BANNER } from "../../../shared/items/previewBanner";
@@ -132,8 +132,13 @@ export function InboxView() {
   // it has no item, so there is no comment to post. Settles once the
   // inbox has been read again, for the reply's reason above.
   const handleMessage = useMutation({
-    mutationFn: (input: { messageId: string; answer: string | null }) =>
-      input.answer === null ? ipcQuery("messages:dismiss", { messageId: input.messageId }) : ipcQuery("messages:answer", { messageId: input.messageId, answer: input.answer }),
+    mutationFn: async (input: { messageId: string; answer: string | null }) => {
+      const handled =
+        input.answer === null ? await ipcQuery("messages:dismiss", { messageId: input.messageId }) : await ipcQuery("messages:answer", { messageId: input.messageId, answer: input.answer });
+      // Refused in words (EO-918): shown where the press was, as a throw is.
+      if (handled.problem !== null) throw new Error(handled.problem);
+      return handled;
+    },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: inboxKey }),
   });
   const setDnd = useMutation({
@@ -308,7 +313,32 @@ export function InboxView() {
           </div>
         </div>
       )}
+
+      <HandledMessages messages={inbox.data?.handledMessages ?? []} />
     </div>
+  );
+}
+
+/**
+ * The last few messages handled (EO-918): how each ended and who ended it
+ * — you, the assistant, or an outside MCP client acting for you — so a
+ * press made for you is seen to have been made.
+ */
+function HandledMessages({ messages }: { messages: readonly Message[] }) {
+  if (messages.length === 0) return null;
+  return (
+    <Card label="Handled recently" className="mt-4 gap-1.5 px-3 py-3">
+      <GroupLabel>Handled recently</GroupLabel>
+      <ul className="flex min-w-0 flex-col gap-1">
+        {messages.map((message) => (
+          <li key={message.id} className="flex min-w-0 items-baseline gap-2 text-[12.5px]">
+            <span className="min-w-0 truncate text-ink">{firstLine(message.body)}</span>
+            <span className="shrink-0 text-ink-muted">{messageHandledWords(message, true)}</span>
+            <span className="ml-auto shrink-0 text-[11px] text-ink-subtle">{age(message.handledAt ?? message.createdAt)}</span>
+          </li>
+        ))}
+      </ul>
+    </Card>
   );
 }
 
