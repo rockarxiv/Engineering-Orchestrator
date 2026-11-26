@@ -1088,6 +1088,112 @@ git update-ref refs/heads/eo/APP-1 ${head}
     expect(await pushBranch(repoPath, "bare", "eo/APP-1")).toMatchObject({ ok: false, rejection: "other", published: null });
   });
 
+  it("takes nothing a hook its configuration registers prints for git's account of the push", async () => {
+    // A preview of exactly the push EO makes, printed by a hook git runs
+    // outside EO's gate (`hook.<name>.event`, git 2.54 and later), and a
+    // refusal by the repository's own hook after it: nothing was pushed.
+    const previewed = join(scratch, "previewed");
+    writeFileSync(
+      join(scratch, "preview.sh"),
+      `#!/bin/sh\nh=$(git rev-parse refs/heads/eo/APP-1)\ngit push --dry-run --porcelain --no-verify "$1" "$h^{commit}:refs/heads/eo/APP-1" | tee -a ${JSON.stringify(previewed)}\n`,
+      { mode: 0o755 },
+    );
+    await run(["config", "hook.preview.command", `'${join(scratch, "preview.sh")}'`], repoPath);
+    await run(["config", "hook.preview.event", "pre-push"], repoPath);
+    const hooks = join(repoPath, await run(["rev-parse", "--git-path", "hooks"], repoPath));
+    mkdirSync(hooks, { recursive: true });
+    writeFileSync(join(hooks, "pre-push"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+
+    const refused = await pushBranch(repoPath, "bare", "eo/APP-1");
+
+    expect(refused).toMatchObject({ ok: false, published: null, rejection: "other" });
+    expect(await remoteTip("eo/APP-1")).toBeNull();
+    // Git that runs hooks its configuration registers ran it, and it printed git's own line for the push.
+    const registers = (await git(["hook", "list", "pre-push"], repoPath)).ok;
+    if (registers) expect(readFileSync(previewed, "utf8")).toContain(`${await localTip()}^{commit}:refs/heads/eo/APP-1\t[new branch]`);
+
+    // Once the repository's hook lets it go, git's own account stands.
+    unlinkSync(join(hooks, "pre-push"));
+    const pushed = await pushBranch(repoPath, "bare", "eo/APP-1");
+    expect(pushed).toMatchObject({ ok: true, updated: true, destination: at(barePath) });
+    expect(await remoteTip("eo/APP-1")).toBe(await localTip());
+
+    // And a preview of a push that would move the branch is not one that did.
+    const again = await pushBranch(repoPath, "bare", "eo/APP-1");
+    expect(again).toMatchObject({ ok: true, updated: false });
+  });
+
+  it("pushes through a temporary directory named relative to EO's working directory, not the checkout's", async () => {
+    const saved = { cwd: process.cwd(), TMPDIR: process.env["TMPDIR"] };
+    // EO's working directory and the checkout apart, and `tmp` only in EO's.
+    const app = join(scratch, "app");
+    mkdirSync(join(app, "tmp"), { recursive: true });
+    process.chdir(app);
+    process.env["TMPDIR"] = "tmp";
+    try {
+      const pushed = await pushBranch(repoPath, "bare", "eo/APP-1");
+
+      expect(pushed).toMatchObject({ ok: true, updated: true, destination: at(barePath) });
+      expect(await remoteTip("eo/APP-1")).toBe(await localTip());
+      expect(existsSync(join(repoPath, "tmp"))).toBe(false);
+    } finally {
+      process.chdir(saved.cwd);
+      if (saved.TMPDIR === undefined) delete process.env["TMPDIR"];
+      else process.env["TMPDIR"] = saved.TMPDIR;
+    }
+  });
+
+  it("publishes the submodule commits a push needs where the repository pushes them on demand, and a lease still sends only its commit", async () => {
+    const subBare = join(scratch, "sub.git");
+    await run(["init", "--bare", subBare], scratch);
+    const seed = join(scratch, "sub-seed");
+    await run(["clone", subBare, seed], scratch);
+    await run(["config", "user.email", "eo@example.com"], seed);
+    await run(["config", "user.name", "EO Test"], seed);
+    await commit(seed, "lib.ts", "// lib\n");
+    await run(["push", "origin", "HEAD"], seed);
+    await run(["-c", "protocol.file.allow=always", "submodule", "add", subBare, "sub"], repoPath);
+    await run(["commit", "-m", "add the submodule"], repoPath);
+    const sub = join(repoPath, "sub");
+    await run(["config", "user.email", "eo@example.com"], sub);
+    await run(["config", "user.name", "EO Test"], sub);
+    // Git pushes a submodule to its remote of the same name as the superproject's.
+    await run(["remote", "add", "bare", subBare], sub);
+    await run(["checkout", "-b", "eo/APP-1"], sub);
+    await commit(sub, "more.ts", "// more\n");
+    await run(["add", "sub"], repoPath);
+    await run(["commit", "-m", "move the submodule"], repoPath);
+    await run(["config", "push.recurseSubmodules", "on-demand"], repoPath);
+    const subTip = async (): Promise<string | null> => {
+      const tip = await git(["rev-parse", "--verify", "--quiet", "refs/heads/eo/APP-1"], subBare);
+      return tip.ok ? tip.stdout : null;
+    };
+
+    const pushed = await pushBranch(repoPath, "bare", "eo/APP-1");
+
+    expect(pushed).toMatchObject({ ok: true, updated: true, destination: at(barePath) });
+    expect(await remoteTip("eo/APP-1")).toBe(await localTip());
+    expect(await subTip()).toBe(await run(["rev-parse", "HEAD"], sub));
+
+    const old = sentBy(pushed);
+    await run(["commit", "--amend", "-m", "rewritten"], repoPath);
+    const rejected = await pushBranch(repoPath, "bare", "eo/APP-1");
+    expect(rejected).toMatchObject({ ok: false, rejection: "diverged" });
+    const send = await localTip();
+    // The branch moves after the rejected push: the lease sends what that push sent, or nothing.
+    await commit(repoPath, "later.ts", "// later\n");
+
+    const moved = await pushBranch(repoPath, "bare", "eo/APP-1", { forceWithLease: { expect: old, destination: pushed.destination!, send } });
+    expect(moved).toMatchObject({ ok: false, rejection: "changed", published: null });
+    expect(await remoteTip("eo/APP-1")).toBe(old);
+
+    await run(["reset", "--hard", send], repoPath);
+    const leased = await pushBranch(repoPath, "bare", "eo/APP-1", { forceWithLease: { expect: old, destination: pushed.destination!, send } });
+    expect(leased).toMatchObject({ ok: true, updated: true, head: send });
+    expect(await remoteTip("eo/APP-1")).toBe(send);
+    expect(await subTip()).toBe(await run(["rev-parse", "HEAD"], sub));
+  });
+
   it("resolves a relative push URL from the top of the checkout, where git does, though EO works from a directory inside it", async () => {
     const inside = join(repoPath, "sub");
     mkdirSync(inside);

@@ -3,7 +3,7 @@
 // goes through the functions here, which keeps the argument-quoting rule
 // below enforceable in one place.
 import { execFile } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { constants, existsSync, realpathSync } from "node:fs";
 import { access, lstat, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -269,26 +269,49 @@ export async function pushBranch(
   // would take it somewhere EO never checked — and git itself refuses it,
   // before any helper runs or anything is sent.
   const leaseEnv: Record<string, string> = lease && route !== null ? { GIT_ALLOW_PROTOCOL: route.protocol } : {};
+  const env = { ...process.env, ...NON_INTERACTIVE_GIT_ENV };
+  const running = { timeout: options.timeoutMs ?? NETWORK_TIMEOUT_MS, ...(options.signal ? { signal: options.signal } : {}) };
+  // What git prints on stdout is its account of the push only after the
+  // gate's line: a hook a configuration registers runs outside the gate
+  // and prints there too, and anything it prints before is not git's.
+  const account = (stdout: string): string => (gate === null ? stdout : gitAccount(stdout, gate.marker));
   const send = async (followRedirects: boolean): Promise<{ stdout: string; failure: unknown }> => {
     try {
       const { stdout } = await execFileAsync("git", composeGitArgs([...gateArg, "push", "--porcelain", "--no-follow-tags", ...receiveArg, ...leaseArg, remote, refspec], process.platform), {
         cwd: repoPath,
         windowsHide: true,
         maxBuffer: 32 * 1024 * 1024,
-        env: { ...process.env, ...NON_INTERACTIVE_GIT_ENV, ...(route?.env ?? {}), ...leaseEnv, ...(followRedirects || route === null ? {} : noRedirects(route)) },
-        timeout: options.timeoutMs ?? NETWORK_TIMEOUT_MS,
-        ...(options.signal ? { signal: options.signal } : {}),
+        env: { ...env, ...(route?.env ?? {}), ...leaseEnv, ...(followRedirects || route === null ? {} : noRedirects(route)) },
+        ...running,
       });
-      return { stdout, failure: null };
+      return { stdout: account(stdout), failure: null };
     } catch (error) {
       // `--porcelain` prints each ref's status on stdout, and that status
       // is what tells divergence from any other refusal. Read untrimmed:
       // the first line's flag may be a space.
       const raw = typeof error === "object" && error !== null ? (error as { stdout?: unknown }).stdout : undefined;
-      return { stdout: typeof raw === "string" ? raw : "", failure: error };
+      return { stdout: account(typeof raw === "string" ? raw : ""), failure: error };
     }
   };
   try {
+    // A repository that pushes its submodules on demand has them pushed
+    // with the refspec the push names, which in a submodule must name a
+    // ref of its own — and the commit EO sends names none. So they go
+    // first, as git would push them for a push of the branch by its name,
+    // and the push of the commit after them finds nothing of theirs left
+    // to push. Only the submodules: what this does at the remote itself is
+    // nothing, whatever git says of it, and the push after it says what
+    // happened there. Its own hooks run once, for that push, with what it
+    // sends.
+    if (await pushesSubmodulesOnDemand(repoPath)) {
+      await execFileAsync("git", composeGitArgs(["push", "--recurse-submodules=only", "--no-verify", "--quiet", remote, branch], process.platform), {
+        cwd: repoPath,
+        windowsHide: true,
+        maxBuffer: 32 * 1024 * 1024,
+        env,
+        ...running,
+      }).catch(() => undefined);
+    }
     let { stdout, failure } = await send(false);
     // Over HTTP every push of EO's follows no redirect, so the URL EO
     // records is the server that took it. One that failed before git
@@ -362,6 +385,46 @@ function noRedirects(route: PushRoute): Record<string, string> {
   const pin = `${shellWord(`http.${route.url}.followredirects`)}=${shellWord("false")}`;
   const given = process.env["GIT_CONFIG_PARAMETERS"];
   return { GIT_CONFIG_PARAMETERS: given !== undefined && given !== "" ? `${given} ${pin}` : pin };
+}
+
+/**
+ * Git's own account of a push from what it printed on stdout: for each
+ * URL, the `To` line and the ref's status line straight after the gate's
+ * `marker` — which the gate prints only once the push passed it and the
+ * repository's own hook, as the last thing before git sends — and nothing
+ * else. Hooks a configuration registers run before the gate, outside it,
+ * and print onto the same stdout, so a line one prints, even one that
+ * reads exactly like git's, is never taken for git's (EO-910).
+ */
+export function gitAccount(stdout: string, marker: string): string {
+  const lines = stdout.split("\n");
+  const kept: string[] = [];
+  lines.forEach((line, index) => {
+    const to = lines[index + 1];
+    const status = lines[index + 2];
+    if (line === marker && to?.startsWith("To ") && status !== undefined && status.includes("\t")) kept.push(to, status);
+  });
+  return kept.length === 0 ? "" : `${kept.join("\n")}\n`;
+}
+
+/**
+ * Whether a push from `repoPath` pushes the submodules' commits it needs
+ * on demand: `push.recurseSubmodules=on-demand`, or `submodule.recurse`
+ * true, whichever git reads last.
+ */
+async function pushesSubmodulesOnDemand(repoPath: string): Promise<boolean> {
+  const keys = await git(["config", "--name-only", "--get-regexp", "^(push\\.recursesubmodules|submodule\\.recurse)$"], repoPath);
+  if (!keys.ok) return false;
+  const last = keys.stdout.split("\n").at(-1)?.toLowerCase();
+  if (last === "push.recursesubmodules") {
+    const value = await git(["config", "--get", "push.recurseSubmodules"], repoPath);
+    return value.ok && value.stdout.toLowerCase() === "on-demand";
+  }
+  if (last === "submodule.recurse") {
+    const value = await git(["config", "--type=bool", "--get", "submodule.recurse"], repoPath);
+    return value.ok && value.stdout === "true";
+  }
+  return false;
 }
 
 /** What the gate saw of a push, or null where that cannot be read. */
@@ -500,7 +563,7 @@ interface GateSeen {
 async function openGate(
   repoPath: string,
   expect: { ref: string; source: string; head: string; route: PushRoute | null; lease: boolean },
-): Promise<{ dir: string; receivePack: string | null; seen: () => Promise<GateSeen>; close: () => Promise<void> } | null> {
+): Promise<{ dir: string; receivePack: string | null; marker: string; seen: () => Promise<GateSeen>; close: () => Promise<void> } | null> {
   const hooks = await hooksPath(repoPath);
   if (hooks === null) return null;
   // As git names it, joined as the system will follow it: `resolve` and
@@ -511,7 +574,12 @@ async function openGate(
   // made is a push EO runs no gate for, never one that throws.
   let dir: string;
   try {
-    dir = await mkdtemp(join(tmpdir(), "eo-push-"));
+    // Absolute, whatever the temporary directory is named by: git runs
+    // from the checkout, not from where EO runs, and a relative one would
+    // name somewhere else there. `mkdtemp` made it from EO's own working
+    // directory, which is a path with no symlink in it, and `join` already
+    // tidied the rest, so `resolve` names exactly the directory it made.
+    dir = resolve(await mkdtemp(join(tmpdir(), "eo-push-")));
   } catch {
     return null;
   }
@@ -531,9 +599,15 @@ async function openGate(
     if (lease && route !== null) await writeFile(join(marks, "url"), route.url);
     const bound = route !== null && route.local !== null && bindsLocalRepository();
     if (lease && bound) await writeFile(join(marks, "expect-at"), `${route.local}\n`);
-    const passOn = (name: string, stdin: string): string =>
-      [`h=${shellPath(`${own}/${name}`)}`, `if [ -f "$h" ] && [ -x "$h" ]; then exec "$h" "$@"${stdin} >&2; fi`, "exit 0"].join("\n");
-    for (const name of GIT_HOOKS) await writeFile(join(dir, name), `#!/bin/sh\n${passOn(name, "")}\n`, { mode: 0o755 });
+    const ownHook = (name: string): string => `h=${shellPath(`${own}/${name}`)}`;
+    const passOn = (name: string): string => [ownHook(name), `if [ -f "$h" ] && [ -x "$h" ]; then exec "$h" "$@" >&2; fi`, "exit 0"].join("\n");
+    for (const name of GIT_HOOKS) await writeFile(join(dir, name), `#!/bin/sh\n${passOn(name)}\n`, { mode: 0o755 });
+    // Printed once the push has passed every check here and the
+    // repository's own hook, as the last thing before git sends: hooks a
+    // configuration registers (`hook.<name>.event`) run before this one,
+    // outside it, and print onto the same stdout as git's account of the
+    // push, so only what follows this line is git's (`gitAccount`).
+    const marker = `EO-PUSH-GATE ${randomBytes(16).toString("hex")}`;
     const stop = (mark: string, why: string): string => `: > "$d/${mark}"; echo ${shellWord(`EO stopped the push: ${why}`)} >&2; exit 1`;
     const gate = [
       "#!/bin/sh",
@@ -561,7 +635,11 @@ async function openGate(
             `elif [ -f "$d/at.$n" ]; then ${stop("elsewhere", "it is not going where EO checked.")}; fi`,
           ]
         : []),
-      passOn("pre-push", ' < "$d/in.$n"'),
+      ownHook("pre-push"),
+      'if [ -f "$h" ] && [ -x "$h" ]; then "$h" "$@" < "$d/in.$n" >&2 || exit $?; fi',
+      // On a line of its own, whatever a hook before it left unfinished.
+      `printf '\\n%s\\n' ${shellWord(marker)}`,
+      "exit 0",
       "",
     ].join("\n");
     const prePush = join(dir, "pre-push");
@@ -615,7 +693,7 @@ async function openGate(
       }
       return { pushes, moved: names.includes("moved"), routed: names.includes("routed"), elsewhere: names.includes("elsewhere") };
     };
-    return { dir, receivePack, seen, close };
+    return { dir, receivePack, marker, seen, close };
   } catch {
     await close();
     return null;
