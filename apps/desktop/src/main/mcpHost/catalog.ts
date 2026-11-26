@@ -2688,9 +2688,10 @@ const ROLE_ACTION_SAVE_TOOL: ToolSpec = channelTool({
     "session to write memory notes and skills from it, which costs a turn on the run's backend; leave it out to keep what " +
     "is set (on, where nothing is), and set it false for an action whose runs rarely teach anything. To change only that " +
     "setting, send `role`, `action` and `learningReview` with no `results`: this is how it is changed on an action a pack " +
-    "ships for the role (the reviewer's `review` ships with it off) or one EO runs for itself (respond, interpret, assist, " +
-    "scenario, clarify), and it changes nothing else about the action. registry_get says `learning review: off` on an " +
-    "action where it is off. " +
+    "ships for the role (the reviewer's `review` ships with it off), on a pack action another role ships that this role " +
+    "runs (a custom role running `review` starts as the pack ships it, off, and is set for that role alone), or on one " +
+    "EO runs for itself (respond, interpret, assist, scenario, clarify), and it changes nothing else about the action. " +
+    "registry_get says `learning review: off` on an action where it is off, and lists the settings on the other two kinds. " +
     "EO generates the answer shape from this: `result` as exactly the declared keys, a required `summary` it posts " +
     "to the thread, then the fields — so no field may be named `result` or `summary`. Refused, with every reason and " +
     "nothing written: no results, a repeated key, fields that are not a schema EO can read, an action EO runs for " +

@@ -943,14 +943,20 @@ export function renderRegistry(data: IpcResponse<"registry:get">): string {
     }),
   );
 
-  // Settings on actions not in the catalog above — one EO runs for
-  // itself, such as `assist` — said here, or nowhere (EO-911).
+  // Settings on pairs not in the catalog above, said here or nowhere
+  // (EO-911): a pack action another role ships, which this role runs as
+  // the pack ships it — so its default is the pack's — and one EO runs
+  // for itself, such as `assist`.
   const listed = new Set(
     [...data.roles.map((role) => ({ role: role.slug, actions: role.actions ?? [] })), ...(data.roleActions ?? [])].flatMap(({ role, actions }) =>
       actions.map((action) => `${role} ${action.action}`),
     ),
   );
-  const otherSettings = settings.filter((entry) => !listed.has(`${entry.role} ${entry.action}`));
+  const packActions = new Set(data.roles.flatMap((role) => (role.actions ?? []).map((action) => action.action)));
+  const unlisted = settings.filter((entry) => !listed.has(`${entry.role} ${entry.action}`));
+  const inheritedSettings = unlisted.filter((entry) => packActions.has(entry.action));
+  const otherSettings = unlisted.filter((entry) => !packActions.has(entry.action));
+  const settingLines = (entries: typeof settings) => list(entries.map((entry) => `- ${entry.role} / ${entry.action}: learning review ${entry.learningReview ? "on" : "off"}`), "None.");
 
   return [
     "Built-in roles:",
@@ -959,16 +965,14 @@ export function renderRegistry(data: IpcResponse<"registry:get">): string {
       "None.",
     ),
     "",
-    ...(otherSettings.length === 0
+    ...(inheritedSettings.length === 0
       ? []
       : [
-          "Learning review settings on actions EO runs for itself, by role:",
-          list(
-            otherSettings.map((entry) => `- ${entry.role} / ${entry.action}: learning review ${entry.learningReview ? "on" : "off"}`),
-            "None.",
-          ),
+          "Learning review settings on pack actions a role runs that another role ships (where none is set, as the pack ships it), by role:",
+          settingLines(inheritedSettings),
           "",
         ]),
+    ...(otherSettings.length === 0 ? [] : ["Learning review settings on actions EO runs for itself, by role:", settingLines(otherSettings), ""]),
     "Actions an agent step can dispatch, by role, with the result keys each can return — a step must route every one:",
     list(catalog, "None."),
     "",

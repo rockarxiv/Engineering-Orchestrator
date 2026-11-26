@@ -227,6 +227,27 @@ describe("the list", () => {
     expect(within(within(own).getByRole("listitem", { name: "respond" })).getByLabelText("Learning review after each run of respond")).toBeChecked();
   });
 
+  it("sets the pack's review for a custom role running it, apart from the reviewer's, starting as the pack ships it (EO-911)", async () => {
+    const calls = renderSections({}, "qa");
+    const inherited = await screen.findByRole("list", { name: "Pack actions this role can also run" });
+    const review = within(inherited).getByRole("listitem", { name: "review" });
+    expect(within(review).getByText(/ships with reviewer, with the learning review off/)).toBeInTheDocument();
+    const setting = within(review).getByLabelText("Learning review after each run of review");
+    expect(setting).not.toBeChecked();
+    expect(within(within(inherited).getByRole("listitem", { name: "implement" })).getByLabelText("Learning review after each run of implement")).toBeChecked();
+
+    fireEvent.click(setting);
+    await waitFor(() => expect(saves(calls)).toEqual([{ role: "qa", action: "review", learningReview: true }]));
+    await waitFor(() => expect(within(review).getByLabelText("Learning review after each run of review")).toBeChecked());
+  });
+
+  it("lists no pack action the role ships itself among the ones it can also run (EO-911)", async () => {
+    renderSections({}, "reviewer");
+    const inherited = await screen.findByRole("list", { name: "Pack actions this role can also run" });
+    expect(within(inherited).queryByRole("listitem", { name: "review" })).toBeNull();
+    expect(within(inherited).getByRole("listitem", { name: "implement" })).toBeInTheDocument();
+  });
+
   it("offers no setting that would do nothing under a lock (EO-911)", async () => {
     renderSections({ locked: true }, "reviewer");
     const review = await row("review");

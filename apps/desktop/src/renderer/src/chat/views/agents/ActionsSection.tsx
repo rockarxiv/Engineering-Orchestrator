@@ -42,7 +42,8 @@ import {
  *
  * Whether each action's runs get a learning review (EO-911) is the one
  * thing that can be changed on every action the role runs: a pack's own,
- * the role's, and the ones EO runs for itself, such as `assist`. It is a
+ * the role's, a pack action another role ships, and the ones EO runs for
+ * itself, such as `assist`. It is a
  * setting on the pair rather than part of the action — a pack's action
  * keeps its shape — and is saved through `roleActions:save` with no
  * results, which writes the setting and nothing else.
@@ -742,6 +743,40 @@ function ShippedAction({ role, action, reviewed, readOnly, onClose }: { role: st
 }
 
 /**
+ * The pack's actions another role ships that this role can still be
+ * dispatched on (EO-911, `actionsAvailableTo`): a custom `qa` role on a
+ * step running `review` runs the pack's review. Their setting is this
+ * role's alone — the reviewer's `review` is another pair — and where none
+ * is set, it is what the pack ships, so `qa`'s `review` starts off.
+ */
+function InheritedActions({ role, view, inherited, locked }: { role: string; view: RegistryView; inherited: readonly { action: ActionView; from: string }[]; locked: boolean }) {
+  if (inherited.length === 0) return null;
+  return (
+    <div className="flex min-w-0 flex-col gap-1.5 pt-2">
+      <span className="text-[12px] font-medium text-ink-muted">Pack actions this role can also run</span>
+      <p className="text-[11.5px] leading-snug text-ink-subtle">
+        Each ships with another role, and a step can dispatch this role on it, which then runs it as the pack ships it. Only whether this role&apos;s runs of it are
+        reviewed for what to remember can be changed here, for this role alone.
+      </p>
+      <ul aria-label="Pack actions this role can also run" className="flex min-w-0 flex-col gap-1.5">
+        {inherited.map(({ action, from }) => (
+          <li key={action.action} aria-label={action.action} className="flex min-w-0 flex-col gap-1">
+            <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+              <span className="font-mono text-[13px] text-ink">{action.action}</span>
+              <span className="text-[11.5px] text-ink-subtle">
+                ships with {from}
+                {action.learningReview === false ? ", with the learning review off" : ""}
+              </span>
+            </div>
+            <SettingOnly role={role} action={action.action} checked={reviewedIn(view, role, action.action, action.learningReview)} readOnly={locked} compact />
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+/**
  * The actions EO runs for itself with an agent of this role (EO-911) —
  * answering a mention, a turn of the assistant's chat, a scenario chat —
  * which no step dispatches and nobody defines. Their learning review
@@ -780,6 +815,15 @@ export function ActionsSection({ role, locked, reveal = false }: { role: string;
   const shipped = view.data?.roles.find((entry) => entry.slug === role)?.actions ?? [];
   const own = view.data?.roleActions?.find((entry) => entry.role === role)?.actions ?? [];
   const actions = [...shipped, ...own];
+  // Every other pack action, first shipped first, as `actionsAvailableTo` offers it — never one this role ships or defined.
+  const inherited: { action: ActionView; from: string }[] = [];
+  for (const entry of view.data?.roles ?? []) {
+    if (entry.slug === role) continue;
+    for (const action of entry.actions ?? []) {
+      if (actions.some((mine) => mine.action === action.action) || inherited.some((seen) => seen.action.action === action.action)) continue;
+      inherited.push({ action, from: entry.slug });
+    }
+  }
   const opened = open === null || open === NEW ? null : (actions.find((entry) => entry.action === open) ?? null);
 
   return (
@@ -855,6 +899,7 @@ export function ActionsSection({ role, locked, reveal = false }: { role: string;
 
       {open === NEW && !locked ? <ActionEditor key="new" role={role} existing={null} reviewed readOnly={false} onClose={() => setOpen(null)} /> : null}
 
+      {view.data !== undefined ? <InheritedActions role={role} view={view.data} inherited={inherited} locked={locked} /> : null}
       {view.data !== undefined ? <EoActions role={role} view={view.data} locked={locked} /> : null}
     </CardSection>
     </div>

@@ -218,7 +218,7 @@ import {
   getStep,
   listActiveRuns,
   listNewestRunPerItem,
-  newestRunWithEvent,
+  learningReviewProgress,
   activeRunForItem,
   unwrittenReviewNotes,
   getMemory,
@@ -3264,26 +3264,6 @@ export function createRunSupervisor(
   }
 
   /**
-   * An assistant chat's run, as it ends (EO-911): where the `assist`
-   * action's learning review is off, its skip is recorded now, as a step
-   * run's is — which is also what tells `reviewQuietChats` the chat owes
-   * nothing for it. Where it is on, nothing is done here: the chat is
-   * reviewed once it has gone quiet (EO-788).
-   */
-  function recordChatReviewSkip(runId: Uuid, item: Item, agent: Agent): void {
-    if (shuttingDown) return;
-    try {
-      const run = getRun(db, runId);
-      if (!run) return;
-      const current = getItem(db, item.id) ?? item;
-      const asked = learningReviewAsked(run, current, agent, ASSIST_ACTION, turnMemoryScopes(current));
-      if ("skip" in asked && asked.skip === "action_off") recordReviewSkipped(runId, asked.review, agent, ASSIST_ACTION);
-    } catch (error) {
-      console.warn(`[eo] EO could not ask whether the chat run ${runId} is reviewed: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  }
-
-  /**
    * EO's pass over the agent skills nobody loads (EO-720), after a run on
    * a project: those within the project's reach given `skillArchiveAfterRuns`
    * runs in a row without a load are archived, and nothing is posted (EO-728).
@@ -3685,9 +3665,13 @@ export function createRunSupervisor(
         const item = getItem(db, itemId);
         if (!item) continue;
         const scopes = turnMemoryScopes(item);
+        // A run skipped for its action's setting is accounted for by its
+        // own event, and moves no cutoff (EO-911).
+        const progress = learningReviewProgress(db, itemId);
         const chat = quietChatReview({
           runs: listRunsForItem(db, itemId).filter((run) => run.action === ASSIST_ACTION),
-          reviewedThrough: newestRunWithEvent(db, itemId, LEARNING_REVIEW_EVENT),
+          reviewedThrough: progress.reviewedThrough,
+          skipped: progress.skipped,
           now: at,
           idleMs: CHAT_IDLE_BEFORE_REVIEW_MS,
           reviewFor: (run) => {
@@ -3695,7 +3679,11 @@ export function createRunSupervisor(
             const ranAs = run.agentId === null ? undefined : getAgent(db, run.agentId);
             if (!ranAs) return null;
             const asked = learningReviewAsked(run, item, ranAs, run.action, scopes);
-            return "skip" in asked ? null : asked.review;
+            // Off for the action (EO-911) is still owed: once the chat is
+            // quiet, its skip is recorded where its review would have run
+            // (`reviewQuietThread`), which asks the setting again then.
+            if ("skip" in asked) return asked.skip === "action_off" ? asked.review : null;
+            return asked.review;
           },
         });
         if (chat.kind === "settled") settledChats.set(itemId, newest);
@@ -3767,6 +3755,14 @@ export function createRunSupervisor(
       const agent = run.agentId === null ? undefined : getAgent(db, run.agentId);
       if (!agent) throw new Error("the agent that ran it is gone");
       const current = getItem(db, item.id) ?? item;
+      // Asked again before each thread's fork (EO-911): a person may have
+      // turned `assist`'s learning review off since the chat went quiet,
+      // or while an earlier thread was being reviewed. Then nothing is
+      // forked, and each run the review would have covered says why.
+      if (!actionLearningReviewed(registryFor(current), definingRole(current, agent), ASSIST_ACTION)) {
+        for (const runId of thread.runIds) recordReviewSkipped(runId, thread.review, agent, ASSIST_ACTION);
+        return;
+      }
       // What a turn of the agent's would be given now: the run's own is
       // not kept once it ends, and is not there after a restart.
       const toolDirectory = prepareToolDirectory(current, agent);
@@ -6245,8 +6241,10 @@ export function createRunSupervisor(
       // skill would start the chat's next message on a new thread, and
       // would hold the slot a quick reply waits for. The chat is reviewed
       // once it has gone quiet (`reviewQuietChats`).
+      // Whether `assist`'s learning review is off (EO-911) is asked then,
+      // before each thread's fork, so the setting that counts is the one
+      // in force when the review would run.
       if (args[3] !== ASSIST_ACTION) await reviewAfterRun(run.id, item, agent, args[3], args[7]);
-      else recordChatReviewSkip(run.id, item, agent);
       // The run moved the counts of the skills it was given (EO-720).
       await archiveAfterRun(item);
     } finally {

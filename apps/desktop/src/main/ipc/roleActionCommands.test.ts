@@ -242,6 +242,19 @@ describe("role_action_save", () => {
     expect(getActionLearningReview(handle.db, "reviewer", "review")).toBeUndefined();
   });
 
+  it("sets the learning review of a pack action a custom role runs for that role alone, and lists it as an inherited pack setting (EO-911)", async () => {
+    const on = answered(await tool("role_action_save").run(dispatch, { role: "qa", action: "review", learningReview: true }));
+    expect(on.refused).toBe(false);
+    expect(getActionLearningReview(handle.db, "qa", "review")).toBe(true);
+    // The reviewer's own is untouched, and nothing was defined for qa.
+    expect(getActionLearningReview(handle.db, "reviewer", "review")).toBeUndefined();
+    expect(listActionDefinitions(handle.db)).toEqual([]);
+
+    const read = answered(await tool("registry_get").run(dispatch, {}));
+    expect(read.text).toMatch(/Learning review settings on pack actions a role runs that another role ships[^\n]*\n- qa \/ review: learning review on/);
+    expect(read.text).not.toContain("Learning review settings on actions EO runs for itself");
+  });
+
   it("forgets a definition's setting with the definition (EO-911)", async () => {
     answered(await tool("role_action_save").run(dispatch, { ...ALIGNMENT, learningReview: false }));
     answered(await tool("role_action_delete").run(dispatch, { role: "qa", action: "alignment" }));

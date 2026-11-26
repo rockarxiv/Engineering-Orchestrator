@@ -266,7 +266,7 @@ export {
   listRunsForItem,
   latestRunForItem,
   listNewestRunPerItem,
-  newestRunWithEvent,
+  learningReviewProgress,
   markRunSynced,
   personCostCentsSince,
   runsNeedingSync,

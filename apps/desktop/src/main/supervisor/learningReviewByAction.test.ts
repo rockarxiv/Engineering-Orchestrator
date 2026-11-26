@@ -6,8 +6,10 @@ import { CHAT_IDLE_BEFORE_REVIEW_MS, FOLDER_KIND, LEARNING_REVIEW_EVENT, SYSTEM_
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DbHandle } from "../db/client.js";
 import {
+  appendRunEvent,
   createProject,
   createRoute,
+  createRun,
   createStep,
   createWorkspace,
   getItem,
@@ -19,6 +21,7 @@ import {
   saveActionDefinition,
   setActionLearningReview,
   updateAgent,
+  updateRun,
 } from "../db/repos/index.js";
 import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import { createClaudeProvider } from "../providers/claude.js";
@@ -28,6 +31,7 @@ import { startTestWriteBridge, type TestWriteBridge } from "../testing/agentWrit
 import { openAssistConversation, postAssistReply } from "../roles/assist.js";
 import { ASSIST_ACTION } from "../roles/conversationSteps.js";
 import { fakeAppServer, note } from "../testing/fakeCodexAppServer.js";
+import { learningReviewSkippedEvent } from "../memory/learningReview.js";
 import { createRunSupervisor } from "./runSupervisor.js";
 
 /**
@@ -46,7 +50,8 @@ import { createRunSupervisor } from "./runSupervisor.js";
  * the setting on is the case that shows the count can be other than
  * zero. And an assistant chat's `assist`, which EO runs for itself and
  * reviews once the chat has gone quiet (EO-788): the setting is on the
- * system agent's role, and it is said on the run as the turn ends.
+ * system agent's role, and is asked as each thread's review would start,
+ * so a setting changed since the turn ended is the one that counts.
  */
 const LIMITS = { globalConcurrency: 1, perAgentConcurrency: 1, perRepositoryConcurrency: 1 };
 const EXECUTABLE = "/opt/eo/runtimes/codex/bin/codex";
@@ -232,9 +237,15 @@ describe.each<BackendName>(["claude", "codex"])("the learning review of an assis
     rmSync(folder, { recursive: true, force: true });
   });
 
-  /** The person's message to the system agent, the turn it starts, and then the chat left quiet past the idle time. */
-  async function chatThenQuiet(over: Backend): Promise<void> {
-    const system = listAgents(handle.db).find((agent) => agent.role === SYSTEM_ROLE)!;
+  const systemAgent = () => listAgents(handle.db).find((agent) => agent.role === SYSTEM_ROLE)!;
+
+  /**
+   * The person's message to the system agent, the turn it starts, and then
+   * the chat left quiet past the idle time — with `meanwhile` done between
+   * the turn's end and the chat going quiet.
+   */
+  async function chatThenQuiet(over: Backend, meanwhile: () => void = () => {}): Promise<void> {
+    const system = systemAgent();
     updateAgent(handle.db, system.id, { provider: name });
     const supervisor = createRunSupervisor({
       db: handle.db,
@@ -250,6 +261,7 @@ describe.each<BackendName>(["claude", "codex"])("the learning review of an assis
     writes.serve(supervisor);
     postComment(handle.db, { itemId: chat.id, author: { type: "human" }, body: "What does the export hold?", mentions: [{ type: "agent", agentId: system.id }] });
     await supervisor.runOnce();
+    meanwhile();
     clock += CHAT_IDLE_BEFORE_REVIEW_MS + 1_000;
     await supervisor.runOnce();
     for (let i = 0; i < 20; i += 1) await new Promise((resolve) => setTimeout(resolve, 5));
@@ -260,7 +272,7 @@ describe.each<BackendName>(["claude", "codex"])("the learning review of an assis
   const chatRuns = () => listRunsForItem(handle.db, chat.id).filter((run) => run.action === ASSIST_ACTION);
   const reviewEvents = () => chatRuns().flatMap((run) => listRunEvents(handle.db, run.id).filter((event) => event.type === LEARNING_REVIEW_EVENT).map((event) => event.payload));
 
-  it("records the skip as the turn ends and forks nothing once the chat is quiet, where assist's learning review is off", async () => {
+  it("records the skip and forks nothing once the chat is quiet, where assist's learning review is off", async () => {
     setActionLearningReview(handle.db, SYSTEM_ROLE, ASSIST_ACTION, false);
     const over = backend(name, CHAT_ANSWER);
 
@@ -281,5 +293,94 @@ describe.each<BackendName>(["claude", "codex"])("the learning review of an assis
     expect(chatRuns().map((run) => run.status)).toEqual(["succeeded"]);
     expect(over.forks()).toBe(1);
     expect(reviewEvents()).toEqual([expect.objectContaining({ outcome: "nothing_to_save" })]);
+  });
+
+  it("records the skip of a review still owed when assist's learning review is turned off after the turn ended", async () => {
+    const over = backend(name, CHAT_ANSWER);
+
+    await chatThenQuiet(over, () => setActionLearningReview(handle.db, SYSTEM_ROLE, ASSIST_ACTION, false));
+
+    expect(over.turns()).toBe(1);
+    expect(over.forks()).toBe(0);
+    expect(listSideCalls(handle.db)).toEqual([]);
+    expect(reviewEvents()).toEqual([expect.objectContaining({ outcome: "skipped", skip: "action_off", forkThreadId: null })]);
+  });
+
+  it("reviews a run that ended with the setting off where it is turned back on before the chat is quiet", async () => {
+    setActionLearningReview(handle.db, SYSTEM_ROLE, ASSIST_ACTION, false);
+    const over = backend(name, CHAT_ANSWER);
+
+    await chatThenQuiet(over, () => setActionLearningReview(handle.db, SYSTEM_ROLE, ASSIST_ACTION, true));
+
+    expect(over.forks()).toBe(1);
+    expect(reviewEvents()).toEqual([expect.objectContaining({ outcome: "nothing_to_save" })]);
+  });
+
+  /** An `assist` run of the system agent's on its own thread, ended long enough ago for the chat to be quiet. */
+  function endedChatRun(threadId: string): Uuid {
+    const run = createRun(handle.db, { itemId: chat.id, agentId: systemAgent().id, action: ASSIST_ACTION, status: "succeeded", threadId, provider: name, cwd: folder });
+    updateRun(handle.db, run.id, { endedAt: clock - CHAT_IDLE_BEFORE_REVIEW_MS - 1_000 });
+    return run.id;
+  }
+
+  async function quietPass(provider: AgentProvider): Promise<void> {
+    const supervisor = createRunSupervisor({
+      db: handle.db,
+      provider,
+      limits: LIMITS,
+      now: () => clock,
+      agentWriteBridge: writes.agentWriteBridge,
+      sideCalls: { provider: () => provider, smallModel: async () => null },
+    });
+    writes.serve(supervisor);
+    await supervisor.runOnce();
+    for (let i = 0; i < 20; i += 1) await new Promise((resolve) => setTimeout(resolve, 5));
+    await supervisor.runOnce();
+    await supervisor.shutdown();
+  }
+
+  const eventsOf = (runId: Uuid) => listRunEvents(handle.db, runId).filter((event) => event.type === LEARNING_REVIEW_EVENT).map((event) => event.payload);
+
+  it("asks the setting again before each thread's fork, so turning it off during one thread's review starts no other", async () => {
+    updateAgent(handle.db, systemAgent().id, { provider: name });
+    const first = endedChatRun("thread-a");
+    const second = endedChatRun("thread-b");
+    const over = backend(name, CHAT_ANSWER);
+    // The person turns it off while the first thread's review is under way.
+    const provider = new Proxy(over.provider, {
+      get(target, property) {
+        const value: unknown = Reflect.get(target, property, target);
+        if (property === "fork" && typeof value === "function") {
+          return (...args: unknown[]) => {
+            setActionLearningReview(handle.db, SYSTEM_ROLE, ASSIST_ACTION, false);
+            return (value as (...a: unknown[]) => unknown).apply(target, args);
+          };
+        }
+        return typeof value === "function" ? (value as (...a: unknown[]) => unknown).bind(target) : value;
+      },
+    });
+
+    await quietPass(provider);
+
+    expect(over.forks()).toBe(1);
+    expect(eventsOf(first)).toEqual([expect.objectContaining({ outcome: "nothing_to_save" })]);
+    expect(eventsOf(second)).toEqual([expect.objectContaining({ outcome: "skipped", skip: "action_off", forkThreadId: null })]);
+  });
+
+  it("reviews an older thread's run that is still owed, where a newer thread's run carries a skip (the skip settles its own run only)", async () => {
+    updateAgent(handle.db, systemAgent().id, { provider: name });
+    // Thread A's run ended with reviews on and has not been reviewed; thread
+    // B's carries the skip of a review turned off for it; reviews are on now.
+    const older = endedChatRun("thread-a");
+    const newer = endedChatRun("thread-b");
+    appendRunEvent(handle.db, newer, LEARNING_REVIEW_EVENT, learningReviewSkippedEvent("full", SYSTEM_ROLE, ASSIST_ACTION));
+    const over = backend(name, CHAT_ANSWER);
+
+    await quietPass(over.provider);
+
+    expect(over.forks()).toBe(1);
+    expect(eventsOf(older)).toEqual([expect.objectContaining({ outcome: "nothing_to_save" })]);
+    // B is not reviewed again on top of its skip.
+    expect(eventsOf(newer)).toEqual([expect.objectContaining({ outcome: "skipped", skip: "action_off" })]);
   });
 });
