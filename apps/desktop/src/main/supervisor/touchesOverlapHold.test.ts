@@ -16,6 +16,9 @@ import {
   updateStep,
 } from "../db/repos/index.js";
 import { createPipelineVersion, ensureCurrentVersion } from "../db/repos/pipelineVersionsRepo.js";
+import { addWorkspaceToProject } from "../db/repos/projectsRepo.js";
+import { createWorkspace } from "../db/repos/workspacesRepo.js";
+import { planVersionMove, writeVersionMove } from "../record/versionMove.js";
 import { pipelineSteps } from "../db/schema.js";
 import { attachWorkspace, createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import { getItemDetail, listItemSummaries } from "../ipc/domainQueries.js";
@@ -60,6 +63,15 @@ function supervisorWith(kinds: ReadonlyMap<WorkspaceKindSlug, WorkspaceKind>): R
   });
 }
 
+/** The steps each item was dispatched at, as `listDispatchSteps` finds them: one per item, whatever definitions of it there are. */
+function dispatchedSteps(...items: Item[]): Map<string, Set<string>> {
+  const steps = new Map<string, Set<string>>();
+  for (const [itemId, definitions] of listDispatchSteps(handle.db, items.map((item) => item.id))) {
+    steps.set(itemId, new Set(definitions.map((definition) => definition.stepId)));
+  }
+  return steps;
+}
+
 function cardLine(): string | null | undefined {
   return listItemSummaries(handle.db, held.projectId).items.find((item) => item.id === held.id)?.dispatchHold;
 }
@@ -90,7 +102,7 @@ afterEach(() => {
 
 describe("an item whose touches overlap an item in flight", () => {
   it("is not dispatched, the thread and the card say which item and path, and no dependency is written", async () => {
-    expect(listDispatchSteps(handle.db)).toEqual(new Map([[holder.id, new Set(["review"])]]));
+    expect(dispatchedSteps(holder, held)).toEqual(new Map([[holder.id, new Set(["review"])]]));
     const engine = supervisor();
     await engine.runOnce();
     await engine.runOnce();
@@ -142,7 +154,7 @@ describe("what counts as dispatched", () => {
     createRun(handle.db, { itemId: talkedTo.id, agentId: null, action: "respond", stepId: "todo", status: "succeeded", threadId: "thread-2" });
     const refused = createTestItem(handle.db, { type: "story", title: "Refused", stepId: "review" });
     createRun(handle.db, { itemId: refused.id, agentId: null, action: "review", stepId: "review", status: "awaiting_input" });
-    expect(listDispatchSteps(handle.db)).toEqual(new Map([[holder.id, new Set(["review"])]]));
+    expect(dispatchedSteps(holder, held, talkedTo, refused)).toEqual(new Map([[holder.id, new Set(["review"])]]));
   });
 
   it("is judged by the step's action as it was defined, so editing the action takes nothing out of flight", async () => {
@@ -152,11 +164,11 @@ describe("what counts as dispatched", () => {
     const entered = getItem(handle.db, holder.id)?.pipelineVersionId;
     expect(entered).not.toBeNull();
     handle.db.update(pipelineSteps).set({ entryAction: "review_again" }).where(eq(pipelineSteps.id, "review")).run();
-    expect(listDispatchSteps(handle.db).get(holder.id)).toEqual(new Set(["review"]));
+    expect(dispatchedSteps(holder).get(holder.id)).toEqual(new Set(["review"]));
 
     createPipelineVersion(handle.db, "default");
     expect(getItem(handle.db, holder.id)?.pipelineVersionId).toBe(entered);
-    expect(listDispatchSteps(handle.db).get(holder.id)).toEqual(new Set(["review"]));
+    expect(dispatchedSteps(holder).get(holder.id)).toEqual(new Set(["review"]));
 
     await supervisor().runOnce();
     expect(openPullRequest).not.toHaveBeenCalled();
@@ -211,7 +223,7 @@ describe("in flight where it worked", () => {
   it("does not let a run on no disk count as started: the item is still held where it would change files", async () => {
     createStep(handle.db, { id: "draft", pipelineId: "default" as Uuid, position: 20, name: "Draft", type: "builtin", entryAction: "draft", workspaceId: NO_WORKSPACE });
     createRun(handle.db, { itemId: held.id, agentId: null, action: "draft", stepId: "draft", status: "succeeded" });
-    expect(listDispatchSteps(handle.db).get(held.id)).toEqual(new Set(["draft"]));
+    expect(dispatchedSteps(held).get(held.id)).toEqual(new Set(["draft"]));
     expect(dispatchedPlaces(handle.db, [held], (item) => workspaceFor(handle.db, item)?.id ?? null).has(held.id)).toBe(false);
     setItemHeld(handle.db, holder.id, 1);
 
@@ -219,5 +231,53 @@ describe("in flight where it worked", () => {
     await engine.runOnce();
     expect(openPullRequest).not.toHaveBeenCalled();
     expect(engine.dispatchBlockerFor(held.id)).toMatchObject({ kind: "touches_overlap", holderId: holder.id });
+  });
+
+  it("keeps holding after the holder is moved to a version whose step works on no disk: it worked in the repository under the one before", async () => {
+    // Under the version it entered on, `review` worked in the repository.
+    const entered = ensureCurrentVersion(handle.db, "default");
+    expect(getItem(handle.db, holder.id)?.pipelineVersionId).toBe(entered?.id);
+    // A later version says `review` works on no disk, and a person moves the holder onto it.
+    updateStep(handle.db, "review", { workspaceId: NO_WORKSPACE });
+    const later = createPipelineVersion(handle.db, "default");
+    const plan = planVersionMove(handle.db, getItem(handle.db, holder.id)!, later.number);
+    if (!plan.ok) throw new Error(plan.problem);
+    writeVersionMove(handle.db, { item: getItem(handle.db, holder.id)!, move: plan, by: "you", note: "" });
+    setItemHeld(handle.db, holder.id, 1);
+    const moved = getItem(handle.db, holder.id)!;
+    expect(moved.pipelineVersionId).toBe(later.id);
+    expect(workspaceFor(handle.db, moved)).toBeUndefined();
+    expect(dispatchedPlaces(handle.db, [moved], (item) => workspaceFor(handle.db, item)?.id ?? null)).toEqual(new Map([[holder.id, new Set([repository])]]));
+
+    const engine = supervisorWith(repositoryKinds());
+    await engine.runOnce();
+    expect(openPullRequest).not.toHaveBeenCalled();
+    expect(engine.dispatchBlockerFor(held.id)).toMatchObject({ kind: "touches_overlap", holderId: holder.id });
+    expect(cardLine()).toBe(`Waits for ${holder.key}, which also changes packages/core/src/ipc.ts`);
+  });
+
+  it("holds an item under way in one repository as it enters another where an overlapping item is under way", async () => {
+    // A second repository on the same project. The holder reviewed in it;
+    // the held item implemented in the first, and now stands on a step
+    // that works in the second.
+    const second = createWorkspace(handle.db, { config: { name: "web", repoPath: "/tmp/eo/web" } });
+    addWorkspaceToProject(handle.db, held.projectId!, second.id);
+    updateStep(handle.db, "review", { workspaceId: second.id });
+    updateStep(handle.db, "merge_request", { workspaceId: second.id });
+    createRun(handle.db, { itemId: held.id, agentId: null, action: "implement", stepId: "todo", status: "succeeded", threadId: "thread-3" });
+    setItemHeld(handle.db, holder.id, 1);
+    const places = dispatchedPlaces(handle.db, [getItem(handle.db, holder.id)!, getItem(handle.db, held.id)!], (item) => workspaceFor(handle.db, item)?.id ?? null);
+    expect(places).toEqual(new Map([[holder.id, new Set([second.id])], [held.id, new Set([repository])]]));
+
+    const engine = supervisorWith(repositoryKinds());
+    await engine.runOnce();
+    expect(openPullRequest).not.toHaveBeenCalled();
+    expect(engine.dispatchBlockerFor(held.id)).toMatchObject({ kind: "touches_overlap", holderId: holder.id });
+    expect(cardLine()).toBe(`Waits for ${holder.key}, which also changes packages/core/src/ipc.ts`);
+
+    // And it goes once the holder finishes.
+    transitionItem(handle.db, { itemId: holder.id, toStepId: "ready_to_merge", actor: "human" });
+    await engine.runOnce();
+    expect(openPullRequest).toHaveBeenCalledTimes(1);
   });
 });

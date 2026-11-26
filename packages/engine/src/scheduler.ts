@@ -212,22 +212,22 @@ export interface EligibilityInput<R extends DispatchRefusal = DispatchRefusal> {
   /**
    * Where each item has been dispatched (EO-912): for an item dispatched
    * at least once at a step of its own, the places — buckets, as
-   * `capacityKeyOf` answers them — of the steps it was dispatched at,
-   * each worked out by the host for that step rather than for the one
-   * the item stands on now, since this package reads no table. A step
-   * that works on no shared disk has no place and is not listed.
+   * `capacityKeyOf` answers them — that it worked in, worked out by the
+   * host from evidence of each dispatch rather than from the step the
+   * item stands on now, since this package reads no table. A dispatch
+   * that worked on no shared disk has no place and is not listed.
    *
    * With a step that is not terminal, that is what *in flight in a
    * place* means: work has started there, and whatever it changed is
    * not finished with yet — whichever step the item has gone on to,
    * a step that works on no disk included, since its changes are still
    * where it made them. Such an item holds back, by `touches_overlap`,
-   * an item with no place listed at all whose current place is one of
-   * these and whose `touches` overlap its own. An item with a place
-   * listed is never held by it, whatever it overlaps, so two items that
-   * both started before the rule existed both carry on rather than wait
-   * for each other for ever; and an item whose only dispatches worked on
-   * no disk has neither changed anything nor started anywhere, so it
+   * an item about to work in one of these places for the first time
+   * whose `touches` overlap its own (`touchesHolds`). An item is never
+   * held in a place it is listed in, whatever it overlaps there, so two
+   * that both started there before the rule existed both carry on
+   * rather than wait for each other for ever; and an item whose only
+   * dispatches worked on no disk has changed nothing anywhere, so it
    * holds nothing and is held at the first place it would work in.
    * Absent is nobody dispatched anywhere, which holds nothing.
    */
@@ -357,17 +357,18 @@ export type DispatchBlocker<R extends DispatchRefusal = DispatchRefusal> =
    */
   | { kind: "open_dependency"; dependsOnId: string; wait: Exclude<DependencyWait, "none">; waitStepId: string | null }
   /**
-   * It has not been dispatched in any place, and the paths it declares
-   * overlap, by `touchesOverlap`, those of `holderId` — an item in
-   * flight in the place this one would work in (EO-912, `dispatchedIn`). `path` is this item's
-   * entry and `holderPath` the holder's it overlaps, which are the same
-   * string where both name one file.
+   * It has not been dispatched in the place it would work in now, and
+   * the paths it declares overlap, by `touchesOverlap`, those of
+   * `holderId` — an item in flight in that place (EO-912,
+   * `dispatchedIn`, `touchesHolds`). `path` is this item's entry and
+   * `holderPath` the holder's it overlaps, which are the same string
+   * where both name one file.
    *
    * Lifts by itself once the holder finishes or leaves flight. Derived
    * on every ask from the items themselves, never stored and never an
    * edge: the plan's own dependencies are the only rows there are, and
-   * an edge between the two either way exempts the pair, because then
-   * the edge says how they are ordered.
+   * a dependency path between the two either way exempts the pair,
+   * because then the edges say how they are ordered.
    */
   | ({ kind: "touches_overlap" } & TouchesHold)
   /** Its most recent run parked waiting for a reply. */
@@ -450,8 +451,8 @@ export interface TouchesClaim {
  * explaining a card asks the very function the scheduler decides with.
  *
  * `inFlight` is the claims in this item's place only — the caller
- * knows what a place is, and this does not. `related` answers whether a
- * dependency edge joins the two ids either way, which exempts the pair.
+ * knows what a place is, and this does not. `related` answers whether
+ * dependency edges join the two ids either way, which exempts the pair.
  * The oldest holder is named where several overlap, so the answer does
  * not depend on the order the claims arrive in.
  */
@@ -467,6 +468,191 @@ export function touchesHold(item: Item, inFlight: readonly TouchesClaim[], relat
     }
   }
   return null;
+}
+
+/** What `touchesHolds` reads: `EligibilityInput`'s own facts, with the step and place lookups the scheduler has built. */
+export interface TouchesHoldsInput {
+  /** Every item the scheduler is considering — holders and held alike. */
+  items: readonly Item[];
+  stepFor: (item: Item) => PipelineStep | undefined;
+  /** `EligibilityInput.dispatchedIn`. */
+  dispatchedIn: ReadonlyMap<string, ReadonlySet<string>>;
+  /** The place an item works in at the step it stands on now; null for none shared. */
+  placeOf: (item: Item) => string | null;
+  /** Every dependency edge, whatever its rule. */
+  deps: readonly Edge[];
+}
+
+/** The overlap hold over one input (`touchesHolds`). */
+export interface TouchesHolds {
+  /** What holds this item back for what it touches, or null. */
+  holdOf(item: Item): TouchesHold | null;
+  /** Counts an item as in flight where it works now: `tick()` calls it for each item it dispatches. */
+  claim(item: Item): void;
+}
+
+/**
+ * The overlap hold (EO-912, `touches_overlap`) over everything the
+ * scheduler is asked about at once, exported so that a host explaining
+ * a card asks the very rule the tick decides with.
+ *
+ * An item is in flight in each place `dispatchedIn` lists for it while
+ * its step is not terminal, and holds there what it declared it touches.
+ * An item is asked about at the place it would work in now, if it has
+ * not been dispatched there before: an item already under way in a
+ * place carries on there, so two that started together both go on, but
+ * one under way elsewhere entering a place for the first time waits
+ * like any other.
+ *
+ * Those that wait can wait on each other in a ring — one under way in A
+ * wanting B, another under way in B wanting A — which no finish would
+ * ever end. In each such ring the oldest goes first, and is held by
+ * nothing in the ring; the next tick, it is under way where it went,
+ * the ring is broken, and the rest wait for it as for anyone. Only
+ * items already in flight can be in a ring, since only they hold.
+ *
+ * Two items a dependency path joins, either way and however long, are
+ * left to their edges: the plan has already said how they go, and an
+ * overlap hold across a chain of edges could close a ring of its own.
+ */
+export function touchesHolds(input: TouchesHoldsInput): TouchesHolds {
+  const { items, stepFor, dispatchedIn, placeOf } = input;
+  const related = dependencyLinked(input.deps);
+
+  const claimsByPlace = new Map<string, TouchesClaim[]>();
+  const addClaim = (item: Item, place: string): void => {
+    const touches = touchesOf(item);
+    if (touches.length === 0) return;
+    const claims = claimsByPlace.get(place);
+    if (claims === undefined) claimsByPlace.set(place, [{ item, touches }]);
+    else if (!claims.some((claim) => claim.item.id === item.id)) claims.push({ item, touches });
+  };
+  for (const item of items) {
+    const places = dispatchedIn.get(item.id);
+    if (places === undefined || places.size === 0) continue;
+    const step = stepFor(item);
+    if (step === undefined || step.isTerminal) continue;
+    for (const place of places) addClaim(item, place);
+  }
+
+  /** The place this item is asked about, or null where the hold does not apply to it. */
+  const askedAt = (item: Item): string | null => {
+    if (touchesOf(item).length === 0) return null;
+    const step = stepFor(item);
+    if (step === undefined || step.isTerminal || step.type === "user") return null;
+    const place = placeOf(item);
+    if (place === null || dispatchedIn.get(item.id)?.has(place) === true) return null;
+    return place;
+  };
+  const overlapsWith = (item: Item, claims: readonly TouchesClaim[]): TouchesClaim[] => {
+    const own = touchesOf(item);
+    return claims.filter(
+      (claim) =>
+        claim.item.id !== item.id &&
+        !related(item.id, claim.item.id) &&
+        own.some((path) => claim.touches.some((other) => touchesOverlap(path, other))),
+    );
+  };
+
+  // Who waits on whom among items already in flight, and the rings in it.
+  const waitsOn = new Map<string, string[]>();
+  const byId = new Map<string, Item>();
+  for (const item of items) {
+    if ((dispatchedIn.get(item.id)?.size ?? 0) === 0) continue;
+    const place = askedAt(item);
+    if (place === null) continue;
+    const holders = overlapsWith(item, claimsByPlace.get(place) ?? []).map((claim) => claim.item.id);
+    if (holders.length === 0) continue;
+    waitsOn.set(item.id, holders);
+    byId.set(item.id, item);
+  }
+  const goesFirstPast = new Map<string, ReadonlySet<string>>();
+  for (const ring of rings(waitsOn)) {
+    const members = ring.flatMap((id) => {
+      const item = byId.get(id);
+      return item === undefined ? [] : [item];
+    });
+    const oldest = [...members].sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id))[0];
+    if (oldest !== undefined) goesFirstPast.set(oldest.id, new Set(ring));
+  }
+
+  return {
+    holdOf(item) {
+      const place = askedAt(item);
+      if (place === null) return null;
+      const past = goesFirstPast.get(item.id);
+      const claims = claimsByPlace.get(place) ?? [];
+      return touchesHold(item, past === undefined ? claims : claims.filter((claim) => !past.has(claim.item.id)), related);
+    },
+    claim(item) {
+      const place = placeOf(item);
+      if (place !== null) addClaim(item, place);
+    },
+  };
+}
+
+/** Whether a path of dependency edges joins two items, either way (`touchesHolds`). */
+function dependencyLinked(deps: readonly Edge[]): (a: string, b: string) => boolean {
+  const out = new Map<string, string[]>();
+  for (const edge of deps) {
+    const list = out.get(edge.itemId);
+    if (list) list.push(edge.dependsOnId);
+    else out.set(edge.itemId, [edge.dependsOnId]);
+  }
+  const reached = new Map<string, Set<string>>();
+  const reachable = (from: string): Set<string> => {
+    const known = reached.get(from);
+    if (known) return known;
+    const seen = new Set<string>();
+    const stack = [...(out.get(from) ?? [])];
+    while (stack.length > 0) {
+      const next = stack.pop() as string;
+      if (seen.has(next)) continue;
+      seen.add(next);
+      stack.push(...(out.get(next) ?? []));
+    }
+    reached.set(from, seen);
+    return seen;
+  };
+  return (a, b) => reachable(a).has(b) || reachable(b).has(a);
+}
+
+/** The strongly connected sets of more than one member in a waits-on graph (Tarjan's). */
+function rings(graph: ReadonlyMap<string, readonly string[]>): string[][] {
+  let counter = 0;
+  const index = new Map<string, number>();
+  const low = new Map<string, number>();
+  const onStack = new Set<string>();
+  const stack: string[] = [];
+  const found: string[][] = [];
+  const visit = (node: string): void => {
+    index.set(node, counter);
+    low.set(node, counter);
+    counter += 1;
+    stack.push(node);
+    onStack.add(node);
+    for (const next of graph.get(node) ?? []) {
+      if (!graph.has(next)) continue; // waits on nobody, so in no ring
+      if (!index.has(next)) {
+        visit(next);
+        low.set(node, Math.min(low.get(node) as number, low.get(next) as number));
+      } else if (onStack.has(next)) {
+        low.set(node, Math.min(low.get(node) as number, index.get(next) as number));
+      }
+    }
+    if (low.get(node) !== index.get(node)) return;
+    const ring: string[] = [];
+    let member: string | undefined;
+    do {
+      member = stack.pop();
+      if (member === undefined) break;
+      onStack.delete(member);
+      ring.push(member);
+    } while (member !== node);
+    if (ring.length > 1) found.push(ring);
+  };
+  for (const node of graph.keys()) if (!index.has(node)) visit(node);
+  return found;
 }
 
 /**
@@ -529,34 +715,10 @@ function eligibility<R extends DispatchRefusal>(input: EligibilityInput<R>) {
 
   const activeRunItemIds = new Set(activeRuns.map((run) => run.itemId));
 
-  // What is in flight, and what each of those declared it touches, by
-  // place (EO-912, `dispatchedIn`). An edge either way between two
-  // items exempts the pair: the plan has already said how they go.
-  const dispatchedIn = input.dispatchedIn ?? new Map<string, ReadonlySet<string>>();
-  const startedSomewhere = (item: Item): boolean => (dispatchedIn.get(item.id)?.size ?? 0) > 0;
+  // The overlap hold (EO-912, `dispatchedIn`), over every item at once:
+  // who is in flight where, and who waits on whom.
   const placeOf = (item: Item): string | null => (input.capacityKeyOf ? input.capacityKeyOf(item) : "");
-  const related = new Set<string>();
-  for (const edge of deps) {
-    related.add(`${edge.itemId} ${edge.dependsOnId}`);
-    related.add(`${edge.dependsOnId} ${edge.itemId}`);
-  }
-  const isRelated = (a: string, b: string): boolean => related.has(`${a} ${b}`);
-  const claimsByPlace = new Map<string, TouchesClaim[]>();
-  /** Counts an item as in flight in `place` for what it touches; `tick()` calls it for each item it dispatches. */
-  const claimTouches = (item: Item, place: string): void => {
-    const touches = touchesOf(item);
-    if (touches.length === 0) return;
-    const claims = claimsByPlace.get(place);
-    if (claims === undefined) claimsByPlace.set(place, [{ item, touches }]);
-    else if (!claims.some((claim) => claim.item.id === item.id)) claims.push({ item, touches });
-  };
-  for (const item of items) {
-    const places = dispatchedIn.get(item.id);
-    if (places === undefined || places.size === 0) continue;
-    const step = stepFor(item);
-    if (step === undefined || step.isTerminal) continue;
-    for (const place of places) claimTouches(item, place);
-  }
+  const overlap = touchesHolds({ items, stepFor, dispatchedIn: input.dispatchedIn ?? new Map(), placeOf, deps });
 
   /**
    * Whether this edge still holds the item waiting on it (EO-776).
@@ -650,13 +812,10 @@ function eligibility<R extends DispatchRefusal>(input: EligibilityInput<R>) {
 
     // 2b. Held back by an item in flight that changes the same paths
     // (EO-912) — `open_dependency` extended from one plan to everything
-    // in flight, with no edge written. Only an item that has not started
-    // in any place: one already under way carries on.
-    if (!startedSomewhere(item) && touchesOf(item).length > 0) {
-      const place = placeOf(item);
-      const overlap = place === null ? null : touchesHold(item, claimsByPlace.get(place) ?? [], isRelated);
-      if (overlap) return { kind: "touches_overlap", ...overlap };
-    }
+    // in flight, with no edge written. Not in a place it is already
+    // under way in: there it carries on.
+    const overlapping = overlap.holdOf(item);
+    if (overlapping) return { kind: "touches_overlap", ...overlapping };
 
     if (awaitingInput.has(item.id)) return { kind: "awaiting_input" }; // 3. blocked on a reply
 
@@ -718,7 +877,7 @@ function eligibility<R extends DispatchRefusal>(input: EligibilityInput<R>) {
     return agentBlocker(step, item);
   }
 
-  return { stepFor, itemById, blockerFor, heldByPause, claimTouches, placeOf };
+  return { stepFor, itemById, blockerFor, heldByPause, claimTouches: overlap.claim };
 }
 
 /**
@@ -792,7 +951,7 @@ export function tick<R extends DispatchRefusal>(input: TickInput<R>): Dispatch[]
   // question, not this one's (EO-135). What is left here is the half
   // that depends on the moment rather than on the item: who has a slot
   // free, and in what order the slots are handed out.
-  const { stepFor, itemById, blockerFor, heldByPause, claimTouches, placeOf } = eligibility(input);
+  const { stepFor, itemById, blockerFor, heldByPause, claimTouches } = eligibility(input);
 
   // No pack, or a pack with nothing to share: every item is in a
   // bucket of its own, so only the global cap and the per-agent cap
@@ -862,8 +1021,7 @@ export function tick<R extends DispatchRefusal>(input: TickInput<R>): Dispatch[]
   // is held, rather than both starting together because neither had run
   // there before.
   function startedNow(item: Item): void {
-    const place = placeOf(item);
-    if (place !== null) claimTouches(item, place);
+    claimTouches(item);
   }
 
   const dispatches: Dispatch[] = [];

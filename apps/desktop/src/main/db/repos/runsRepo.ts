@@ -13,7 +13,7 @@ import {
   type Uuid,
 } from "@eo/core";
 import type { Db } from "../client.js";
-import { runs, runEvents, items, pipelineSteps, pipelineVersions, projects } from "../schema.js";
+import { runs, runEvents, items, pipelines, pipelineSteps, pipelineVersions, projects } from "../schema.js";
 import {
   personSideCallCentsSince,
   sideCallCentsBetween,
@@ -717,9 +717,24 @@ export function sumCostCentsBetween(db: Db, startMs: number, endMs: number): num
 }
 
 /**
- * The steps each item has been dispatched at (EO-912): what the
- * scheduler's overlap hold turns into the places an item is *in flight*
- * in (`dispatchedPlaces`), together with a step that is not terminal.
+ * One definition of a step an item was dispatched at (EO-912): the step,
+ * and the pipeline and version whose definition of it names the run's
+ * action as its entry action. `versionId` is the pipeline's current
+ * version for its live row, which is how `stepForItem` is told to read
+ * the live row — null where the pipeline has no version yet, which reads
+ * it too.
+ */
+export interface DispatchDefinition {
+  stepId: string;
+  pipelineId: string;
+  versionId: string | null;
+}
+
+/**
+ * Where each item has been dispatched (EO-912), as every definition EO
+ * holds of each step it was dispatched at: what the scheduler's overlap
+ * hold turns into the places an item is *in flight* in
+ * (`dispatchedPlaces`), together with a step that is not terminal.
  *
  * A run of the step's own entry action at that step, so a reply to a
  * mention, a discussion or an interpretation on an item nobody has
@@ -730,13 +745,16 @@ export function sumCostCentsBetween(db: Db, startMs: number, endMs: number): num
  *
  * "Its own entry action" by **any definition of the step EO still
  * holds** — the live row, or the step in any of its pipeline's version
- * documents — and not today's alone. The run was dispatched by the
- * definition in force then: an item finishing on an older version, or
- * one whose step was saved with another action since, was dispatched
- * all the same, and an edit to a pipeline must not silently take an
- * unfinished item's work out of what it holds back. A version nothing
- * references any more may be pruned, but a version an unfinished item
- * stands on is not.
+ * documents — and not today's alone; and every such definition is
+ * returned, not only the one the item is bound to now. EO does not
+ * record which version a run was dispatched under, and an item can be
+ * moved to another version afterwards (`writeVersionMove`) whose
+ * definition of the same step works somewhere else, or on no disk. So
+ * where the dispatch worked is answered by every definition that could
+ * have dispatched it — a claim on each place any of them works in, which
+ * never loses the place it really worked in and may name one it did not.
+ * A version nothing references any more may be pruned, and takes its
+ * definition with it.
  *
  * A dry run borrows an item and is not its work. A guard's placeholder
  * (`awaiting_input` with no session) is a refusal rather than a
@@ -744,28 +762,40 @@ export function sumCostCentsBetween(db: Db, startMs: number, endMs: number): num
  * session — nothing reached the disk — though an agent run still queued
  * or starting counts from the moment it exists, or the next tick would
  * start a second item over the first.
+ *
+ * Only for `itemIds`: the caller asks about unfinished items, and the
+ * runs of finished ones are most of the table.
  */
-export function listDispatchSteps(db: Db): Map<Uuid, Set<string>> {
-  const rows = db.all<{ itemId: string; stepId: string }>(sql`
-    with definitions(step_id, action) as (
-      select ${pipelineSteps.id}, ${pipelineSteps.entryAction} from ${pipelineSteps} where ${pipelineSteps.entryAction} is not null
+export function listDispatchSteps(db: Db, itemIds: readonly string[]): Map<Uuid, DispatchDefinition[]> {
+  const steps = new Map<Uuid, DispatchDefinition[]>();
+  if (itemIds.length === 0) return steps;
+  const rows = db.all<{ itemId: string; stepId: string; pipelineId: string; versionId: string | null }>(sql`
+    with definitions(step_id, action, pipeline_id, version_id) as (
+      select s.id, s.entry_action, s.pipeline_id, p.current_version_id
+      from ${pipelineSteps} s join ${pipelines} p on p.id = s.pipeline_id
+      where s.entry_action is not null
       union
-      select json_extract(step.value, '$.id'), json_extract(step.value, '$.entryAction')
-      from ${pipelineVersions}, json_each(${pipelineVersions.steps}) step
+      select json_extract(step.value, '$.id'), json_extract(step.value, '$.entryAction'), v.pipeline_id, v.id
+      from ${pipelineVersions} v, json_each(v.steps) step
       where json_extract(step.value, '$.entryAction') is not null
+    ),
+    dispatched as (
+      select distinct r.item_id, r.step_id, r.action
+      from ${runs} r
+      where r.item_id in (select value from json_each(${JSON.stringify(itemIds)}))
+        and r.dry_run = 0
+        and not (r.status = 'awaiting_input' and r.thread_id is null)
+        and (r.agent_id is null or r.thread_id is not null or r.status in ('queued', 'running'))
     )
-    select distinct r.item_id as "itemId", r.step_id as "stepId"
-    from ${runs} r
+    select distinct r.item_id as "itemId", d.step_id as "stepId", d.pipeline_id as "pipelineId", d.version_id as "versionId"
+    from dispatched r
     join definitions d on d.step_id = r.step_id and d.action = r.action
-    where r.dry_run = 0
-      and not (r.status = 'awaiting_input' and r.thread_id is null)
-      and (r.agent_id is null or r.thread_id is not null or r.status in ('queued', 'running'))
   `);
-  const steps = new Map<Uuid, Set<string>>();
   for (const row of rows) {
+    const definition = { stepId: row.stepId, pipelineId: row.pipelineId, versionId: row.versionId };
     const at = steps.get(row.itemId as Uuid);
-    if (at) at.add(row.stepId);
-    else steps.set(row.itemId as Uuid, new Set([row.stepId]));
+    if (at) at.push(definition);
+    else steps.set(row.itemId as Uuid, [definition]);
   }
   return steps;
 }

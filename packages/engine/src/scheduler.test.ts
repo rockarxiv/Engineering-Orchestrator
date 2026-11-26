@@ -1621,7 +1621,7 @@ describe("tick — overlapping touches hold an item back while another is in fli
     expect(dispatchBlocker(input, "856")).toBeNull();
   });
 
-  it("never holds an item already in flight, so two that both started carry on rather than wait for each other", () => {
+  it("never holds an item in a place it is already under way in, so two that both started there carry on rather than wait for each other", () => {
     const input = board({
       items: [makeItem("856", { stepId: "build", ...touching("src") }), makeItem("859", { stepId: "build", ...touching("src") })],
       dispatchedIn: startedHere("856", "859"),
@@ -1721,5 +1721,48 @@ describe("tick — overlapping touches hold an item back while another is in fli
       dispatchedIn: new Map([["856", new Set(["api", "web"])]]),
     });
     expect(dispatchBlocker(input, "859")).toMatchObject({ kind: "touches_overlap", holderId: "856" });
+  });
+
+  it("holds an item under way in one place as it enters another where an overlapping item is in flight, until that one finishes", () => {
+    // 859 worked in `a` and now stands on a step working in `b`, where 856 is under way.
+    const items = (holderStep: string) => [
+      makeItem("856", { stepId: holderStep, workspaceId: "b" as Uuid, ...touching("src/index.ts") }),
+      makeItem("859", { stepId: "todo", workspaceId: "b" as Uuid, ...touching("src/index.ts") }),
+    ];
+    const dispatchedIn = new Map([["856", new Set(["b"])], ["859", new Set(["a"])]]);
+    const input = board({ items: items("build"), dispatchedIn, activeRuns: [makeRun("856", "agent-1")] });
+    expect(dispatchBlocker(input, "859")).toEqual({ kind: "touches_overlap", holderId: "856", path: "src/index.ts", holderPath: "src/index.ts" });
+    expect(tick(input)).toEqual([]);
+    const finished = board({ items: items("done"), dispatchedIn });
+    expect(dispatchBlocker(finished, "859")).toBeNull();
+    expect(tick(finished).map((d) => d.item.id)).toEqual(["859"]);
+  });
+
+  it("lets the oldest of two items waiting on each other across places go first, and holds the other behind it", () => {
+    // 856 is under way in `a` and wants `b`; 859 is under way in `b` and wants `a`. Neither finishes while it waits.
+    const input = board({
+      items: [
+        makeItem("856", { stepId: "todo", createdAt: 1, workspaceId: "b" as Uuid, ...touching("src/index.ts") }),
+        makeItem("859", { stepId: "todo", createdAt: 2, workspaceId: "a" as Uuid, ...touching("src/index.ts") }),
+      ],
+      dispatchedIn: new Map([["856", new Set(["a"])], ["859", new Set(["b"])]]),
+    });
+    expect(dispatchBlocker(input, "856")).toBeNull();
+    expect(dispatchBlocker(input, "859")).toMatchObject({ kind: "touches_overlap", holderId: "856" });
+    expect(tick(input).map((d) => d.item.id)).toEqual(["856"]);
+    // Next tick 856 is under way in both, the ring is gone, and 859 still waits for it.
+    const after = { ...input, dispatchedIn: new Map([["856", new Set(["a", "b"])], ["859", new Set(["b"])]]) };
+    expect(dispatchBlocker(after, "859")).toMatchObject({ kind: "touches_overlap", holderId: "856" });
+  });
+
+  it("leaves the order to a chain of dependencies between the two, not only a direct edge", () => {
+    const input = board({
+      items: [...board().items, makeItem("mid", { stepId: "todo" })],
+      deps: [
+        { itemId: "859" as Uuid, dependsOnId: "mid" as Uuid, wait: "none" },
+        { itemId: "mid" as Uuid, dependsOnId: "856" as Uuid, wait: "none" },
+      ],
+    });
+    expect(dispatchBlocker(input, "859")).toBeNull();
   });
 });

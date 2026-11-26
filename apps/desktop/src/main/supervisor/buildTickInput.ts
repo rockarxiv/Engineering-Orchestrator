@@ -1,6 +1,6 @@
 import type { Item, Uuid } from "@eo/core";
-import { touchesHold, touchesOf } from "@eo/engine";
-import type { CapacityKeyOf, DispatchBlocker, DispatchGate, EligibilityInput, TickInput, TouchesClaim, WatchHold } from "@eo/engine";
+import { touchesHolds, touchesOf } from "@eo/engine";
+import type { CapacityKeyOf, DispatchBlocker, DispatchGate, EligibilityInput, TickInput, WatchHold } from "@eo/engine";
 import type { Db } from "../db/client.js";
 import {
   gateArrivals,
@@ -139,9 +139,9 @@ export function buildEligibilityInput(
     activeRuns: listActiveRuns(db),
     awaitingInput: schedulingParks(db),
     heldItemIds: listHeldItemIds(db),
-    // Where each item has started (EO-912): an item in flight holds back
-    // one not yet started anywhere whose `touches` overlap its own, in a
-    // bucket it worked in.
+    // Where each item has worked (EO-912): an item in flight there holds
+    // back one about to work there for the first time whose `touches`
+    // overlap its own.
     // Finished items are left out: they hold nothing and wait for nothing.
     dispatchedIn: dispatchedPlaces(
       db,
@@ -166,31 +166,39 @@ export function buildEligibilityInput(
 
 /**
  * The places each of `items` declaring `touches` has been dispatched in
- * (EO-912), as the scheduler's `dispatchedIn` takes them: for each step
- * it was dispatched at (`listDispatchSteps`), the bucket the item is in
- * *at that step* — `capacityKeyOf` asked of the item as though it stood
- * there, so its own version's definition of that step picks the
- * workspace, as it did for the run. Derived from the item and its runs
- * on every ask, never stored.
+ * (EO-912), as the scheduler's `dispatchedIn` takes them: for each
+ * definition of a step it was dispatched at (`listDispatchSteps`), the
+ * bucket the item is in *under that definition* — `capacityKeyOf` asked
+ * of the item as though it stood at that step of that version, so the
+ * workspace that definition picks is the one counted. Derived from the
+ * item and its runs on every ask, never stored.
  *
- * Not the bucket of the step it stands on now: an item whose work moved
- * on to a step that picks no disk still has its changes where it made
- * them, and one that only drafted on no disk has made none anywhere. A
- * step with no bucket adds nothing, and an item with no bucket at all
- * is left out. Without a bucket function every place is the one place,
- * the engine's own reading of an absent `capacityKeyOf`.
+ * Not the bucket of the step it stands on now, nor of the version it is
+ * bound to now: an item whose work moved on to a step that picks no
+ * disk, or that was moved to a version whose step does, still has its
+ * changes where it made them, and one that only drafted on no disk has
+ * made none anywhere. A definition with no bucket adds nothing, and an
+ * item with no bucket at all is left out. Without a bucket function
+ * every place is the one place, the engine's own reading of an absent
+ * `capacityKeyOf`.
  */
 export function dispatchedPlaces(db: Db, items: readonly Item[], capacityKeyOf: CapacityKeyOf | undefined): Map<string, Set<string>> {
   const places = new Map<string, Set<string>>();
   const touching = items.filter((item) => touchesOf(item).length > 0);
   if (touching.length === 0) return places;
-  const steps = listDispatchSteps(db);
+  const definitions = listDispatchSteps(db, touching.map((item) => item.id));
   for (const item of touching) {
-    const at = steps.get(item.id);
+    const at = definitions.get(item.id);
     if (at === undefined) continue;
     const worked = new Set<string>();
-    for (const stepId of at) {
-      const place = capacityKeyOf ? capacityKeyOf({ ...item, stepId: stepId as Item["stepId"] }) : "";
+    for (const definition of at) {
+      const asDispatched = {
+        ...item,
+        stepId: definition.stepId as Item["stepId"],
+        pipelineId: definition.pipelineId as Item["pipelineId"],
+        pipelineVersionId: definition.versionId as Item["pipelineVersionId"],
+      };
+      const place = capacityKeyOf ? capacityKeyOf(asDispatched) : "";
       if (place !== null) worked.add(place);
     }
     if (worked.size > 0) places.set(item.id, worked);
@@ -202,13 +210,11 @@ export function dispatchedPlaces(db: Db, items: readonly Item[], capacityKeyOf: 
  * Each of `listed` that the overlap hold keeps back (EO-912), with its
  * holder named — what a card says in place of a pack's refusal.
  *
- * The engine's own `touchesHold`, over what the scheduler's input reads:
+ * The engine's own `touchesHolds`, over what the scheduler's input reads:
  * the same candidates, the same in-flight rule (`dispatchedPlaces`, on a
- * step of its own version that is not terminal), the same bucket and the
- * same exemption for a pair an edge joins. Asked only of an item not yet
- * started anywhere, on a step something is dispatched at, since anywhere
- * else the hold is not what stands in its way. Reads nothing more than
- * an item list when no listed item declares `touches`.
+ * step of its own version that is not terminal), the same bucket, the
+ * same rings and the same exemption for a pair dependencies join. Reads
+ * nothing more than an item list when no listed item declares `touches`.
  */
 export function touchesHoldsOf(db: Db, listed: readonly Item[], capacityKeyOf: CapacityKeyOf | undefined): Map<string, WaitingOnOverlap> {
   const holds = new Map<string, WaitingOnOverlap>();
@@ -218,39 +224,31 @@ export function touchesHoldsOf(db: Db, listed: readonly Item[], capacityKeyOf: C
   const shelved = itemsOnArchivedProjects(db);
   const candidates = listItemsIncludingArchived(db).filter((item) => item.archivedAt === null && !moving.has(item.id) && !shelved.has(item.id));
   const candidateIds = new Set(candidates.map((item) => item.id));
-  const asking = listed.filter((item) => touchesOf(item).length > 0 && !candidateIds.has(item.id));
   const liveSteps = new Map(listPipelineSteps(db).map((step) => [step.id, step]));
-  const bound = stepsByItemVersion(db, [...candidates, ...asking]);
+  const bound = stepsByItemVersion(db, candidates);
   const stepFor = (item: Item) => {
+    if (item.pipelineId === null || item.stepId === null) return undefined;
     const own = bound.get(item.id);
     if (own && own.pipelineId === item.pipelineId && own.id === item.stepId) return own;
-    const live = item.stepId === null ? undefined : liveSteps.get(item.stepId);
+    const live = liveSteps.get(item.stepId);
     return live && live.pipelineId === item.pipelineId ? live : undefined;
   };
   // Unfinished only, as the tick's: a finished item holds nothing and waits for nothing.
-  const unfinished = [...candidates, ...asking].filter((item) => {
+  const unfinished = candidates.filter((item) => {
     const step = stepFor(item);
     return step !== undefined && !step.isTerminal;
   });
-  const dispatchedIn = dispatchedPlaces(db, unfinished, capacityKeyOf);
-  const waiting = listed.filter((item) => touchesOf(item).length > 0 && !dispatchedIn.has(item.id));
-  if (waiting.length === 0) return holds;
-
-  const claims = new Map<string, TouchesClaim[]>();
-  for (const item of candidates) {
-    const places = dispatchedIn.get(item.id);
-    if (places === undefined) continue;
-    for (const place of places) claims.set(place, [...(claims.get(place) ?? []), { item, touches: touchesOf(item) }]);
-  }
-  if (claims.size === 0) return holds;
-  const related = new Set(listAllDependencies(db).flatMap((edge) => [`${edge.itemId} ${edge.dependsOnId}`, `${edge.dependsOnId} ${edge.itemId}`]));
+  const overlap = touchesHolds({
+    items: candidates,
+    stepFor,
+    dispatchedIn: dispatchedPlaces(db, unfinished, capacityKeyOf),
+    placeOf: (item) => (capacityKeyOf ? capacityKeyOf(item) : ""),
+    deps: listAllDependencies(db),
+  });
   const keys = new Map(candidates.map((item) => [item.id as string, item.key]));
-  for (const item of waiting) {
-    const step = stepFor(item);
-    if (step === undefined || step.type === "user" || step.isTerminal) continue;
-    const place = capacityKeyOf ? capacityKeyOf(item) : "";
-    if (place === null) continue;
-    const hold = touchesHold(item, claims.get(place) ?? [], (a, b) => related.has(`${a} ${b}`));
+  for (const item of listed) {
+    if (!candidateIds.has(item.id)) continue;
+    const hold = overlap.holdOf(item);
     if (hold) holds.set(item.id, { kind: "touches_overlap", ...hold, holderKey: keys.get(hold.holderId) ?? hold.holderId });
   }
   return holds;
