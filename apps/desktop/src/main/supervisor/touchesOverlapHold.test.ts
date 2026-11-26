@@ -1,12 +1,30 @@
-import type { Item } from "@eo/core";
+import { eq } from "drizzle-orm";
+import { GIT_WORKTREE_KIND, NO_WORKSPACE, type Item, type Uuid, type WorkspaceKindSlug } from "@eo/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DbHandle } from "../db/client.js";
-import { createRun, listAllDependencies, listCommentsForItem, listDispatchedItemIds, listRunsForItem, needsAttention, setItemHeld, transitionItem } from "../db/repos/index.js";
-import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
+import {
+  createRun,
+  createStep,
+  getItem,
+  listAllDependencies,
+  listCommentsForItem,
+  listDispatchSteps,
+  listRunsForItem,
+  needsAttention,
+  setItemHeld,
+  transitionItem,
+  updateStep,
+} from "../db/repos/index.js";
+import { createPipelineVersion, ensureCurrentVersion } from "../db/repos/pipelineVersionsRepo.js";
+import { pipelineSteps } from "../db/schema.js";
+import { attachWorkspace, createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import { getItemDetail, listItemSummaries } from "../ipc/domainQueries.js";
 import type { BuiltinRunner } from "./builtins.js";
+import { dispatchedPlaces } from "./buildTickInput.js";
 import { createRunSupervisor, type RunSupervisor } from "./runSupervisor.js";
 import { fakeWorkspaceKind, installedKinds } from "./testWorkspaceKinds.js";
+import type { WorkspaceKind } from "./workspaceKind.js";
+import { workspaceFor } from "./workspaceResolution.js";
 
 /**
  * Two items filed apart that declare the same files (EO-912), as the
@@ -29,11 +47,15 @@ let held: Item;
 let openPullRequest: ReturnType<typeof vi.fn<BuiltinRunner>>;
 
 function supervisor(capacityKeyOf: (item: Item) => string | null = () => "one-repository"): RunSupervisor {
+  return supervisorWith(installedKinds(fakeWorkspaceKind({ capacityKeyOf })));
+}
+
+function supervisorWith(kinds: ReadonlyMap<WorkspaceKindSlug, WorkspaceKind>): RunSupervisor {
   return createRunSupervisor({
     db: handle.db,
     provider: { start: () => { throw new Error("a builtin must not reach a provider"); } } as never,
     limits: LIMITS,
-    kinds: installedKinds(fakeWorkspaceKind({ capacityKeyOf })),
+    kinds,
     builtins: { open_pull_request: openPullRequest },
   });
 }
@@ -68,7 +90,7 @@ afterEach(() => {
 
 describe("an item whose touches overlap an item in flight", () => {
   it("is not dispatched, the thread and the card say which item and path, and no dependency is written", async () => {
-    expect(listDispatchedItemIds(handle.db)).toEqual(new Set([holder.id]));
+    expect(listDispatchSteps(handle.db)).toEqual(new Map([[holder.id, new Set(["review"])]]));
     const engine = supervisor();
     await engine.runOnce();
     await engine.runOnce();
@@ -120,6 +142,82 @@ describe("what counts as dispatched", () => {
     createRun(handle.db, { itemId: talkedTo.id, agentId: null, action: "respond", stepId: "todo", status: "succeeded", threadId: "thread-2" });
     const refused = createTestItem(handle.db, { type: "story", title: "Refused", stepId: "review" });
     createRun(handle.db, { itemId: refused.id, agentId: null, action: "review", stepId: "review", status: "awaiting_input" });
-    expect(listDispatchedItemIds(handle.db)).toEqual(new Set([holder.id]));
+    expect(listDispatchSteps(handle.db)).toEqual(new Map([[holder.id, new Set(["review"])]]));
+  });
+
+  it("is judged by the step's action as it was defined, so editing the action takes nothing out of flight", async () => {
+    // The holder entered on the version in force; its step's action then
+    // changes, first by a save nobody has published, then by a publish.
+    ensureCurrentVersion(handle.db, "default");
+    const entered = getItem(handle.db, holder.id)?.pipelineVersionId;
+    expect(entered).not.toBeNull();
+    handle.db.update(pipelineSteps).set({ entryAction: "review_again" }).where(eq(pipelineSteps.id, "review")).run();
+    expect(listDispatchSteps(handle.db).get(holder.id)).toEqual(new Set(["review"]));
+
+    createPipelineVersion(handle.db, "default");
+    expect(getItem(handle.db, holder.id)?.pipelineVersionId).toBe(entered);
+    expect(listDispatchSteps(handle.db).get(holder.id)).toEqual(new Set(["review"]));
+
+    await supervisor().runOnce();
+    expect(openPullRequest).not.toHaveBeenCalled();
+    expect(cardLine()).toBe(`Waits for ${holder.key}, which also changes packages/core/src/ipc.ts`);
+  });
+});
+
+/**
+ * Where an item is in flight is where it worked, not where it stands
+ * (EO-912): on a repository attached the way the app attaches one, with
+ * the git kind's own bucket — the workspace the step resolves to — and
+ * EO's own `none` kind for a step that says "no disk".
+ */
+describe("in flight where it worked", () => {
+  let repository: Uuid;
+  const repositoryKinds = () =>
+    new Map<WorkspaceKindSlug, WorkspaceKind>([[GIT_WORKTREE_KIND, fakeWorkspaceKind({ capacityKeyOf: (item) => workspaceFor(handle.db, item)?.id ?? null })]]);
+
+  beforeEach(() => {
+    handle.close();
+    handle = openMigratedTestDb();
+    const workspace = attachWorkspace(handle.db, { keyPrefix: "EO", name: "eo", repoPath: "/tmp/eo/eo" });
+    repository = workspace.id;
+    const projectId = workspace.projectId!;
+    holder = createTestItem(handle.db, {
+      type: "story",
+      title: "Holder",
+      projectId,
+      workspaceId: repository,
+      stepId: "review",
+      spec: { touches: ["packages/core/src/ipc.ts"] },
+    });
+    createRun(handle.db, { itemId: holder.id, agentId: null, action: "review", stepId: "review", status: "succeeded", threadId: "thread-1" });
+    held = createTestItem(handle.db, { type: "story", title: "Held", projectId, workspaceId: repository, stepId: "merge_request", spec: { touches: ["packages/core/src/ipc.ts"] } });
+  });
+
+  it("keeps holding while the holder stands on a step that works on no disk, since its changes are still in the repository", async () => {
+    updateStep(handle.db, "pull_request_watch", { workspaceId: NO_WORKSPACE });
+    transitionItem(handle.db, { itemId: holder.id, toStepId: "pull_request_watch", actor: "human" });
+    setItemHeld(handle.db, holder.id, 1);
+    const moved = getItem(handle.db, holder.id)!;
+    expect(workspaceFor(handle.db, moved)).toBeUndefined();
+    expect(dispatchedPlaces(handle.db, [moved], (item) => workspaceFor(handle.db, item)?.id ?? null)).toEqual(new Map([[holder.id, new Set([repository])]]));
+
+    const engine = supervisorWith(repositoryKinds());
+    await engine.runOnce();
+    expect(openPullRequest).not.toHaveBeenCalled();
+    expect(engine.dispatchBlockerFor(held.id)).toMatchObject({ kind: "touches_overlap", holderId: holder.id });
+    expect(cardLine()).toBe(`Waits for ${holder.key}, which also changes packages/core/src/ipc.ts`);
+  });
+
+  it("does not let a run on no disk count as started: the item is still held where it would change files", async () => {
+    createStep(handle.db, { id: "draft", pipelineId: "default" as Uuid, position: 20, name: "Draft", type: "builtin", entryAction: "draft", workspaceId: NO_WORKSPACE });
+    createRun(handle.db, { itemId: held.id, agentId: null, action: "draft", stepId: "draft", status: "succeeded" });
+    expect(listDispatchSteps(handle.db).get(held.id)).toEqual(new Set(["draft"]));
+    expect(dispatchedPlaces(handle.db, [held], (item) => workspaceFor(handle.db, item)?.id ?? null).has(held.id)).toBe(false);
+    setItemHeld(handle.db, holder.id, 1);
+
+    const engine = supervisorWith(repositoryKinds());
+    await engine.runOnce();
+    expect(openPullRequest).not.toHaveBeenCalled();
+    expect(engine.dispatchBlockerFor(held.id)).toMatchObject({ kind: "touches_overlap", holderId: holder.id });
   });
 });

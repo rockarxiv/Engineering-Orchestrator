@@ -210,21 +210,28 @@ export interface EligibilityInput<R extends DispatchRefusal = DispatchRefusal> {
   /** itemIds a person manually parked without changing their pipeline step (EO-45) */
   heldItemIds: Set<string>;
   /**
-   * Items that have been dispatched at least once at a step of their
-   * own (EO-912): the host's reading of the runs, since this package
-   * reads no table. With a step that is not terminal, that is what *in
-   * flight* means — work has started, and whatever it changed is not
-   * finished with yet.
+   * Where each item has been dispatched (EO-912): for an item dispatched
+   * at least once at a step of its own, the places — buckets, as
+   * `capacityKeyOf` answers them — of the steps it was dispatched at,
+   * each worked out by the host for that step rather than for the one
+   * the item stands on now, since this package reads no table. A step
+   * that works on no shared disk has no place and is not listed.
    *
-   * What the overlap hold is decided by (`touches_overlap`): an item
-   * that has never been dispatched is not, while an item in flight in
-   * the same place declares `touches` overlapping its own. An item in
-   * flight is never held by it, whatever it overlaps, so two items that
+   * With a step that is not terminal, that is what *in flight in a
+   * place* means: work has started there, and whatever it changed is
+   * not finished with yet — whichever step the item has gone on to,
+   * a step that works on no disk included, since its changes are still
+   * where it made them. Such an item holds back, by `touches_overlap`,
+   * an item with no place listed at all whose current place is one of
+   * these and whose `touches` overlap its own. An item with a place
+   * listed is never held by it, whatever it overlaps, so two items that
    * both started before the rule existed both carry on rather than wait
-   * for each other for ever. Absent is nobody in flight, which holds
-   * nothing.
+   * for each other for ever; and an item whose only dispatches worked on
+   * no disk has neither changed anything nor started anywhere, so it
+   * holds nothing and is held at the first place it would work in.
+   * Absent is nobody dispatched anywhere, which holds nothing.
    */
-  dispatchedItemIds?: ReadonlySet<string>;
+  dispatchedIn?: ReadonlyMap<string, ReadonlySet<string>>;
   /**
    * Which bucket each item's run consumes (KAN-161).
    *
@@ -236,8 +243,10 @@ export interface EligibilityInput<R extends DispatchRefusal = DispatchRefusal> {
    * share the place their runs work in, so a path in one names the same
    * file as that path in the other, and two in different buckets do
    * not, however alike their paths read. Absent is one place for
-   * everything; an item whose bucket is null works in nothing shared,
-   * so it neither holds nor is held for what it touches.
+   * everything; an item whose bucket is null stands where nothing is
+   * shared, so it is not held there for what it touches. Where an item
+   * in flight holds others is `dispatchedIn`'s, not this: the places it
+   * worked in, not the one it stands on now.
    */
   capacityKeyOf?: CapacityKeyOf;
   /**
@@ -348,9 +357,9 @@ export type DispatchBlocker<R extends DispatchRefusal = DispatchRefusal> =
    */
   | { kind: "open_dependency"; dependsOnId: string; wait: Exclude<DependencyWait, "none">; waitStepId: string | null }
   /**
-   * It has never been dispatched, and the paths it declares overlap,
-   * by `touchesOverlap`, those of `holderId` — an item in flight in the
-   * same place (EO-912, `dispatchedItemIds`). `path` is this item's
+   * It has not been dispatched in any place, and the paths it declares
+   * overlap, by `touchesOverlap`, those of `holderId` — an item in
+   * flight in the place this one would work in (EO-912, `dispatchedIn`). `path` is this item's
    * entry and `holderPath` the holder's it overlaps, which are the same
    * string where both name one file.
    *
@@ -521,9 +530,10 @@ function eligibility<R extends DispatchRefusal>(input: EligibilityInput<R>) {
   const activeRunItemIds = new Set(activeRuns.map((run) => run.itemId));
 
   // What is in flight, and what each of those declared it touches, by
-  // place (EO-912, `dispatchedItemIds`). An edge either way between two
+  // place (EO-912, `dispatchedIn`). An edge either way between two
   // items exempts the pair: the plan has already said how they go.
-  const dispatched = input.dispatchedItemIds ?? new Set<string>();
+  const dispatchedIn = input.dispatchedIn ?? new Map<string, ReadonlySet<string>>();
+  const startedSomewhere = (item: Item): boolean => (dispatchedIn.get(item.id)?.size ?? 0) > 0;
   const placeOf = (item: Item): string | null => (input.capacityKeyOf ? input.capacityKeyOf(item) : "");
   const related = new Set<string>();
   for (const edge of deps) {
@@ -532,20 +542,20 @@ function eligibility<R extends DispatchRefusal>(input: EligibilityInput<R>) {
   }
   const isRelated = (a: string, b: string): boolean => related.has(`${a} ${b}`);
   const claimsByPlace = new Map<string, TouchesClaim[]>();
-  /** Counts an item as in flight for what it touches; `tick()` calls it for each item it dispatches. */
-  const claimTouches = (item: Item): void => {
+  /** Counts an item as in flight in `place` for what it touches; `tick()` calls it for each item it dispatches. */
+  const claimTouches = (item: Item, place: string): void => {
     const touches = touchesOf(item);
     if (touches.length === 0) return;
-    const place = placeOf(item);
-    if (place === null) return;
     const claims = claimsByPlace.get(place);
-    if (claims) claims.push({ item, touches });
-    else claimsByPlace.set(place, [{ item, touches }]);
+    if (claims === undefined) claimsByPlace.set(place, [{ item, touches }]);
+    else if (!claims.some((claim) => claim.item.id === item.id)) claims.push({ item, touches });
   };
   for (const item of items) {
-    if (!dispatched.has(item.id)) continue;
+    const places = dispatchedIn.get(item.id);
+    if (places === undefined || places.size === 0) continue;
     const step = stepFor(item);
-    if (step !== undefined && !step.isTerminal) claimTouches(item);
+    if (step === undefined || step.isTerminal) continue;
+    for (const place of places) claimTouches(item, place);
   }
 
   /**
@@ -640,9 +650,9 @@ function eligibility<R extends DispatchRefusal>(input: EligibilityInput<R>) {
 
     // 2b. Held back by an item in flight that changes the same paths
     // (EO-912) — `open_dependency` extended from one plan to everything
-    // in flight, with no edge written. Only an item that has never been
-    // dispatched: one already under way carries on.
-    if (!dispatched.has(item.id) && touchesOf(item).length > 0) {
+    // in flight, with no edge written. Only an item that has not started
+    // in any place: one already under way carries on.
+    if (!startedSomewhere(item) && touchesOf(item).length > 0) {
       const place = placeOf(item);
       const overlap = place === null ? null : touchesHold(item, claimsByPlace.get(place) ?? [], isRelated);
       if (overlap) return { kind: "touches_overlap", ...overlap };
@@ -708,7 +718,7 @@ function eligibility<R extends DispatchRefusal>(input: EligibilityInput<R>) {
     return agentBlocker(step, item);
   }
 
-  return { stepFor, itemById, blockerFor, heldByPause, claimTouches };
+  return { stepFor, itemById, blockerFor, heldByPause, claimTouches, placeOf };
 }
 
 /**
@@ -782,7 +792,7 @@ export function tick<R extends DispatchRefusal>(input: TickInput<R>): Dispatch[]
   // question, not this one's (EO-135). What is left here is the half
   // that depends on the moment rather than on the item: who has a slot
   // free, and in what order the slots are handed out.
-  const { stepFor, itemById, blockerFor, heldByPause, claimTouches } = eligibility(input);
+  const { stepFor, itemById, blockerFor, heldByPause, claimTouches, placeOf } = eligibility(input);
 
   // No pack, or a pack with nothing to share: every item is in a
   // bucket of its own, so only the global cap and the per-agent cap
@@ -847,12 +857,13 @@ export function tick<R extends DispatchRefusal>(input: TickInput<R>): Dispatch[]
     remainingCapacityByBucket.set(key, remaining - 1);
   }
 
-  // An item dispatched on this tick is in flight from here on (EO-912),
-  // so a later item in the same tick that overlaps it is held, rather
-  // than both starting together because neither had run before.
-  const dispatchedBefore = input.dispatchedItemIds;
+  // An item dispatched on this tick is in flight where it works from
+  // here on (EO-912), so a later item in the same tick that overlaps it
+  // is held, rather than both starting together because neither had run
+  // there before.
   function startedNow(item: Item): void {
-    if (!dispatchedBefore?.has(item.id)) claimTouches(item);
+    const place = placeOf(item);
+    if (place !== null) claimTouches(item, place);
   }
 
   const dispatches: Dispatch[] = [];

@@ -13,7 +13,7 @@ import {
   type Uuid,
 } from "@eo/core";
 import type { Db } from "../client.js";
-import { runs, runEvents, items, pipelineSteps, projects } from "../schema.js";
+import { runs, runEvents, items, pipelineSteps, pipelineVersions, projects } from "../schema.js";
 import {
   personSideCallCentsSince,
   sideCallCentsBetween,
@@ -717,32 +717,57 @@ export function sumCostCentsBetween(db: Db, startMs: number, endMs: number): num
 }
 
 /**
- * itemIds that have been dispatched at a step of their own at least once
- * (EO-912): what the scheduler's overlap hold counts as *in flight*,
- * together with a step that is not terminal (`dispatchedItemIds`).
+ * The steps each item has been dispatched at (EO-912): what the
+ * scheduler's overlap hold turns into the places an item is *in flight*
+ * in (`dispatchedPlaces`), together with a step that is not terminal.
  *
  * A run of the step's own entry action at that step, so a reply to a
  * mention, a discussion or an interpretation on an item nobody has
  * started does not make it in flight: those name the item's step on
  * their row but are not its dispatch, and a backlog item somebody talked
  * to would otherwise hold back everything touching the same files for
- * as long as it sat there. A dry run borrows an item and is not its
- * work. A guard's placeholder (`awaiting_input` with no session) is a
- * refusal rather than a dispatch, and so is an agent run that ended
- * without ever getting a session — nothing reached the disk — though an
- * agent run still queued or starting counts from the moment it exists,
- * or the next tick would start a second item over the first.
+ * as long as it sat there.
+ *
+ * "Its own entry action" by **any definition of the step EO still
+ * holds** — the live row, or the step in any of its pipeline's version
+ * documents — and not today's alone. The run was dispatched by the
+ * definition in force then: an item finishing on an older version, or
+ * one whose step was saved with another action since, was dispatched
+ * all the same, and an edit to a pipeline must not silently take an
+ * unfinished item's work out of what it holds back. A version nothing
+ * references any more may be pruned, but a version an unfinished item
+ * stands on is not.
+ *
+ * A dry run borrows an item and is not its work. A guard's placeholder
+ * (`awaiting_input` with no session) is a refusal rather than a
+ * dispatch, and so is an agent run that ended without ever getting a
+ * session — nothing reached the disk — though an agent run still queued
+ * or starting counts from the moment it exists, or the next tick would
+ * start a second item over the first.
  */
-export function listDispatchedItemIds(db: Db): Set<Uuid> {
-  const rows = db.all<{ itemId: string }>(sql`
-    select distinct r.item_id as "itemId"
+export function listDispatchSteps(db: Db): Map<Uuid, Set<string>> {
+  const rows = db.all<{ itemId: string; stepId: string }>(sql`
+    with definitions(step_id, action) as (
+      select ${pipelineSteps.id}, ${pipelineSteps.entryAction} from ${pipelineSteps} where ${pipelineSteps.entryAction} is not null
+      union
+      select json_extract(step.value, '$.id'), json_extract(step.value, '$.entryAction')
+      from ${pipelineVersions}, json_each(${pipelineVersions.steps}) step
+      where json_extract(step.value, '$.entryAction') is not null
+    )
+    select distinct r.item_id as "itemId", r.step_id as "stepId"
     from ${runs} r
-    join ${pipelineSteps} s on s.id = r.step_id and s.entry_action = r.action
+    join definitions d on d.step_id = r.step_id and d.action = r.action
     where r.dry_run = 0
       and not (r.status = 'awaiting_input' and r.thread_id is null)
       and (r.agent_id is null or r.thread_id is not null or r.status in ('queued', 'running'))
   `);
-  return new Set(rows.map((row) => row.itemId as Uuid));
+  const steps = new Map<Uuid, Set<string>>();
+  for (const row of rows) {
+    const at = steps.get(row.itemId as Uuid);
+    if (at) at.add(row.stepId);
+    else steps.set(row.itemId as Uuid, new Set([row.stepId]));
+  }
+  return steps;
 }
 
 /**

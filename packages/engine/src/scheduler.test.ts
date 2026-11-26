@@ -1549,6 +1549,8 @@ describe("dependency wait rules", () => {
  */
 describe("tick — overlapping touches hold an item back while another is in flight (EO-912)", () => {
   const touching = (...paths: string[]) => ({ spec: { touches: paths } });
+  /** Each id dispatched at least once, in the one place a board with no workspaces has. */
+  const startedHere = (...ids: string[]) => new Map(ids.map((id) => [id, new Set([""])]));
   const board = (overrides: Partial<TickInput> = {}) =>
     baseInput({
       items: [
@@ -1557,7 +1559,7 @@ describe("tick — overlapping touches hold an item back while another is in fli
       ],
       steps: [makeState("todo"), makeState("build"), makeState("done", { isTerminal: true, agentId: null })],
       agents: [makeAgent("agent-1")],
-      dispatchedItemIds: new Set(["856"]),
+      dispatchedIn: startedHere("856"),
       ...overrides,
     });
 
@@ -1614,7 +1616,7 @@ describe("tick — overlapping touches hold an item back while another is in fli
   });
 
   it("is not held by an item that has never been dispatched, however its touches overlap", () => {
-    const input = board({ dispatchedItemIds: new Set(), items: [makeItem("856", touching("src")), makeItem("859", touching("src"))] });
+    const input = board({ dispatchedIn: new Map(), items: [makeItem("856", touching("src")), makeItem("859", touching("src"))] });
     expect(dispatchBlocker(input, "859")).toBeNull();
     expect(dispatchBlocker(input, "856")).toBeNull();
   });
@@ -1622,7 +1624,7 @@ describe("tick — overlapping touches hold an item back while another is in fli
   it("never holds an item already in flight, so two that both started carry on rather than wait for each other", () => {
     const input = board({
       items: [makeItem("856", { stepId: "build", ...touching("src") }), makeItem("859", { stepId: "build", ...touching("src") })],
-      dispatchedItemIds: new Set(["856", "859"]),
+      dispatchedIn: startedHere("856", "859"),
     });
     expect(tick(input).map((d) => d.item.id).sort()).toEqual(["856", "859"]);
   });
@@ -1630,7 +1632,7 @@ describe("tick — overlapping touches hold an item back while another is in fli
   it("keeps apart two items that would both start on the same tick: the first in line goes, the other is held", () => {
     const input = board({
       items: [makeItem("856", { createdAt: 1, ...touching("src") }), makeItem("859", { createdAt: 2, ...touching("src/router.ts") })],
-      dispatchedItemIds: new Set(),
+      dispatchedIn: new Map(),
     });
     expect(tick(input).map((d) => d.item.id)).toEqual(["856"]);
   });
@@ -1641,6 +1643,7 @@ describe("tick — overlapping touches hold an item back while another is in fli
         makeItem("856", { stepId: "build", workspaceId: "api" as Uuid, ...touching("src/index.ts") }),
         makeItem("859", { workspaceId: "web" as Uuid, ...touching("src/index.ts") }),
       ],
+      dispatchedIn: new Map([["856", new Set(["api"])]]),
     });
     expect(dispatchBlocker(input, "859")).toBeNull();
     // An item whose bucket is null works in nothing shared, and is held by nothing.
@@ -1662,14 +1665,61 @@ describe("tick — overlapping touches hold an item back while another is in fli
       makeItem("old", { stepId: "build", createdAt: 1, ...touching("src") }),
       makeItem("859", { createdAt: 9, ...touching("src") }),
     ];
-    const input = board({ items, dispatchedItemIds: new Set(["new", "old"]) });
+    const input = board({ items, dispatchedIn: startedHere("new", "old") });
     expect(dispatchBlocker(input, "859")).toMatchObject({ kind: "touches_overlap", holderId: "old" });
     expect(dispatchBlocker({ ...input, items: [...items].reverse() }, "859")).toMatchObject({ kind: "touches_overlap", holderId: "old" });
   });
 
   it("holds nothing when the host says nothing about what has been dispatched", () => {
     const input: TickInput = board();
-    delete input.dispatchedItemIds;
+    delete input.dispatchedIn;
     expect(dispatchBlocker(input, "859")).toBeNull();
+  });
+
+  it("keeps holding while the holder stands on a step that works on no disk: its changes are still where it made them", () => {
+    // Its bucket where it stands now is null; where it was dispatched is not.
+    const input = board({
+      items: [
+        makeItem("856", { stepId: "notes", workspaceId: "api" as Uuid, ...touching("src/index.ts") }),
+        makeItem("859", { stepId: "todo", workspaceId: "api" as Uuid, ...touching("src/index.ts") }),
+      ],
+      steps: [makeState("todo"), makeState("notes")],
+      capacityKeyOf: (item) => (item.stepId === "notes" ? null : item.workspaceId),
+      dispatchedIn: new Map([["856", new Set(["api"])]]),
+    });
+    expect(dispatchBlocker(input, "859")).toEqual({ kind: "touches_overlap", holderId: "856", path: "src/index.ts", holderPath: "src/index.ts" });
+    expect(tick(input).map((d) => d.item.id)).toEqual(["856"]);
+  });
+
+  it("does not let work on no disk count as started: such an item holds nothing and is held where it would change files", () => {
+    // 859 drafted on no disk, so `dispatchedIn` lists no place for it.
+    const input = board({
+      items: [
+        makeItem("856", { stepId: "build", workspaceId: "api" as Uuid, ...touching("src/index.ts") }),
+        makeItem("859", { stepId: "todo", workspaceId: "api" as Uuid, ...touching("src/index.ts") }),
+      ],
+      dispatchedIn: new Map([["856", new Set(["api"])], ["859", new Set<string>()]]),
+    });
+    expect(dispatchBlocker(input, "859")).toMatchObject({ kind: "touches_overlap", holderId: "856" });
+    // And the other way round: one that has only drafted holds back nobody.
+    const drafted = board({
+      items: [
+        makeItem("856", { stepId: "build", workspaceId: "api" as Uuid, ...touching("src/index.ts") }),
+        makeItem("859", { stepId: "todo", workspaceId: "api" as Uuid, ...touching("src/index.ts") }),
+      ],
+      dispatchedIn: new Map(),
+    });
+    expect(dispatchBlocker(drafted, "859")).toBeNull();
+  });
+
+  it("holds by every place the holder worked in, not only the one it stands in", () => {
+    const input = board({
+      items: [
+        makeItem("856", { stepId: "build", workspaceId: "web" as Uuid, ...touching("src/index.ts") }),
+        makeItem("859", { workspaceId: "api" as Uuid, ...touching("src/index.ts") }),
+      ],
+      dispatchedIn: new Map([["856", new Set(["api", "web"])]]),
+    });
+    expect(dispatchBlocker(input, "859")).toMatchObject({ kind: "touches_overlap", holderId: "856" });
   });
 });
