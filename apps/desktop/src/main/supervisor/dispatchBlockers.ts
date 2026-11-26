@@ -301,6 +301,15 @@ export function blockerWords(blocker: Exclude<RerunBlocker, { kind: "run_active"
               `so it waits until ${new Date(blocker.until).toLocaleTimeString()} for the network to come back before it checks`,
             fix: "Nothing to do: it checks once by itself then.",
           };
+    case "route_limit":
+      // A send-back loop past its route's limit (EO-921): only a person's
+      // comment lifts it, so the fix is to say something.
+      return {
+        condition:
+          `it came here by "${blocker.fromStepName}" → ${blocker.label}, which has been taken ${blocker.count} times ` +
+          `${blocker.since === null ? "since this ticket was filed" : "since anybody last commented on it"}, and that route's limit is ${blocker.limit}`,
+        fix: "Comment on it — narrow what it has to do, or say it should carry on — and it carries on from your comment.",
+      };
     case "awaiting_input":
       return {
         condition: "the last run here is waiting for an answer from you",

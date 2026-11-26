@@ -47,14 +47,20 @@ export const COMPARED_STEP_FIELDS = ["type", "entryAction", "ownerRole", "watch"
 export type ComparedStepField = (typeof COMPARED_STEP_FIELDS)[number];
 
 /** The route fields that make up a route's value. Its order among its siblings is not one of them. */
-export const COMPARED_ROUTE_FIELDS = ["target", "label", "tone"] as const;
+export const COMPARED_ROUTE_FIELDS = ["target", "label", "tone", "traversalLimit"] as const;
 export type ComparedRouteField = (typeof COMPARED_ROUTE_FIELDS)[number];
 
 /** A step as the comparison reads it: an id, and the settings it compares. Anything else on it is carried, never read. */
 export type ComparableStep = { readonly id: string } & { readonly [F in ComparedStepField]: unknown };
 
-/** A route as the comparison reads it. Anything else on it is carried, never read. */
-export type ComparableRoute = { readonly fromStepId: string; readonly resultKey: string } & { readonly [F in ComparedRouteField]: unknown };
+/**
+ * A route as the comparison reads it. Anything else on it is carried, never read.
+ * Its traversal limit (EO-921) may be absent, as it is on a route of a
+ * document written before it, and reads as none.
+ */
+export type ComparableRoute = { readonly fromStepId: string; readonly resultKey: string } & {
+  readonly [F in Exclude<ComparedRouteField, "traversalLimit">]: unknown;
+} & { readonly traversalLimit?: unknown };
 
 /**
  * One of the three graphs, its steps in board order.
@@ -269,7 +275,12 @@ export function mergeThreeWay<S extends ComparableStep, R extends ComparableRout
     const fromTemplate = templateRoutes.get(routeKey);
     if (changedRoutes.has(routeKey) && fromTemplate !== undefined) {
       const updated: Record<string, unknown> = { ...route };
-      for (const field of COMPARED_ROUTE_FIELDS) updated[field] = fromTemplate[field];
+      // A limit the template's route has none of is cleared, not left out:
+      // a save reads an absent limit as "keep the one there was" (EO-921).
+      for (const field of COMPARED_ROUTE_FIELDS) {
+        if (field !== "traversalLimit") updated[field] = fromTemplate[field];
+        else if (fromTemplate[field] != null || updated[field] != null) updated[field] = fromTemplate[field] ?? null;
+      }
       routes.push(updated as R);
     } else {
       routes.push(route);
@@ -322,7 +333,11 @@ function stepValue(step: ComparableStep | undefined): Record<string, unknown> | 
 
 function routeValue(route: ComparableRoute | undefined): Record<string, unknown> | null {
   if (route === undefined) return null;
-  return Object.fromEntries(COMPARED_ROUTE_FIELDS.map((field) => [field, route[field] ?? null]));
+  // A traversal limit only where there is one (EO-921): a route without
+  // one reads exactly as it did before routes could carry one.
+  return Object.fromEntries(
+    COMPARED_ROUTE_FIELDS.flatMap((field) => (field === "traversalLimit" && route[field] == null ? [] : [[field, route[field] ?? null] as const])),
+  );
 }
 
 function byStepId<S extends ComparableStep>(steps: readonly S[]): Map<string, S> {

@@ -470,6 +470,8 @@ function diffableGraph(snapshot: PipelineGraphSnapshot): DiffableGraph {
       target: route.target,
       tone: route.tone,
       position: route.position,
+      // How often it may be taken (EO-921), so setting or clearing a limit is a change.
+      traversalLimit: route.traversalLimit,
     })),
   };
 }

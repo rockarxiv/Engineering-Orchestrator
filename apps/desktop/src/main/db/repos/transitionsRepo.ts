@@ -75,9 +75,10 @@ export interface TransitionItemInput {
   reason?: string | null;
   /**
    * The declared result the move was made on, where one was (EO-586): a
-   * route's key, or the result a person pressed. Not written — the row
-   * keeps the shape it has always had — but told to whatever listens to
-   * moves (`AppliedTransition.resultKey`), because once a pack has read an
+   * route's key, or the result a person pressed. Written since EO-921
+   * (`transitions.result_key`), which is what a route's traversal limit
+   * counts, and told to whatever listens to moves
+   * (`AppliedTransition.resultKey`), because once a pack has read an
    * answer its own way the key cannot be read back from the run.
    */
   resultKey?: string | null;
@@ -268,6 +269,8 @@ export function transitionItem(db: Db, input: TransitionItemInput): Item {
         actor: input.actor,
         runId: input.runId ?? null,
         reason: input.reason ?? null,
+        // What a route's traversal limit counts (EO-921).
+        resultKey: input.resultKey ?? null,
         ts: now,
       })
       .run();

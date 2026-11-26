@@ -34,6 +34,7 @@ import {
   projectsWithWorkOnPipeline,
   listStepsElsewhere,
   listStepsForPipeline,
+  listRoutesForPipeline,
   olderVersionsInUse,
   pipelineHasWebhookEntry,
   unreachableRetiredSteps,
@@ -1012,7 +1013,17 @@ function restoredOwners(db: Db, pipelineId: string, number: number, steps: reado
   return owners;
 }
 
-function toDomainRoutes(pipelineId: string, routes: IpcPayload<"pipeline:save">["routes"]): StepRoute[] {
+/**
+ * The routes a save submits, as the engine judges and the repo writes them.
+ *
+ * A route that leaves its traversal limit out keeps the one the stored
+ * route of the same step and result has (EO-921), as a step that leaves
+ * `watch` out keeps its own: a writer that predates the field, or an agent
+ * that did not mention it, must not clear a limit a person set. Null
+ * clears it.
+ */
+function toDomainRoutes(db: Db, pipelineId: string, routes: IpcPayload<"pipeline:save">["routes"]): StepRoute[] {
+  const stored = new Map(listRoutesForPipeline(db, pipelineId).map((route) => [`${route.fromStepId}\u0000${route.resultKey}`, route.traversalLimit] as const));
   return routes.map((route) => ({
     id: route.id as Uuid,
     pipelineId: pipelineId as Uuid,
@@ -1022,6 +1033,7 @@ function toDomainRoutes(pipelineId: string, routes: IpcPayload<"pipeline:save">[
     tone: route.tone,
     target: route.target,
     position: route.position,
+    traversalLimit: route.traversalLimit === undefined ? (stored.get(`${route.fromStepId}\u0000${route.resultKey}`) ?? null) : route.traversalLimit,
   }));
 }
 
@@ -1338,7 +1350,7 @@ function uniqueById(steps: readonly PipelineStep[]): PipelineStep[] {
 
 export function validatePipelineCommand(db: Db, input: IpcPayload<"pipeline:validate">): IpcResponse<"pipeline:validate"> {
   const steps = toDomainSteps(db, input.pipelineId, input.steps);
-  const routes = toDomainRoutes(input.pipelineId, input.routes);
+  const routes = toDomainRoutes(db, input.pipelineId, input.routes);
   const proposed = registryWith(db, input.actions ?? []);
   const judged = validationInput(db, input.pipelineId, steps, routes, input.entryStepId, proposed.registry, undefined, input.entryRules);
   return {
@@ -1425,7 +1437,7 @@ export function savePipeline(
   options: { createdBy?: string | null; judgeActionsOnly?: boolean } = {},
 ): IpcResponse<"pipeline:save"> {
   const steps = toDomainSteps(db, input.pipelineId, input.steps);
-  const routes = toDomainRoutes(input.pipelineId, input.routes);
+  const routes = toDomainRoutes(db, input.pipelineId, input.routes);
   // What the graph is judged with, and what is written: the same, but
   // for a trial's save, which writes none (EO-832).
   const actions = input.actions ?? [];

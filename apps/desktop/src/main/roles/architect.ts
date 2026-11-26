@@ -465,6 +465,9 @@ export function toDomainRoutes(pipelineId: string, draft: Pick<PipelineDraft, "r
     ...route,
     id: `draft-route-${index}` as Uuid,
     pipelineId: pipelineId as Uuid,
+    // No draft sets a traversal limit (EO-921), and nothing a draft is
+    // judged by reads one; Publish keeps the stored route's.
+    traversalLimit: null,
   }));
 }
 

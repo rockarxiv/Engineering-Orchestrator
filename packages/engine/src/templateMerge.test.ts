@@ -25,6 +25,7 @@ interface Route {
   label: string;
   tone: string;
   position: number;
+  traversalLimit?: number | null;
 }
 
 function step(id: string, overrides: Partial<Step> = {}): Step {
@@ -183,6 +184,18 @@ describe("comparing three graphs", () => {
     expect(changeOf(changes, "write → blocked")).toMatchObject({ outcome: "person", base: null });
     expect(changeOf(changes, "check → rejected")).toMatchObject({ outcome: "template", base: { label: "rejected" }, template: { label: "Sent back" } });
     expect(conflicts).toEqual([]);
+  });
+
+  it("compares a route's traversal limit, keeping the person's and taking the template's (EO-921)", () => {
+    const limited = (graph: ComparableGraph<Step, Route>, limit: number) => ({
+      ...graph,
+      routes: graph.routes.map((r) => (r.resultKey === "rejected" ? { ...r, traversalLimit: limit } : r)),
+    });
+    expect(changeOf(compareThreeWay(baseGraph(), limited(baseGraph(), 2), baseGraph()).changes, "check → rejected")).toMatchObject({ outcome: "person", current: { traversalLimit: 2 } });
+    const taken = mergeThreeWay(baseGraph(), baseGraph(), limited(baseGraph(), 4));
+    expect(taken.ok && taken.merged.routes.find((r) => r.resultKey === "rejected")).toMatchObject({ traversalLimit: 4 });
+    const cleared = mergeThreeWay(limited(baseGraph(), 4), limited(baseGraph(), 4), baseGraph());
+    expect(cleared.ok && cleared.merged.routes.find((r) => r.resultKey === "rejected")).toMatchObject({ traversalLimit: null });
   });
 
   it("does not count a route's order among its siblings as a change", () => {

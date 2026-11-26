@@ -681,6 +681,12 @@ export const stepRoutes = sqliteTable(
      */
     target: text("target").notNull(),
     position: integer("position").notNull().default(0),
+    /**
+     * How many times the route may be taken since a person last commented
+     * on the item (EO-921, migration 0185); null for no limit. Counted,
+     * never stored: see `transitions.result_key`.
+     */
+    traversalLimit: integer("traversal_limit"),
   },
   // One route per declared result. Two rows for one result would make the
   // next step depend on row order, which is not something anyone chose.
@@ -2378,6 +2384,15 @@ export const transitions = sqliteTable("transitions", {
   actor: text("actor").notNull(), // "human" | agent_id
   runId: text("run_id").references(() => runs.id),
   reason: text("reason"),
+  /**
+   * The declared result the move was made on, where the mover knew it
+   * (EO-921, migration 0185): a route's key, or the result a person
+   * pressed. What a route's traversal limit counts, by this and
+   * `from_step_id`. Null on moves before it and on moves no route made.
+   * Written on the machine that made the move; the record's own copy,
+   * and a mirror of it, leave it null.
+   */
+  resultKey: text("result_key"),
   ts: integer("ts").notNull(),
 }, (table) => [
   // What one item has been through (EO-555, migration 0140).

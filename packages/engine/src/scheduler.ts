@@ -454,8 +454,8 @@ export type DispatchBlocker<R extends DispatchRefusal = DispatchRefusal> =
 
 /**
  * A route taken past its traversal limit (EO-921, ARCHITECTURE.md,
- * "Guardrails"): the route by the step it leaves, its result and its
- * label, how many times it has been taken since `since` — the newest
+ * "Guardrails"): the route by the step it leaves (its id, and its name for
+ * the sentence that says so), its result and its label, how many times it has been taken since `since` — the newest
  * comment from a person on the item, epoch ms, or null where nobody has
  * commented — and the limit it carries.
  *
@@ -465,6 +465,7 @@ export type DispatchBlocker<R extends DispatchRefusal = DispatchRefusal> =
  */
 export interface RouteLimitHold {
   fromStepId: string;
+  fromStepName: string;
   resultKey: string;
   label: string;
   count: number;

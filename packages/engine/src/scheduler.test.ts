@@ -364,7 +364,7 @@ describe("tick — skip conditions", () => {
   });
 
   it("3c'. holds an item that arrived over a route's traversal limit, on any kind of step, and says which route (EO-921)", () => {
-    const hold = { fromStepId: "review", resultKey: "changes_requested", label: "Changes requested", count: 5, limit: 4, since: 1_700_000_000_000 };
+    const hold = { fromStepId: "review", fromStepName: "Review", resultKey: "changes_requested", label: "Changes requested", count: 5, limit: 4, since: 1_700_000_000_000 };
     const input = baseInput({
       items: [makeItem("A"), makeItem("B"), makeItem("C", { stepId: "check" })],
       steps: [makeState("todo"), makeState("check", { type: "builtin", agentId: null, entryAction: "check" })],
