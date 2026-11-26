@@ -429,7 +429,7 @@ async function openNew(
     // At the publish step itself, so a replaced push carries on to look
     // for and create the pull request exactly as after any push, with no
     // second push (EO-910). Never for a branch a person named.
-    ...(gitStateOf(item).namedBranch ? {} : { onDiverged: () => replaceOwnPush(db, workspace, item, branch, options) }),
+    ...(gitStateOf(item).namedBranch ? {} : { onDiverged: (rejected) => replaceOwnPush(db, workspace, item, branch, rejected.destination, options) }),
   });
 
   if (!result.ok) {
@@ -652,9 +652,9 @@ async function pushAlreadyOpen(
     return alreadyOpen;
   }
 
-  const classified = classifyPushError(pushed.error, pushed.rejection === "diverged");
+  const classified = classifyPushError(pushed.error, pushed.rejection === "diverged", pushed.status);
   if (classified.diverged && !gitStateOf(item).namedBranch) {
-    if (await replaceOwnPush(db, workspace, item, branch, options)) return alreadyOpen;
+    if (await replaceOwnPush(db, workspace, item, branch, pushed.destination, options)) return alreadyOpen;
     const target = await resolveSendTarget(db, workspace, item, run, signal);
     if (target.kind === "escalate") {
       return { kind: "failed", reason: target.reason, ...(target.options ? { options: target.options } : {}) };
@@ -763,21 +763,31 @@ function recordPushed(db: Db, item: Item, branch: string, pushed: { head: string
  * reaches compares its branch with that exact commit as it takes the
  * push, so a push by anybody in between — a person's above all — makes
  * git refuse rather than lose it. And the push goes to that one URL and
- * nowhere else: `pushBranch` reads the remote's push URL, checks it
- * against the record, and pins the push to exactly the URL it checked,
- * so neither a rewrite of it nor a change to the remote's configuration
- * since can send the lease to a server where the same commit is
- * somebody else's.
+ * nowhere else: the push that was just rejected must have been rejected
+ * there (`rejectedAt`), and `pushBranch` reads the remote's push URL
+ * again, checks it against the record, and pins the push to exactly the
+ * URL it checked, so neither a rewrite of it nor a change to the remote's
+ * configuration since can send the lease to a server where the same
+ * commit is somebody else's, or answer one server's refusal with a push
+ * to another.
  *
  * Anything else is a no, and the caller refuses as it always has: no
  * record; a record of a push to another ref, or to another server — the
- * same commit there may be anybody's — or to no single one; a remote that
- * now pushes to several URLs; or a lease git refuses. What it says names
+ * same commit there may be anybody's — or to no single one; a rejection
+ * somewhere else; a remote that now pushes to several URLs; or a lease
+ * git refuses. What it says names
  * neither a URL nor anything git printed, either of which can carry a
  * credential into the run's transcript. Never reached for a branch a
  * person named, which EO never force-pushes.
  */
-async function replaceOwnPush(db: Db, workspace: GitWorkspace, item: Item, branch: string, options: OpenForItemOptions): Promise<boolean> {
+async function replaceOwnPush(
+  db: Db,
+  workspace: GitWorkspace,
+  item: Item,
+  branch: string,
+  rejectedAt: string | null,
+  options: OpenForItemOptions,
+): Promise<boolean> {
   const { signal, onProgress } = options;
   const { repoPath, forgeRemote: remote } = workspace.config;
   const refuse = (reason: string): false => {
@@ -790,6 +800,9 @@ async function replaceOwnPush(db: Db, workspace: GitWorkspace, item: Item, branc
   if (pushedHead === null) return refuse("EO has no record of pushing it before");
   if (pushedHead.ref !== `refs/heads/${branch}`) return refuse(`EO last pushed ${pushedHead.ref}, not this branch`);
   if (pushedHead.destination === null) return refuse("EO's last push of it did not go to one place it could check");
+  // The server that refused the push is the one whose refusal this
+  // answers: a lease anywhere else would leave it standing.
+  if (rejectedAt !== pushedHead.destination) return refuse("the push was rejected somewhere other than the one server EO last pushed it to");
 
   const expect = pushedHead.commit;
   const pushed = await pushBranch(repoPath, remote, branch, {

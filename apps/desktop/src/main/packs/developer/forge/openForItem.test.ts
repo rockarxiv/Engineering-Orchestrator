@@ -1659,7 +1659,7 @@ describe("before it opens or reuses one (EO-429)", () => {
       expect(tipAt(elsewhere)).toBe(ours);
       expect(remoteTip()).toBe(ours);
       expect(notes(item).at(-1)).toContain("did not force-push");
-      expect(progress.some((line) => line.includes("no longer pushes to exactly the one server EO last pushed it to"))).toBe(true);
+      expect(progress.some((line) => line.includes("rejected somewhere other than the one server EO last pushed it to"))).toBe(true);
       expect(progress.some((line) => line.includes(remotePath) || line.includes(elsewhere))).toBe(false);
     });
 
@@ -1897,6 +1897,94 @@ describe("before it opens or reuses one (EO-429)", () => {
       expect(result).toMatchObject({ ok: true, result: "remote_diverged" });
       expect(remoteTip()).toBe(ours);
       expect(tipAt(second)).toBe(ours);
+      expect(notes(item).at(-1)).toContain("did not force-push");
+    });
+
+    it.each([
+      ["on the first open", null],
+      ["with the pull request already open", PULL_REQUEST],
+    ])("answers a refusal only where it was refused, though the remote points back at EO's server by the time it would retry, %s", async (_, pullRequest) => {
+      // EO pushed to A. `origin` now pushes to B, where a person's commit
+      // sits on top; while the push is refused there, it is pointed back
+      // at A, which still holds exactly what EO pushed.
+      const a = bare("a.git");
+      const b = bare("b.git");
+      git(["config", "remote.origin.pushurl", a], repoPath);
+      const item = story({ git: { branch: "eo/API-4", pullRequest } });
+      const worktree = worktreeFor(item);
+      const refused: CliResult = { ok: false, stdout: "", error: "HTTP 422: Validation Failed", notFound: false };
+      await mergeRequestStep(item, pullRequest === null ? async () => refused : onlyFinds(found));
+      const ours = tipAt(a)!;
+      expect(gitStateOf(getItem(handle.db, item.id)!).pushedHead).toEqual(pushedTo(ours, a));
+      const theirs = git(["commit-tree", `${ours}^{tree}`, "-p", ours, "-m", "a person's commit"], repoPath).trim();
+      git(["push", b, `${theirs}:refs/heads/eo/API-4`], repoPath);
+      git(["config", "remote.origin.pushurl", b], repoPath);
+      const hook = join(repoPath, git(["rev-parse", "--git-path", "hooks"], repoPath).trim(), "pre-push");
+      writeFileSync(hook, `#!/bin/sh\ngit config remote.origin.pushurl '${a}'\n`, { mode: 0o755 });
+      rewriteIn(worktree);
+      const progress: string[] = [];
+
+      const result = await mergeRequestStep(item, onlyFinds(found), (text) => progress.push(text));
+
+      expect(result).toMatchObject({ ok: true, result: "remote_diverged" });
+      expect(tipAt(a)).toBe(ours);
+      expect(tipAt(b)).toBe(theirs);
+      expect(gitStateOf(getItem(handle.db, item.id)!).pushedHead).toEqual(pushedTo(ours, a));
+      expect(progress.some((line) => line.includes("rejected somewhere other than the one server EO last pushed it to"))).toBe(true);
+      expect(notes(item).at(-1)).toContain("did not force-push");
+    });
+
+    it("keeps what a hook printed out of a refusal that is not divergence, whichever hook refused", async () => {
+      const server = sshServer();
+      const user = "tok:SYNTHETIC-SECRET";
+      const repo = server.repo(user);
+      git(["config", "remote.origin.pushurl", server.url(user)], repoPath);
+      const local = join(repoPath, git(["rev-parse", "--git-path", "hooks"], repoPath).trim(), "pre-push");
+      const serverHook = join(repo, "hooks", "pre-receive");
+      const item = story();
+
+      for (const pullRequest of [null, PULL_REQUEST]) {
+        updateItem(handle.db, item.id, { git: { pullRequest } });
+        for (const refusing of ["pre-push", "pre-receive"] as const) {
+          if (refusing === "pre-push") writeFileSync(local, '#!/bin/sh\necho "refusing a push to $2"\necho "refusing a push to $2" >&2\nexit 1\n', { mode: 0o755 });
+          else writeFileSync(serverHook, `#!/bin/sh\necho 'refusing https://${user}@example.com' >&2\nexit 1\n`, { mode: 0o755 });
+          const progress: string[] = [];
+
+          const result = await mergeRequestStep(item, onlyFinds(found), (text) => progress.push(text));
+
+          expect(result).not.toMatchObject({ result: "remote_diverged" });
+          const reason = result.ok ? "" : result.reason;
+          expect(reason).toContain(refusing === "pre-push" ? "pre-push hook" : "[remote rejected] (pre-receive hook declined)");
+          expect(reason).not.toContain("SYNTHETIC");
+          expect(reason).not.toContain("moved on since EO pushed it");
+          for (const line of progress) expect(line).not.toContain("SYNTHETIC");
+          expect(tipAt(repo)).toBeNull();
+          rmSync(refusing === "pre-push" ? local : serverHook);
+        }
+      }
+    });
+
+    it("refuses when the push URL now differs only by a leading byte-order mark, which is another repository holding the same commit", async () => {
+      // Relative to the repository, so that the mark leads the URL.
+      const plain = "a.git";
+      const marked = "﻿a.git";
+      for (const path of [plain, marked]) execFileSync("git", ["init", "--bare", join(repoPath, path)], { encoding: "utf8" });
+      writeFileSync(join(repoPath, git(["rev-parse", "--git-path", "info"], repoPath).trim(), "exclude"), `${plain}\n${marked}\n`);
+      git(["config", "remote.origin.pushurl", plain], repoPath);
+      const item = story({ git: { branch: "eo/API-4", pullRequest: PULL_REQUEST } });
+      const worktree = worktreeFor(item);
+      await mergeRequestStep(item, onlyFinds(found));
+      const ours = tipAt(join(repoPath, plain))!;
+      expect(gitStateOf(getItem(handle.db, item.id)!).pushedHead).toEqual(pushedTo(ours, plain));
+      execFileSync("git", ["push", join(repoPath, marked), `${ours}:refs/heads/eo/API-4`], { cwd: repoPath, encoding: "utf8" });
+      git(["config", "remote.origin.pushurl", marked], repoPath);
+      rewriteIn(worktree);
+
+      const result = await mergeRequestStep(item, onlyFinds(found));
+
+      expect(result).toMatchObject({ ok: true, result: "remote_diverged" });
+      expect(tipAt(join(repoPath, plain))).toBe(ours);
+      expect(tipAt(join(repoPath, marked))).toBe(ours);
       expect(notes(item).at(-1)).toContain("did not force-push");
     });
 

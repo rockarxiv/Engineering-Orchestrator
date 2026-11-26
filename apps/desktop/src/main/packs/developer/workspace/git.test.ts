@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -15,6 +15,7 @@ import {
   pushBranch,
   pushDestination,
   pushDiverged,
+  pushRefusal,
   pushUpdated,
   rebaseOntoBase,
   statusPorcelain,
@@ -280,7 +281,7 @@ describe("pushBranch (EO-910)", () => {
 
     const pushed = await pushBranch(repoPath, "bare", "eo/non-fast-forward-APP-1");
 
-    expect(pushed).toMatchObject({ ok: false, rejection: "other", published: null });
+    expect(pushed).toMatchObject({ ok: false, rejection: "other", published: null, status: "[remote rejected] (pre-receive hook declined)" });
     expect(await remoteTip("eo/non-fast-forward-APP-1")).toBeNull();
   });
 
@@ -321,6 +322,67 @@ describe("pushBranch (EO-910)", () => {
 
     const pushed = await pushBranch(repoPath, "bare", "eo/APP-1");
 
+    expect(await run(["rev-parse", "refs/remotes/bare/eo/APP-1"], repoPath)).toBe(pushed.ok ? pushed.head : "");
+  });
+
+  it("tells apart push URLs that differ only by a leading byte-order mark, and pushes to the one git names", async () => {
+    // Relative to the repository, so that the mark leads the URL.
+    const plain = "a.git";
+    const marked = "\uFEFFa.git";
+    await run(["init", "--bare", join(repoPath, plain)], scratch);
+    await run(["init", "--bare", join(repoPath, marked)], scratch);
+    const first = await pushBranch(repoPath, "bare", "eo/APP-1");
+    const old = first.ok ? first.head : "";
+    for (const path of [plain, marked]) await run(["push", join(repoPath, path), `${old}:refs/heads/eo/APP-1`], repoPath);
+    await run(["config", "remote.bare.pushurl", marked], repoPath);
+    await run(["commit", "--amend", "-m", "rewritten"], repoPath);
+
+    expect(await pushDestination(repoPath, "bare")).toBe(marked);
+    const leased = await pushBranch(repoPath, "bare", "eo/APP-1", { forceWithLease: { expect: old, destination: destinationKey(plain) } });
+
+    expect(leased).toMatchObject({ ok: false, rejection: "destination", destination: destinationKey(marked) });
+    expect(await run(["rev-parse", "eo/APP-1"], join(repoPath, plain))).toBe(old);
+    expect(await run(["rev-parse", "eo/APP-1"], join(repoPath, marked))).toBe(old);
+
+    const pushed = await pushBranch(repoPath, "bare", "eo/APP-1", { forceWithLease: { expect: old, destination: destinationKey(marked) } });
+    expect(pushed).toMatchObject({ ok: true, updated: true, destination: destinationKey(marked) });
+    expect(await run(["rev-parse", "eo/APP-1"], join(repoPath, marked))).toBe(pushed.ok ? pushed.head : "");
+    expect(await run(["rev-parse", "eo/APP-1"], join(repoPath, plain))).toBe(old);
+  });
+
+  it("pushes by the remote's name: its pre-push hook is told the name, and its receivepack is honoured, with no destination to force at", async () => {
+    const told = join(scratch, "told.log");
+    const hook = join(repoPath, await run(["rev-parse", "--git-path", "hooks"], repoPath), "pre-push");
+    writeFileSync(hook, `#!/bin/sh\necho "$1" >> '${told}'\n[ "$1" = bare ]\n`, { mode: 0o755 });
+
+    const pinned = await pushBranch(repoPath, "bare", "eo/APP-1");
+    expect(pinned).toMatchObject({ ok: true, updated: true, destination: destinationKey(barePath) });
+
+    // A receivepack that lands the push somewhere the URL does not name.
+    const landed = join(scratch, "landed.git");
+    await run(["init", "--bare", landed], scratch);
+    const receive = join(scratch, "receive.sh");
+    writeFileSync(receive, `#!/bin/sh\nexec git receive-pack '${landed}'\n`, { mode: 0o755 });
+    await run(["config", "remote.bare.receivepack", `'${receive}'`], repoPath);
+    await commit(repoPath, "more.ts", "// more\n");
+
+    const received = await pushBranch(repoPath, "bare", "eo/APP-1");
+
+    expect(received).toMatchObject({ ok: true, updated: true, destination: null });
+    expect(await run(["rev-parse", "eo/APP-1"], landed)).toBe(received.ok ? received.head : "");
+    expect(await remoteTip("eo/APP-1")).toBe(pinned.ok ? pinned.head : "");
+    expect(readFileSync(told, "utf8")).toBe("bare\nbare\n");
+  });
+
+  it("moves only the tracking ref git's own push moves, though the fetch refspec changes while it pushes", async () => {
+    await run(["config", "remote.bare.fetch", "+refs/heads/*:refs/remotes/bare/*"], repoPath);
+    const main = await run(["rev-parse", "main"], repoPath);
+    const hook = join(repoPath, await run(["rev-parse", "--git-path", "hooks"], repoPath), "pre-push");
+    writeFileSync(hook, "#!/bin/sh\ngit config remote.bare.fetch +refs/heads/eo/APP-1:refs/heads/main\n", { mode: 0o755 });
+
+    const pushed = await pushBranch(repoPath, "bare", "eo/APP-1");
+    expect(pushed).toMatchObject({ ok: true, updated: true });
+    expect(await run(["rev-parse", "main"], repoPath)).toBe(main);
     expect(await run(["rev-parse", "refs/remotes/bare/eo/APP-1"], repoPath)).toBe(pushed.ok ? pushed.head : "");
   });
 
@@ -479,6 +541,25 @@ describe("pushDiverged", () => {
   it("reads nothing into a branch whose name says non-fast-forward", () => {
     const named = "abc:refs/heads/eo/non-fast-forward-APP-1";
     expect(pushDiverged(`To ../bare.git\n!\t${named}\t[remote rejected] (pre-receive hook declined)\nDone`, named)).toBe(false);
+  });
+});
+
+describe("pushRefusal", () => {
+  const refspec = "abc:refs/heads/eo/APP-1";
+  it.each([
+    ["[remote rejected] (pre-receive hook declined)", "[remote rejected] (pre-receive hook declined)"],
+    ["[rejected] (stale info)", "[rejected] (stale info)"],
+    ["[remote rejected]", "[remote rejected]"],
+    // A reason a server or hook could fill with anything is not repeated.
+    ["[remote rejected] (see https://tok:SECRET@example.com/x)", "[remote rejected]"],
+    ["something else entirely", "[rejected]"],
+  ])("says %j as %j", (summary, said) => {
+    expect(pushRefusal(`To ../bare.git\n!\t${refspec}\t${summary}\nDone`, refspec)).toBe(said);
+  });
+
+  it("is null where git gave the ref no refused status", () => {
+    expect(pushRefusal("", refspec)).toBeNull();
+    expect(pushRefusal(`To ../bare.git\n*\t${refspec}\t[new branch]\nDone`, refspec)).toBeNull();
   });
 });
 

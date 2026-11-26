@@ -102,20 +102,32 @@ describe("the awkward overlap", () => {
 });
 
 describe("a failed push, whose divergence git's status for the ref settles (EO-910)", () => {
-  const hook = "remote: not this branch\nerror: failed to push some refs to 'origin'\n!\tabc:refs/heads/eo/non-fast-forward-API-4\t[remote rejected] (pre-receive hook declined)";
+  const hook =
+    "remote: refusing https://tok:SECRET@example.com/acme/api.git\nerror: failed to push some refs to 'origin'\n!\tabc:refs/heads/eo/non-fast-forward-API-4\t[remote rejected] (pre-receive hook declined)";
 
   it("is divergence when the ref's status says so", () => {
-    expect(classifyPushError("error: failed to push some refs to 'origin'", true)).toMatchObject({ final: true, diverged: true });
+    expect(classifyPushError("error: failed to push some refs to 'origin'", true, "[rejected] (fetch first)")).toMatchObject({ final: true, diverged: true });
   });
 
-  it("is not divergence for a hook's refusal, whatever the branch is called, and keeps git's words", () => {
-    const classified = classifyPushError(hook, false);
+  it("is not divergence for a hook's refusal, whatever the branch is called, and says it from the ref's status alone", () => {
+    const classified = classifyPushError(hook, false, "[remote rejected] (pre-receive hook declined)");
     expect(classified).toMatchObject({ final: true, diverged: false });
     expect(classified.message).not.toContain("moved on");
-    expect(classified.message).toContain("pre-receive hook declined");
+    expect(classified.message).toContain("[remote rejected] (pre-receive hook declined)");
+    expect(classified.message).not.toContain("SECRET");
+  });
+
+  it("names a local pre-push hook, and repeats nothing it printed, where the ref has no status", () => {
+    const classified = classifyPushError("refusing a push to ssh://tok:SECRET@host/~/api.git\nerror: failed to push some refs to 'origin'", false, null);
+    expect(classified).toMatchObject({ final: true, diverged: false });
+    expect(classified.message).toContain("pre-push hook");
+    expect(classified.message).not.toContain("SECRET");
   });
 
   it("is classified as any other failure where no rejection is in it", () => {
-    expect(classifyPushError("fatal: unable to access: Could not resolve host", false)).toEqual({ ...classifyForgeError("fatal: unable to access: Could not resolve host"), diverged: false });
+    expect(classifyPushError("fatal: unable to access: Could not resolve host", false, null)).toEqual({
+      ...classifyForgeError("fatal: unable to access: Could not resolve host"),
+      diverged: false,
+    });
   });
 });

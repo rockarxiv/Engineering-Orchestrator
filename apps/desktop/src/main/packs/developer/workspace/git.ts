@@ -181,18 +181,24 @@ export async function listTree(repoPath: string, ref: string, path: string): Pro
  * the destination refuses cannot fail a push whose branch went through.
  * The branch's upstream is then set as `--set-upstream` would have.
  *
- * Pinned to one destination. Where the remote pushes to one URL
- * (`pushDestination`), that URL is read once, exactly, and the push goes
- * to it and nowhere else: to a name made up for this push alone, which a
- * `url.<that URL>.pushInsteadOf` given in the environment maps onto it.
- * Git applies a rewrite once, and nothing configured can name a rewrite
- * of a name it never saw — so neither a second rewrite of the URL nor a
- * change to the remote's configuration while EO works reaches another
- * server, and `destination` is the fingerprint of the URL the push
- * actually went to. The URL is never on git's command line, where a
- * timeout's error would repeat it. A remote with several push URLs, or
- * one git cannot name exactly, is pushed to by its name as it always
- * was, with `destination` null.
+ * Pinned to one destination, and still pushed by the remote's name, so
+ * that what git does for a push to that remote — its `receivepack`, the
+ * local `pre-push` hook told the remote's name, the remote-tracking ref
+ * moved by its fetch refspec — is what it always was. Where the remote
+ * pushes to one URL (`pushDestination`), that URL is read once, exactly,
+ * and the environment git is given clears the remote's push URLs and
+ * gives it one: a name made up for this push alone, which a
+ * `url.<that URL>.insteadOf` beside it maps back onto the URL. Git
+ * applies a rewrite once, and nothing configured can name a rewrite of a
+ * name it never saw — so neither a second rewrite of the URL nor a change
+ * to the remote's push URLs while EO works reaches another server, and
+ * `destination` is the fingerprint of the URL the push actually went to.
+ * The URL is never on git's command line, where a timeout's error would
+ * repeat it. Where that pin cannot be shown to hold — several push URLs,
+ * one git cannot name exactly, a `receivepack` or a remote helper that
+ * decides for itself where the push lands, or a git too old to clear a
+ * remote's push URLs from the environment — the push goes by the
+ * remote's name unpinned, as it always did, with `destination` null.
  *
  * `updated` is whether the remote's branch actually moved to `head`, read
  * off `--porcelain`: an up-to-date push changes nothing, and its `head`
@@ -220,9 +226,9 @@ export async function pushBranch(
   options: NetworkGitOptions & { forceWithLease?: { expect: string; destination: string } } = {},
 ): Promise<PushOutcome> {
   const head = await git(["rev-parse", "--verify", `refs/heads/${branch}^{commit}`], repoPath);
-  if (!head.ok) return { ok: false, error: head.error, published: null, destination: null, rejection: "other" };
-  const url = await pushDestination(repoPath, remote);
-  const destination = url === null ? null : destinationKey(url);
+  if (!head.ok) return { ok: false, error: head.error, published: null, destination: null, rejection: "other", status: null };
+  const pin = await pinPush(repoPath, remote);
+  const destination = pin === null ? null : destinationKey(pin.url);
   if (options.forceWithLease && destination !== options.forceWithLease.destination) {
     return {
       ok: false,
@@ -230,15 +236,15 @@ export async function pushBranch(
       published: null,
       destination,
       rejection: "destination",
+      status: null,
     };
   }
   const ref = `refs/heads/${branch}`;
   const refspec = `${head.stdout}:${ref}`;
   const lease = options.forceWithLease ? [`--force-with-lease=${branch}:${options.forceWithLease.expect}`] : [];
-  const target = url === null ? remote : `eo-push-${randomUUID()}:`;
-  const env = { ...process.env, ...NON_INTERACTIVE_GIT_ENV, ...(url === null ? {} : pinnedPushEnv(process.env, url, target)) };
+  const env = { ...process.env, ...NON_INTERACTIVE_GIT_ENV, ...(pin === null ? {} : pin.env) };
   try {
-    const { stdout } = await execFileAsync("git", composeGitArgs(["push", "--porcelain", "--no-follow-tags", ...lease, target, refspec], process.platform), {
+    const { stdout } = await execFileAsync("git", composeGitArgs(["push", "--porcelain", "--no-follow-tags", ...lease, remote, refspec], process.platform), {
       cwd: repoPath,
       windowsHide: true,
       maxBuffer: 32 * 1024 * 1024,
@@ -247,10 +253,7 @@ export async function pushBranch(
       ...(options.signal ? { signal: options.signal } : {}),
     });
     // Best effort: the push has happened, and a missing upstream costs a
-    // person's `git status` its ahead/behind, nothing of EO's. A push by
-    // the remote's name moves its remote-tracking ref itself; one pinned
-    // to its URL does not, so that is done here as git would have.
-    if (url !== null) await updateTrackingRef(repoPath, remote, ref, head.stdout);
+    // person's `git status` its ahead/behind, nothing of EO's.
     await git(["config", `branch.${branch}.remote`, remote], repoPath);
     await git(["config", `branch.${branch}.merge`, ref], repoPath);
     return { ok: true, stdout: stdout.trim(), head: head.stdout, updated: pushUpdated(stdout, refspec), destination };
@@ -261,56 +264,51 @@ export async function pushBranch(
     const raw = typeof error === "object" && error !== null ? (error as { stdout?: unknown }).stdout : undefined;
     const stdout = typeof raw === "string" ? raw : "";
     const stderr = extractGitError(error);
-    const said = stdout.trim() ? `${stderr}\n${stdout.trim()}` : stderr;
     return {
       ok: false,
-      // The made-up name means nothing to anybody reading this.
-      error: url === null ? said : said.split(target).join(remote),
+      error: stdout.trim() ? `${stderr}\n${stdout.trim()}` : stderr,
       published: pushUpdated(stdout, refspec) ? head.stdout : null,
       destination,
       rejection: pushDiverged(stdout, refspec) ? "diverged" : "other",
+      status: pushRefusal(stdout, refspec),
     };
   }
 }
 
 /**
- * The environment that maps `alias` onto `url` for one push, after any
- * configuration the environment already gives git that way.
+ * The one URL a push to `remote` goes to, and the environment that holds
+ * it there (`pushBranch`), or null where that cannot be shown to hold.
+ *
+ * The environment comes after any configuration the environment already
+ * gives git, and after every configuration file: an empty
+ * `remote.<name>.pushurl` clears the remote's push URLs, the next gives
+ * it the made-up name, and `url.<URL>.insteadOf` maps that name back.
+ * Asked of git again under exactly that environment, the remote must
+ * push to exactly that URL and nothing else — a git that cannot clear
+ * the list keeps the URLs it had beside the new one, and is not pinned.
  */
-function pinnedPushEnv(inherited: NodeJS.ProcessEnv, url: string, alias: string): Record<string, string> {
-  const given = Number.parseInt(inherited["GIT_CONFIG_COUNT"] ?? "", 10);
-  const index = Number.isInteger(given) && given > 0 ? given : 0;
-  return {
-    GIT_CONFIG_COUNT: String(index + 1),
-    [`GIT_CONFIG_KEY_${index}`]: `url.${url}.pushInsteadOf`,
-    [`GIT_CONFIG_VALUE_${index}`]: alias,
-  };
-}
-
-/**
- * Moves the remote-tracking ref the remote's fetch refspecs map `ref` to,
- * as a push by the remote's name would have. Best effort, like setting
- * the upstream.
- */
-async function updateTrackingRef(repoPath: string, remote: string, ref: string, commit: string): Promise<void> {
-  const fetch = await git(["config", "--get-all", `remote.${remote}.fetch`], repoPath);
-  if (!fetch.ok) return;
-  for (const spec of fetch.stdout.split("\n")) {
-    const [source, tracking] = spec.trim().replace(/^\+/, "").split(":");
-    if (source === undefined || tracking === undefined || source.startsWith("^")) continue;
-    let mapped: string | null = null;
-    if (!source.includes("*")) mapped = source === ref ? tracking : null;
-    else {
-      const [before = "", after = ""] = source.split("*");
-      if (ref.length >= before.length + after.length && ref.startsWith(before) && ref.endsWith(after)) {
-        mapped = tracking.replace("*", ref.slice(before.length, ref.length - after.length));
-      }
-    }
-    if (mapped !== null && mapped.startsWith("refs/")) {
-      await git(["update-ref", mapped, commit], repoPath);
-      return;
-    }
+async function pinPush(repoPath: string, remote: string): Promise<{ url: string; env: Record<string, string> } | null> {
+  const url = await pushDestination(repoPath, remote);
+  if (url === null) return null;
+  // Either decides for itself where the push lands, whatever the URL.
+  for (const key of ["receivepack", "vcs"]) {
+    const set = await git(["config", "--get-all", `remote.${remote}.${key}`], repoPath);
+    if (set.ok) return null;
   }
+  const alias = `eo-push-${randomUUID()}:`;
+  const given = Number.parseInt(process.env["GIT_CONFIG_COUNT"] ?? "", 10);
+  const index = Number.isInteger(given) && given > 0 ? given : 0;
+  const pins: [string, string][] = [
+    [`remote.${remote}.pushurl`, ""],
+    [`remote.${remote}.pushurl`, alias],
+    [`url.${url}.insteadOf`, alias],
+  ];
+  const env: Record<string, string> = { GIT_CONFIG_COUNT: String(index + pins.length) };
+  pins.forEach(([key, value], offset) => {
+    env[`GIT_CONFIG_KEY_${index + offset}`] = key;
+    env[`GIT_CONFIG_VALUE_${index + offset}`] = value;
+  });
+  return (await pushDestination(repoPath, remote, env)) === url ? { url, env } : null;
 }
 
 /** This refspec's porcelain status lines, one per URL the push went to. */
@@ -342,16 +340,44 @@ export function pushDiverged(porcelain: string, refspec: string): boolean {
 }
 
 /**
+ * How git refused `refspec`, from its own status line, in words that
+ * cannot carry anything a hook or a server chose to print: the bracketed
+ * status, and the reason beside it only where that is a plain phrase
+ * (`pre-receive hook declined`). Null where git gave the ref no status —
+ * a local `pre-push` hook that refused, a remote that could not be
+ * reached.
+ */
+export function pushRefusal(porcelain: string, refspec: string): string | null {
+  for (const line of refStatuses(porcelain, refspec)) {
+    const [flag, , summary = ""] = line.split("\t");
+    if (flag !== "!") continue;
+    const status = /^\[[a-z ]+\]/.exec(summary)?.[0];
+    if (status === undefined) return "[rejected]";
+    const reason = /^ \(([A-Za-z0-9 ._'-]+)\)$/.exec(summary.slice(status.length))?.[1];
+    return reason === undefined ? status : `${status} (${reason})`;
+  }
+  return null;
+}
+
+/**
  * A push that went through says which commit it sent, whether that moved
  * the remote's branch, and where it went (`destinationKey`, or null). One
  * that failed says what git said, which commit it published anyway, if
  * any, where it was going, and why it was refused: `diverged`, refused
  * for the ref by every account git gave; `destination`, never sent,
- * because a lease's destination no longer holds; anything else `other`.
+ * because a lease's destination no longer holds; anything else `other`
+ * — and, in `status`, how git refused the ref (`pushRefusal`).
  */
 export type PushOutcome =
   | { ok: true; stdout: string; head: string; updated: boolean; destination: string | null }
-  | { ok: false; error: string; published: string | null; destination: string | null; rejection: "diverged" | "destination" | "other" };
+  | {
+      ok: false;
+      error: string;
+      published: string | null;
+      destination: string | null;
+      rejection: "diverged" | "destination" | "other";
+      status: string | null;
+    };
 
 /**
  * The one URL a push to `remote` goes to right now — `remote.<name>.
@@ -364,7 +390,7 @@ export type PushOutcome =
  * Handed back to git only as `pushBranch` pins it, never as a URL git
  * would rewrite again.
  */
-export async function pushDestination(repoPath: string, remote: string): Promise<string | null> {
+export async function pushDestination(repoPath: string, remote: string, env?: Record<string, string>): Promise<string | null> {
   let stdout: Buffer;
   try {
     ({ stdout } = await execFileAsync("git", composeGitArgs(["remote", "get-url", "--push", "--all", remote], process.platform), {
@@ -372,13 +398,15 @@ export async function pushDestination(repoPath: string, remote: string): Promise
       windowsHide: true,
       encoding: "buffer",
       maxBuffer: 1024 * 1024,
+      ...(env ? { env: { ...process.env, ...env } } : {}),
     }));
   } catch {
     return null;
   }
   let text: string;
   try {
-    text = new TextDecoder("utf-8", { fatal: true }).decode(stdout);
+    // Every byte, a leading byte-order mark too: `\uFEFFa.git` is not `a.git`.
+    text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(stdout);
   } catch {
     return null;
   }

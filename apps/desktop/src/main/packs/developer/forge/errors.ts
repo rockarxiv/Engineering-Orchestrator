@@ -92,13 +92,22 @@ export function classifyForgeError(raw: string): Classification {
  * A failed `git push`, where whether it diverged is known from the ref's
  * own status (`pushBranch`'s `rejection`) rather than guessed from the
  * text, which names the branch — a branch called `…non-fast-forward…`
- * says nothing about how it was refused (EO-910). A refusal that is not
- * divergence — a declined hook, above all — keeps git's own words rather
- * than being told it moved on.
+ * says nothing about how it was refused (EO-910). A refused ref that did
+ * not diverge — a declined hook, above all — is not told it moved on, nor
+ * given git's words, which carry whatever a hook printed, a URL with its
+ * credential included: it is said from the ref's status alone
+ * (`pushRefusal`), as the classifier masked it before.
  */
-export function classifyPushError(raw: string, diverged: boolean): Classification {
+export function classifyPushError(raw: string, diverged: boolean, status: string | null): Classification {
   if (diverged) return { final: true, diverged: true, message: DIVERGED_MESSAGE };
   const classified = classifyForgeError(raw);
   if (classified.message !== DIVERGED_MESSAGE) return { ...classified, diverged: false };
-  return { final: true, diverged: false, message: `The remote refused the push: ${raw.trim()}` };
+  return {
+    final: true,
+    diverged: false,
+    message:
+      status === null
+        ? "git refused the push without the remote saying anything of the branch — a local pre-push hook, most likely. EO did not force-push."
+        : `The remote refused the push: git reported the branch as ${status}. EO did not force-push.`,
+  };
 }

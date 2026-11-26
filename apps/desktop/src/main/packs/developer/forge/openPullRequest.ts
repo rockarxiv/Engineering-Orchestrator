@@ -88,9 +88,11 @@ export interface OpenPullRequestInput {
    * Asked when the push is rejected as diverged, before that is reported
    * (EO-910). True means the caller has published the branch itself — EO
    * replacing its own last push — and this carries on exactly as after a
-   * push that went through, without pushing again.
+   * push that went through, without pushing again. Told where the push
+   * was rejected (`destinationKey`, or null for no one place), so that the
+   * push replacing it goes there or nowhere.
    */
-  onDiverged?: () => Promise<boolean>;
+  onDiverged?: (rejected: { destination: string | null }) => Promise<boolean>;
 }
 
 /** What came of asking for reviewers, on a pull request this created. */
@@ -203,8 +205,8 @@ export async function openPullRequest(input: OpenPullRequestInput): Promise<Open
     // Moved the branch at one of several push URLs though it failed at
     // another: it is published all the same.
     if (pushed.published !== null) input.onPushed?.({ head: pushed.published, destination: pushed.destination });
-    const classified = classifyPushError(pushed.error, pushed.rejection === "diverged");
-    if (!(classified.diverged && input.onDiverged && (await input.onDiverged()))) {
+    const classified = classifyPushError(pushed.error, pushed.rejection === "diverged", pushed.status);
+    if (!(classified.diverged && input.onDiverged && (await input.onDiverged({ destination: pushed.destination })))) {
       return { ...fail(classified.message, classified.final), diverged: classified.diverged };
     }
   } else if (pushed.updated) {
