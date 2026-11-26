@@ -225,6 +225,14 @@ const keyOf = (scope: MemoryScope) => `${scope.kind}:${scope.id}`;
 export const CONSOLIDATION_STUCK_SOURCE = "consolidation_stuck";
 
 const PAUSED_NOTE = "EO was paused while this consolidation ran, so it was stopped and changed nothing. It is asked again once EO is resumed.";
+/**
+ * What the last row of a retry says when it found nothing left to give
+ * (EO-913): the run it went on with had every entry it was to have, or
+ * they were retired since, so the run is finished as it is
+ * rather than taken up again.
+ */
+const NOTHING_LEFT_NOTE =
+  "This went on with a consolidation that stopped part-way, and found nothing left to give it: the earlier batches had the rest, and what the stopped batch was to be given has since been retired. The consolidation is finished as it is.";
 const PAUSED_BETWEEN_NOTE = "EO was paused before this batch of the consolidation started, so it changed nothing; the batches before it stay applied. It is asked again once EO is resumed.";
 /**
  * What a `container_done` whose container's work resumed says (EO-596):
@@ -263,6 +271,8 @@ type Applied = Extract<ApplyConsolidationResult, { ok: true }>;
 interface Sequence {
   /** What it ran under: only a retry of the same run goes on with it (EO-913). */
   trigger: MemoryConsolidationTrigger;
+  /** Which run it is: the moment its first attempt read its entries, what each retry's rows name as `continues_run` (EO-913). */
+  run: number;
   /**
    * Each entry its batches were given or wrote, as the version they had
    * it (`versionOf`): an entry edited or restored since — which keeps its
@@ -446,6 +456,13 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
   let draining = false;
   /** The scope the running consolidation is of, by key (EO-589). */
   let runningKey: string | null = null;
+  /**
+   * The run the running consolidation goes on with, where it is a retry
+   * of one that stopped part-way (EO-913): every row it starts names it
+   * (`continues_run`), so a failure of the retry's first batch still
+   * counts as one after that run applied something.
+   */
+  let continuing: number | undefined;
   /** The running consolidation's way to stop its side call (`abortRunning`). */
   let current: AbortController | null = null;
   let timer: ReturnType<typeof setInterval> | undefined;
@@ -554,10 +571,19 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
    * a scheduled one's new entries are counted from: they are still new to
    * the retry, after a restart too.
    *
+   * A retry goes on with the run it retries (`continuing`): each row it
+   * starts names that run (`continues_run`), so if its own first batch
+   * fails the run is still one that stopped part-way, and is taken up
+   * again — while a person asking anew starts a run of its own.
+   *
    * A scheduled run with no new entry left to give — the one it was queued
-   * for retired or edited back while it waited, or each already had by the
-   * batches of the run it resumes — changes nothing and asks nothing, not
-   * even to fold duplicates or propose skills.
+   * for retired or edited back while it waited — changes nothing and asks
+   * nothing, not even to fold duplicates or propose skills. A retry left
+   * with none — what its run's earlier batches had is done, and the rest
+   * was retired since — is that run finished: one row that
+   * changed nothing ends it (`NOTHING_LEFT_NOTE`), so it is not queued
+   * again and its earlier batches are not resent, and skills are proposed
+   * as after any run that finished.
    *
    * What a run is given is read when it starts, before its first side
    * call waits for its slot. Entries written after that — an agent's note
@@ -586,6 +612,11 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
     // anyone else during any of them is new to the next scheduled one —
     // though a later batch's row finished after it.
     const readAt = now();
+    // A retry of a run that stopped part-way goes on with that run, under
+    // the trigger it ran under (EO-913): its rows name it. Anything else —
+    // a person asking now, a later day's schedule — is a run of its own.
+    const interrupted = resumesRun && trigger !== "container_done" ? consolidationState(db, scope).failuresSince[0] : undefined;
+    continuing = interrupted !== undefined && interrupted.trigger === trigger && interrupted.afterApplied ? interrupted.run : undefined;
     const read = agentEntries(scope);
     const facts = scopeFacts(db, scope, options.workspacesElsewhere);
     if (!facts || read.length === 0) {
@@ -601,25 +632,35 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
     const onlyNew = trigger !== "manual";
     const fresh = onlyNew ? new Set(entriesNewSinceConsolidated(db, scope)) : null;
     const kept = sequences.get(key);
-    const resumes =
-      resumesRun && kept !== undefined && kept.trigger === trigger && now() - kept.at <= SEQUENCE_KEPT_MS && consolidationState(db, scope).failuresSince.length > 0;
-    const sequence: Sequence = resumes ? kept : { trigger, done: new Set<string>(), folded: new Set<string>(), batches: 0, at: now() };
-    // Nothing new left to give: nothing is asked, and nothing written.
-    if (fresh !== null && !read.some((entry) => fresh.has(entry.id) && !sequence.done.has(versionOf(entry)))) {
-      sequences.delete(key);
-      return;
-    }
+    const resumes = continuing !== undefined && kept !== undefined && kept.run === continuing && kept.trigger === trigger && now() - kept.at <= SEQUENCE_KEPT_MS;
+    const sequence: Sequence = resumes ? kept : { trigger, run: continuing ?? readAt, done: new Set<string>(), folded: new Set<string>(), batches: 0, at: now() };
     sequences.set(key, sequence);
     /** This run's last consolidation to succeed: what the skills proposed after it are posted under. */
     let last: Applied | null = null;
     const succeeded = async () => {
       sequences.delete(key);
-      if (last !== null) markConsolidationRunFinished(db, last.consolidation.id);
+      // A retry that found nothing left to do still ends its run, on a
+      // row of its own that changed nothing, so the run is not taken up
+      // again — and its earlier batches resent — for ever.
+      if (last === null) {
+        const closed = await onRow(scope, trigger, readAt, async (rowId) => apply(rowId, scope, [], { retire: [], merge: [], rewrite: [] }, NOTHING_LEFT_NOTE));
+        if (closed === null) return;
+        last = closed;
+      }
+      markConsolidationRunFinished(db, last.consolidation.id);
       // A skill is the project's, a workspace's or everyone's; a
       // container's memory ends with its work (EO-596), so none is
       // proposed from it.
-      if (last !== null && scope.kind !== "container") await proposeSkills(scope, facts, last.consolidation.id, [...sequence.folded]);
+      if (scope.kind !== "container") await proposeSkills(scope, facts, last.consolidation.id, [...sequence.folded]);
     };
+    // Nothing new left to give: nothing is asked, and nothing written —
+    // unless this goes on with a run whose earlier batches had the rest,
+    // which is then finished as it is.
+    if (fresh !== null && !read.some((entry) => fresh.has(entry.id) && !sequence.done.has(versionOf(entry)))) {
+      if (sequence.batches > 0) return succeeded();
+      sequences.delete(key);
+      return;
+    }
     const record = (applied: Applied) => {
       last = applied;
       // In the order written, so a rewrite of an entry an earlier batch
@@ -687,6 +728,11 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
     return succeeded();
   }
 
+  /** What a row the running consolidation starts says of its run: the run it goes on with, where it is a retry (`continuing`). */
+  function runOfRow(): { continuesRun?: number } {
+    return continuing === undefined ? {} : { continuesRun: continuing };
+  }
+
   /**
    * Whether the next call of a sequence runs (EO-574): not once EO is
    * stopping, nor for a project handed to a record meanwhile, nor while
@@ -698,12 +744,12 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
   function mayContinue(scope: MemoryScope, trigger: MemoryConsolidationTrigger, readAt: number): "continue" | "stop" {
     if (stopped || heldElsewhereNow(scope)) return "stop";
     if (!(options.canStart?.() ?? true)) {
-      const row = startConsolidation(db, { scope, trigger, now: readAt });
+      const row = startConsolidation(db, { scope, trigger, now: readAt, ...runOfRow() });
       failConsolidation(db, row.id, { reason: CONSOLIDATION_PAUSED_REASON, note: PAUSED_BETWEEN_NOTE, now: now() });
       return "stop";
     }
     if (pipelineBusy()) {
-      const row = startConsolidation(db, { scope, trigger, now: readAt });
+      const row = startConsolidation(db, { scope, trigger, now: readAt, ...runOfRow() });
       failConsolidation(db, row.id, { reason: CONSOLIDATION_DEFERRED_REASON, note: DEFERRED_NOTE, now: now() });
       return "stop";
     }
@@ -822,7 +868,7 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
     readAt: number,
     work: (rowId: string, controller: AbortController) => Promise<T | null>,
   ): Promise<T | null> {
-    const row = startConsolidation(db, { scope, trigger, now: readAt });
+    const row = startConsolidation(db, { scope, trigger, now: readAt, ...runOfRow() });
     const controller = new AbortController();
     current = controller;
     try {

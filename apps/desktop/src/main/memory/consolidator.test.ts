@@ -521,7 +521,7 @@ describe("automatic memory consolidation", () => {
     it("applies a rewrite that gives its reason though it makes the entry longer, as an absolute date does (EO-913)", async () => {
       fill();
       const dated = byAgent(workspace, "The ledger moved to UTC yesterday.", Date.parse("2026-11-21T09:00:00Z"));
-      const longer = "The ledger moved to UTC on 2026-11-20, and has been in UTC since.";
+      const longer = "The ledger moved to UTC on November 20, 2026.";
       const caller = answeringWith({ ...NOTHING, rewrite: [{ id: dated.id, body: longer, contradictsRepositoryFile: false, reason: "relative_date" }] });
 
       askNow(consolidatorWith(caller.sideCall));
@@ -1098,26 +1098,108 @@ describe("automatic memory consolidation", () => {
       const old = settledScope();
       const fresh = newNotes(40);
       givenToFiveRuns(fresh);
+      const sent: string[][] = [];
       let calls = 0;
-      const scheduled = consolidatorWith((async (): Promise<AnyAnswer> => {
+      // One consolidator throughout, so the scheduled run's progress is still held when the person asks.
+      const runner = consolidatorWith((async (request: AnyRequest): Promise<AnyAnswer> => {
         calls += 1;
-        return calls === 1 ? { ok: true, value: NOTHING } : { ok: false, reason: "error", message: "The backend fell over." };
-      }) as never, { neighbours: () => null });
-      scheduled.start();
-      await scheduled.idle();
-      scheduled.stop();
-      expect(listConsolidations(handle.db, project).slice(0, 2).map((row) => row.status)).toEqual(["failed", "succeeded"]);
-
-      const sent: string[] = [];
-      const manual = consolidatorWith((async (request: AnyRequest): Promise<AnyAnswer> => {
-        sent.push(...idsIn(request.input));
+        sent.push(idsIn(request.input));
+        if (calls === 2) return { ok: false, reason: "error", message: "The backend fell over." };
         return { ok: true, value: request.system === MEMORY_CONSOLIDATE_SYSTEM ? NOTHING : { groups: [] } };
       }) as never, { neighbours: () => null });
-      manual.start();
-      expect(manual.requestNow(project).outcome).toBe("started");
-      await manual.idle();
-      // Every agent's entry, the first batch's included.
-      expect([...new Set(sent)].sort()).toEqual([...ids(old), ...ids(fresh)].sort());
+      runner.start();
+      await runner.idle();
+      expect(listConsolidations(handle.db, project).slice(0, 2).map((row) => row.status)).toEqual(["failed", "succeeded"]);
+      expect(sent).toHaveLength(2);
+
+      expect(runner.requestNow(project).outcome).toBe("started");
+      await runner.idle();
+      const manual = sent.slice(2).flat();
+      // Every agent's entry, the scheduled run's first batch's included.
+      expect([...new Set(manual)].sort()).toEqual([...ids(old), ...ids(fresh)].sort());
+      expect(manual).toEqual(expect.arrayContaining(sent[0]!));
+      expect(listConsolidations(handle.db, project)[0]).toMatchObject({ trigger: "manual", status: "succeeded" });
+    });
+
+    it("keeps retrying a person's run that stopped part-way when the retry's own first batch fails too (EO-913)", async () => {
+      settledScope();
+      newNotes(40);
+      vi.useFakeTimers({ toFake: ["Date"] });
+      const sent: string[][] = [];
+      let calls = 0;
+      const runner = consolidatorWith((async (request: AnyRequest): Promise<AnyAnswer> => {
+        calls += 1;
+        sent.push(idsIn(request.input));
+        if (calls === 2 || calls === 3) return { ok: false, reason: "error", message: "The backend fell over." };
+        return { ok: true, value: request.system === MEMORY_CONSOLIDATE_SYSTEM ? NOTHING : { groups: [] } };
+      }) as never, { neighbours: () => null });
+      runner.start();
+      expect(runner.requestNow(project).outcome).toBe("started");
+      await runner.idle();
+      // Batch one applied, batch two failed.
+      expect(sent).toHaveLength(2);
+      const firstRun = listConsolidations(handle.db, project)[0]!.startedAt;
+
+      // Retried after its backoff: the retry's first batch, the run's second, fails again.
+      vi.setSystemTime(Date.now() + CONSOLIDATION_BACKOFF_MS[0] + 1);
+      expect(runner.check()).toEqual([{ scope: project, trigger: "manual" }]);
+      runner.poke();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await runner.idle();
+      expect(sent).toHaveLength(3);
+      const [retried] = handle.db.all<{ started_at: number; continues_run: number | null; status: string }>(
+        sql`select started_at, continues_run, status from memory_consolidations where scope_id = ${project.id} order by started_at desc, id desc limit 1`,
+      );
+      expect(retried).toMatchObject({ status: "failed", continues_run: firstRun });
+      expect(retried!.started_at).toBeGreaterThan(firstRun);
+
+      // Still the run that stopped part-way: it is queued again after the next backoff, and goes on where it left off.
+      vi.setSystemTime(Date.now() + CONSOLIDATION_BACKOFF_MS[1] + 1);
+      expect(runner.check()).toEqual([{ scope: project, trigger: "manual" }]);
+      runner.poke();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await runner.idle();
+      expect(sent.length).toBeGreaterThan(3);
+      for (const id of sent[0]!) expect(sent[3]).not.toContain(id);
+      expect(sent[3]).toEqual(expect.arrayContaining(sent[1]!));
+      expect(listConsolidations(handle.db, project)[0]).toMatchObject({ trigger: "manual", status: "succeeded" });
+      // Finished: nothing is queued.
+      expect(runner.check()).toEqual([]);
+    });
+
+    it("finishes a scheduled run that stopped part-way, without resending its earlier batch, when what its failed batch was to have is gone (EO-913)", async () => {
+      settledScope();
+      const fresh = newNotes(40);
+      givenToFiveRuns(fresh);
+      vi.useFakeTimers({ toFake: ["Date"] });
+      const sent: string[][] = [];
+      let calls = 0;
+      const proposeSkills = vi.fn(async (): Promise<SideCallResult<unknown>> => ({ ok: true, value: { skills: [] } }));
+      const runner = consolidatorWith((async (request: AnyRequest): Promise<AnyAnswer> => {
+        calls += 1;
+        sent.push(idsIn(request.input));
+        return calls === 2 ? { ok: false, reason: "error", message: "The backend fell over." } : { ok: true, value: NOTHING };
+      }) as never, { neighbours: () => null, proposeSkills });
+      runner.start();
+      await runner.idle();
+      expect(sent).toHaveLength(2);
+
+      // Every entry the failed batch was given is retired by hand.
+      for (const id of sent[1]!) expect(retireMemory(handle.db, id, { now: Date.now() + 1 }).ok).toBe(true);
+
+      vi.setSystemTime(Date.now() + CONSOLIDATION_BACKOFF_MS[0] + 1);
+      expect(runner.check()).toEqual([{ scope: project, trigger: "schedule" }]);
+      runner.poke();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await runner.idle();
+
+      // Nothing was asked, the first batch's entries were not sent again, and the run is finished.
+      expect(sent).toHaveLength(2);
+      expect(listConsolidations(handle.db, project)[0]).toMatchObject({ trigger: "schedule", status: "succeeded", retiredIds: [], writtenIds: [] });
+      expect(listConsolidations(handle.db, project)[0]!.note).toMatch(/found nothing left to give it/);
+      expect(proposeSkills).toHaveBeenCalledTimes(1);
+      expect(entriesNewSinceConsolidated(handle.db, project)).toEqual([]);
+      expect(runner.check()).toEqual([]);
     });
 
     it("goes on where a scheduled run that stopped part-way left off when that run is retried", async () => {

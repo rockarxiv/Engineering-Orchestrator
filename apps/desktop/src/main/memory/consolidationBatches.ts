@@ -125,9 +125,10 @@ export const NEW_ENTRY_NEIGHBOURS = 8;
  * Groups are packed into batches oldest new entry first, a group that
  * would take a batch over `limits` starting the next. Only a group too
  * large for any batch is cut, new entry by new entry: each with its
- * neighbours not yet placed, and a new entry already placed in the batch
- * being filled with its own that still fit there — so only there can a
- * new entry go without part of its list. Without neighbours — the index
+ * neighbours not yet placed, and, before the batch is closed, every new
+ * entry that brings with its own neighbours as far as they fit there —
+ * so a new entry goes without part of its list only where the batch it
+ * is in could hold no more. Without neighbours — the index
  * could not be asked — the new entries go alone, by age.
  */
 export function planNewEntryBatches<T extends BatchableEntry>(
@@ -182,6 +183,26 @@ export function planNewEntryBatches<T extends BatchableEntry>(
   };
   const fits = (count: number, size: number) => batch.length + count <= limits.maxEntries && chars + size <= limits.maxChars;
   const sizeOf = (members: readonly T[]) => members.reduce((sum, member) => sum + member.body.length, 0);
+  const unitOf = new Map(units.map((unit) => [unit[0]!.id, unit]));
+  const widened = new Set<string>();
+  /** With `unit` in the batch being filled: each new entry in it, and in what that brings, has its own list joined to it where it fits. */
+  const widen = (unit: readonly T[]) => {
+    widened.add(unit[0]!.id);
+    const queue = [unit];
+    for (let next = queue.shift(); next !== undefined; next = queue.shift()) {
+      for (const member of next) {
+        if (!placed.has(member.id)) {
+          if (!fits(1, member.body.length)) continue;
+          add(member);
+        }
+        if (!batch.includes(member) || widened.has(member.id)) continue;
+        const own = unitOf.get(member.id);
+        if (own === undefined) continue;
+        widened.add(member.id);
+        queue.push(own);
+      }
+    }
+  };
   // In order of each group's oldest new entry: the order units are in.
   for (const group of groups.values()) {
     const members = [...new Set(group.flat())];
@@ -191,20 +212,19 @@ export function planNewEntryBatches<T extends BatchableEntry>(
       members.forEach(add);
       continue;
     }
-    // Too large for one batch: new entry by new entry.
+    // Too large for one batch: new entry by new entry. Placing one brings
+    // in, while its batch is still being filled, the own lists of the new
+    // entries among its neighbours — and theirs — as far as they fit, so
+    // a new entry's ranked context is never left for a later batch it
+    // cannot be in.
     flush();
     for (const unit of group) {
       const [head, ...rest] = unit as [T, ...T[]];
-      if (placed.has(head.id)) {
-        // Placed with an earlier new entry: its own neighbours join it
-        // where that batch is still being filled and they fit.
-        if (!batch.includes(head)) continue;
-        for (const member of rest) if (!placed.has(member.id) && fits(1, member.body.length)) add(member);
-        continue;
-      }
+      if (placed.has(head.id)) continue;
       const members = [head, ...rest.filter((member) => !placed.has(member.id))];
       if (batch.length > 0 && !fits(members.length, sizeOf(members))) flush();
       members.forEach(add);
+      widen(unit);
     }
     flush();
   }

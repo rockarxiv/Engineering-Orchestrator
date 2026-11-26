@@ -171,6 +171,27 @@ describe("a scheduled consolidation's batches (EO-913)", () => {
     expect(new Set(ids(batches.flat())).size).toBe(batches.flat().length);
   });
 
+  it("brings a new entry's own neighbours into the batch it is placed in before an overlapping group can close that batch (EO-913)", () => {
+    const scope = entries(60, 1_000);
+    // a is oldest, then c, then b: b is one of a's neighbours, and its only neighbour is d.
+    const [a, c, b, d] = [scope[40]!, scope[41]!, scope[42]!, scope[30]!];
+    const neighbours = new Map([
+      [a.id, [...scope.slice(0, 7).map((entry) => entry.id), b.id]],
+      // c shares scope[0] with a, so they are one group, too large for one batch.
+      [c.id, [scope[0]!.id, ...scope.slice(10, 17).map((entry) => entry.id)]],
+      [b.id, [d.id]],
+    ]);
+    const batches = planNewEntryBatches([a, c, b], scope, neighbours);
+    const batchOf = (id: string) => batches.findIndex((batch) => ids(batch).includes(id));
+    // a's list fills 9,000 characters, and c's would take it past 15,000: d still joins b first.
+    expect(batchOf(d.id)).toBe(batchOf(b.id));
+    expect(batchOf(b.id)).toBe(batchOf(a.id));
+    expect(batchOf(c.id)).not.toBe(batchOf(a.id));
+    for (const id of scope.slice(10, 17).map((entry) => entry.id)) expect(batchOf(id)).toBe(batchOf(c.id));
+    for (const batch of batches) expect(charsOf(batch)).toBeLessThanOrEqual(CONSOLIDATION_BATCH_MAX_CHARS);
+    expect(new Set(ids(batches.flat())).size).toBe(batches.flat().length);
+  });
+
   it("starts another batch where the next new entry and its neighbours would take one over its limits", () => {
     const scope = entries(60, 1_000);
     const fresh = [scope[40]!, scope[50]!];
@@ -298,8 +319,8 @@ describe("the cross-batch pass", () => {
 
     const schema = consolidationAnswerSchema(
       [
-        { id: "a", body: "The ledger is in UTC.\nAlways.", createdAt: NOW },
-        { id: "b", body: "The ledger is in UTC.", createdAt: NOW },
+        { id: "a", body: "The ledger is in UTC.\nAlways.", createdAt: NOW, contradictsRepositoryFile: false },
+        { id: "b", body: "The ledger is in UTC.", createdAt: NOW, contradictsRepositoryFile: false },
       ],
       { repositoryFiles: [] },
     );

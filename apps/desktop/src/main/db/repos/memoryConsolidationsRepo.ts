@@ -76,7 +76,17 @@ export function listConsolidations(db: Db, scope: MemoryScope, page: { before?: 
 }
 
 /** A consolidation begun: its row, `running`, whose id the entries it touches will carry. */
-export function startConsolidation(db: Db, input: { scope: MemoryScope; trigger: MemoryConsolidationTrigger; now: number; id?: Uuid }): MemoryConsolidationView {
+export function startConsolidation(
+  db: Db,
+  input: {
+    scope: MemoryScope;
+    trigger: MemoryConsolidationTrigger;
+    now: number;
+    id?: Uuid;
+    /** The `started_at` of the run this row's retry goes on with (EO-913); absent for a run's own rows. */
+    continuesRun?: number;
+  },
+): MemoryConsolidationView {
   const row: Row = {
     id: input.id ?? (uuidv7() as Uuid),
     scopeKind: input.scope.kind,
@@ -96,6 +106,7 @@ export function startConsolidation(db: Db, input: { scope: MemoryScope; trigger:
     slotHeldMs: 0,
     stuckNoticedAt: null,
     endsRun: false,
+    continuesRun: input.continuesRun ?? null,
   };
   db.insert(memoryConsolidations).values(row).run();
   return toView(row);
@@ -214,13 +225,15 @@ export interface ScopeConsolidationState {
     note: string | null;
     stuckNoticed: boolean;
     /**
-     * Whether an earlier consolidation of the same run — a batch, or the
-     * fold of exact duplicates, started at the same moment — was applied
-     * under the same trigger — was applied before it failed (EO-913): a
-     * run that stopped part-way, rather than
-     * one that failed before it changed anything.
+     * Whether a consolidation of the same run — a batch, or the fold of
+     * exact duplicates, under the same trigger and started at the same
+     * moment or by a retry that went on with it (`continues_run`) — was
+     * applied before it failed (EO-913): a run that stopped part-way,
+     * rather than one that failed before it changed anything.
      */
     afterApplied: boolean;
+    /** The run it is a row of: the `started_at` of the run's first attempt (`continues_run`, or its own). */
+    run: number;
   }[];
   running: boolean;
 }
@@ -271,8 +284,9 @@ export function consolidationState(db: Db, scope: MemoryScope): ScopeConsolidati
     const at = settledAt(row);
     if (at !== null && (settled === null || at > settled)) settled = at;
   }
-  // A run is the rows started at one moment under one trigger.
-  const runOf = (row: Row) => `${row.startedAt}:${row.trigger}`;
+  // A run is the rows started at one moment under one trigger, with the
+  // rows of the retries that went on with it (`continues_run`).
+  const runOf = (row: Row) => `${row.continuesRun ?? row.startedAt}:${row.trigger}`;
   const appliedRuns = new Set(rows.filter((row) => row.status === "succeeded").map(runOf));
   const failuresSince: ScopeConsolidationState["failuresSince"] = [];
   for (const row of rows.filter((candidate) => candidate.status !== "running")) {
@@ -285,6 +299,7 @@ export function consolidationState(db: Db, scope: MemoryScope): ScopeConsolidati
       note: row.note,
       stuckNoticed: row.stuckNoticedAt !== null,
       afterApplied: appliedRuns.has(runOf(row)),
+      run: row.continuesRun ?? row.startedAt,
     });
   }
   return {

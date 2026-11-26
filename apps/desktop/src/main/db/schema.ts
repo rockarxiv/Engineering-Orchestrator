@@ -3444,6 +3444,15 @@ export const memoryConsolidations = sqliteTable(
      * finished where none of its rows failed.
      */
     endsRun: integer("ends_run", { mode: "boolean" }),
+    /**
+     * The `started_at` of the run it goes on with, on a row of a retry of
+     * a run that stopped part-way (EO-913, migration 0184): the retry reads
+     * its entries at its own moment, but is the same run, so a failure of
+     * its first batch is still one after that run applied something. Null
+     * on a run's own rows. A run is the rows with one `coalesce(continues_run,
+     * started_at)` and one trigger.
+     */
+    continuesRun: integer("continues_run"),
   },
   (table) => [index("idx_memory_consolidations_scope").on(table.scopeKind, table.scopeId, table.startedAt)],
 );

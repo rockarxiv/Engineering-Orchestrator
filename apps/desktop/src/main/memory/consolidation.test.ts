@@ -9,6 +9,7 @@ import {
   CONSOLIDATION_PAUSED_REASON,
   consolidationAnswerSchema,
   absoluteDates,
+  resolvedDay,
   saysRelativeTime,
   consolidationDue,
   consolidationInput,
@@ -46,7 +47,7 @@ function state(overrides: Partial<ScopeConsolidationState> = {}): ScopeConsolida
 
 /** One failed consolidation, as `failuresSince` lists it: on the schedule unless said otherwise. */
 function failure(finishedAt: number, reason: string | null, overrides: Partial<ScopeConsolidationState["failuresSince"][number]> = {}): ScopeConsolidationState["failuresSince"][number] {
-  return { id: `failure-${finishedAt}`, trigger: "schedule", finishedAt, reason, note: null, stuckNoticed: false, afterApplied: false, ...overrides };
+  return { id: `failure-${finishedAt}`, trigger: "schedule", finishedAt, reason, note: null, stuckNoticed: false, afterApplied: false, run: finishedAt, ...overrides };
 }
 
 /** Consolidated at `at`. */
@@ -269,13 +270,15 @@ describe("when a scope is due a consolidation (EO-480)", () => {
 });
 
 describe("the operations a consolidation answers with (EO-573)", () => {
-  // Oldest first: a was written first, d last.
+  // Oldest first: a was written first, d last. b was written 2027-01-12, so its "yesterday" is 2027-01-11.
   const sent = [
-    { id: "a", body: "Tests need Postgres 15.", createdAt: NOW - 4 * DAY },
-    { id: "b", body: "Tests need Postgres 16 since yesterday.", createdAt: NOW - 3 * DAY },
-    { id: "c", body: "The ledger is in UTC.", createdAt: NOW - 2 * DAY },
-    { id: "d", body: "Run `pnpm test` before pushing.", createdAt: NOW - DAY },
+    { id: "a", body: "Tests need Postgres 15.", createdAt: NOW - 4 * DAY, contradictsRepositoryFile: false },
+    { id: "b", body: "Tests need Postgres 16 since yesterday.", createdAt: NOW - 3 * DAY, contradictsRepositoryFile: false },
+    { id: "c", body: "The ledger is in UTC.", createdAt: NOW - 2 * DAY, contradictsRepositoryFile: false },
+    { id: "d", body: "Run `pnpm test` before pushing.", createdAt: NOW - DAY, contradictsRepositoryFile: false },
   ];
+  /** An entry as a call is given it, unflagged unless said. */
+  const entry = (id: string, body: string, createdAt: number, contradictsRepositoryFile = false) => ({ id, body, createdAt, contradictsRepositoryFile });
   const FILE = "## Testing\n\nRun `pnpm test` before you push. The ledger is kept in local time, not UTC.";
   const schema = consolidationAnswerSchema(sent, { repositoryFiles: [FILE] });
   const answer = (overrides: Record<string, unknown> = {}) => ({ retire: [], merge: [], rewrite: [], ...overrides });
@@ -284,11 +287,11 @@ describe("the operations a consolidation answers with (EO-573)", () => {
   it("has retire, merge and rewrite, a merge folding at least two entries, and an entry not named stays as it is", () => {
     const value = answer({
       retire: [{ id: "a", reason: "Contradicted by b, which is newer." }],
-      merge: [{ from: ["b", "c"], body: "Tests need Postgres 16 (since 2026-10-25). The ledger is in UTC.", contradictsRepositoryFile: false }],
+      merge: [{ from: ["b", "c"], body: "Tests need Postgres 16 (since 2027-01-11). The ledger is in UTC.", contradictsRepositoryFile: false }],
     });
     expect(accepts(value)).toBe(true);
 
-    expect(accepts(answer({ rewrite: [{ id: "b", body: "Tests need Postgres 16 since 2026-10-25.", contradictsRepositoryFile: false, reason: "relative_date" }] }))).toBe(true);
+    expect(accepts(answer({ rewrite: [{ id: "b", body: "Tests need Postgres 16 since 2027-01-11.", contradictsRepositoryFile: false, reason: "relative_date" }] }))).toBe(true);
     expect(accepts(answer({ merge: [{ from: ["b"], body: "Postgres 16.", contradictsRepositoryFile: false }] }))).toBe(false);
     expect(accepts(answer({ merge: [{ from: [], body: "Postgres 16.", contradictsRepositoryFile: false }] }))).toBe(false);
     expect(accepts(answer({ retire: [{ id: "a", reason: "" }] }))).toBe(false);
@@ -327,7 +330,7 @@ describe("the operations a consolidation answers with (EO-573)", () => {
     // One retirement of four entries.
     expect(accepts(answer({ retire: [{ id: "c", reason: "Derivable from the code." }] }))).toBe(true);
     // A rewrite that makes an entry longer, as an absolute date does, is no reason to refuse it.
-    expect(accepts(answer({ rewrite: [{ id: "b", body: "Tests need Postgres 16 since 2026-10-24, when it replaced 15.", contradictsRepositoryFile: false, reason: "relative_date" }] }))).toBe(true);
+    expect(accepts(answer({ rewrite: [{ id: "b", body: "Tests need Postgres 16 since January 11, 2027.", contradictsRepositoryFile: false, reason: "relative_date" }] }))).toBe(true);
     // Only flagging an entry that corrects the repository file.
     expect(accepts(answer({ rewrite: [{ id: "c", body: "The ledger is in UTC.", contradictsRepositoryFile: true, reason: "repository_file" }] }))).toBe(true);
     // Nothing to change.
@@ -362,9 +365,9 @@ describe("the operations a consolidation answers with (EO-573)", () => {
   it("refuses a shortening under a reason whose supposed support was given, for the reason must show in the change (EO-913)", () => {
     const shorter = { id: "a", body: "Run `pnpm test` first.", contradictsRepositoryFile: false };
     const entries = [
-      { id: "a", body: "Run `pnpm test` before pushing.", createdAt: NOW - 2 * DAY },
+      entry("a", "Run `pnpm test` before pushing.", NOW - 2 * DAY),
       // Newer, and about something else.
-      { id: "n", body: "The ledger is in UTC, settled at noon.", createdAt: NOW - DAY },
+      entry("n", "The ledger is in UTC, settled at noon.", NOW - DAY),
     ];
     // A repository file is given, mentioning the same command: the rewrite takes none of its words.
     const withFile = consolidationAnswerSchema(entries, { repositoryFiles: [FILE, "Always run `pnpm test` and `pnpm lint` first thing in the morning."] });
@@ -374,28 +377,120 @@ describe("the operations a consolidation answers with (EO-573)", () => {
     // A newer entry is given: the rewrite takes none of its words.
     expect(withFile.safeParse(answer({ rewrite: [{ ...shorter, reason: "newer_entry" }] })).success).toBe(false);
     // A relative date is in the entry, but the rewrite keeps it and only writes a date it already said another way.
-    const dated = [{ id: "e", body: "Since yesterday, October 24, 2026, tests need Postgres 16.", createdAt: NOW }];
+    const dated = [entry("e", "Since yesterday, October 24, 2026, tests need Postgres 16.", NOW)];
     const sameDate = consolidationAnswerSchema(dated, { repositoryFiles: [] }).safeParse(
       answer({ rewrite: [{ id: "e", body: "Since yesterday, 2026-10-24, tests need Postgres 16.", contradictsRepositoryFile: false, reason: "relative_date" }] }),
     );
     expect(sameDate.success).toBe(false);
-    expect(sameDate.error?.issues.map((issue) => issue.message).join(" ")).toMatch(/still says every relative date/);
+    expect(sameDate.error?.issues.map((issue) => issue.message).join(" ")).toMatch(/changes more than the relative dates/);
+    // Kept word for word, the relative date and all.
+    const kept = consolidationAnswerSchema(dated, { repositoryFiles: [] }).safeParse(answer({ rewrite: [{ id: "e", body: dated[0]!.body, contradictsRepositoryFile: false, reason: "relative_date" }] }));
+    expect(kept.error?.issues.map((issue) => issue.message).join(" ")).toMatch(/still says every relative date/);
     // Nor one that replaces "yesterday" with its date and drops other words while it is at it.
-    const trimmed = consolidationAnswerSchema([{ id: "f", body: "Tests need Postgres 16 since yesterday, and run in CI on every push.", createdAt: NOW }], { repositoryFiles: [] }).safeParse(
-      answer({ rewrite: [{ id: "f", body: "Tests need Postgres 16 since 2026-10-24.", contradictsRepositoryFile: false, reason: "relative_date" }] }),
+    const trimmed = consolidationAnswerSchema([entry("f", "Tests need Postgres 16 since yesterday, and run in CI on every push.", NOW)], { repositoryFiles: [] }).safeParse(
+      answer({ rewrite: [{ id: "f", body: "Tests need Postgres 16 since 2027-01-14.", contradictsRepositoryFile: false, reason: "relative_date" }] }),
     );
     expect(trimmed.success).toBe(false);
-    expect(trimmed.error?.issues.map((issue) => issue.message).join(" ")).toMatch(/drops words the entry said: and, run, in, ci, on, every, push/);
+    expect(trimmed.error?.issues.map((issue) => issue.message).join(" ")).toMatch(/changes more than the relative dates and times the entry says/);
+  });
+
+  it("refuses a phrase a source happens to say that the rewrite made only by deleting words (EO-913)", () => {
+    const always = entry("a", "Always run pnpm test before pushing any code.", NOW - 2 * DAY);
+    const other = "Check the branch name before pushing code.";
+    const shorter = { id: "a", body: "Run pnpm test before pushing code.", contradictsRepositoryFile: false };
+    // "before pushing code" is the file's, and the newer entry's, but every word of it was the entry's own.
+    const file = consolidationAnswerSchema([always], { repositoryFiles: [other] }).safeParse(answer({ rewrite: [{ ...shorter, reason: "repository_file" }] }));
+    expect(file.success).toBe(false);
+    expect(file.error?.issues.map((issue) => issue.message).join(" ")).toMatch(/takes nothing from a repository file/);
+    const newer = consolidationAnswerSchema([always, entry("n", other, NOW - DAY)], { repositoryFiles: [] }).safeParse(answer({ rewrite: [{ ...shorter, reason: "newer_entry" }] }));
+    expect(newer.success).toBe(false);
+    expect(newer.error?.issues.map((issue) => issue.message).join(" ")).toMatch(/takes nothing from a newer entry/);
+    // A correction that brings the source's own word is taken.
+    const lint = { id: "a", body: "Always run pnpm lint before pushing any code.", contradictsRepositoryFile: false };
+    expect(consolidationAnswerSchema([always], { repositoryFiles: ["Always run pnpm lint before you push."] }).safeParse(answer({ rewrite: [{ ...lint, reason: "repository_file" }] })).success).toBe(true);
+    // A new word common to every text is no evidence: "the" joined to the entry's words.
+    expect(
+      consolidationAnswerSchema([always], { repositoryFiles: ["Run the pnpm checks."] }).safeParse(
+        answer({ rewrite: [{ id: "a", body: "Always run the pnpm test before pushing any code.", contradictsRepositoryFile: false, reason: "repository_file" }] }),
+      ).success,
+    ).toBe(false);
+  });
+
+  it("takes a repository_file rewrite that keeps the entry's text only where it changes the flag, and the text exactly (EO-913)", () => {
+    const count = entry("c", "Use count > 10.", NOW);
+    const schema = consolidationAnswerSchema([count], { repositoryFiles: ["An unrelated file about the ledger."] });
+    const rewrite = (body: string, contradictsRepositoryFile: boolean) => schema.safeParse(answer({ rewrite: [{ id: "c", body, contradictsRepositoryFile, reason: "repository_file" }] }));
+    // Its words, as `words` reads them, are the same, but the text is not: the comparison is turned round.
+    expect(rewrite("Use count < 10.", false).success).toBe(false);
+    expect(rewrite("Use count < 10.", true).success).toBe(false);
+    // The same text with the same flag changes nothing.
+    const unchanged = rewrite("Use count > 10.", false);
+    expect(unchanged.success).toBe(false);
+    expect(unchanged.error?.issues.map((issue) => issue.message).join(" ")).toMatch(/changes nothing/);
+    // The same text, flagged, or an entry flagged before, cleared.
+    expect(rewrite("Use count > 10.", true).success).toBe(true);
+    expect(rewrite("  Use count > 10.\n", true).success).toBe(true);
+    const flagged = consolidationAnswerSchema([entry("c", "Use count > 10.", NOW, true)], { repositoryFiles: ["Anything."] });
+    expect(flagged.safeParse(answer({ rewrite: [{ id: "c", body: "Use count > 10.", contradictsRepositoryFile: false, reason: "repository_file" }] })).success).toBe(true);
+  });
+
+  it("holds a relative_date rewrite to the day the phrase meant, counted from the day the entry was written, and to its span (EO-913)", () => {
+    // Written 2026-11-26.
+    const written = Date.UTC(2026, 10, 26, 15);
+    const released = entry("r", "Released yesterday.", written);
+    const rewrite = (body: string, at = released, contradictsRepositoryFile = false) =>
+      consolidationAnswerSchema([at], { repositoryFiles: [] }).safeParse(answer({ rewrite: [{ id: at.id, body, contradictsRepositoryFile, reason: "relative_date" }] }));
+    const wrong = rewrite("Released 2026-11-24.");
+    expect(wrong.success).toBe(false);
+    expect(wrong.error?.issues.map((issue) => issue.message).join(" ")).toMatch(/"yesterday" in an entry written 2026-11-26 is 2026-11-25/);
+    expect(rewrite("Released 2026-11-25.").success).toBe(true);
+    expect(rewrite("Released on November 25, 2026.").success).toBe(true);
+    // A month is not the day it meant, nor are two dates.
+    expect(rewrite("Released in November 2026.").success).toBe(false);
+    expect(rewrite("Released 2026-11-25 or 2026-11-24.").success).toBe(false);
+    // Nothing beside the date: not a word more, nor a change outside the phrase, nor the flag.
+    expect(rewrite("Released 2026-11-25 to everyone.").success).toBe(false);
+    expect(rewrite("Shipped 2026-11-25.").success).toBe(false);
+    expect(rewrite("Released 2026-11-25.", released, true).success).toBe(false);
+    // Nor a date that keeps the relative phrase beside it.
+    expect(rewrite("Released yesterday (2026-11-25).").success).toBe(false);
+    // Days counted in words and numbers, either way, and "today".
+    expect(rewrite("Released 2026-11-23.", entry("r", "Released three days ago.", written)).success).toBe(true);
+    expect(rewrite("Released 2026-11-22.", entry("r", "Released three days ago.", written)).success).toBe(false);
+    expect(rewrite("Due 2026-11-28.", entry("r", "Due in 2 days.", written)).success).toBe(true);
+    expect(rewrite("Fixed on 2026-11-26.", entry("r", "Fixed today.", written)).success).toBe(true);
+    // Written late in the day UTC: the day is the one the model is shown, UTC.
+    expect(rewrite("Released 2026-11-26.", entry("r", "Released yesterday.", Date.UTC(2026, 10, 27, 0, 30))).success).toBe(true);
+    // A phrase EO cannot resolve to a day is held only to being replaced by a date, in its span.
+    const lastWeek = entry("w", "Broken since last week.", written);
+    expect(rewrite("Broken since the week of 2026-11-16.", lastWeek).success).toBe(true);
+    expect(rewrite("Broken since 2026-11-16, badly.", lastWeek).success).toBe(false);
+    // Of two phrases, one may be replaced and the other kept.
+    const two = entry("t", "Broken yesterday, fixed on Monday.", written);
+    expect(rewrite("Broken 2026-11-25, fixed on Monday.", two).success).toBe(true);
+    expect(rewrite("Broken 2026-11-25, fixed on 2026-11-23.", two).success).toBe(true);
+  });
+
+  it("resolves the relative days it can, and no others", () => {
+    const at = Date.UTC(2026, 10, 26, 12);
+    expect(resolvedDay("yesterday", at)).toBe("2026-11-25");
+    expect(resolvedDay("Tomorrow", at)).toBe("2026-11-27");
+    expect(resolvedDay("tonight", at)).toBe("2026-11-26");
+    expect(resolvedDay("a day ago", at)).toBe("2026-11-25");
+    expect(resolvedDay("10 days ago", at)).toBe("2026-11-16");
+    expect(resolvedDay("in two days", at)).toBe("2026-11-28");
+    expect(resolvedDay("five days from now", at)).toBe("2026-12-01");
+    for (const phrase of ["last week", "on Monday", "recently", "three weeks ago", "a few days ago"]) expect(resolvedDay(phrase, at), phrase).toBeNull();
   });
 
   it("takes each reason where the change bears it out (EO-913)", () => {
     const run = (repositoryFiles: string[]) => (value: unknown) => consolidationAnswerSchema(sent, { repositoryFiles }).safeParse(value).success;
     // b says "yesterday", and the rewrite says the day in its place.
-    expect(run([])(answer({ rewrite: [{ id: "b", body: "Tests need Postgres 16 since 2026-10-24.", contradictsRepositoryFile: false, reason: "relative_date" }] }))).toBe(true);
-    expect(run([])(answer({ rewrite: [{ id: "b", body: "Tests need Postgres 16 since October 24, 2026.", contradictsRepositoryFile: false, reason: "relative_date" }] }))).toBe(true);
+    expect(run([])(answer({ rewrite: [{ id: "b", body: "Tests need Postgres 16 since 2027-01-11.", contradictsRepositoryFile: false, reason: "relative_date" }] }))).toBe(true);
+    expect(run([])(answer({ rewrite: [{ id: "b", body: "Tests need Postgres 16 since January 11, 2027.", contradictsRepositoryFile: false, reason: "relative_date" }] }))).toBe(true);
     // ...but not one that drops the relative date without saying one, nor one that keeps only a date it already said.
     expect(run([])(answer({ rewrite: [{ id: "b", body: "Tests need Postgres 16.", contradictsRepositoryFile: false, reason: "relative_date" }] }))).toBe(false);
-    const dated = [{ id: "e", body: "Since yesterday (2026-10-24) tests need Postgres 16, and run in CI on every push.", createdAt: NOW }];
+    const dated = [entry("e", "Since yesterday (2026-10-24) tests need Postgres 16, and run in CI on every push.", NOW)];
     expect(consolidationAnswerSchema(dated, { repositoryFiles: [] }).safeParse(answer({ rewrite: [{ id: "e", body: "2026-10-24: Postgres 16.", contradictsRepositoryFile: false, reason: "relative_date" }] })).success).toBe(false);
     // a is older than b, and takes b's correction in b's words.
     expect(run([])(answer({ rewrite: [{ id: "a", body: "Tests need Postgres 16.", contradictsRepositoryFile: false, reason: "newer_entry" }] }))).toBe(true);
@@ -417,7 +512,7 @@ describe("the operations a consolidation answers with (EO-573)", () => {
 });
 
 describe("how long a merged or rewritten entry may be (EO-591)", () => {
-  const sent = ["a", "b", "c"].map((id) => ({ id, body: `${id} `.repeat(900), createdAt: NOW }));
+  const sent = ["a", "b", "c"].map((id) => ({ id, body: `${id} `.repeat(900), createdAt: NOW, contradictsRepositoryFile: false }));
   // A file whose words a repository_file rewrite of any length can take (EO-913).
   const schema = consolidationAnswerSchema(sent, { repositoryFiles: ["xx yy zz"] });
   const answer = (overrides: Record<string, unknown>) => ({ retire: [], merge: [], rewrite: [], ...overrides });
@@ -499,7 +594,7 @@ describe("what a consolidation is told (EO-573, EO-913)", () => {
 describe("a consolidation's answer carries no skills (EO-575)", () => {
   it("has the three operations and nothing else, and its prompt says nothing of skills", () => {
     expect(Object.keys(MemoryConsolidationAnswerSchema.shape).sort()).toEqual(["merge", "retire", "rewrite"]);
-    const schema = consolidationAnswerSchema([{ id: "a", body: "Entry a.", createdAt: NOW }], { repositoryFiles: [] });
+    const schema = consolidationAnswerSchema([{ id: "a", body: "Entry a.", createdAt: NOW, contradictsRepositoryFile: false }], { repositoryFiles: [] });
     const parsed = schema.parse({ retire: [], merge: [], rewrite: [], skills: [{ slug: "run-e2e" }] });
     expect(parsed).toEqual({ retire: [], merge: [], rewrite: [] });
     expect(MEMORY_CONSOLIDATE_SYSTEM).not.toMatch(/skill/i);
