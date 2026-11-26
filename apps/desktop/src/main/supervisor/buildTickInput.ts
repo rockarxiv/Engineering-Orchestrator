@@ -1,5 +1,6 @@
 import type { Item, Uuid } from "@eo/core";
-import type { CapacityKeyOf, DispatchBlocker, DispatchGate, EligibilityInput, TickInput, WatchHold } from "@eo/engine";
+import { touchesHold, touchesOf } from "@eo/engine";
+import type { CapacityKeyOf, DispatchBlocker, DispatchGate, EligibilityInput, TickInput, TouchesClaim, WatchHold } from "@eo/engine";
 import type { Db } from "../db/client.js";
 import {
   gateArrivals,
@@ -9,6 +10,7 @@ import {
   listAgents,
   listAllDependencies,
   listAwaitingInputItemIds,
+  listDispatchedItemIds,
   listHeldItemIds,
   listItemsIncludingArchived,
   listPipelineSteps,
@@ -21,7 +23,7 @@ import {
 } from "../db/repos/index.js";
 import { archivedProjectOf, itemsMidAdoption, itemsOnArchivedProjects } from "../db/repos/projectsRepo.js";
 import { parkedForMissingCriteria } from "./reviewCriteria.js";
-import type { GateRefusal, ItemBlocker, ProjectArchived } from "./dispatchBlockers.js";
+import type { GateRefusal, ItemBlocker, ProjectArchived, WaitingOnOverlap } from "./dispatchBlockers.js";
 import { watchesHeld, watchingUntil } from "./watches.js";
 import { isSignInStop } from "./runtimeBlocks.js";
 
@@ -137,6 +139,9 @@ export function buildEligibilityInput(
     activeRuns: listActiveRuns(db),
     awaitingInput: schedulingParks(db),
     heldItemIds: listHeldItemIds(db),
+    // What has started (EO-912): an item in flight holds back one not yet
+    // dispatched whose `touches` overlap its own, in the same bucket.
+    dispatchedItemIds: listDispatchedItemIds(db),
     retryAfter: retryBackoffs(db, items, now, attemptLimit),
     // Between one check of a step that keeps checking and the next
     // (EO-456). A check that came back waiting left no active run, so
@@ -147,7 +152,66 @@ export function buildEligibilityInput(
     paused,
     pauseExemptRoles,
     ...(scheduling.dispatchGate ? { dispatchGate: scheduling.dispatchGate } : {}),
+    // The bucket is also where an item's `touches` are paths in (EO-912),
+    // so the explanation of a hold needs it as much as the tick does.
+    ...(scheduling.capacityKeyOf ? { capacityKeyOf: scheduling.capacityKeyOf } : {}),
   };
+}
+
+/**
+ * Each of `itemIds` that the overlap hold keeps back (EO-912), with its
+ * holder named — what a card says in place of a pack's refusal.
+ *
+ * The engine's own `touchesHold`, over what the scheduler's input reads:
+ * the same candidates, the same in-flight rule (dispatched, on a step of
+ * its own version that is not terminal), the same bucket and the same
+ * exemption for a pair an edge joins. Asked only of an item never
+ * dispatched, on a step something is dispatched at, since anywhere else
+ * the hold is not what stands in its way. Reads nothing more than an
+ * item list and the runs when no listed item declares `touches`.
+ */
+export function touchesHoldsOf(db: Db, listed: readonly Item[], capacityKeyOf: CapacityKeyOf | undefined): Map<string, WaitingOnOverlap> {
+  const holds = new Map<string, WaitingOnOverlap>();
+  const asking = listed.filter((item) => touchesOf(item).length > 0);
+  if (asking.length === 0) return holds;
+  const dispatched = listDispatchedItemIds(db);
+  const waiting = asking.filter((item) => !dispatched.has(item.id));
+  if (waiting.length === 0) return holds;
+
+  const moving = itemsMidAdoption(db);
+  const shelved = itemsOnArchivedProjects(db);
+  const candidates = listItemsIncludingArchived(db).filter((item) => item.archivedAt === null && !moving.has(item.id) && !shelved.has(item.id));
+  const liveSteps = new Map(listPipelineSteps(db).map((step) => [step.id, step]));
+  const bound = stepsByItemVersion(db, [...candidates, ...waiting]);
+  const stepFor = (item: Item) => {
+    const own = bound.get(item.id);
+    if (own && own.pipelineId === item.pipelineId && own.id === item.stepId) return own;
+    const live = item.stepId === null ? undefined : liveSteps.get(item.stepId);
+    return live && live.pipelineId === item.pipelineId ? live : undefined;
+  };
+  const placeOf = (item: Item): string | null => (capacityKeyOf ? capacityKeyOf(item) : "");
+  const claims = new Map<string, TouchesClaim[]>();
+  for (const item of candidates) {
+    if (!dispatched.has(item.id)) continue;
+    const step = stepFor(item);
+    if (step === undefined || step.isTerminal) continue;
+    const touches = touchesOf(item);
+    const place = touches.length === 0 ? null : placeOf(item);
+    if (place === null) continue;
+    claims.set(place, [...(claims.get(place) ?? []), { item, touches }]);
+  }
+  if (claims.size === 0) return holds;
+  const related = new Set(listAllDependencies(db).flatMap((edge) => [`${edge.itemId} ${edge.dependsOnId}`, `${edge.dependsOnId} ${edge.itemId}`]));
+  const keys = new Map(candidates.map((item) => [item.id as string, item.key]));
+  for (const item of waiting) {
+    const step = stepFor(item);
+    if (step === undefined || step.type === "user" || step.isTerminal) continue;
+    const place = placeOf(item);
+    if (place === null) continue;
+    const hold = touchesHold(item, claims.get(place) ?? [], (a, b) => related.has(`${a} ${b}`));
+    if (hold) holds.set(item.id, { kind: "touches_overlap", ...hold, holderKey: keys.get(hold.holderId) ?? hold.holderId });
+  }
+  return holds;
 }
 
 /**
@@ -267,7 +331,8 @@ export function archivedProjectBlocker(db: Db, itemId: Uuid): ProjectArchived | 
 
 /**
  * The scheduler's answer about an item, with an open dependency's ids
- * resolved to the names a person reads (EO-776, `WaitingOnDependency`).
+ * resolved to the names a person reads (EO-776, `WaitingOnDependency`),
+ * and an overlap hold's holder to its key (EO-912, `WaitingOnOverlap`).
  * Every other reason passes through as it is.
  *
  * Wherever EO turns the engine's `dispatchBlocker` into words, it goes
@@ -276,6 +341,9 @@ export function archivedProjectBlocker(db: Db, itemId: Uuid): ProjectArchived | 
 export function namedBlocker(db: Db, blocker: DispatchBlocker<GateRefusal>): ItemBlocker;
 export function namedBlocker(db: Db, blocker: DispatchBlocker<GateRefusal> | null): ItemBlocker | null;
 export function namedBlocker(db: Db, blocker: DispatchBlocker<GateRefusal> | null): ItemBlocker | null {
+  if (blocker?.kind === "touches_overlap") {
+    return { ...blocker, holderKey: getItem(db, blocker.holderId as Uuid)?.key ?? blocker.holderId };
+  }
   if (blocker?.kind !== "open_dependency") return blocker;
   const dependency = getItem(db, blocker.dependsOnId as Uuid);
   return {
@@ -309,7 +377,6 @@ export function buildTickInput(
     ...buildEligibilityInput(db, paused, scheduling, now, attemptLimit, watchHold, pauseExemptRoles),
     limits,
     uncappedRoles,
-    ...(scheduling.capacityKeyOf ? { capacityKeyOf: scheduling.capacityKeyOf } : {}),
     ...(trialsFirst ? { firstInLine: trialItemsInRunningLoops(db) } : {}),
   };
 }

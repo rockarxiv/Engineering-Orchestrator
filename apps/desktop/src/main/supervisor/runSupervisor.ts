@@ -152,6 +152,7 @@ import {
   watchGiveUpWords,
 } from "@eo/core";
 import { agentAttachmentsHash, agentToolSurfaceHash, agentToolSurfaceVerdict, type ToolSurfaceVerdict } from "../agentAttachments/fingerprint.js";
+import { useCapacityKey } from "../installedGate.js";
 import { qualifiedServerName } from "../agentAttachments/pluginDirectory.js";
 import { deliverableSkills, skillReadAnswer } from "../agentAttachments/worktreeSkills.js";
 import { resolveAgentAttachmentsForRun } from "../db/repos/agentAttachmentsRepo.js";
@@ -323,7 +324,7 @@ import { ASSIST_ACTION, ASSIST_STEP, conversationTurnOptions, CONVERSATION_SETTI
 import { changeReferenceProblem, createModuleChangeStaging, type ModuleChangeStaging } from "../roles/moduleChangeProposals.js";
 import { attachRunFiles } from "./runAttachments.js";
 import { blockedByActiveRunRefusal, createItemLock, type ItemHold, type ItemLock } from "./itemLock.js";
-import { archivedAgentRefusal, mentionDepthRefusal, outOfProjectDispatchRefusal, outOfProjectMentionRefusal, outOfProjectRecoveryNote, pullRequestHoldNote, rerunRefusal, stoppedByHandNote, unrunnableStepNote, type GateRefusal, type ItemBlocker, type OutOfProject, type RerunBlocker } from "./dispatchBlockers.js";
+import { archivedAgentRefusal, mentionDepthRefusal, outOfProjectDispatchRefusal, outOfProjectMentionRefusal, outOfProjectRecoveryNote, pullRequestHoldNote, rerunRefusal, stoppedByHandNote, touchesHoldNote, unrunnableStepNote, type GateRefusal, type ItemBlocker, type OutOfProject, type RerunBlocker } from "./dispatchBlockers.js";
 import { watchDependencyRegressions } from "./dependencyGates.js";
 import { declaresNoCriteria, isMissingCriteriaAsk, missingCriteriaRefusal } from "./reviewCriteria.js";
 import { recordStop, stopStands } from "./stoppedByHand.js";
@@ -2426,6 +2427,9 @@ export function createRunSupervisor(
     capacityKeyOf: (item: Item) => kindFor(item).capacityKeyOf(item),
     ...(dispatchGate ? { dispatchGate } : {}),
   };
+  // And where a card asks whose bucket an item is in, to say what holds
+  // it back for the paths it touches (EO-912).
+  useCapacityKey(db, scheduling.capacityKeyOf);
 
   /**
    * This item's type, as its row has it (KAN-147).
@@ -10956,6 +10960,9 @@ export function createRunSupervisor(
       // And an item on a step that names no agent, or one that cannot run
       // it (EO-875), is told which and what to do, once for each stay.
       noteUnrunnableSteps(tickInput);
+      // And an item held back by one in flight that changes the same
+      // paths (EO-912) is told which and what path, once for each stay.
+      noteTouchesHolds(tickInput);
       // **The device asks; it does not decide** (EO-324, ARCHITECTURE.md, "The record"). What
       // comes back is work the record has already leased to this
       // machine. In one process that is the same sweep-pick-claim this
@@ -11111,6 +11118,32 @@ export function createRunSupervisor(
       const step = stepForItem(db, item);
       if (step === undefined) continue;
       const body = pullRequestHoldNote(step.name, blocker);
+      const enteredAt = stepEntryTimes(db, [item.id]).get(item.id) ?? item.createdAt;
+      const alreadySaid = listCommentsForItem(db, item.id, { since: enteredAt }).some(
+        (comment) => comment.authorType === "engine" && comment.body === body,
+      );
+      if (alreadySaid) continue;
+      postComment(db, { itemId: item.id, author: { type: "engine" }, kind: "note", body });
+      onItemChanged(item.id);
+    }
+  }
+
+  /**
+   * Says once, in the thread, why an item is held back by another in
+   * flight that changes the same paths (EO-912, invariant #8): which
+   * item, and which path. `notePullRequestHolds`' shape and for its
+   * reason — nobody has to act, the hold lifts by itself when the
+   * holder finishes, so a note and no run. A different holder or path
+   * is different words, and is said again.
+   */
+  function noteTouchesHolds(input: TickInput<GateRefusal>): void {
+    for (const { item, blocker } of dispatchBlockers(input)) {
+      if (blocker.kind !== "touches_overlap") continue;
+      const step = stepForItem(db, item);
+      if (step === undefined || step.offBoard) continue;
+      const named = namedBlocker(db, blocker);
+      if (named.kind !== "touches_overlap") continue;
+      const body = touchesHoldNote(step.name, named);
       const enteredAt = stepEntryTimes(db, [item.id]).get(item.id) ?? item.createdAt;
       const alreadySaid = listCommentsForItem(db, item.id, { since: enteredAt }).some(
         (comment) => comment.authorType === "engine" && comment.body === body,

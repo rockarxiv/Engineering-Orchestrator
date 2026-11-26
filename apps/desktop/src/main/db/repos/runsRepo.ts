@@ -13,7 +13,7 @@ import {
   type Uuid,
 } from "@eo/core";
 import type { Db } from "../client.js";
-import { runs, runEvents, items, projects } from "../schema.js";
+import { runs, runEvents, items, pipelineSteps, projects } from "../schema.js";
 import {
   personSideCallCentsSince,
   sideCallCentsBetween,
@@ -714,6 +714,35 @@ export function sumCostCentsBetween(db: Db, startMs: number, endMs: number): num
     sql`select sum(${runs.costCents}) as total from ${runs} join ${items} on ${items.id} = ${runs.itemId} where ${items.previewAt} is null and ${runs.startedAt} >= ${startMs} and ${runs.startedAt} < ${endMs}`,
   );
   return (row?.total ?? 0) + sideCallCentsBetween(db, startMs, endMs);
+}
+
+/**
+ * itemIds that have been dispatched at a step of their own at least once
+ * (EO-912): what the scheduler's overlap hold counts as *in flight*,
+ * together with a step that is not terminal (`dispatchedItemIds`).
+ *
+ * A run of the step's own entry action at that step, so a reply to a
+ * mention, a discussion or an interpretation on an item nobody has
+ * started does not make it in flight: those name the item's step on
+ * their row but are not its dispatch, and a backlog item somebody talked
+ * to would otherwise hold back everything touching the same files for
+ * as long as it sat there. A dry run borrows an item and is not its
+ * work. A guard's placeholder (`awaiting_input` with no session) is a
+ * refusal rather than a dispatch, and so is an agent run that ended
+ * without ever getting a session — nothing reached the disk — though an
+ * agent run still queued or starting counts from the moment it exists,
+ * or the next tick would start a second item over the first.
+ */
+export function listDispatchedItemIds(db: Db): Set<Uuid> {
+  const rows = db.all<{ itemId: string }>(sql`
+    select distinct r.item_id as "itemId"
+    from ${runs} r
+    join ${pipelineSteps} s on s.id = r.step_id and s.entry_action = r.action
+    where r.dry_run = 0
+      and not (r.status = 'awaiting_input' and r.thread_id is null)
+      and (r.agent_id is null or r.thread_id is not null or r.status in ('queued', 'running'))
+  `);
+  return new Set(rows.map((row) => row.itemId as Uuid));
 }
 
 /**

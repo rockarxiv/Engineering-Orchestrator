@@ -68,6 +68,23 @@ export type WaitingOnDependency = Extract<DispatchBlocker<GateRefusal>, { kind: 
 };
 
 /**
+ * The scheduler's `touches_overlap`, with the holder's key (EO-912):
+ * `namedBlocker` resolves it, as it does a dependency's.
+ */
+export type WaitingOnOverlap = Extract<DispatchBlocker<GateRefusal>, { kind: "touches_overlap" }> & { holderKey: string };
+
+/**
+ * "Waits for EO-856, which also changes packages/core/src/ipc.ts": the
+ * overlap hold as one line on the item's card and page (EO-912). Names
+ * both entries where they differ, since either may be the wider one.
+ */
+export function touchesHoldLine(blocker: Pick<WaitingOnOverlap, "holderKey" | "path" | "holderPath">): string {
+  return blocker.path === blocker.holderPath
+    ? `Waits for ${blocker.holderKey}, which also changes ${blocker.path}`
+    : `Waits for ${blocker.holderKey}, which changes ${blocker.holderPath} (this changes ${blocker.path})`;
+}
+
+/**
  * Why an item is not going to be dispatched, as EO says it (EO-347).
  *
  * The scheduler's reasons, plus the one that is decided before the
@@ -75,7 +92,11 @@ export type WaitingOnDependency = Extract<DispatchBlocker<GateRefusal>, { kind: 
  * An open dependency is the scheduler's own reason with its names
  * resolved (`WaitingOnDependency`).
  */
-export type ItemBlocker = Exclude<DispatchBlocker<GateRefusal>, { kind: "open_dependency" }> | WaitingOnDependency | ProjectArchived;
+export type ItemBlocker =
+  | Exclude<DispatchBlocker<GateRefusal>, { kind: "open_dependency" | "touches_overlap" }>
+  | WaitingOnDependency
+  | WaitingOnOverlap
+  | ProjectArchived;
 
 /**
  * "Waits for EO-12 to reach Watch merge request (now at Review)": what a
@@ -299,6 +320,14 @@ export function blockerWords(blocker: Exclude<RerunBlocker, { kind: "run_active"
             fix: `Nothing to do: it carries on by itself once ${blocker.dependencyKey} gets there or finishes. Or remove the dependency.`,
           };
     }
+    case "touches_overlap":
+      return {
+        condition:
+          blocker.path === blocker.holderPath
+            ? `${blocker.holderKey} is already under way and also changes ${blocker.path}, so this waits rather than collide with it`
+            : `${blocker.holderKey} is already under way and changes ${blocker.holderPath}, which overlaps ${blocker.path} here, so this waits rather than collide with it`,
+        fix: `Nothing to do: it starts by itself once ${blocker.holderKey} finishes. If it will not change that path after all, take it out of this ticket's touches.`,
+      };
     case "no_agent":
       return {
         condition: "this step names no agent, so nobody can run it",
@@ -415,6 +444,16 @@ export function rerunRefusal(step: PipelineStep, blocker: RerunBlocker): string 
  * is asked of anybody, so it raises no `!`.
  */
 export function pullRequestHoldNote(stepName: string, blocker: Extract<GateRefusal, { kind: "dependency_pull_request_pending" }>): string {
+  const { condition, fix } = blockerWords(blocker);
+  return `Holding "${stepName}": ${condition}. ${fix}`;
+}
+
+/**
+ * The note EO posts once on an item the overlap hold keeps back (EO-912,
+ * invariant #8): which item it waits for and which path. A note rather
+ * than a mention — it lifts by itself, so it raises no `!`.
+ */
+export function touchesHoldNote(stepName: string, blocker: WaitingOnOverlap): string {
   const { condition, fix } = blockerWords(blocker);
   return `Holding "${stepName}": ${condition}. ${fix}`;
 }

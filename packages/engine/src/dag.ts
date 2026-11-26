@@ -203,6 +203,20 @@ export function touchesOverlap(a: string, b: string): boolean {
 }
 
 /**
+ * The paths an item says it will change: its spec's `touches`, EO's own
+ * key in the one open bag an item has (`SYSTEM_SPEC_FIELDS`).
+ *
+ * Narrowed rather than cast, because `spec` is open JSON: anything that
+ * is not an array of non-blank strings is ignored, entry by entry, and
+ * an item with no such key touches nothing.
+ */
+export function touchesOf(item: Pick<Item, "spec">): string[] {
+  const raw = item.spec?.["touches"];
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((path): path is string => typeof path === "string" && path.trim() !== "");
+}
+
+/**
  * Proposes serializing any two stories whose `touches` overlap — a
  * suggestion for human or engine review, never applied automatically.
  * Indices are positions within `stories`, matching how the PO agent's
