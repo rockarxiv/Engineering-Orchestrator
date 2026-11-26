@@ -268,7 +268,7 @@ import {
 import type { AgentCliTool, CliTool, CliToolDetection, RuntimeId } from "@eo/core";
 import { invalidateRuntimeAuth, type RuntimeAuthCheck } from "../runtimes/auth.js";
 import { resolveMessagesAbout, reviseMessage, sendMessageHere } from "../messages/messages.js";
-import { planUsage } from "../planUsage/store.js";
+import { planUsage as processPlanUsage, type PlanUsageStore } from "../planUsage/store.js";
 import {
   heldByBlockedRuntimes,
   RUNTIME_BLOCK_RECHECK_MS,
@@ -697,6 +697,14 @@ export interface RunSupervisorOptions {
    * Heard from `start()` to `stop()`, as `onWake` is.
    */
   onRuntimeSignedIn?: (listener: (runtime: RuntimeId) => void) => () => void;
+  /**
+   * The plan usage readings the rail's Usage block draws (EO-896): every
+   * run's `quota` events go into it, and a reading of a held backend that
+   * shows every window back lifts its plan-limit hold (EO-920). Heard from
+   * `start()` to `stop()`, as `onRuntimeSignedIn` is. Defaults to this
+   * process's one store.
+   */
+  planUsage?: PlanUsageStore;
   /**
    * What EO is configured to do for this agent and deliberately will
    * not, as sentences to post on the item (EO-108).
@@ -2052,6 +2060,7 @@ export function createRunSupervisor(
     watchdogIntervalMs = DEFAULT_WATCHDOG_INTERVAL_MS,
     onWake,
     onRuntimeSignedIn,
+    planUsage = processPlanUsage,
     isOnline = () => true,
     sleeps = true,
     tickIntervalMs = DEFAULT_TICK_INTERVAL_MS,
@@ -4386,6 +4395,7 @@ export function createRunSupervisor(
   let watchdogTimer: ReturnType<typeof setInterval> | undefined;
   let stopHearingWakes: (() => void) | undefined;
   let stopHearingSignIns: (() => void) | undefined;
+  let stopHearingUsage: (() => void) | undefined;
   let stopWatchingRegressions: (() => void) | undefined;
   /**
    * What the inactivity guard knows of each run in flight: when its
@@ -11192,6 +11202,12 @@ export function createRunSupervisor(
     resetAt: number | null;
     /** When this episode began, on the wall clock comments are stamped with. */
     since: number;
+    /**
+     * Where in the Usage store's order of readings the last refusal it
+     * took was (`PlanUsageStore.mark`): only a reading taken after it can
+     * say the backend is back (EO-920).
+     */
+    heardAt: number;
     messageId: string | null;
   }
   const limitBlocks = new Map<RuntimeId, LimitBlock>();
@@ -11220,6 +11236,7 @@ export function createRunSupervisor(
     const resetAt = quotaResetAt(quota.resetsAt, now());
     const standing = limitBlocks.get(runtime);
     if (standing) {
+      standing.heardAt = planUsage.mark();
       if (standing.resetAt !== null && (resetAt === null || resetAt > standing.resetAt)) {
         standing.quota = quota;
         standing.resetAt = resetAt;
@@ -11232,7 +11249,7 @@ export function createRunSupervisor(
     }
     const open = openMessageAbout(db, RUNTIME_LIMIT_SOURCE, runtime);
     const since = open?.createdAt ?? Date.now();
-    const block: LimitBlock = { runtime, quota, resetAt, since, messageId: open?.id ?? null };
+    const block: LimitBlock = { runtime, quota, resetAt, since, heardAt: planUsage.mark(), messageId: open?.id ?? null };
     limitBlocks.set(runtime, block);
     if (open) return;
 
@@ -11249,18 +11266,40 @@ export function createRunSupervisor(
   }
 
   function liftLimitBlock(runtime: RuntimeId): void {
+    const block = limitBlocks.get(runtime);
     limitBlocks.delete(runtime);
+    // A refusal on a window the backend did not name is over with the
+    // hold (EO-920): nothing else would take it off the Usage block.
+    if (block) planUsage.limitLifted(block.quota.provider);
     resolveMessagesAbout(db, RUNTIME_LIMIT_SOURCE, runtime);
     notifyStateChange({ promptly: true });
   }
 
   /**
+   * A reading of a backend arrived — a run's, a side call's or the
+   * five-minute read (EO-920). One taken while its runtime is held that
+   * shows every window allowed and below 100% is the backend saying it is
+   * back, whatever reset it named before: an early reset, or another
+   * account or plan. The hold lifts as a reached reset lifts it; a next
+   * run refused anyway holds it again, with no attempt spent. Event by
+   * event, and only by a reading taken after the hold's last refusal: a
+   * read asked before it, whose answer came back after, is the account as
+   * it stood before the limit was reached, not evidence it is back.
+   */
+  function usageRead(provider: string, takenAt: number): void {
+    for (const block of [...limitBlocks.values()]) {
+      if (block.quota.provider === provider && takenAt > block.heardAt && planUsage.allowed(provider, now())) liftLimitBlock(block.runtime);
+    }
+  }
+
+  /**
    * Lifts each plan-limit block that is over: its reset has passed, or
-   * the person pressed Carry on now. With no reset EO could read, only
-   * that answer ends it: dismissing the message is the person putting it
-   * away, not saying the window is back, and taking it as Carry on now
-   * would spend the allowance on a guess. Such a block holds until EO is
-   * next started, which forgets it. A block lifted too soon is found
+   * the person pressed Carry on now. A reading showing the backend back
+   * lifts one as it arrives (`usageRead`). With no reset EO could read,
+   * only that answer or such a reading ends it: dismissing the message is
+   * the person putting it away, not saying the window is back, and taking
+   * it as Carry on now would spend the allowance on a guess. Such a block
+   * otherwise holds until EO is next started, which forgets it. A block lifted too soon is found
    * again by the next dispatch, and blocked again without an attempt
    * spent.
    */
@@ -11456,6 +11495,8 @@ export function createRunSupervisor(
     stopHearingWakes = onWake?.(() => noteWake());
     // A sign-in EO completed lifts a block on that runtime (EO-796).
     stopHearingSignIns = onRuntimeSignedIn?.((runtime) => runtimeSignedIn(runtime));
+    // A reading showing a held backend back lifts its plan-limit block (EO-920).
+    stopHearingUsage = planUsage.onChange((provider, takenAt) => usageRead(provider, takenAt));
     // A plan-limit block is this process's (EO-798), so one left open by
     // the last is over: the next dispatch to that runtime runs, or finds
     // the limit again and says so afresh.
@@ -11475,6 +11516,8 @@ export function createRunSupervisor(
     stopHearingWakes?.();
     stopHearingSignIns?.();
     stopHearingSignIns = undefined;
+    stopHearingUsage?.();
+    stopHearingUsage = undefined;
     stopWatchingRegressions?.();
     stopWatchingRegressions = undefined;
     memoryConsolidator.stop();

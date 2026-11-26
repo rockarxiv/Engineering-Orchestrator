@@ -80,6 +80,45 @@ describe("createQuotaRefusals", () => {
     expect(refusals.blocking(NOW)?.window).toBe("seven_day_opus");
   });
 
+  it("chooses among the named refusals when an unnamed one from the same backend stands beside them (EO-920)", () => {
+    // What Codex sends for one refused turn: its five-hour reading at
+    // 100% with a reset, and the turn's `usageLimitExceeded` on no window.
+    const unnamed: QuotaEvent = { type: "quota", provider: "codex", window: "unknown", status: "rejected" };
+    const named = reading({ provider: "codex", window: "5_hour", resetsAt: (NOW + 2 * HOUR) / 1000 });
+    for (const order of [
+      [named, unnamed],
+      [unnamed, named],
+    ]) {
+      const refusals = createQuotaRefusals();
+      for (const event of order) refusals.record(event);
+      expect(refusals.blocking(NOW)).toEqual(named);
+    }
+
+    // Claude's unnamed refusal is read the same way (invariant 12).
+    const claude = createQuotaRefusals();
+    claude.record({ type: "quota", provider: "claude", window: "unknown", status: "rejected" });
+    claude.record(fiveHour);
+    expect(claude.blocking(NOW)).toEqual(fiveHour);
+  });
+
+  it("still holds on an unnamed refusal alone, with no reset", () => {
+    const unnamed: QuotaEvent = { type: "quota", provider: "codex", window: "unknown", status: "rejected" };
+    const refusals = createQuotaRefusals();
+    refusals.record(unnamed);
+    expect(refusals.blocking(NOW)).toEqual(unnamed);
+
+    // A named refusal from another backend does not speak for this one.
+    refusals.record(fiveHour);
+    expect(refusals.blocking(NOW)).toEqual(unnamed);
+
+    // And once the named window has come back, the unnamed one is all that stands.
+    const codex = createQuotaRefusals();
+    codex.record(unnamed);
+    codex.record(reading({ provider: "codex", window: "5_hour", resetsAt: (NOW + 2 * HOUR) / 1000 }));
+    codex.record(reading({ provider: "codex", window: "5_hour", status: "allowed", utilization: 3 }));
+    expect(codex.blocking(NOW)).toEqual(unnamed);
+  });
+
   it("takes a fresher reading of the same window over the stale one", () => {
     const refusals = createQuotaRefusals();
     refusals.record(fiveHour);
