@@ -429,7 +429,15 @@ async function openNew(
     // At the publish step itself, so a replaced push carries on to look
     // for and create the pull request exactly as after any push, with no
     // second push (EO-910). Never for a branch a person named.
-    ...(gitStateOf(item).namedBranch ? {} : { onDiverged: (rejected) => replaceOwnPush(db, workspace, item, branch, rejected, options) }),
+    ...(gitStateOf(item).namedBranch
+      ? {}
+      : {
+          onDiverged: async (rejected) => {
+            const replaced = await replaceOwnPush(db, workspace, item, branch, rejected, options);
+            if (replaced !== true && replaced.published !== null) published = replaced.published;
+            return replaced === true;
+          },
+        }),
   });
 
   if (!result.ok) {
@@ -654,12 +662,13 @@ async function pushAlreadyOpen(
 
   const classified = classifyPushError(pushed.error, pushed.rejection === "diverged", pushed.status, pushed.rejection === "changed");
   if (classified.diverged && !gitStateOf(item).namedBranch) {
-    if (await replaceOwnPush(db, workspace, item, branch, { destination: pushed.destination, head: pushed.head }, options)) return alreadyOpen;
+    const replaced = await replaceOwnPush(db, workspace, item, branch, { destination: pushed.destination, head: pushed.head }, options);
+    if (replaced === true) return alreadyOpen;
     const target = await resolveSendTarget(db, workspace, item, run, signal);
     if (target.kind === "escalate") {
       return { kind: "failed", reason: target.reason, ...(target.options ? { options: target.options } : {}) };
     }
-    return diverged(db, item, remote, branch, target.baseRef, pushed.published);
+    return diverged(db, item, remote, branch, target.baseRef, replaced.published ?? pushed.published);
   }
   if (classified.diverged && !adopted && (await adoptRemoteHead(db, workspace, item, branch, options))) {
     return pushAlreadyOpen(db, workspace, item, branch, alreadyOpen, run, options, true);
@@ -786,6 +795,12 @@ function recordPushed(db: Db, item: Item, branch: string, pushed: { head: string
  * refuses. What it says names neither a URL nor anything git printed,
  * either of which can carry a credential into the run's transcript.
  * Never reached for a branch a person named, which EO never force-pushes.
+ *
+ * A lease that went through at one push URL and failed at another — one
+ * added beside the checked one as git pushed — is not a replaced push:
+ * it is recorded as a push to no one place, and answered as a partial
+ * push always is, the step stopping with the commit it published named
+ * (`published`).
  */
 async function replaceOwnPush(
   db: Db,
@@ -794,12 +809,12 @@ async function replaceOwnPush(
   branch: string,
   rejected: { destination: string | null; head: string | null },
   options: OpenForItemOptions,
-): Promise<boolean> {
+): Promise<true | { published: string | null }> {
   const { signal, onProgress } = options;
   const { repoPath, forgeRemote: remote } = workspace.config;
-  const refuse = (reason: string): false => {
+  const refuse = (reason: string): { published: null } => {
     onProgress?.(`"${branch}" has diverged on ${remote}, and ${reason}, so EO will not force-push.`);
-    return false;
+    return { published: null };
   };
   // Read fresh: the attempt's item predates the push this run may have
   // recorded a moment ago.
@@ -823,10 +838,12 @@ async function replaceOwnPush(
   if (!pushed.ok && pushed.published === null && pushed.rejection === "changed") return refuse(`the branch is no longer at ${rejected.head.slice(0, 12)}, the commit whose push was rejected`);
   if (!pushed.ok && pushed.published === null && pushed.rejection === "destination") return refuse(`${remote} no longer pushes to exactly the one place EO last pushed it to`);
   onProgress?.(`EO last pushed "${branch}" to ${remote} at ${expect.slice(0, 12)}, so pushed over it with --force-with-lease, which git refuses if anything else is there.`);
-  // One place, one ref: what moved is what was replaced, whatever else git
-  // went on to say.
-  const moved = pushed.ok ? pushed.updated : pushed.published !== null;
-  if (!moved) {
+  if (!pushed.ok && pushed.published !== null) {
+    recordPushed(db, item, branch, { head: pushed.published, destination: null });
+    onProgress?.(`The push with --force-with-lease went through at one of ${remote}'s push URLs and not at another, so the step stops.`);
+    return { published: pushed.published };
+  }
+  if (!pushed.ok || !pushed.updated) {
     // Git checks a lease only where it has something to send: a remote
     // that somebody has already put the same commit on is "up to date"
     // whatever else it held a moment before, which shows nothing of
@@ -836,7 +853,7 @@ async function replaceOwnPush(
         ? `The push with --force-with-lease found "${branch}" on ${remote} already at ${rejected.head.slice(0, 12)}, put there by something other than EO, so EO did not take it for its own.`
         : `The push with --force-with-lease did not go through — "${branch}" on ${remote} is no longer only what EO pushed, or could not be reached — so nothing was overwritten.`,
     );
-    return false;
+    return { published: null };
   }
 
   // A restack's rewrite, if that is what this was, is published now.

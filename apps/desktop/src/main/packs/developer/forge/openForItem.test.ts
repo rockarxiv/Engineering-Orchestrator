@@ -2129,7 +2129,7 @@ describe("before it opens or reuses one (EO-429)", () => {
         expect(gitStateOf(getItem(handle.db, item.id)!).pushedHead).toEqual(pushedTo(ours));
         expect(notes(item).at(-1)).toContain("did not force-push");
       });
-      it.skipIf(process.platform === "win32")("replaces its push only at the URL it checked when another is added beside it, and records that as no one place to force at again", async () => {
+      it.skipIf(process.platform === "win32")("stops the step when its lease went through only at the URL it checked and not at another added beside it, names what it published, and records that as no one place to force at again", async () => {
         const a = bare("a.git");
         git(["config", "remote.origin.pushurl", a], repoPath);
         const item = story({ git: { branch: "eo/API-4", pullRequest: PULL_REQUEST } });
@@ -2143,11 +2143,11 @@ describe("before it opens or reuses one (EO-429)", () => {
 
         const result = await mergeRequestStep(item, onlyFinds(found));
 
-        expect(result).toMatchObject({ ok: true, result: "opened" });
+        expect(result).toMatchObject({ ok: true, result: "remote_diverged" });
         expect(tipAt(a)).toBe(localTip());
         expect(tipAt(other)).toBe(ours);
         expect(gitStateOf(getItem(handle.db, item.id)!).pushedHead).toEqual(pushedTo(localTip(), null));
-        expect(notes(item).at(-1)).toContain(`--force-with-lease=eo/API-4:${ours}`);
+        expect(notes(item).at(-1)).toContain(`is now \`${localTip()}\` there; the step stopped all the same`);
       });
     });
 

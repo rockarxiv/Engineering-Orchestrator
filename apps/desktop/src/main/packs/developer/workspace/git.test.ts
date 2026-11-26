@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { delimiter, join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   canonicalPath,
@@ -619,6 +619,29 @@ git update-ref refs/heads/eo/APP-1 ${head}
       expect(await remoteTip("eo/APP-1")).toBe(old);
     });
 
+    it.skipIf(process.platform === "win32")("sends a lease through no remote helper configured for the remote after EO checked where it pushes", async () => {
+      const first = await pushBranch(repoPath, "bare", "eo/APP-1");
+      const old = sentBy(first);
+      await run(["commit", "--amend", "-m", "rewritten"], repoPath);
+      const helpers = join(scratch, "helpers");
+      mkdirSync(helpers);
+      const ran = join(scratch, "helper-ran");
+      writeFileSync(join(helpers, "git-remote-elsewhere"), `#!/bin/sh\n: > '${ran}'\nexit 1\n`, { mode: 0o755 });
+      const path = process.env["PATH"];
+      process.env["PATH"] = `${helpers}${delimiter}${path ?? ""}`;
+      const unhelp = beforeGitPush(scratch, `"$GIT" config remote.bare.vcs elsewhere`);
+      restore = () => {
+        unhelp();
+        process.env["PATH"] = path;
+      };
+
+      const leased = await pushBranch(repoPath, "bare", "eo/APP-1", { forceWithLease: { expect: old, destination: leasedAt(barePath), send: await localTip() } });
+
+      expect(leased).toMatchObject({ ok: false, published: null });
+      expect(existsSync(ran)).toBe(false);
+      expect(await remoteTip("eo/APP-1")).toBe(old);
+    });
+
     it.skipIf(process.platform === "win32")("sends a lease exactly the commit it is to send, though the branch moves after EO checked it", async () => {
       const first = await pushBranch(repoPath, "bare", "eo/APP-1");
       const old = sentBy(first);
@@ -841,13 +864,27 @@ git update-ref refs/heads/eo/APP-1 ${head}
     }
   });
 
+  // A file name ending in a space is not one Windows will make.
+  it.skipIf(process.platform === "win32")("runs the repository's own hook from a core.hooksPath ending in a space, exactly as git names it", async () => {
+    const spaced = join(scratch, "hooks ");
+    const trimmed = join(scratch, "hooks");
+    mkdirSync(spaced);
+    mkdirSync(trimmed);
+    writeFileSync(join(spaced, "pre-push"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+    await run(["config", "core.hooksPath", spaced], repoPath);
+
+    expect(await pushBranch(repoPath, "bare", "eo/APP-1")).toMatchObject({ ok: false, published: null });
+    expect(await git(["rev-parse", "--verify", "--quiet", "refs/heads/eo/APP-1"], barePath)).toMatchObject({ ok: false });
+  });
+
   it("takes nothing its own hook prints for git's account of the push", async () => {
     await pushBranch(repoPath, "bare", "eo/APP-1");
-    const head = await localTip();
     const hook = join(repoPath, await run(["rev-parse", "--git-path", "hooks"], repoPath), "pre-push");
     writeFileSync(
       hook,
-      `#!/bin/sh\nprintf '*\\t%s\\t[new branch]\\n' '${head}^{commit}:refs/heads/eo/APP-1'\nprintf '!\\t%s\\t[rejected] (non-fast-forward)\\n' '${head}^{commit}:refs/heads/eo/APP-1'\n`,
+      // The refspec of whichever push it runs for, so that a line leaked
+      // into the porcelain output would match it.
+      `#!/bin/sh\nh=$(git rev-parse refs/heads/eo/APP-1)\nprintf '*\\t%s\\t[new branch]\\n' "$h^{commit}:refs/heads/eo/APP-1"\nprintf '!\\t%s\\t[rejected] (non-fast-forward)\\n' "$h^{commit}:refs/heads/eo/APP-1"\n`,
       { mode: 0o755 },
     );
 

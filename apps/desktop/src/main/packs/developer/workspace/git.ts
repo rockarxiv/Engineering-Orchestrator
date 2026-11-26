@@ -261,11 +261,20 @@ export async function pushBranch(
   // that no `GIT_CONFIG_PARAMETERS` and no configuration file can name
   // another hooks directory: `-c` is read last, and the last one wins.
   const gateArg = gate ? ["-c", `core.hooksPath=${gate.dir}`] : [];
+  // A lease goes by the route's own transport and nothing else, and
+  // follows no redirect: a remote helper configured for the remote after
+  // EO read it (`remote.<name>.vcs`), or a server that sends the push on
+  // to another URL, would each take it somewhere EO never checked — so
+  // git itself refuses them, before any helper runs or anything is sent.
+  const routeArg =
+    lease && route !== null
+      ? ["-c", "protocol.allow=never", "-c", `protocol.${route.protocol}.allow=always`, "-c", "http.followRedirects=false"]
+      : [];
   try {
     let stdout = "";
     let failure: unknown = null;
     try {
-      ({ stdout } = await execFileAsync("git", composeGitArgs([...gateArg, "push", "--porcelain", "--no-follow-tags", ...receiveArg, ...leaseArg, remote, refspec], process.platform), {
+      ({ stdout } = await execFileAsync("git", composeGitArgs([...gateArg, ...routeArg, "push", "--porcelain", "--no-follow-tags", ...receiveArg, ...leaseArg, remote, refspec], process.platform), {
         cwd: repoPath,
         windowsHide: true,
         maxBuffer: 32 * 1024 * 1024,
@@ -410,9 +419,9 @@ async function openGate(
   repoPath: string,
   expect: { ref: string; source: string; head: string; route: PushRoute | null; lease: boolean },
 ): Promise<{ dir: string; receivePack: string | null; seen: () => Promise<GateSeen>; close: () => Promise<void> } | null> {
-  const hooks = await git(["rev-parse", "--git-path", "hooks"], repoPath);
-  if (!hooks.ok) return null;
-  const own = resolve(repoPath, hooks.stdout);
+  const hooks = await hooksPath(repoPath);
+  if (hooks === null) return null;
+  const own = resolve(repoPath, hooks);
   const dir = await mkdtemp(join(tmpdir(), "eo-push-"));
   const close = (): Promise<void> => rm(dir, { recursive: true, force: true });
   const { route, lease } = expect;
@@ -513,6 +522,28 @@ async function openGate(
 }
 
 /**
+ * The repository's own hooks directory, exactly as git names it — every
+ * byte of it, a space at either end too, since `core.hooksPath` may end
+ * in one and git runs the hooks there — or null where git cannot say it
+ * as one line. Never through `git()`, which trims.
+ */
+async function hooksPath(repoPath: string): Promise<string | null> {
+  let stdout: string;
+  try {
+    ({ stdout } = await execFileAsync("git", composeGitArgs(["rev-parse", "--git-path", "hooks"], process.platform), {
+      cwd: repoPath,
+      windowsHide: true,
+      maxBuffer: 1024 * 1024,
+    }));
+  } catch {
+    return null;
+  }
+  if (!stdout.endsWith("\n")) return null;
+  const path = stdout.slice(0, -1);
+  return path === "" || path.includes("\n") ? null : path;
+}
+
+/**
  * Where a push to `remote` goes, as EO checks it before pushing: the one
  * URL git would push to (`pushDestination`), the fingerprint of the
  * place it reaches (`key`), the repository a local path reaches
@@ -524,6 +555,8 @@ interface PushRoute {
   key: string;
   local: string | null;
   env: Record<string, string>;
+  /** The transport git reaches it by, as `protocol.<name>.allow` names it. */
+  protocol: "file" | "http" | "https" | "ssh";
 }
 
 /**
@@ -546,8 +579,8 @@ async function pushRoute(repoPath: string, remote: string, branch: string): Prom
   }
   const place = await reachedBy(repoPath, url, branch);
   if (place === null) return null;
-  if (place.kind === "local") return { url, key: destinationKey(place.path), local: place.path, env: {} };
-  if (place.kind === "url") return { url, key: destinationKey(url), local: null, env: {} };
+  if (place.kind === "local") return { url, key: destinationKey(place.path), local: place.path, env: {}, protocol: "file" };
+  if (place.kind === "url") return { url, key: destinationKey(url), local: null, env: {}, protocol: place.scheme };
   const configured = async (key: string): Promise<string | null> => {
     const value = await git(["config", "--get", key], repoPath);
     return value.ok ? value.stdout : null;
@@ -558,11 +591,9 @@ async function pushRoute(repoPath: string, remote: string, branch: string): Prom
   const program = process.env["GIT_SSH"];
   const command = given ?? (await configured("core.sshCommand")) ?? shellWord(program !== undefined && program !== "" ? program : "ssh");
   const variant = process.env["GIT_SSH_VARIANT"] ?? (await configured("ssh.variant")) ?? "auto";
-  return { url, key: destinationKey(`${url}\0${command}\0${variant}`), local: null, env: { GIT_SSH_COMMAND: command, GIT_SSH_VARIANT: variant } };
+  return { url, key: destinationKey(`${url}\0${command}\0${variant}`), local: null, env: { GIT_SSH_COMMAND: command, GIT_SSH_VARIANT: variant }, protocol: "ssh" };
 }
 
-/** The transports whose URL alone names the server a push reaches. */
-const URL_SCHEMES = new Set(["https", "http"]);
 /** The transports git reaches over SSH. */
 const SSH_SCHEMES = new Set(["ssh", "git+ssh", "ssh+git"]);
 
@@ -591,7 +622,7 @@ async function reachedBy(
   repoPath: string,
   url: string,
   branch: string,
-): Promise<{ kind: "url" } | { kind: "ssh" } | { kind: "local"; path: string } | null> {
+): Promise<{ kind: "url"; scheme: "http" | "https" } | { kind: "ssh" } | { kind: "local"; path: string } | null> {
   if (/^[A-Za-z][A-Za-z0-9+.-]*::/.test(url)) return null;
   const local = async (path: string): Promise<{ kind: "local"; path: string } | null> => {
     if (process.platform === "win32") return null;
@@ -602,7 +633,8 @@ async function reachedBy(
   };
   const scheme = /^([A-Za-z][A-Za-z0-9+.-]*):\/\//.exec(url)?.[1]?.toLowerCase();
   if (scheme === "file") return url.startsWith("file:///") && !url.includes("%") ? local(url.slice("file://".length)) : null;
-  if (scheme !== undefined) return URL_SCHEMES.has(scheme) ? { kind: "url" } : SSH_SCHEMES.has(scheme) ? { kind: "ssh" } : null;
+  if (scheme === "http" || scheme === "https") return { kind: "url", scheme };
+  if (scheme !== undefined) return SSH_SCHEMES.has(scheme) ? { kind: "ssh" } : null;
   // Git's own test: a path unless a colon comes before any slash, which
   // makes it `host:path` over SSH — a drive letter aside, on Windows.
   const colon = url.indexOf(":");
