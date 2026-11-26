@@ -55,7 +55,7 @@ import { scopeLines } from "./writing.js";
  * one it skips for a short answer and the one that wrote its own notes,
  * which still gets the skill half (EO-731).
  */
-export type LearningReviewSkip = Exclude<ExtractionSkip, "little_prose" | "noted_itself">;
+export type LearningReviewSkip = Exclude<ExtractionSkip, "little_prose" | "noted_itself"> | "action_off";
 
 /**
  * Which review a run gets, or why it gets none. Pure. The runs
@@ -65,16 +65,44 @@ export type LearningReviewSkip = Exclude<ExtractionSkip, "little_prose" | "noted
  * which is what the fork sees. A run that called `memory_note` itself
  * gets the skill half alone (EO-731): the skip that extraction made for
  * it is about memory, so only memory is skipped.
+ *
+ * And a run of an action whose learning review is off (EO-911) gets
+ * none, for `action_off` — `reviewed` is `actionLearningReviewed`'s
+ * answer for the run's role and action. Asked after the others, so a run
+ * they skip is skipped for the reason it always was; and, unlike them,
+ * answered with the review it would have had, which its `skipped` event
+ * records (`learningReviewSkippedEvent`).
  */
 export function learningReviewFor(
   run: Run,
   item: Pick<Item, "previewAt">,
   produce: RunProduce,
   scopes: readonly MemoryScopeInfo[],
-): { review: LearningReviewKind } | { skip: LearningReviewSkip } {
+  reviewed: boolean,
+): { review: LearningReviewKind } | { skip: Exclude<LearningReviewSkip, "action_off"> } | { skip: "action_off"; review: LearningReviewKind } {
   const skip = extractionSkip(run, item, { ...produce, calledMemoryNote: false }, scopes);
   if (skip !== null && skip !== "little_prose" && skip !== "noted_itself") return { skip };
-  return { review: produce.calledMemoryNote ? "skills_only" : "full" };
+  const review = produce.calledMemoryNote ? "skills_only" : "full";
+  if (!reviewed) return { skip: "action_off", review };
+  return { review };
+}
+
+/**
+ * The `learning_review` event of a run whose review was not run because
+ * its action's learning review is off (EO-911): nothing was forked, and
+ * nothing ran in its place.
+ */
+export function learningReviewSkippedEvent(review: LearningReviewKind, role: string, action: string): LearningReviewEvent {
+  return {
+    type: LEARNING_REVIEW_EVENT,
+    outcome: "skipped",
+    review,
+    entryIds: [],
+    skillIds: [],
+    reason: `The learning review is off for the ${role} role's "${action}" action, so this run was not reviewed.`,
+    forkThreadId: null,
+    skip: "action_off",
+  };
 }
 
 const MEMORY_NOTE = eoToolName(MEMORY_NOTE_TOOL_NAME);

@@ -7,6 +7,8 @@ import {
   FAILED_RESULT,
   PER_CONVERSATION,
   actionFactsFor,
+  actionLearningReviewed,
+  actionSettingsOf,
   actionsAvailableTo,
   builtinInputs,
   builtinLabel,
@@ -458,6 +460,46 @@ describe("the actions a registry declares (EO-423)", () => {
         expect(facts.results.every((result) => result.label !== "")).toBe(true);
       }
     }
+  });
+
+  it("ships the reviewer's review with its learning review off, and the implementer's implement with it on (EO-911)", () => {
+    expect(actionFactsFor(registry, "reviewer", "review")?.learningReview).toBe(false);
+    expect(actionLearningReviewed(registry, "reviewer", "review")).toBe(false);
+    expect(actionLearningReviewed(registry, "implementer", "implement")).toBe(true);
+    // A role with no review of its own is held to the pack's, setting and all.
+    expect(actionLearningReviewed(registry, "qa", "review")).toBe(false);
+    // An action nothing declares, and one EO runs for itself, are reviewed as every run was.
+    expect(actionLearningReviewed(registry, "qa", "nothing_declares_this")).toBe(true);
+    expect(actionLearningReviewed(registry, "system", "assist")).toBe(true);
+  });
+
+  it("puts a person's setting on a pair over what the pack ships, for that role alone (EO-911)", () => {
+    const settings = actionSettingsOf([
+      { role: "reviewer", action: "review", learningReview: true },
+      { role: "implementer", action: "implement", learningReview: false },
+      { role: "system", action: "assist", learningReview: false },
+    ]);
+    const set = { ...registry, actionSettings: settings };
+    expect(actionLearningReviewed(set, "reviewer", "review")).toBe(true);
+    expect(actionLearningReviewed(set, "implementer", "implement")).toBe(false);
+    expect(actionLearningReviewed(set, "system", "assist")).toBe(false);
+    // Another role on the same action is not the one somebody set.
+    expect(actionLearningReviewed(set, "qa", "review")).toBe(false);
+    expect(actionLearningReviewed(set, "qa", "assist")).toBe(true);
+    // A preview is held to no role, so to the pack's alone.
+    expect(actionLearningReviewed(set, null, "review")).toBe(false);
+  });
+
+  it("carries the settings across IPC, and says nothing of them where nobody set one (EO-911)", () => {
+    const set = { ...registry, actionSettings: actionSettingsOf([{ role: "reviewer", action: "review", learningReview: true }]) };
+    const view = RegistryViewSchema.parse(JSON.parse(JSON.stringify(toRegistryView(set))));
+    expect(view.actionSettings).toEqual([{ role: "reviewer", action: "review", learningReview: true }]);
+    expect(actionLearningReviewed(fromRegistryView(view), "reviewer", "review")).toBe(true);
+    // The pack's own default crosses with the action.
+    expect(fromRegistryView(view).roles.get("reviewer")?.actions?.get("review")?.learningReview).toBe(false);
+
+    expect(toRegistryView(registry)).not.toHaveProperty("actionSettings");
+    expect(toRegistryView({ ...registry, actionSettings: new Map() })).not.toHaveProperty("actionSettings");
   });
 
   it("lists every key refine can report on the types the pack ships", () => {

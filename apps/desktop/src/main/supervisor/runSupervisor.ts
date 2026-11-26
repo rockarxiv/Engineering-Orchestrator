@@ -90,6 +90,7 @@ import {
   type LearningReviewKind,
   actionAnswerSummary,
   actionSchemaName,
+  actionLearningReviewed,
   definedActionFor,
   INTERPRET_ACTION,
   builtinResults,
@@ -217,7 +218,7 @@ import {
   getStep,
   listActiveRuns,
   listNewestRunPerItem,
-  newestRunWithEvent,
+  learningReviewProgress,
   activeRunForItem,
   unwrittenReviewNotes,
   getMemory,
@@ -345,7 +346,7 @@ import type { AgentWriteBridge, AgentWriteHandler } from "../mcp/writeBridge.js"
 import { writeAgentComment } from "./agentComments.js";
 import { projectMovedToTheRecord } from "../db/repos/projectsRepo.js";
 import { extractionEvent, extractMemory, runProduce } from "../memory/extraction.js";
-import { learningReviewEvent, learningReviewFor, learningReviewPrompt, learningReviewSkillsPrompt, type LearningReviewOutcome } from "../memory/learningReview.js";
+import { learningReviewEvent, learningReviewFor, learningReviewSkippedEvent, learningReviewPrompt, learningReviewSkillsPrompt, type LearningReviewOutcome } from "../memory/learningReview.js";
 import { answerReviewSkillTool, commitHeldSkillWrites, reviewableSkills, reviewSkillState, type ReviewSkillState } from "../memory/reviewSkills.js";
 import { runSubject } from "../modules/runName.js";
 import { createSideCallSlots } from "../sideCalls/slots.js";
@@ -3216,8 +3217,13 @@ export function createRunSupervisor(
       if (!run) return;
       const current = getItem(db, item.id) ?? item;
       const scopes = turnMemoryScopes(item);
-      const asked = learningReviewFor(run, current, runProduce(db, run), scopes);
-      if ("skip" in asked) return;
+      const asked = learningReviewAsked(run, current, agent, action, scopes);
+      if ("skip" in asked) {
+        // Off for this action (EO-911): said on the run, and nothing is
+        // asked of its backend — no fork, no extraction in its place.
+        if (asked.skip === "action_off") recordReviewSkipped(runId, asked.review, agent, action);
+        return;
+      }
       review = asked.review;
       outcome = await reviewOnFork(run, current, agent, scopes, review, { item, action, toolDirectory: runTurns?.toolDirectory, attachment: runTurns?.attachment });
     } catch (error) {
@@ -3235,6 +3241,25 @@ export function createRunSupervisor(
       record.appendRunEvent(runId, LEARNING_REVIEW_EVENT, learningReviewEvent(outcome, review));
     } catch (error) {
       console.warn(`[eo] how the learning review of run ${runId} ended could not be recorded: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  /**
+   * Which review a run gets, or why none (`learningReviewFor`), with
+   * whether its action's learning review is on (EO-911) asked of the
+   * registry the run was held to, as its schema was — so for the role
+   * that defined the action, or the pack's where it is a preview.
+   */
+  function learningReviewAsked(run: Run, item: Item, agent: Agent, action: string, scopes: readonly MemoryScopeInfo[]): ReturnType<typeof learningReviewFor> {
+    return learningReviewFor(run, item, runProduce(db, run), scopes, actionLearningReviewed(registryFor(item), definingRole(item, agent), action));
+  }
+
+  /** A run's `learning_review` event for a review its action's setting skipped (EO-911). Never throws. */
+  function recordReviewSkipped(runId: Uuid, review: LearningReviewKind, agent: Agent, action: string): void {
+    try {
+      record.appendRunEvent(runId, LEARNING_REVIEW_EVENT, learningReviewSkippedEvent(review, agent.role, action));
+    } catch (error) {
+      console.warn(`[eo] that the learning review of run ${runId} was skipped could not be recorded: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
@@ -3640,20 +3665,42 @@ export function createRunSupervisor(
         const item = getItem(db, itemId);
         if (!item) continue;
         const scopes = turnMemoryScopes(item);
+        // A run skipped for its action's setting is accounted for by its
+        // own event, and moves no cutoff (EO-911).
+        const progress = learningReviewProgress(db, itemId);
         const chat = quietChatReview({
           runs: listRunsForItem(db, itemId).filter((run) => run.action === ASSIST_ACTION),
-          reviewedThrough: newestRunWithEvent(db, itemId, LEARNING_REVIEW_EVENT),
+          reviewedThrough: progress.reviewedThrough,
+          skipped: progress.skipped,
           now: at,
           idleMs: CHAT_IDLE_BEFORE_REVIEW_MS,
           reviewFor: (run) => {
             if (runEventDevices(db, run.id).size > 0) return null;
-            const asked = learningReviewFor(run, item, runProduce(db, run), scopes);
-            return "skip" in asked ? null : asked.review;
+            const ranAs = run.agentId === null ? undefined : getAgent(db, run.agentId);
+            if (!ranAs) return null;
+            const asked = learningReviewAsked(run, item, ranAs, run.action, scopes);
+            // Off for the action (EO-911) is still owed: once the chat is
+            // quiet, its skip is recorded where its review would have run
+            // (`reviewQuietThread`), which asks the setting again then.
+            if ("skip" in asked) return asked.skip === "action_off" ? asked.review : null;
+            return asked.review;
           },
         });
         if (chat.kind === "settled") settledChats.set(itemId, newest);
         if (chat.kind === "waiting" && chat.dueAt !== null) soonest = Math.min(soonest, chat.dueAt);
         if (chat.kind !== "due") continue;
+        // Nor is a chat quiet while a message of the person's waits for
+        // its answer: the answer's run is written a few awaits after this
+        // tick offered it, and a review started meanwhile — or a skip
+        // recorded for the setting now (EO-911) — would be of a chat
+        // being carried on. A message the dispatch has already refused —
+        // the attempt limit's stop, say — is not waiting for an answer:
+        // its mention stays open, but each later offer of it returns at
+        // `alreadyRefused`, so counting it would hold the chat unreviewed
+        // for good. Where a refusal's cause lifts (a budget raised) and the
+        // run starts after all, a review begun meanwhile is cancelled once
+        // its run is queued (`cancelCarriedOnChatReviews`).
+        if (findPendingResponses(db, [itemId]).some((pending) => !alreadyRefused(itemId, pending.commentId))) continue;
         startQuietChatReview(item, chat.threads);
         return;
       }
@@ -3696,7 +3743,11 @@ export function createRunSupervisor(
    */
   async function reviewQuietChat(item: Item, threads: readonly QuietThreadReview[], review: QuietChatReview): Promise<void> {
     for (const thread of threads) {
-      if (review.controller.signal.aborted || shuttingDown) return;
+      // Asked of the chat itself too, not only of the signal: the tick
+      // that aborts it may not have come yet, and a thread whose turn the
+      // person has carried on is owed what the next quiet period decides
+      // — not a skip recorded now for the setting in force now (EO-911).
+      if (review.controller.signal.aborted || shuttingDown || chatCarriedOn(item.id, review.spoken)) return;
       const hold: QuietReviewHold = {
         signal: review.controller.signal,
         stillQuiet: () => !chatCarriedOn(item.id, review.spoken),
@@ -3720,6 +3771,14 @@ export function createRunSupervisor(
       const agent = run.agentId === null ? undefined : getAgent(db, run.agentId);
       if (!agent) throw new Error("the agent that ran it is gone");
       const current = getItem(db, item.id) ?? item;
+      // Asked again before each thread's fork (EO-911): a person may have
+      // turned `assist`'s learning review off since the chat went quiet,
+      // or while an earlier thread was being reviewed. Then nothing is
+      // forked, and each run the review would have covered says why.
+      if (!actionLearningReviewed(registryFor(current), definingRole(current, agent), ASSIST_ACTION)) {
+        for (const runId of thread.runIds) recordReviewSkipped(runId, thread.review, agent, ASSIST_ACTION);
+        return;
+      }
       // What a turn of the agent's would be given now: the run's own is
       // not kept once it ends, and is not there after a restart.
       const toolDirectory = prepareToolDirectory(current, agent);
@@ -6198,6 +6257,9 @@ export function createRunSupervisor(
       // skill would start the chat's next message on a new thread, and
       // would hold the slot a quick reply waits for. The chat is reviewed
       // once it has gone quiet (`reviewQuietChats`).
+      // Whether `assist`'s learning review is off (EO-911) is asked then,
+      // before each thread's fork, so the setting that counts is the one
+      // in force when the review would run.
       if (args[3] !== ASSIST_ACTION) await reviewAfterRun(run.id, item, agent, args[3], args[7]);
       // The run moved the counts of the skills it was given (EO-720).
       await archiveAfterRun(item);

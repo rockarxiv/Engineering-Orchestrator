@@ -11,10 +11,12 @@ import type { LearningReviewKind, Run, Uuid } from "@eo/core";
  *
  * Which chats are due is worked out from runs and `run_events`, not
  * stored: a chat is due when it has a run to review newer than the newest
- * of its runs carrying a `learning_review` event. So a chat that went
- * quiet before EO quit is still reviewed after it starts again, and a
- * review that was cancelled, having appended no event, leaves the chat
- * due.
+ * of its runs carrying a `learning_review` event of a review that ran. So
+ * a chat that went quiet before EO quit is still reviewed after it starts
+ * again, and a review that was cancelled, having appended no event,
+ * leaves the chat due. A run whose review was skipped for its action's
+ * setting (EO-911) carries an event of its own, which accounts for that
+ * run alone: an older run on another thread is still owed its review.
  */
 
 /** One review a quiet chat is owed: of the newest run on one of its threads. */
@@ -22,6 +24,12 @@ export interface QuietThreadReview {
   runId: Uuid;
   threadId: string;
   review: LearningReviewKind;
+  /**
+   * Every run on the thread the review accounts for, oldest first and
+   * `runId` last: where it is skipped for its action's setting rather
+   * than run (EO-911), each of them carries the skip.
+   */
+  runIds: Uuid[];
 }
 
 export type QuietChat =
@@ -36,8 +44,9 @@ export type QuietChat =
  * Whether a chat is owed a review now, and of what. Pure.
  *
  * `runs` are the chat's `assist` runs, oldest first; `reviewedThrough` the
- * newest of its runs that carries a `learning_review` event. A run past
- * it is reviewable where `reviewFor` says which review it gets — a run
+ * newest of its runs carrying a `learning_review` event of a review that
+ * ran, and `skipped` those whose event records a skip (EO-911), which owe
+ * nothing. Any other run past it is reviewable where `reviewFor` says which review it gets — a run
  * cancelled, interrupted, on a preview or with no memory scope gets none,
  * as after a run — and where it has a thread to fork. Each thread among
  * them gets its own review, of its newest run: a full one unless every
@@ -46,6 +55,7 @@ export type QuietChat =
 export function quietChatReview(input: {
   runs: readonly Run[];
   reviewedThrough: string | null;
+  skipped?: ReadonlySet<string>;
   now: number;
   idleMs: number;
   reviewFor: (run: Run) => LearningReviewKind | null;
@@ -54,13 +64,18 @@ export function quietChatReview(input: {
   const threads = new Map<string, QuietThreadReview>();
   for (const run of runs) {
     if (reviewedThrough !== null && run.id <= reviewedThrough) continue;
-    if (run.threadId === null) continue;
+    if (run.threadId === null || input.skipped?.has(run.id) === true) continue;
     const review = input.reviewFor(run);
     if (review === null) continue;
     const earlier = threads.get(run.threadId);
     // Deleted and set again, so the map's order is by each thread's newest run.
     threads.delete(run.threadId);
-    threads.set(run.threadId, { runId: run.id, threadId: run.threadId, review: earlier?.review === "full" ? "full" : review });
+    threads.set(run.threadId, {
+      runId: run.id,
+      threadId: run.threadId,
+      review: earlier?.review === "full" ? "full" : review,
+      runIds: [...(earlier?.runIds ?? []), run.id],
+    });
   }
   if (threads.size === 0) return { kind: "settled" };
   if (runs.some((run) => run.status === "queued" || run.status === "running")) return { kind: "waiting", dueAt: null };

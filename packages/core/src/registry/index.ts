@@ -128,6 +128,35 @@ export interface ActionFacts {
    * its shape is the pack's schema, which stays in the main process.
    */
   fields?: Readonly<Record<string, unknown>> | undefined;
+  /**
+   * Whether a run of it is followed by a learning review when nobody on
+   * this installation has said (EO-911). Only `false` turns it off:
+   * absent is on. What a pack ships for its own action — a default, which
+   * a person's setting (`RegistryOf.actionSettings`) overrides.
+   */
+  learningReview?: boolean | undefined;
+}
+
+/**
+ * A person's settings on a role's action (EO-911), by role slug, then by
+ * action: whether a run of it is followed by a learning review. For any
+ * pair a role runs — a pack's action, one the role defined for itself,
+ * or one EO runs for itself, such as `assist` — since a setting changes
+ * nothing about what the action is or answers in.
+ */
+export type ActionSettings = ReadonlyMap<string, ReadonlyMap<string, { learningReview: boolean }>>;
+
+/**
+ * Whether a run of `role`'s `action` gets a learning review (EO-911): a
+ * person's setting on the pair where there is one, and otherwise what
+ * the action `actionFactsFor` resolves to says — on, unless a pack ships
+ * it off. So an action nobody set anything on, or nothing declares, is
+ * reviewed as it always was.
+ */
+export function actionLearningReviewed(registry: RegistryFacts, role: string | null | undefined, action: string): boolean {
+  const set = role === null || role === undefined ? undefined : registry.actionSettings?.get(role)?.get(action);
+  if (set !== undefined) return set.learningReview;
+  return actionFactsFor(registry, role, action)?.learningReview !== false;
 }
 
 /** By role slug, then by action. Maps for the reason the registry is maps throughout. */
@@ -525,6 +554,13 @@ export interface RegistryOf<R extends RoleFacts> {
    * without knowing what a Jira key is (invariant 13).
    */
   entryRuleKinds?: ReadonlyMap<string, EntryRuleKind>;
+  /**
+   * What people on this installation set on a role's actions (EO-911,
+   * `ActionSettings`). Optional for `roleActions`' reason: a registry
+   * built from packs alone has none, and every action is then as its
+   * pack ships it.
+   */
+  actionSettings?: ActionSettings;
 }
 
 /**
@@ -1213,6 +1249,8 @@ const ActionFactsViewSchema = z.object({
    * a view built from a registry alone leaves it out.
    */
   usedBy: z.array(ActionUseSchema).optional(),
+  /** False where the action's runs get no learning review (EO-911); absent is on. */
+  learningReview: z.boolean().optional(),
 });
 
 type ActionFactsView = z.infer<typeof ActionFactsViewSchema>;
@@ -1292,6 +1330,8 @@ export const RegistryViewSchema = z.object({
   entryRuleKinds: z
     .array(z.object({ kind: z.string().min(1), noun: z.string().min(1), extension: z.string().min(1), property: z.string().min(1) }))
     .optional(),
+  /** A person's learning review settings, one per role and action (EO-911, `ActionSettings`). Optional for `packs`' reason, and absent is none. */
+  actionSettings: z.array(z.object({ role: z.string().min(1), action: z.string().min(1), learningReview: z.boolean() })).optional(),
 });
 
 export type RegistryView = z.infer<typeof RegistryViewSchema>;
@@ -1306,6 +1346,7 @@ function toActionViews(actions: ReadonlyMap<string, ActionFacts> | undefined): A
     results: facts.results.map((result) => ({ key: result.key, label: result.label, ...(result.meaning === undefined ? {} : { meaning: result.meaning }) })),
     packShipped: facts.packShipped,
     ...(facts.fields === undefined ? {} : { fields: { ...facts.fields } }),
+    ...(facts.learningReview === undefined ? {} : { learningReview: facts.learningReview }),
   }));
 }
 
@@ -1313,7 +1354,13 @@ function fromActionViews(views: readonly ActionFactsView[] | undefined): Map<str
   return new Map(
     (views ?? []).map((view) => [
       view.action,
-      { description: view.description, results: view.results, packShipped: view.packShipped, ...(view.fields === undefined ? {} : { fields: view.fields }) },
+      {
+        description: view.description,
+        results: view.results,
+        packShipped: view.packShipped,
+        ...(view.fields === undefined ? {} : { fields: view.fields }),
+        ...(view.learningReview === undefined ? {} : { learningReview: view.learningReview }),
+      },
     ]),
   );
 }
@@ -1348,6 +1395,11 @@ export function toRegistryView(registry: RegistryFacts): RegistryView {
       results: { ...vocabulary.results },
     })),
     entryRuleKinds: [...(registry.entryRuleKinds ?? [])].map(([kind, entry]) => ({ kind, ...entry })),
+    // Said only where somebody set something, so a view of an
+    // installation nobody changed is the document it always was.
+    ...(registry.actionSettings === undefined || registry.actionSettings.size === 0
+      ? {}
+      : { actionSettings: [...registry.actionSettings].flatMap(([role, actions]) => [...actions].map(([action, setting]) => ({ role, action, learningReview: setting.learningReview }))) }),
   };
 }
 
@@ -1375,5 +1427,17 @@ export function fromRegistryView(view: RegistryView): RegistryFacts {
     itemTypes: new Map(view.itemTypes.map((type) => [qualifiedItemType(type), type])),
     packs: new Map((view.packs ?? []).map((pack) => [pack.slug, { item: pack.item, items: pack.items, results: pack.results }])),
     entryRuleKinds: new Map((view.entryRuleKinds ?? []).map(({ kind, ...entry }) => [kind, entry])),
+    ...(view.actionSettings === undefined ? {} : { actionSettings: actionSettingsOf(view.actionSettings) }),
   };
+}
+
+/** Settings as rows — the table's, or the view's — as the registry holds them (EO-911). */
+export function actionSettingsOf(rows: readonly { role: string; action: string; learningReview: boolean }[]): ActionSettings {
+  const byRole = new Map<string, Map<string, { learningReview: boolean }>>();
+  for (const row of rows) {
+    const ofRole = byRole.get(row.role) ?? new Map<string, { learningReview: boolean }>();
+    ofRole.set(row.action, { learningReview: row.learningReview });
+    byRole.set(row.role, ofRole);
+  }
+  return byRole;
 }

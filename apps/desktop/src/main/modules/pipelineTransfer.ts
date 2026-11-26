@@ -83,6 +83,7 @@ import {
   getProject,
   getStep,
   listActionDefinitionsForRole,
+  getActionLearningReview,
   listItemTypes,
   listModules,
   listModuleTests,
@@ -498,7 +499,13 @@ function exportedRoles(
     // description, each result with its label and meaning, the fields.
     // A pack's own role included, for an action it defines beside the
     // ones it ships.
-    const actions = listActionDefinitionsForRole(db, slug).map(({ action, description, results, fields }) => ({ action, description, results, fields }));
+    // And its learning review setting where somebody set one (EO-911),
+    // off or on: a definition turned off does not arrive on elsewhere,
+    // nor one turned on arrive off where the pair's setting is inherited.
+    const actions = listActionDefinitionsForRole(db, slug).map(({ action, description, results, fields }) => {
+      const learningReview = getActionLearningReview(db, slug, action);
+      return { action, description, results, fields, ...(learningReview === undefined ? {} : { learningReview }) };
+    });
 
     const agent = live.find((candidate) => candidate.role === slug);
     if (agent === undefined) {

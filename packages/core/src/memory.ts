@@ -545,7 +545,9 @@ export const CHAT_IDLE_BEFORE_REVIEW_MS = 10 * 60_000;
  * back to — has returned. Not written for a run the review was never
  * asked about: one cancelled, interrupted, on a preview, or with no
  * memory scope. A run that called `memory_note` itself is asked about
- * skills alone (EO-731), and its event says so.
+ * skills alone (EO-731), and its event says so. A run that would have
+ * been reviewed but for its action's setting (EO-911) is recorded as
+ * `skipped`, with why, and nothing is asked of its backend.
  */
 export const LEARNING_REVIEW_EVENT = "learning_review";
 
@@ -561,8 +563,12 @@ export const LEARNING_REVIEW_EVENT = "learning_review";
  *   review `memory_extract` ran instead and its `memory_extracted` event
  *   says how that went; after a skill-only one nothing ran in its place,
  *   since extraction writes memory alone and the run wrote its own.
+ * - `skipped` — the run would have been reviewed, and a person turned
+ *   the learning review off for its action (EO-911): no fork, no side
+ *   call and no extraction in its place. `skip` says why, and `reason`
+ *   in a sentence.
  */
-export const LEARNING_REVIEW_OUTCOMES = ["written", "nothing_to_save", "failed", "fell_back"] as const;
+export const LEARNING_REVIEW_OUTCOMES = ["written", "nothing_to_save", "failed", "fell_back", "skipped"] as const;
 export const LearningReviewOutcomeSchema = z.enum(LEARNING_REVIEW_OUTCOMES);
 export type LearningReviewOutcome = z.infer<typeof LearningReviewOutcomeSchema>;
 
@@ -606,8 +612,14 @@ export const LearningReviewEventSchema = z.object({
    * before reviews wrote skills.
    */
   skillIds: z.array(z.string()).default([]),
-  /** Why it failed or fell back, in a sentence; null otherwise. */
+  /** Why it failed, fell back or was skipped, in a sentence; null otherwise. */
   reason: z.string().nullable(),
+  /**
+   * Why a `skipped` review was not run (EO-911): `action_off`, the
+   * run's action set to have no learning review. Absent on every other
+   * outcome.
+   */
+  skip: z.enum(["action_off"]).optional(),
   /** The fork's thread, where one was opened; null on a fallback. Never the item's own thread. */
   forkThreadId: z.string().nullable(),
   /**

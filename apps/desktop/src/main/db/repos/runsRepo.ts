@@ -3,6 +3,7 @@ import { onProject } from "./projectScope.js";
 import {
   DEBUG_SENT_EVENT,
   INTERPRET_ACTION,
+  LEARNING_REVIEW_EVENT,
   uuidv7,
   type RecordCursor,
   type Run,
@@ -421,18 +422,29 @@ export function listNewestRunPerItem(db: Db, action: string): { itemId: Uuid; ru
 }
 
 /**
- * The newest of an item's runs carrying an event of this type (EO-788),
- * by id, or null where none does. Ids are UUIDv7, so newest is creation
- * order: for `learning_review` it is how far the item's runs have been
- * reviewed.
+ * How far an item's runs have been reviewed (EO-788, EO-911), read off
+ * their `learning_review` events. `reviewedThrough` is the newest run, by
+ * id, whose review ran — ids are UUIDv7, so newest is creation order —
+ * and so how far the item's runs are reviewed; null where none was.
+ * `skipped` is every run whose event says it was skipped for its
+ * action's setting: that run is accounted for and owes nothing, and
+ * says nothing about any other run, so it moves no cutoff.
  */
-export function newestRunWithEvent(db: Db, itemId: Uuid, eventType: string): Uuid | null {
-  const row = db
-    .select({ runId: sql<string | null>`max(${runEvents.runId})` })
+export function learningReviewProgress(db: Db, itemId: Uuid): { reviewedThrough: Uuid | null; skipped: Set<Uuid> } {
+  const rows = db
+    .select({ runId: runEvents.runId, payload: runEvents.payload })
     .from(runEvents)
-    .where(and(eq(runEvents.type, eventType), inArray(runEvents.runId, db.select({ id: runs.id }).from(runs).where(eq(runs.itemId, itemId)))))
-    .get();
-  return (row?.runId ?? null) as Uuid | null;
+    .where(and(eq(runEvents.type, LEARNING_REVIEW_EVENT), inArray(runEvents.runId, db.select({ id: runs.id }).from(runs).where(eq(runs.itemId, itemId)))))
+    .all();
+  let reviewedThrough: Uuid | null = null;
+  const skipped = new Set<Uuid>();
+  for (const row of rows) {
+    const runId = row.runId as Uuid;
+    const payload = row.payload as unknown;
+    if (typeof payload === "object" && payload !== null && (payload as { outcome?: unknown }).outcome === "skipped") skipped.add(runId);
+    else if (reviewedThrough === null || runId > reviewedThrough) reviewedThrough = runId;
+  }
+  return { reviewedThrough, skipped };
 }
 
 export function listActiveRuns(db: Db): Run[] {

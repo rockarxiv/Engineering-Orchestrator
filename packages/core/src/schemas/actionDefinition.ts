@@ -129,6 +129,27 @@ export const ActionDefinitionDraftSchema = z.object({
   description: z.string().default(""),
   results: z.array(z.object({ key: z.string(), label: z.string().default(""), meaning: z.string().default("") })),
   fields: z.record(z.string(), z.unknown()).default({}),
+  /**
+   * Whether its runs get a learning review (EO-911): the role's setting
+   * on the pair (`action_settings`), written beside the definition.
+   * **Absent leaves what is set** — on, where nothing is — rather than
+   * turning it back on: a published draft and an older caller say
+   * nothing about it, and neither is a person changing it.
+   */
+  learningReview: z.boolean().optional(),
+});
+
+/**
+ * What `roleActions:save` is handed (EO-911): a draft, or — with
+ * `results` left out — a change to the pair's learning review setting
+ * alone. The second is how the setting is changed on an action the role
+ * cannot define: one a pack ships for it, such as the reviewer's
+ * `review`, or one EO runs for itself, such as `assist`. It writes the
+ * setting and nothing else, so neither the action's shape nor what EO
+ * does with its answer can be changed through it.
+ */
+export const RoleActionSaveSchema = ActionDefinitionDraftSchema.extend({
+  results: ActionDefinitionDraftSchema.shape.results.optional(),
 });
 
 export type ActionDefinitionDraft = z.input<typeof ActionDefinitionDraftSchema>;
@@ -137,7 +158,16 @@ export type ParsedActionDefinitionDraft = z.output<typeof ActionDefinitionDraftS
 
 /** A draft that may be written, normalised, or the sentences saying why it may not. */
 export type ActionDefinitionDraftResult =
-  | { ok: true; role: string; action: string; description: string; results: ActionResult[]; fields: JsonSchema }
+  | {
+      ok: true;
+      role: string;
+      action: string;
+      description: string;
+      results: ActionResult[];
+      fields: JsonSchema;
+      /** Null where the draft said nothing about it, which leaves what is saved (EO-911). */
+      learningReview: boolean | null;
+    }
   | { ok: false; problems: string[] };
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -254,6 +284,7 @@ export function readActionDefinitionDraft(input: unknown, context: ActionDefinit
       meaning: result.meaning.trim(),
     })),
     fields: draft.fields,
+    learningReview: draft.learningReview ?? null,
   };
 }
 

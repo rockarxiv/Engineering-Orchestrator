@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Plus, Trash2 } from "lucide-react";
-import { ACTION_KEY_PATTERN, actionDefinitionProviderSchema, ENGINE_RESULTS } from "@eo/core";
+import { ACTION_KEY_PATTERN, actionDefinitionProviderSchema, ENGINE_RESULTS, UNDISPATCHED_ACTIONS } from "@eo/core";
 import type { ActionRouteUse, ActionUse, RegistryView } from "@eo/core";
 import { ipcQuery } from "../../../query/client";
 import { registryKey, useChromeVocabulary } from "../../../query/hooks";
@@ -40,6 +40,14 @@ import {
  * the one save every definition is written by — so this screen refuses
  * exactly what an import or the system agent's tool would.
  *
+ * Whether each action's runs get a learning review (EO-911) is the one
+ * thing that can be changed on every action the role runs: a pack's own,
+ * the role's, a pack action another role ships, and the ones EO runs for
+ * itself, such as `assist`. It is a
+ * setting on the pair rather than part of the action — a pack's action
+ * keeps its shape — and is saved through `roleActions:save` with no
+ * results, which writes the setting and nothing else.
+ *
  * Under an organisation lock on the agents section both are read-only
  * and the section says who manages it. The two channels are refused
  * there in any case (`SECTION_LOCKED_CHANNELS.agents`); the fence is so
@@ -47,6 +55,17 @@ import {
  */
 
 type ActionView = NonNullable<RegistryView["roleActions"]>[number]["actions"][number];
+
+/**
+ * Whether `role`'s runs of `action` get a learning review (EO-911): a
+ * person's setting on the pair, else what the action ships with — on
+ * unless a pack ships it off. `actionLearningReviewed`'s rule, read off
+ * the view the way this screen holds it.
+ */
+function reviewedIn(view: RegistryView | undefined, role: string, action: string, shipped: boolean | undefined): boolean {
+  const set = view?.actionSettings?.find((entry) => entry.role === role && entry.action === action);
+  return set?.learningReview ?? shipped !== false;
+}
 
 interface ResultDraft {
   key: string;
@@ -66,6 +85,8 @@ interface Draft {
   text: string;
   /** Why the text is not the schema yet, in the parser's words. */
   textProblem: string | null;
+  /** Whether a run of it is followed by a learning review (EO-911). */
+  learningReview: boolean;
 }
 
 const NEW = "\u0000new";
@@ -73,7 +94,7 @@ const NEW = "\u0000new";
 /** The registry as `registry:get` sends it, kept as sent: `usedBy` is on the wire and not in the maps `useRegistry` builds. */
 const registryViewKey = [...registryKey, "view"] as const;
 
-function draftOf(action: ActionView | null): Draft {
+function draftOf(action: ActionView | null, learningReview: boolean): Draft {
   const fields = { ...(action?.fields ?? {}) };
   return {
     action: action?.action ?? "",
@@ -83,6 +104,7 @@ function draftOf(action: ActionView | null): Draft {
     rows: rowsFromFields(fields),
     text: fieldsToText(fields),
     textProblem: null,
+    learningReview,
   };
 }
 
@@ -91,12 +113,13 @@ function draftOf(action: ActionView | null): Draft {
  * editor's draft is made from and nothing else. Which steps use it is
  * left out — that is read live and is nobody's draft.
  */
-function savedContent(action: ActionView | null): string | null {
+function savedContent(action: ActionView | null, learningReview: boolean): string | null {
   if (action === null) return null;
   return JSON.stringify({
     description: action.description,
     results: action.results.map((result) => [result.key, result.label, result.meaning ?? ""]),
     fields: action.fields ?? {},
+    learningReview,
   });
 }
 
@@ -308,22 +331,92 @@ function FieldList({ rows, onChange }: { rows: FieldRow[]; onChange: (rows: Fiel
   );
 }
 
+/**
+ * Whether a run of the action is followed by a learning review (EO-911):
+ * the fork EO opens once a run ends, to write memory notes and skills
+ * from what the run did. Worth turning off for an action whose reviews
+ * keep writing nothing, since each one costs a turn on the run's backend.
+ */
+function LearningReviewSetting({
+  checked,
+  onChange,
+  disabled = false,
+  action,
+  compact = false,
+}: {
+  checked: boolean;
+  onChange: (next: boolean) => void;
+  disabled?: boolean;
+  /** Named in the box's label where several are drawn together. */
+  action?: string;
+  /** Without the sentence saying what a review is, for a list that says it once. */
+  compact?: boolean;
+}) {
+  return (
+    <div className="flex min-w-0 flex-col gap-1">
+      <Checkbox
+        checked={checked}
+        onChange={onChange}
+        disabled={disabled}
+        label="Review each run for what to remember"
+        ariaLabel={action === undefined ? "Learning review after each run" : `Learning review after each run of ${action}`}
+      />
+      {compact ? null : (
+        <p className="text-[11.5px] leading-snug text-ink-subtle">
+          After a run of this action ends, EO forks its session to write memory notes and skills from what it did. Each review is a turn on the run&apos;s backend:
+          turn it off for an action whose runs rarely teach anything.
+        </p>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The learning review setting of an action this screen does not edit the
+ * rest of — a pack's own, or one EO runs for itself (EO-911) — saved as
+ * it is changed, through a save with no results: the setting and nothing
+ * else.
+ */
+function SettingOnly({ role, action, checked, readOnly, compact = false }: { role: string; action: string; checked: boolean; readOnly: boolean; compact?: boolean }) {
+  const queryClient = useQueryClient();
+  const [problems, setProblems] = useState<string[]>([]);
+  const save = useMutation({
+    mutationFn: (learningReview: boolean) => ipcQuery("roleActions:save", { role, action, learningReview }),
+    onSuccess: (result) => {
+      setProblems(result.saved ? [] : result.problems);
+      void queryClient.invalidateQueries({ queryKey: registryKey });
+    },
+    onError: (error: Error) => setProblems([error.message]),
+  });
+  return (
+    <div className="flex min-w-0 flex-col gap-1">
+      <LearningReviewSetting checked={checked} action={action} compact={compact} disabled={readOnly || save.isPending} onChange={(next) => save.mutate(next)} />
+      {problems.map((problem) => (
+        <ErrorLine key={problem}>{problem}</ErrorLine>
+      ))}
+    </div>
+  );
+}
+
 /** One of the role's own actions, open: what it is for, its results, its fields in either view, where it is used and what the provider gets. */
 function ActionEditor({
   role,
   existing,
+  reviewed,
   readOnly,
   onClose,
 }: {
   role: string;
   existing: ActionView | null;
+  /** Whether its runs get a learning review as things stand (EO-911); on for one being created. */
+  reviewed: boolean;
   readOnly: boolean;
   onClose: () => void;
 }) {
   const queryClient = useQueryClient();
-  const [draft, setDraft] = useState(() => draftOf(existing));
+  const [draft, setDraft] = useState(() => draftOf(existing, reviewed));
   /** The saved definition this draft was made from, so one saved since can be told apart from it. */
-  const [base, setBase] = useState(() => savedContent(existing));
+  const [base, setBase] = useState(() => savedContent(existing, reviewed));
   const [touched, setTouched] = useState(false);
   const [view, setView] = useState<"list" | "json">("list");
   const [problems, setProblems] = useState<string[]>([]);
@@ -336,11 +429,11 @@ function ActionEditor({
   // an open editor showing what used to be saved is one whose Save
   // would put it back. A draft somebody has typed into is theirs, and
   // is asked about below rather than replaced or silently kept.
-  const latest = savedContent(existing);
+  const latest = savedContent(existing, reviewed);
   const changedElsewhere = latest !== base;
   if (changedElsewhere && !touched) {
     setBase(latest);
-    setDraft(draftOf(existing));
+    setDraft(draftOf(existing, reviewed));
   }
   const conflict = changedElsewhere && touched;
 
@@ -376,7 +469,14 @@ function ActionEditor({
   const impact = impactNeeded && !impactPending && !impactFailed ? inspection.data : undefined;
 
   const save = useMutation({
-    mutationFn: () => ipcQuery("roleActions:save", { role, action: name, description: draft.description, results: draft.results, fields: draft.fields }),
+    mutationFn: () => ipcQuery("roleActions:save", {
+        role,
+        action: name,
+        description: draft.description,
+        results: draft.results,
+        fields: draft.fields,
+        learningReview: draft.learningReview,
+      }),
     onSuccess: (result) => {
       // A refusal keeps the draft, and says why in the save's own words — the compiler's, where it was the schema.
       if (!result.saved) {
@@ -438,7 +538,7 @@ function ActionEditor({
                 size="sm"
                 onClick={() => {
                   setBase(latest);
-                  setDraft(draftOf(existing));
+                  setDraft(draftOf(existing, reviewed));
                   setTouched(false);
                   setProblems([]);
                 }}
@@ -468,6 +568,8 @@ function ActionEditor({
         </Field>
 
         <ResultRows results={draft.results} onChange={(results) => edit((current) => ({ ...current, results }))} />
+
+        <LearningReviewSetting checked={draft.learningReview} onChange={(learningReview) => edit((current) => ({ ...current, learningReview }))} />
       </ReadOnlyFence>
 
       <div className="flex min-w-0 flex-col gap-1.5">
@@ -590,12 +692,15 @@ function ActionEditor({
  * verdict — so a document built here from its result keys would be a
  * plausible picture of something no provider is ever handed.
  */
-function ShippedAction({ role, action, onClose }: { role: string; action: ActionView; onClose: () => void }) {
+function ShippedAction({ role, action, reviewed, readOnly, onClose }: { role: string; action: ActionView; reviewed: boolean; readOnly: boolean; onClose: () => void }) {
   const inspection = useInspection(role, action.action, true);
   const schema = inspection.data?.providerSchema;
   return (
     <section aria-label={`Action ${action.action}`} className="flex min-w-0 flex-col gap-3 rounded-[12px] border border-line px-3.5 py-3">
-      <Notice>This action ships with the role. The pack that ships it decides its results and its shape, so it is shown here and cannot be edited.</Notice>
+      <Notice>
+        This action ships with the role. The pack that ships it decides its results and its shape, so it is shown here and cannot be edited — only whether its runs
+        are reviewed for what to remember.
+      </Notice>
       {action.description !== "" ? <p className="text-[12.5px] leading-snug text-ink-muted">{action.description}</p> : null}
       <div className="flex min-w-0 flex-col gap-1">
         <span className="text-[12px] font-medium text-ink-muted">Results</span>
@@ -607,6 +712,8 @@ function ShippedAction({ role, action, onClose }: { role: string; action: Action
           ))}
         </ul>
       </div>
+      <SettingOnly role={role} action={action.action} checked={reviewed} readOnly={readOnly} />
+      {action.learningReview === false ? <p className="text-[11.5px] leading-snug text-ink-subtle">The pack ships it with the learning review off.</p> : null}
       <UsedBy uses={action.usedBy ?? []} />
       <div className="flex min-w-0 flex-col gap-1">
         <span className="text-[12px] font-medium text-ink-muted">What the provider is handed</span>
@@ -635,6 +742,66 @@ function ShippedAction({ role, action, onClose }: { role: string; action: Action
   );
 }
 
+/**
+ * The pack's actions another role ships that this role can still be
+ * dispatched on (EO-911, `actionsAvailableTo`): a custom `qa` role on a
+ * step running `review` runs the pack's review. Their setting is this
+ * role's alone — the reviewer's `review` is another pair — and where none
+ * is set, it is what the pack ships, so `qa`'s `review` starts off.
+ */
+function InheritedActions({ role, view, inherited, locked }: { role: string; view: RegistryView; inherited: readonly { action: ActionView; from: string }[]; locked: boolean }) {
+  if (inherited.length === 0) return null;
+  return (
+    <div className="flex min-w-0 flex-col gap-1.5 pt-2">
+      <span className="text-[12px] font-medium text-ink-muted">Pack actions this role can also run</span>
+      <p className="text-[11.5px] leading-snug text-ink-subtle">
+        Each ships with another role, and a step can dispatch this role on it, which then runs it as the pack ships it. Only whether this role&apos;s runs of it are
+        reviewed for what to remember can be changed here, for this role alone.
+      </p>
+      <ul aria-label="Pack actions this role can also run" className="flex min-w-0 flex-col gap-1.5">
+        {inherited.map(({ action, from }) => (
+          <li key={action.action} aria-label={action.action} className="flex min-w-0 flex-col gap-1">
+            <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+              <span className="font-mono text-[13px] text-ink">{action.action}</span>
+              <span className="text-[11.5px] text-ink-subtle">
+                ships with {from}
+                {action.learningReview === false ? ", with the learning review off" : ""}
+              </span>
+            </div>
+            <SettingOnly role={role} action={action.action} checked={reviewedIn(view, role, action.action, action.learningReview)} readOnly={locked} compact />
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+/**
+ * The actions EO runs for itself with an agent of this role (EO-911) —
+ * answering a mention, a turn of the assistant's chat, a scenario chat —
+ * which no step dispatches and nobody defines. Their learning review
+ * setting is all there is to change about them.
+ */
+function EoActions({ role, view, locked }: { role: string; view: RegistryView; locked: boolean }) {
+  return (
+    <div className="flex min-w-0 flex-col gap-1.5 pt-2">
+      <span className="text-[12px] font-medium text-ink-muted">Actions EO runs for itself</span>
+      <p className="text-[11.5px] leading-snug text-ink-subtle">
+        Answering a mention, a turn of a chat: EO decides their answers, so only whether their runs are reviewed for what to remember can be changed. A review
+        forks the run&apos;s session to write memory notes and skills, and is a turn on the run&apos;s backend.
+      </p>
+      <ul aria-label="Actions EO runs for itself" className="flex min-w-0 flex-col gap-1.5">
+        {UNDISPATCHED_ACTIONS.map((action) => (
+          <li key={action} aria-label={action} className="flex min-w-0 flex-col gap-1">
+            <span className="font-mono text-[13px] text-ink">{action}</span>
+            <SettingOnly role={role} action={action} checked={reviewedIn(view, role, action, undefined)} readOnly={locked} compact />
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 export function ActionsSection({ role, locked, reveal = false }: { role: string; locked: boolean; /** Arrived at by address (EO-428): brought into sight once. */ reveal?: boolean }) {
   const sectionRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -648,6 +815,15 @@ export function ActionsSection({ role, locked, reveal = false }: { role: string;
   const shipped = view.data?.roles.find((entry) => entry.slug === role)?.actions ?? [];
   const own = view.data?.roleActions?.find((entry) => entry.role === role)?.actions ?? [];
   const actions = [...shipped, ...own];
+  // Every other pack action, first shipped first, as `actionsAvailableTo` offers it — never one this role ships or defined.
+  const inherited: { action: ActionView; from: string }[] = [];
+  for (const entry of view.data?.roles ?? []) {
+    if (entry.slug === role) continue;
+    for (const action of entry.actions ?? []) {
+      if (actions.some((mine) => mine.action === action.action) || inherited.some((seen) => seen.action.action === action.action)) continue;
+      inherited.push({ action, from: entry.slug });
+    }
+  }
   const opened = open === null || open === NEW ? null : (actions.find((entry) => entry.action === open) ?? null);
 
   return (
@@ -705,16 +881,26 @@ export function ActionsSection({ role, locked, reveal = false }: { role: string;
             </div>
             {opened !== null && opened.action === action.action ? (
               action.packShipped ? (
-                <ShippedAction role={role} action={action} onClose={() => setOpen(null)} />
+                <ShippedAction role={role} action={action} reviewed={reviewedIn(view.data, role, action.action, action.learningReview)} readOnly={locked} onClose={() => setOpen(null)} />
               ) : (
-                <ActionEditor key={action.action} role={role} existing={action} readOnly={locked} onClose={() => setOpen(null)} />
+                <ActionEditor
+                  key={action.action}
+                  role={role}
+                  existing={action}
+                  reviewed={reviewedIn(view.data, role, action.action, action.learningReview)}
+                  readOnly={locked}
+                  onClose={() => setOpen(null)}
+                />
               )
             ) : null}
           </li>
         ))}
       </ul>
 
-      {open === NEW && !locked ? <ActionEditor key="new" role={role} existing={null} readOnly={false} onClose={() => setOpen(null)} /> : null}
+      {open === NEW && !locked ? <ActionEditor key="new" role={role} existing={null} reviewed readOnly={false} onClose={() => setOpen(null)} /> : null}
+
+      {view.data !== undefined ? <InheritedActions role={role} view={view.data} inherited={inherited} locked={locked} /> : null}
+      {view.data !== undefined ? <EoActions role={role} view={view.data} locked={locked} /> : null}
     </CardSection>
     </div>
   );

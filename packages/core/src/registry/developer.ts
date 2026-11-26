@@ -523,6 +523,10 @@ export const DEVELOPER_ACTIONS: Record<string, Omit<ActionFacts, "packShipped">>
   },
   review: {
     description: "Reviews the work against the item and gives a verdict.",
+    // A person's call (EO-911): the learning review of a review run
+    // almost never writes anything, and costs as much as one that does.
+    // Implement keeps its own on.
+    learningReview: false,
     results: [
       { key: "approved", label: "Approved" },
       { key: "changes_requested", label: "Changes requested" },

@@ -916,6 +916,10 @@ export function renderRegistry(data: IpcResponse<"registry:get">): string {
   // one shape, because a client writing a step asks the same thing of
   // both — which keys must this step route — and the one difference that
   // matters to it, whether it may edit the entry, is said on the line.
+  // A person's setting on the pair, else what the action ships with (EO-911, `actionLearningReviewed`).
+  const settings = data.actionSettings ?? [];
+  const setting = (role: string, action: string) => settings.find((entry) => entry.role === role && entry.action === action)?.learningReview;
+  const reviewed = (role: string, action: string, shipped: boolean | undefined) => setting(role, action) ?? shipped !== false;
   const catalog = [
     ...data.roles.map((role) => ({ role: role.slug, actions: role.actions ?? [] })),
     ...(data.roleActions ?? []),
@@ -929,6 +933,8 @@ export function renderRegistry(data: IpcResponse<"registry:get">): string {
         }),
       ];
       if (action.fields !== undefined && Object.keys(action.fields).length > 0) lines.push(`  - fields: ${JSON.stringify(action.fields)}`);
+      // Said only where it is off (EO-911): on is every action nobody changed.
+      if (!reviewed(role, action.action, action.learningReview)) lines.push("  - learning review: off (its runs get no learning review)");
       const usedBy = action.usedBy ?? [];
       lines.push(
         usedBy.length === 0 ? "  - used by no step" : `  - used by ${usedBy.map(describeActionUse).join(", ")}`,
@@ -937,6 +943,21 @@ export function renderRegistry(data: IpcResponse<"registry:get">): string {
     }),
   );
 
+  // Settings on pairs not in the catalog above, said here or nowhere
+  // (EO-911): a pack action another role ships, which this role runs as
+  // the pack ships it — so its default is the pack's — and one EO runs
+  // for itself, such as `assist`.
+  const listed = new Set(
+    [...data.roles.map((role) => ({ role: role.slug, actions: role.actions ?? [] })), ...(data.roleActions ?? [])].flatMap(({ role, actions }) =>
+      actions.map((action) => `${role} ${action.action}`),
+    ),
+  );
+  const packActions = new Set(data.roles.flatMap((role) => (role.actions ?? []).map((action) => action.action)));
+  const unlisted = settings.filter((entry) => !listed.has(`${entry.role} ${entry.action}`));
+  const inheritedSettings = unlisted.filter((entry) => packActions.has(entry.action));
+  const otherSettings = unlisted.filter((entry) => !packActions.has(entry.action));
+  const settingLines = (entries: typeof settings) => list(entries.map((entry) => `- ${entry.role} / ${entry.action}: learning review ${entry.learningReview ? "on" : "off"}`), "None.");
+
   return [
     "Built-in roles:",
     list(
@@ -944,6 +965,14 @@ export function renderRegistry(data: IpcResponse<"registry:get">): string {
       "None.",
     ),
     "",
+    ...(inheritedSettings.length === 0
+      ? []
+      : [
+          "Learning review settings on pack actions a role runs that another role ships (where none is set, as the pack ships it), by role:",
+          settingLines(inheritedSettings),
+          "",
+        ]),
+    ...(otherSettings.length === 0 ? [] : ["Learning review settings on actions EO runs for itself, by role:", settingLines(otherSettings), ""]),
     "Actions an agent step can dispatch, by role, with the result keys each can return — a step must route every one:",
     list(catalog, "None."),
     "",

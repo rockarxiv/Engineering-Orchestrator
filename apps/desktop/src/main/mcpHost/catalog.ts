@@ -2684,7 +2684,15 @@ const ROLE_ACTION_SAVE_TOOL: ToolSpec = channelTool({
     "step's routes name), a `label` a person reads, and a `meaning` saying when to return it — the agent is shown that " +
     "sentence beside the key. `fields` is a JSON Schema object for any extra answer properties (`properties`, and " +
     "`required` for the ones that must arrive); leave it out for an action that answers with a result and a summary " +
-    "alone. EO generates the answer shape from this: `result` as exactly the declared keys, a required `summary` it posts " +
+    "alone. `learningReview` says whether each run of the action is followed by a learning review — EO forking the run's " +
+    "session to write memory notes and skills from it, which costs a turn on the run's backend; leave it out to keep what " +
+    "is set (on, where nothing is), and set it false for an action whose runs rarely teach anything. To change only that " +
+    "setting, send `role`, `action` and `learningReview` with no `results`: this is how it is changed on an action a pack " +
+    "ships for the role (the reviewer's `review` ships with it off), on a pack action another role ships that this role " +
+    "runs (a custom role running `review` starts as the pack ships it, off, and is set for that role alone), or on one " +
+    "EO runs for itself (respond, interpret, assist, scenario, clarify), and it changes nothing else about the action. " +
+    "registry_get says `learning review: off` on an action where it is off, and lists the settings on the other two kinds. " +
+    "EO generates the answer shape from this: `result` as exactly the declared keys, a required `summary` it posts " +
     "to the thread, then the fields — so no field may be named `result` or `summary`. Refused, with every reason and " +
     "nothing written: no results, a repeated key, fields that are not a schema EO can read, an action EO runs for " +
     "itself (respond, interpret, discuss, configure, assist, scenario, clarify), and a pack's own role redefining the " +
@@ -2694,11 +2702,15 @@ const ROLE_ACTION_SAVE_TOOL: ToolSpec = channelTool({
     "pipeline_save. A definition applies to its own role and no other, and takes effect on the next dispatch.",
   kind: "write",
   annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  render: (data) =>
-    data.definition === null
+  render: (data, input) => {
+    const review = data.learningReview === undefined ? "" : data.learningReview ? " Each run of it is followed by a learning review." : " Its runs get no learning review.";
+    // A setting alone (EO-911): nothing about the action was written.
+    if (input.results === undefined) return data.saved ? `Saved the ${input.role.trim()} role's "${input.action}" learning review setting; nothing else about the action changed.${review}` : "Nothing was saved.";
+    return data.definition === null
       ? "Nothing was saved."
       : `Saved the ${data.definition.role} role's "${data.definition.action}" action. It can return: ` +
-        `${data.definition.results.map((result) => result.key).join(", ")}. Every step that uses it must route each of those keys.`,
+          `${data.definition.results.map((result) => result.key).join(", ")}. Every step that uses it must route each of those keys.${review}`;
+  },
   refusal: (data) => (data.saved ? null : `Nothing was saved: ${data.problems.length > 0 ? data.problems.join(" ") : "it refused."} Nothing has changed.`),
 });
 

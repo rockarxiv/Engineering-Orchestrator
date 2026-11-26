@@ -3207,6 +3207,32 @@ export const actionDefinitions = sqliteTable(
 );
 
 /**
+ * What a person set on a role's action (EO-911, migration 0184): whether
+ * a run of it is followed by a learning review.
+ *
+ * Its own table rather than a column on `action_definitions`, because
+ * the pairs it is set on are mostly not definitions: a pack's own action
+ * (the reviewer's `review`, which the pack ships with it off) and one EO
+ * runs for itself (`assist`) have no row there and may not have one, and
+ * a setting changes nothing about what the action answers in. Keyed by
+ * role and action as a definition is. A pair with no row is as its pack
+ * ships it, and on where nothing ships it (`actionLearningReviewed`).
+ *
+ * Written only through `setActionLearningReview`.
+ */
+export const actionSettings = sqliteTable(
+  "action_settings",
+  {
+    id: text("id").primaryKey(), // uuidv7
+    role: text("role").notNull(),
+    action: text("action").notNull(),
+    learningReview: integer("learning_review", { mode: "boolean" }).notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (table) => [uniqueIndex("idx_action_settings_role_action").on(table.role, table.action)],
+);
+
+/**
  * One short model call that was not an agent run (EO-477).
  *
  * Memory selection, extraction and consolidation each ask a small model
