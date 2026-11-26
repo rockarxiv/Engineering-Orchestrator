@@ -326,6 +326,46 @@ describe("pushBranch", () => {
     expect(pushed).toEqual({ ok: true, updated: await tip(repoPath), destination: { fingerprint: fingerprint(`${barePath}\n${second}`), urls: 2 } });
     expect(await tip(second)).toBe(await tip(repoPath));
   });
+
+  it("reports no commit where a hook's output adds a status line for the branch to git's own", async () => {
+    // The branch is already on the remote, so git's own line says `=
+    // [up to date]`; a pre-push hook that only logs prints a line shaped
+    // like a new branch beside it, on the same stdout.
+    await pushBranch(repoPath, "bare", "eo/EO-1");
+    const sha = await tip(repoPath);
+    const hook = join(repoPath, ".git", "hooks", "pre-push");
+    writeFileSync(hook, `#!/bin/sh\nprintf '*\\t${sha}:refs/heads/eo/EO-1\\t[new branch]\\n'\nexit 0\n`, { mode: 0o755 });
+
+    const pushed = await pushBranch(repoPath, "bare", "eo/EO-1");
+
+    expect(pushed).toEqual({ ok: true, updated: null, destination: toBare() });
+  });
+
+  it("refuses a lease from another checkout whose relative push URL names a different remote", async () => {
+    // Two checkouts at different depths, each with `../target.git`, which
+    // from each is a different bare repository — both holding the commit
+    // the lease names.
+    const nested = join(scratch, "deeper", "repo");
+    await run(["clone", repoPath, nested], scratch);
+    for (const [path, target] of [
+      [repoPath, join(scratch, "target.git")],
+      [nested, join(scratch, "deeper", "target.git")],
+    ] as const) {
+      await run(["init", "--bare", target], scratch);
+      await run(["remote", "add", "relative", "../target.git"], path);
+      await run(["push", target, "eo/EO-1"], repoPath);
+    }
+    const before = await tip(repoPath);
+    const recorded = (await pushDestination(repoPath, "relative"))!.fingerprint;
+    for (const [key, value] of [["user.email", "eo@example.com"], ["user.name", "EO Test"], ["commit.gpgsign", "false"]]) await run(["config", key!, value!], nested);
+    await run(["commit", "--amend", "-m", "rebased"], nested);
+
+    expect((await pushDestination(nested, "relative"))?.fingerprint).not.toBe(recorded);
+    const pushed = await pushBranch(nested, "relative", "eo/EO-1", { lease: { commit: before, destination: recorded } });
+
+    expect(pushed).toMatchObject({ ok: false, diverged: false, leaseRefused: true });
+    expect(await tip(join(scratch, "deeper", "target.git"))).toBe(before);
+  });
 });
 
 describe("pushDestination", () => {
