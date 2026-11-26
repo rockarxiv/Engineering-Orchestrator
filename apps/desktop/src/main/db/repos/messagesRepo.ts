@@ -346,56 +346,30 @@ export function listOpenMessageIds(db: Db, recipientId: string): string[] {
 }
 
 /**
- * Where a message lives, as its row says (EO-918): `record` for a
- * replica's copy of one the organisation's record holds — a press on it
- * goes there — `here` for one this database wrote, and `unknown` for one
- * already here at the upgrade that nothing on the row proved this
- * desktop's own (migration 0184), which only the record can settle.
- * Asked of the row, not its project — a message about a record-held job
- * has none. Undefined for no such message.
+ * Whether a message is a replica's copy of one the organisation's record
+ * holds (EO-918) — a press on it goes there — rather than one this
+ * database wrote. Asked of the row, not its project: a message about a
+ * record-held job has none. Undefined for no such message.
  */
-export type MessageHolder = "record" | "here" | "unknown";
-
-export function messageHolder(db: Db, id: string): MessageHolder | undefined {
-  const row = db.select({ fromRecord: messages.fromRecord }).from(messages).where(eq(messages.id, id)).get();
-  if (row === undefined) return undefined;
-  return row.fromRecord === null ? "unknown" : row.fromRecord ? "record" : "here";
+export function isRecordCopy(db: Db, id: string): boolean | undefined {
+  return db.select({ fromRecord: messages.fromRecord }).from(messages).where(eq(messages.id, id)).get()?.fromRecord;
 }
 
 /**
- * Settles a message not known to be a copy as this database's own
- * (EO-918), where the record answered that it has no such message of
- * this person's. Only one not yet known: a copy stays a copy.
- */
-export function markMessageHeldHere(db: Db, id: string): boolean {
-  return db.update(messages).set({ fromRecord: false }).where(and(eq(messages.id, id), isNull(messages.fromRecord))).run().changes > 0;
-}
-
-/**
- * Settles every message not yet known to be a copy as this database's
- * own (EO-918), once a pull has read the record's messages for this
- * person from the beginning to the end: the record named every one it
- * keeps for them, and each it named is a copy now, so any still unknown
- * is one the record does not hold. Answers how many.
- */
-export function markUnplacedMessagesHeldHere(db: Db): number {
-  return db.update(messages).set({ fromRecord: false }).where(isNull(messages.fromRecord)).run().changes;
-}
-
-/**
- * Removes a replica's open copies of messages the organisation's record
- * no longer holds open (EO-726): those copied from it and not among
- * `stillOpen`. A message handled elsewhere and then swept by the record's
- * retention never pages again, so this is the only way such a copy stops
- * being open here. Never one not known to be a copy (EO-918): a message
- * of this desktop's own is not among `stillOpen` either. Answers how many
+ * Removes a replica's open copies of this person's messages the
+ * organisation's record no longer holds open (EO-726): those copied from
+ * it and not among `stillOpen`, which is the record's list for this
+ * person and says nothing of anybody else's. A message handled elsewhere
+ * and then swept by the record's retention never pages again, so this is
+ * the only way such a copy stops being open here. Never one this desktop
+ * wrote (EO-918): it is not among `stillOpen` either. Answers how many
  * went.
  */
-export function forgetMessagesGoneFromTheRecord(db: Db, stillOpen: ReadonlySet<string>): number {
+export function forgetMessagesGoneFromTheRecord(db: Db, recipientId: string, stillOpen: ReadonlySet<string>): number {
   const gone = db
     .select({ id: messages.id })
     .from(messages)
-    .where(and(isNull(messages.handledAt), eq(messages.fromRecord, true)))
+    .where(and(eq(messages.recipientId, recipientId), isNull(messages.handledAt), eq(messages.fromRecord, true)))
     .all()
     .filter((row) => !stillOpen.has(row.id))
     .map((row) => row.id);
@@ -404,22 +378,21 @@ export function forgetMessagesGoneFromTheRecord(db: Db, stillOpen: ReadonlySet<s
 }
 
 /**
- * Removes a replica's handled copies of messages the organisation's
- * record holds (EO-918), before a pull that reads the person's messages
- * from the beginning writes back every one the record still keeps. One
- * the record has swept never pages again, and a copy pulled by a build
- * that dropped who handled it would otherwise go on reading as the
- * person's press when the assistant or an outside MCP client made it.
- * Only copies: a message this desktop sent and handled itself — about a
- * project since moved, say — is its own history, which no pull brings
- * back — nor one not yet known to be a copy, which only the record can
- * settle. Open copies are left to `forgetMessagesGoneFromTheRecord`.
- * Answers how many went.
+ * Removes a replica's handled copies of this person's messages the
+ * organisation's record holds (EO-918), before a pull that reads their
+ * messages from the beginning writes back every one the record still
+ * keeps. One the record has swept never pages again, and a copy pulled
+ * by a build that dropped who handled it would otherwise go on reading as
+ * the person's press when the assistant or an outside MCP client made it.
+ * Only this person's — the pull reads nobody else's back — and only
+ * copies: a message this desktop sent and handled itself is its own
+ * history, which no pull brings back. Open copies are left to
+ * `forgetMessagesGoneFromTheRecord`. Answers how many went.
  */
-export function forgetHandledRecordMessages(db: Db): number {
+export function forgetHandledRecordMessages(db: Db, recipientId: string): number {
   return db
     .delete(messages)
-    .where(and(isNotNull(messages.handledAt), eq(messages.fromRecord, true)))
+    .where(and(eq(messages.recipientId, recipientId), isNotNull(messages.handledAt), eq(messages.fromRecord, true)))
     .run().changes;
 }
 

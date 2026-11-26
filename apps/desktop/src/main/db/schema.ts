@@ -3585,13 +3585,11 @@ export const messages = sqliteTable(
      * job has none, and one sent here before its project moved is this
      * desktop's own.
      *
-     * Null only on a message that was already here at the upgrade and that
-     * nothing then on the row proved this desktop's own: not yet known. A
-     * press on one asks the record first, nothing that deletes copies
-     * touches one, and the first pull that reads the record's messages
-     * for this person to the end settles it either way.
+     * One already here at the upgrade was placed by the marks its row
+     * carried — a subject, a job, the local person as recipient, a project
+     * kept here — which a copy never has (see the migration).
      */
-    fromRecord: integer("from_record", { mode: "boolean" }),
+    fromRecord: integer("from_record", { mode: "boolean" }).notNull().default(false),
   },
   (table) => [index("idx_messages_recipient_open").on(table.recipientId, table.handledAt), index("idx_messages_source_subject").on(table.source, table.subject)],
 );

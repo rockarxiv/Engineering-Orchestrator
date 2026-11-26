@@ -3,22 +3,25 @@
 -- press answered there — 0 for one this database wrote itself. Read to
 -- send a press on it to the record and to clear the copies the record no
 -- longer keeps. Asked of the row rather than inferred from its project,
--- since a message about a record-held job has none, and one sent here
--- about a project before it moved is this desktop's own.
+-- since a message about a record-held job has none.
 --
--- A message already here is marked this database's own only on evidence
--- the row carries, never on a clock: one with a subject (a replica's copy
--- never has one), one about a project kept here (no copy is ever about
--- one), or one about no project on a desktop that has never pulled its
--- person's messages (the pull is the only way such a copy arrives). Any
--- other is left null — not known — rather than guessed: a press on it
--- asks the record first, nothing that deletes copies touches it, and the
--- first pull that reads the person's messages to the end settles it.
-ALTER TABLE `messages` ADD `from_record` integer;
+-- A message already here is placed by what its row carries, never by a
+-- clock. Every sender that writes on a desktop leaves a mark a replica's
+-- copy never has: a subject (a copy's is dropped), a job (a copy keeps
+-- only a job this desktop holds, and the record's jobs never reach one),
+-- or the local person as its recipient (`sendMessageHere`; a desktop
+-- pulls only what is addressed to its signed-in person). And no copy is
+-- about a project kept here, nor about no project on a desktop that has
+-- never pulled its person's messages. A message with none of those marks
+-- is one only the record writes: a copy.
+ALTER TABLE `messages` ADD `from_record` integer DEFAULT false NOT NULL;
 --> statement-breakpoint
-UPDATE `messages` SET `from_record` = 0 WHERE `subject` IS NOT NULL
-  OR EXISTS (
+UPDATE `messages` SET `from_record` = 1
+WHERE `subject` IS NULL
+  AND `job_id` IS NULL
+  AND `recipient_id` <> '01a0a0af-6d78-73d8-9954-953391d30f68'
+  AND NOT EXISTS (
     SELECT 1 FROM `projects`
     WHERE `projects`.`id` = `messages`.`project_id` AND `projects`.`managed_at` IS NULL AND `projects`.`adopting_at` IS NULL
   )
-  OR (`project_id` IS NULL AND NOT EXISTS (SELECT 1 FROM `app_settings` WHERE `key` = 'record.messagesCursor'));
+  AND (`project_id` IS NOT NULL OR EXISTS (SELECT 1 FROM `app_settings` WHERE `key` = 'record.messagesCursor'));

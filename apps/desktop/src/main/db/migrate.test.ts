@@ -4102,18 +4102,23 @@ describe("0184: whether a message is a replica's copy of the record's (EO-918)",
       handle.db.run(sql`INSERT INTO projects (id, name, key_prefix, created_at, updated_at, managed_at) VALUES ('moved', 'Moved', 'MOV', 1, 1, 100)`);
       handle.db.run(sql`INSERT INTO projects (id, name, key_prefix, created_at, updated_at) VALUES ('kept', 'Kept', 'KEP', 1, 1)`);
       handle.db.run(sql`INSERT INTO projects (id, name, key_prefix, created_at, updated_at, adopting_at) VALUES ('moving', 'Moving', 'MVG', 1, 1, 90)`);
+      // A job of this desktop's own; its owner and thread do not matter here.
+      handle.db.run(sql`PRAGMA foreign_keys = OFF`);
+      handle.db.run(
+        sql`INSERT INTO jobs (id, project_id, name, trigger, owner_id, thread_item_id, created_at, updated_at) VALUES ('job', NULL, 'Tidy', '{"kind":"manual"}', 'anna', 'thread', 1, 1)`,
+      );
       if (pulledBefore) handle.db.run(sql`INSERT INTO app_settings (key, value, updated_at) VALUES ('record.messagesCursor', '{"ts":5,"id":"x","deviceId":"d"}', 1)`);
-      for (const [id, projectId, createdAt, subject] of [
-        ["moved-before-the-move", "moved", 50, null],
-        ["moved-after-the-move", "moved", 150, null],
-        ["moved-with-a-subject", "moved", 150, "conflict-1"],
-        ["moving-project", "moving", 150, null],
-        ["kept-project", "kept", 150, null],
-        ["no-project", null, 150, null],
-        ["no-project-with-a-subject", null, 150, "scope-1"],
+      for (const [id, recipientId, projectId, jobId, subject] of [
+        ["copy-about-a-moved-project", "anna", "moved", null, null],
+        ["copy-about-a-moving-project", "anna", "moving", null, null],
+        ["copy-about-a-record-job", "anna", null, null, null],
+        ["with-a-subject", "anna", "moved", null, "conflict-1"],
+        ["to-the-local-person", LOCAL_PERSON_ID, "moved", null, null],
+        ["about-a-job-here", "anna", null, "job", null],
+        ["about-a-kept-project", "anna", "kept", null, null],
       ] as const) {
         handle.db.run(
-          sql`INSERT INTO messages (id, recipient_id, project_id, source, body, created_at, handled_at, handled_how, subject) VALUES (${id}, 'anna', ${projectId}, 'template_conflict', 'Body', ${createdAt}, 200, 'answered', ${subject})`,
+          sql`INSERT INTO messages (id, recipient_id, project_id, job_id, source, body, created_at, handled_at, handled_how, subject) VALUES (${id}, ${recipientId}, ${projectId}, ${jobId}, 'template_conflict', 'Body', 150, 200, 'answered', ${subject})`,
         );
       }
 
@@ -4126,24 +4131,24 @@ describe("0184: whether a message is a replica's copy of the record's (EO-918)",
     }
   }
 
-  it("marks a message this desktop's own only on evidence the row carries, and leaves every other one not known — whatever the clocks say", () => {
+  it("marks a message a copy only where its row has none of the marks every desktop sender leaves, and never by a clock", () => {
     expect(upgraded(true)).toEqual({
-      // About a moved project: a copy, or sent here before the move —
-      // which the move's timestamp cannot tell, so neither is assumed.
-      "moved-before-the-move": null,
-      "moved-after-the-move": null,
-      // A replica's copy never has a subject.
-      "moved-with-a-subject": 0,
-      "moving-project": null,
-      // No copy is ever about a project kept here.
-      "kept-project": 0,
-      // A desktop that has pulled may hold the record's message about a job it does not hold.
-      "no-project": null,
-      "no-project-with-a-subject": 0,
+      "copy-about-a-moved-project": 1,
+      "copy-about-a-moving-project": 1,
+      // A record-held job's: the job is dropped from the copy, since the record's jobs never reach a desktop.
+      "copy-about-a-record-job": 1,
+      // A replica's copy never has a subject…
+      "with-a-subject": 0,
+      // …nor the local person as its recipient (`sendMessageHere`)…
+      "to-the-local-person": 0,
+      // …nor a job this desktop holds…
+      "about-a-job-here": 0,
+      // …nor is it ever about a project kept here.
+      "about-a-kept-project": 0,
     });
   });
 
   it("marks a message about no project this desktop's own on a desktop that never pulled its person's messages", () => {
-    expect(upgraded(false)).toMatchObject({ "no-project": 0, "moved-after-the-move": null, "kept-project": 0 });
+    expect(upgraded(false)).toMatchObject({ "copy-about-a-record-job": 0, "copy-about-a-moved-project": 1 });
   });
 });
