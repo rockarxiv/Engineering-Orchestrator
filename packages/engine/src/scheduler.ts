@@ -481,6 +481,12 @@ export interface TouchesHoldsInput {
   placeOf: (item: Item) => string | null;
   /** Every dependency edge, whatever its rule. */
   deps: readonly Edge[];
+  /**
+   * The items each one is held back by on an edge that holds it now
+   * (`open_dependency`). Waits the overlap hold must see to find a ring
+   * that runs through edges as well as through overlaps. Absent is none.
+   */
+  waitsOnDependencies?: (item: Item) => readonly string[];
 }
 
 /** The overlap hold over one input (`touchesHolds`). */
@@ -506,10 +512,13 @@ export interface TouchesHolds {
  *
  * Those that wait can wait on each other in a ring — one under way in A
  * wanting B, another under way in B wanting A — which no finish would
- * ever end. In each such ring the oldest goes first, and is held by
- * nothing in the ring; the next tick, it is under way where it went,
- * the ring is broken, and the rest wait for it as for anyone. Only
- * items already in flight can be in a ring, since only they hold.
+ * ever end; and a ring can run through dependency edges as well, where
+ * an item one of them waits for by an edge is itself waiting on the
+ * other's place (`waitsOnDependencies`). In each such ring the oldest
+ * member that no edge inside the ring holds, and that waits there for
+ * a place, goes first: it is held by nothing in the ring, so no edge is
+ * ever bypassed. The next tick it is under way where it went, the ring
+ * is broken, and the rest wait for it as for anyone.
  *
  * Two items a dependency path joins, either way and however long, are
  * left to their edges: the plan has already said how they go, and an
@@ -554,26 +563,51 @@ export function touchesHolds(input: TouchesHoldsInput): TouchesHolds {
     );
   };
 
-  // Who waits on whom among items already in flight, and the rings in it.
-  const waitsOn = new Map<string, string[]>();
+  // Who waits on whom, and the rings in it. An overlap wait is an item
+  // wanting a place where an overlapping item is in flight; a dependency
+  // wait is an edge that holds it. Either may close a ring — A wants B's
+  // place, B's edge waits on C, C wants D's place, D's edge waits on A —
+  // and only an overlap wait can be broken, since edges are the plan's.
+  const overlapWaits = new Map<string, Set<string>>();
   const byId = new Map<string, Item>();
   for (const item of items) {
-    if ((dispatchedIn.get(item.id)?.size ?? 0) === 0) continue;
     const place = askedAt(item);
     if (place === null) continue;
     const holders = overlapsWith(item, claimsByPlace.get(place) ?? []).map((claim) => claim.item.id);
     if (holders.length === 0) continue;
-    waitsOn.set(item.id, holders);
-    byId.set(item.id, item);
+    overlapWaits.set(item.id, new Set(holders));
   }
   const goesFirstPast = new Map<string, ReadonlySet<string>>();
-  for (const ring of rings(waitsOn)) {
-    const members = ring.flatMap((id) => {
-      const item = byId.get(id);
-      return item === undefined ? [] : [item];
-    });
-    const oldest = [...members].sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id))[0];
-    if (oldest !== undefined) goesFirstPast.set(oldest.id, new Set(ring));
+  if (overlapWaits.size > 0) {
+    const dependencyWaits = new Map<string, Set<string>>();
+    for (const item of items) {
+      byId.set(item.id, item);
+      const step = stepFor(item);
+      if (step === undefined || step.isTerminal || step.type === "user") continue;
+      const on = input.waitsOnDependencies?.(item) ?? [];
+      if (on.length > 0) dependencyWaits.set(item.id, new Set(on));
+    }
+    const waitsOn = new Map<string, string[]>();
+    for (const id of new Set([...overlapWaits.keys(), ...dependencyWaits.keys()])) {
+      waitsOn.set(id, [...(overlapWaits.get(id) ?? []), ...(dependencyWaits.get(id) ?? [])]);
+    }
+    for (const ring of rings(waitsOn)) {
+      const inRing = new Set(ring);
+      // Who may go past the ring: one whose overlap wait is inside it and
+      // whom no edge inside it holds. There is always one — the edges are
+      // acyclic, so some member waits on no other by an edge, and it is
+      // in the ring by an overlap wait — though an edge out of the ring
+      // may still hold it, which is waiting on something that can finish.
+      const free = ring.flatMap((id) => {
+        const item = byId.get(id);
+        if (item === undefined) return [];
+        const byOverlap = [...(overlapWaits.get(id) ?? [])].some((other) => inRing.has(other));
+        const byEdge = [...(dependencyWaits.get(id) ?? [])].some((other) => inRing.has(other));
+        return byOverlap && !byEdge ? [item] : [];
+      });
+      const oldest = [...free].sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id))[0];
+      if (oldest !== undefined) goesFirstPast.set(oldest.id, inRing);
+    }
   }
 
   return {
@@ -665,15 +699,21 @@ function gateOf(edge: DependencyEdge): { wait: "finished" | "reached"; waitStepI
 }
 
 /**
- * The lookups every eligibility question needs, built once.
- *
- * `tick()` builds this for the whole board and asks it per item;
- * `dispatchBlocker` builds it to ask about exactly one. Sharing the
- * construction is the point — see `DispatchBlocker` above.
+ * What a scheduling question reads an item's step and its dependencies
+ * by, built once from the input (`eligibility`, `touchesHoldsOver`).
  */
-function eligibility<R extends DispatchRefusal>(input: EligibilityInput<R>) {
-  const { items, deps, steps, agents, activeRuns, awaitingInput, heldItemIds } = input;
+interface Lookups {
+  stepFor: (item: Item) => PipelineStep | undefined;
+  itemById: Map<string, Item>;
+  depsByItem: Map<string, DependencyEdge[]>;
+  hasOpenDep: (edge: DependencyEdge) => boolean;
+}
 
+/** What `lookupsOf` reads: the items, their steps and their edges. */
+type LookupInput = Pick<EligibilityInput, "items" | "deps" | "steps" | "stepsByItem" | "dependencyItems" | "arrivals">;
+
+function lookupsOf(input: LookupInput): Lookups {
+  const { items, deps, steps } = input;
   // Step lookup is scoped by pipeline, not global. Two pipelines may use
   // the same step id only if one was copied from the other, but they will
   // routinely share positions, roles and names — so the pipeline is part
@@ -713,13 +753,6 @@ function eligibility<R extends DispatchRefusal>(input: EligibilityInput<R>) {
     else depsByItem.set(edge.itemId, [edge]);
   }
 
-  const activeRunItemIds = new Set(activeRuns.map((run) => run.itemId));
-
-  // The overlap hold (EO-912, `dispatchedIn`), over every item at once:
-  // who is in flight where, and who waits on whom.
-  const placeOf = (item: Item): string | null => (input.capacityKeyOf ? input.capacityKeyOf(item) : "");
-  const overlap = touchesHolds({ items, stepFor, dispatchedIn: input.dispatchedIn ?? new Map(), placeOf, deps });
-
   /**
    * Whether this edge still holds the item waiting on it (EO-776).
    *
@@ -749,6 +782,58 @@ function eligibility<R extends DispatchRefusal>(input: EligibilityInput<R>) {
     if (gate === "reached" && edge.waitStepId) return !input.arrivals?.get(edge.dependsOnId)?.has(edge.waitStepId);
     return true;
   };
+
+  return { stepFor, itemById, depsByItem, hasOpenDep };
+}
+
+/**
+ * The overlap hold over a scheduling input (EO-912), with the lookups
+ * already built: the place an item works in is `capacityKeyOf`'s answer,
+ * and an item waits by dependency on each edge that still holds it.
+ */
+function overlapOver(
+  input: Pick<EligibilityInput, "items" | "deps" | "dispatchedIn" | "capacityKeyOf">,
+  lookups: Pick<Lookups, "stepFor" | "depsByItem" | "hasOpenDep">,
+): TouchesHolds {
+  const { stepFor, depsByItem, hasOpenDep } = lookups;
+  return touchesHolds({
+    items: input.items,
+    stepFor,
+    dispatchedIn: input.dispatchedIn ?? new Map(),
+    placeOf: (item) => (input.capacityKeyOf ? input.capacityKeyOf(item) : ""),
+    deps: input.deps,
+    waitsOnDependencies: (item) => (depsByItem.get(item.id) ?? []).filter(hasOpenDep).map((edge) => edge.dependsOnId),
+  });
+}
+
+/** What `touchesHoldsOver` reads: `EligibilityInput`'s own facts about items, steps, edges and where work was dispatched. */
+export type OverlapInput = LookupInput & Pick<EligibilityInput, "dispatchedIn" | "capacityKeyOf">;
+
+/**
+ * The overlap hold exactly as `tick()` applies it, over the part of its
+ * input it reads (EO-912): what a host explaining a card asks, so the
+ * card and the tick decide by one rule over the same facts.
+ */
+export function touchesHoldsOver(input: OverlapInput): TouchesHolds {
+  return overlapOver(input, lookupsOf(input));
+}
+
+/**
+ * The lookups every eligibility question needs, built once.
+ *
+ * `tick()` builds this for the whole board and asks it per item;
+ * `dispatchBlocker` builds it to ask about exactly one. Sharing the
+ * construction is the point — see `DispatchBlocker` above.
+ */
+function eligibility<R extends DispatchRefusal>(input: EligibilityInput<R>) {
+  const { agents, activeRuns, awaitingInput, heldItemIds } = input;
+  const { stepFor, itemById, depsByItem, hasOpenDep } = lookupsOf(input);
+
+  const activeRunItemIds = new Set(activeRuns.map((run) => run.itemId));
+
+  // The overlap hold (EO-912, `dispatchedIn`), over every item at once:
+  // who is in flight where, and who waits on whom.
+  const overlap = overlapOver(input, { stepFor, depsByItem, hasOpenDep });
 
   /**
    * Why the agent this step names cannot run this item, capacity aside,

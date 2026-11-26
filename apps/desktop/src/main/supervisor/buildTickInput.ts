@@ -1,5 +1,5 @@
 import type { Item, Uuid } from "@eo/core";
-import { touchesHolds, touchesOf } from "@eo/engine";
+import { touchesHoldsOver, touchesOf } from "@eo/engine";
 import type { CapacityKeyOf, DispatchBlocker, DispatchGate, EligibilityInput, TickInput, WatchHold } from "@eo/engine";
 import type { Db } from "../db/client.js";
 import {
@@ -10,7 +10,7 @@ import {
   listAgents,
   listAllDependencies,
   listAwaitingInputItemIds,
-  listDispatchSteps,
+  listDispatches,
   listHeldItemIds,
   listItemsIncludingArchived,
   listPipelineSteps,
@@ -166,38 +166,44 @@ export function buildEligibilityInput(
 
 /**
  * The places each of `items` declaring `touches` has been dispatched in
- * (EO-912), as the scheduler's `dispatchedIn` takes them: for each
- * definition of a step it was dispatched at (`listDispatchSteps`), the
- * bucket the item is in *under that definition* — `capacityKeyOf` asked
- * of the item as though it stood at that step of that version, so the
- * workspace that definition picks is the one counted. Derived from the
- * item and its runs on every ask, never stored.
+ * (EO-912), as the scheduler's `dispatchedIn` takes them, derived from
+ * the item's runs on every ask and never stored.
  *
- * Not the bucket of the step it stands on now, nor of the version it is
- * bound to now: an item whose work moved on to a step that picks no
- * disk, or that was moved to a version whose step does, still has its
- * changes where it made them, and one that only drafted on no disk has
- * made none anywhere. A definition with no bucket adds nothing, and an
- * item with no bucket at all is left out. Without a bucket function
- * every place is the one place, the engine's own reading of an absent
- * `capacityKeyOf`.
+ * A run the supervisor stamped says where it was dispatched
+ * (`runs.dispatched_in`, `dispatchPlace`): the bucket the item was in
+ * at that step as its own version then defined it, written as the run
+ * was made. Not the bucket of the step it stands on now, nor of the
+ * version it is bound to now: an item whose work moved on to a step
+ * that picks no disk, or that was moved to a version whose step works
+ * somewhere else, still has its changes where it made them, and an
+ * item that only drafted on no disk has made none anywhere.
+ *
+ * A run with no stamp is a dispatch only where its action is the entry
+ * action of the step as the item's own version defines it, and then in
+ * the bucket that definition picks — all EO has for a run from before
+ * the stamp, or from another machine. Every other unstamped run (a
+ * reply to a mention, a discussion) is not a dispatch.
+ *
+ * A dispatch with no bucket adds nothing, and an item with no bucket at
+ * all is left out. Without a bucket function every place is the one
+ * place, the engine's own reading of an absent `capacityKeyOf`.
  */
 export function dispatchedPlaces(db: Db, items: readonly Item[], capacityKeyOf: CapacityKeyOf | undefined): Map<string, Set<string>> {
   const places = new Map<string, Set<string>>();
   const touching = items.filter((item) => touchesOf(item).length > 0);
   if (touching.length === 0) return places;
-  const definitions = listDispatchSteps(db, touching.map((item) => item.id));
+  const dispatches = listDispatches(db, touching.map((item) => item.id));
   for (const item of touching) {
-    const at = definitions.get(item.id);
-    if (at === undefined) continue;
+    const runs = dispatches.get(item.id);
+    if (runs === undefined) continue;
     const worked = new Set<string>();
-    for (const definition of at) {
-      const asDispatched = {
-        ...item,
-        stepId: definition.stepId as Item["stepId"],
-        pipelineId: definition.pipelineId as Item["pipelineId"],
-        pipelineVersionId: definition.versionId as Item["pipelineVersionId"],
-      };
+    for (const run of runs) {
+      if (run.dispatchedIn !== null) {
+        for (const place of run.dispatchedIn) worked.add(capacityKeyOf ? place : "");
+        continue;
+      }
+      const asDispatched = { ...item, stepId: run.stepId as Item["stepId"] };
+      if (stepForItem(db, asDispatched)?.entryAction !== run.action) continue;
       const place = capacityKeyOf ? capacityKeyOf(asDispatched) : "";
       if (place !== null) worked.add(place);
     }
@@ -210,11 +216,12 @@ export function dispatchedPlaces(db: Db, items: readonly Item[], capacityKeyOf: 
  * Each of `listed` that the overlap hold keeps back (EO-912), with its
  * holder named — what a card says in place of a pack's refusal.
  *
- * The engine's own `touchesHolds`, over what the scheduler's input reads:
- * the same candidates, the same in-flight rule (`dispatchedPlaces`, on a
- * step of its own version that is not terminal), the same bucket, the
- * same rings and the same exemption for a pair dependencies join. Reads
- * nothing more than an item list when no listed item declares `touches`.
+ * The engine's own `touchesHoldsOver`, over the facts the scheduler's
+ * input reads them from: the same candidates, steps, edges and arrivals,
+ * the same in-flight rule (`dispatchedPlaces`, on a step of its own
+ * version that is not terminal) and the same bucket, so the rings it
+ * breaks and the pairs dependencies exempt are the tick's. Reads nothing
+ * more than an item list when no listed item declares `touches`.
  */
 export function touchesHoldsOf(db: Db, listed: readonly Item[], capacityKeyOf: CapacityKeyOf | undefined): Map<string, WaitingOnOverlap> {
   const holds = new Map<string, WaitingOnOverlap>();
@@ -222,28 +229,28 @@ export function touchesHoldsOf(db: Db, listed: readonly Item[], capacityKeyOf: C
 
   const moving = itemsMidAdoption(db);
   const shelved = itemsOnArchivedProjects(db);
-  const candidates = listItemsIncludingArchived(db).filter((item) => item.archivedAt === null && !moving.has(item.id) && !shelved.has(item.id));
+  const everyItem = listItemsIncludingArchived(db);
+  const candidates = everyItem.filter((item) => item.archivedAt === null && !moving.has(item.id) && !shelved.has(item.id));
   const candidateIds = new Set(candidates.map((item) => item.id));
-  const liveSteps = new Map(listPipelineSteps(db).map((step) => [step.id, step]));
-  const bound = stepsByItemVersion(db, candidates);
-  const stepFor = (item: Item) => {
-    if (item.pipelineId === null || item.stepId === null) return undefined;
-    const own = bound.get(item.id);
-    if (own && own.pipelineId === item.pipelineId && own.id === item.stepId) return own;
-    const live = liveSteps.get(item.stepId);
-    return live && live.pipelineId === item.pipelineId ? live : undefined;
-  };
-  // Unfinished only, as the tick's: a finished item holds nothing and waits for nothing.
-  const unfinished = candidates.filter((item) => {
-    const step = stepFor(item);
-    return step !== undefined && !step.isTerminal;
-  });
-  const overlap = touchesHolds({
+  const steps = listPipelineSteps(db);
+  const liveSteps = new Map(steps.map((step) => [step.id, step]));
+  const stepsByItem = stepsByItemVersion(db, everyItem);
+  const stepFor = (item: Item) => stepsByItem.get(item.id) ?? (item.stepId === null ? undefined : liveSteps.get(item.stepId));
+  const deps = listAllDependencies(db);
+  const overlap = touchesHoldsOver({
     items: candidates,
-    stepFor,
-    dispatchedIn: dispatchedPlaces(db, unfinished, capacityKeyOf),
-    placeOf: (item) => (capacityKeyOf ? capacityKeyOf(item) : ""),
-    deps: listAllDependencies(db),
+    deps,
+    arrivals: gateArrivals(db, deps),
+    dependencyItems: everyItem,
+    steps,
+    stepsByItem,
+    // Unfinished only, as the tick's: a finished item holds nothing and waits for nothing.
+    dispatchedIn: dispatchedPlaces(
+      db,
+      candidates.filter((item) => stepFor(item)?.isTerminal !== true),
+      capacityKeyOf,
+    ),
+    ...(capacityKeyOf ? { capacityKeyOf } : {}),
   });
   const keys = new Map(candidates.map((item) => [item.id as string, item.key]));
   for (const item of listed) {

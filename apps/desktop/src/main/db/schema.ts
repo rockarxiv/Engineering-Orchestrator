@@ -2149,6 +2149,15 @@ export const runs = sqliteTable("runs", {
   // `none` workspace hands back nothing. Read on both resume paths,
   // which is why the rename is a migration rather than a fresh column.
   cwd: text("cwd"),
+  // Where the run was dispatched (EO-912, migration 0184): the bucket
+  // its item was in at the step it was dispatched from, as a one-entry
+  // list, or `[]` for a dispatch on no shared disk. Written once, by the
+  // supervisor, on the dispatch of a step's own entry action, and null
+  // on every other run, on rows from before the column and on rows from
+  // another machine — which, like `cwd`, it never travels to: a bucket
+  // is one of this machine's workspaces. What the overlap hold counts
+  // an item as in flight by; read by `listDispatches`.
+  dispatchedIn: text("dispatched_in", { mode: "json" }).$type<string[]>(),
   pid: integer("pid"),
   // One workflow-state entry, direct mention, or explicit human
   // re-authorization. Retries share it; a new initiation gets a new id.

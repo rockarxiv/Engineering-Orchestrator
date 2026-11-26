@@ -264,7 +264,7 @@ export {
   listActiveRuns,
   resumableRunCwds,
   listAwaitingInputItemIds,
-  listDispatchSteps,
+  listDispatches,
   listRunsFailedSince,
   listRunsForItem,
   latestRunForItem,

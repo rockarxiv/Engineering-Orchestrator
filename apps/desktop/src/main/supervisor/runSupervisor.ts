@@ -2432,6 +2432,29 @@ export function createRunSupervisor(
   useCapacityKey(db, scheduling.capacityKeyOf);
 
   /**
+   * Where a run about to be made is dispatched (EO-912), as its row
+   * keeps it (`runs.dispatched_in`): the bucket the item is in at that
+   * step as its own version defines it now, `[]` where that is no shared
+   * disk. Undefined — nothing stamped — unless the run is the dispatch
+   * of the step's own entry action: a reply to a mention or a discussion
+   * at the same step is not its work there, and a dry run borrows the
+   * item.
+   *
+   * Asked as the row is made, because this moment is the only one at
+   * which the answer is certain: no run records the version it went
+   * under, a later move to another version can change what the step
+   * picks, and a version nothing uses any more can be pruned. What the
+   * overlap hold counts an item as in flight by (`dispatchedPlaces`).
+   */
+  function dispatchPlace(item: Item, stepId: string | null | undefined, action: string): { dispatchedIn?: string[] } {
+    if (stepId === null || stepId === undefined) return {};
+    const atStep = { ...item, stepId: stepId as Item["stepId"] };
+    if (stepForItem(db, atStep)?.entryAction !== action) return {};
+    const place = scheduling.capacityKeyOf?.(atStep) ?? null;
+    return { dispatchedIn: place === null ? [] : [place] };
+  }
+
+  /**
    * This item's type, as its row has it (KAN-147).
    *
    * The container flag rides on the item itself (KAN-146) because fourteen
@@ -7795,6 +7818,8 @@ export function createRunSupervisor(
       agentId: agent.id,
       action,
       ...(opts.stepId ? { stepId: opts.stepId } : {}),
+      // Where this dispatch works (EO-912), kept on the row.
+      ...dispatchPlace(item, opts.stepId, action),
       status: "queued",
       // The thread this run is continuing, exactly as `resumeItem`
       // records it — so a crash mid-run leaves the conversation
@@ -8405,7 +8430,7 @@ export function createRunSupervisor(
       if (checked === null) return;
     }
 
-    const run = checked?.run ?? createRun(db, { itemId: item.id, agentId: null, action, ...(stepId ? { stepId } : {}), status: "running", provider: builtin ? "builtin" : "module" });
+    const run = checked?.run ?? createRun(db, { itemId: item.id, agentId: null, action, ...(stepId ? { stepId } : {}), ...dispatchPlace(item, stepId, action), status: "running", provider: builtin ? "builtin" : "module" });
     if (checked === null) updateRun(db, run.id, { startedAt: now() });
     announceRun(run.id, item.id, "running");
 
@@ -9212,6 +9237,7 @@ export function createRunSupervisor(
         agentId: null,
         action,
         stepId: step.id,
+        ...dispatchPlace(item, step.id, action),
         status: "running",
         provider: builtin ? "builtin" : "module",
         ...(cwd === null ? {} : { cwd }),
@@ -9360,7 +9386,7 @@ export function createRunSupervisor(
       // on a timer — without this an open item would show the check
       // before last for as long as the watch went on waiting.
       if (fresh.length === 0 && run === undefined && !resuming) {
-        const quiet = recordQuietCheck(db, { itemId: item.id, stepId: step.id, action, provider: builtin ? "builtin" : "module", stay: watchArrival(db, item), detail: outcome.detail, at: ended, leasedAt: heldLeases.get(item.id)?.grantedAt ?? ended });
+        const quiet = recordQuietCheck(db, { itemId: item.id, stepId: step.id, action, ...dispatchPlace(item, step.id, action), provider: builtin ? "builtin" : "module", stay: watchArrival(db, item), detail: outcome.detail, at: ended, leasedAt: heldLeases.get(item.id)?.grantedAt ?? ended });
         if (quiet.created) onRunChanged(quiet.run.id, item.id, "succeeded");
         onPushEvents?.(quiet.run.id, []);
         onItemChanged(item.id);
@@ -10105,6 +10131,7 @@ export function createRunSupervisor(
         // The step the crashed run was dispatched from, not wherever the
         // item sits now: this run is that one continued.
         stepId: run.stepId,
+        ...dispatchPlace(item, run.stepId, run.action),
         status: "queued",
         threadId: resumableThreadId,
         provider: run.provider,
@@ -12745,6 +12772,7 @@ export function createRunSupervisor(
       agentId: priorRun.agentId,
       action: priorRun.action,
       stepId: priorRun.stepId, // the step the parked run was dispatched from
+      ...dispatchPlace(item, priorRun.stepId, priorRun.action),
 
       status: "queued",
       threadId: priorRun.threadId,

@@ -13,7 +13,7 @@ import {
   type Uuid,
 } from "@eo/core";
 import type { Db } from "../client.js";
-import { runs, runEvents, items, pipelines, pipelineSteps, pipelineVersions, projects } from "../schema.js";
+import { runs, runEvents, items, projects } from "../schema.js";
 import {
   personSideCallCentsSince,
   sideCallCentsBetween,
@@ -118,6 +118,13 @@ export interface CreateRunInput {
   /** Hash of the item's own files this run's thread was told about (EO-703) — carried over on a resume, like the two above. */
   itemFilesHash?: string | null;
   cwd?: string | null;
+  /**
+   * Where this run was dispatched (EO-912): the bucket its item was in
+   * at the step, `[]` for no shared disk. Given only by the supervisor's
+   * dispatch of a step's own entry action (`dispatchPlace`); absent on
+   * every other run, which stores null.
+   */
+  dispatchedIn?: string[] | null;
   pid?: number | null;
   initiationId?: string | null;
   attempt?: number;
@@ -163,6 +170,7 @@ export function createRun(db: Db, input: CreateRunInput): Run {
       agentAttachmentsHash: input.agentAttachmentsHash ?? null,
       itemFilesHash: input.itemFilesHash ?? null,
       cwd: input.cwd ?? null,
+      dispatchedIn: input.dispatchedIn ?? null,
       pid: input.pid ?? null,
       initiationId: input.initiationId ?? null,
       attempt: input.attempt ?? 1,
@@ -717,44 +725,30 @@ export function sumCostCentsBetween(db: Db, startMs: number, endMs: number): num
 }
 
 /**
- * One definition of a step an item was dispatched at (EO-912): the step,
- * and the pipeline and version whose definition of it names the run's
- * action as its entry action. `versionId` is the pipeline's current
- * version for its live row, which is how `stepForItem` is told to read
- * the live row — null where the pipeline has no version yet, which reads
- * it too.
+ * A run that may be an item's dispatch at a step (EO-912), as
+ * `listDispatches` finds it: the step and action it names, and where it
+ * says it was dispatched — the bucket list the supervisor wrote when it
+ * made the row (`runs.dispatched_in`), or null where it wrote none.
  */
-export interface DispatchDefinition {
+export interface DispatchRow {
   stepId: string;
-  pipelineId: string;
-  versionId: string | null;
+  action: string;
+  dispatchedIn: string[] | null;
 }
 
 /**
- * Where each item has been dispatched (EO-912), as every definition EO
- * holds of each step it was dispatched at: what the scheduler's overlap
- * hold turns into the places an item is *in flight* in
- * (`dispatchedPlaces`), together with a step that is not terminal.
+ * The runs that may be each item's dispatches (EO-912): what the
+ * scheduler's overlap hold turns into the places an item is *in flight*
+ * in (`dispatchedPlaces`), together with a step that is not terminal.
  *
- * A run of the step's own entry action at that step, so a reply to a
- * mention, a discussion or an interpretation on an item nobody has
- * started does not make it in flight: those name the item's step on
- * their row but are not its dispatch, and a backlog item somebody talked
- * to would otherwise hold back everything touching the same files for
- * as long as it sat there.
- *
- * "Its own entry action" by **any definition of the step EO still
- * holds** — the live row, or the step in any of its pipeline's version
- * documents — and not today's alone; and every such definition is
- * returned, not only the one the item is bound to now. EO does not
- * record which version a run was dispatched under, and an item can be
- * moved to another version afterwards (`writeVersionMove`) whose
- * definition of the same step works somewhere else, or on no disk. So
- * where the dispatch worked is answered by every definition that could
- * have dispatched it — a claim on each place any of them works in, which
- * never loses the place it really worked in and may name one it did not.
- * A version nothing references any more may be pruned, and takes its
- * definition with it.
+ * A row the supervisor stamped (`dispatched_in`) is a dispatch, in the
+ * bucket it names: written when the run was made, from the step as the
+ * item's own version defined it then, so neither a later edit of the
+ * step, a move to another version, nor the pruning of one changes it.
+ * An unstamped row is a reply to a mention, a discussion, an
+ * interpretation — or a dispatch from before the column or from another
+ * machine; the caller tells those apart by the item's own definition of
+ * the step, which is all EO has left for them.
  *
  * A dry run borrows an item and is not its work. A guard's placeholder
  * (`awaiting_input` with no session) is a refusal rather than a
@@ -764,40 +758,40 @@ export interface DispatchDefinition {
  * start a second item over the first.
  *
  * Only for `itemIds`: the caller asks about unfinished items, and the
- * runs of finished ones are most of the table.
+ * runs of finished ones are most of the table. One row per distinct
+ * step, action and stamp.
  */
-export function listDispatchSteps(db: Db, itemIds: readonly string[]): Map<Uuid, DispatchDefinition[]> {
-  const steps = new Map<Uuid, DispatchDefinition[]>();
-  if (itemIds.length === 0) return steps;
-  const rows = db.all<{ itemId: string; stepId: string; pipelineId: string; versionId: string | null }>(sql`
-    with definitions(step_id, action, pipeline_id, version_id) as (
-      select s.id, s.entry_action, s.pipeline_id, p.current_version_id
-      from ${pipelineSteps} s join ${pipelines} p on p.id = s.pipeline_id
-      where s.entry_action is not null
-      union
-      select json_extract(step.value, '$.id'), json_extract(step.value, '$.entryAction'), v.pipeline_id, v.id
-      from ${pipelineVersions} v, json_each(v.steps) step
-      where json_extract(step.value, '$.entryAction') is not null
-    ),
-    dispatched as (
-      select distinct r.item_id, r.step_id, r.action
-      from ${runs} r
-      where r.item_id in (select value from json_each(${JSON.stringify(itemIds)}))
-        and r.dry_run = 0
-        and not (r.status = 'awaiting_input' and r.thread_id is null)
-        and (r.agent_id is null or r.thread_id is not null or r.status in ('queued', 'running'))
-    )
-    select distinct r.item_id as "itemId", d.step_id as "stepId", d.pipeline_id as "pipelineId", d.version_id as "versionId"
-    from dispatched r
-    join definitions d on d.step_id = r.step_id and d.action = r.action
+export function listDispatches(db: Db, itemIds: readonly string[]): Map<Uuid, DispatchRow[]> {
+  const found = new Map<Uuid, DispatchRow[]>();
+  if (itemIds.length === 0) return found;
+  const rows = db.all<{ itemId: string; stepId: string; action: string; dispatchedIn: string | null }>(sql`
+    select distinct r.item_id as "itemId", r.step_id as "stepId", r.action as "action", r.dispatched_in as "dispatchedIn"
+    from ${runs} r
+    where r.item_id in (select value from json_each(${JSON.stringify(itemIds)}))
+      and r.step_id is not null
+      and r.dry_run = 0
+      and not (r.status = 'awaiting_input' and r.thread_id is null)
+      and (r.agent_id is null or r.thread_id is not null or r.status in ('queued', 'running'))
   `);
   for (const row of rows) {
-    const definition = { stepId: row.stepId, pipelineId: row.pipelineId, versionId: row.versionId };
-    const at = steps.get(row.itemId as Uuid);
-    if (at) at.push(definition);
-    else steps.set(row.itemId as Uuid, [definition]);
+    const dispatch = { stepId: row.stepId, action: row.action, dispatchedIn: placesFrom(row.dispatchedIn) };
+    const at = found.get(row.itemId as Uuid);
+    if (at) at.push(dispatch);
+    else found.set(row.itemId as Uuid, [dispatch]);
   }
-  return steps;
+  return found;
+}
+
+/** `runs.dispatched_in` read back: a list of bucket names, or null for a column that holds none or anything else. */
+function placesFrom(stored: string | null): string[] | null {
+  if (stored === null) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stored);
+  } catch {
+    return null;
+  }
+  return Array.isArray(parsed) && parsed.every((place): place is string => typeof place === "string") ? parsed : null;
 }
 
 /**

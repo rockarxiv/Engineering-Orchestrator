@@ -1755,6 +1755,55 @@ describe("tick — overlapping touches hold an item back while another is in fli
     expect(dispatchBlocker(after, "859")).toMatchObject({ kind: "touches_overlap", holderId: "856" });
   });
 
+  it("breaks a ring that runs through dependency edges as well as overlaps, without bypassing an edge", () => {
+    // A is under way in `a` and wants `b`, where B is under way; B waits on C by an edge;
+    // C is under way in `c` and wants `d`, where D is under way; D waits on A by an edge.
+    // The edges are acyclic, but A → B → C → D → A is a ring no finish ends.
+    const input = board({
+      items: [
+        makeItem("A", { stepId: "todo", createdAt: 1, workspaceId: "b" as Uuid, ...touching("src") }),
+        makeItem("B", { stepId: "todo", createdAt: 2, workspaceId: "b" as Uuid, ...touching("src") }),
+        makeItem("C", { stepId: "todo", createdAt: 3, workspaceId: "d" as Uuid, ...touching("src") }),
+        makeItem("D", { stepId: "todo", createdAt: 4, workspaceId: "d" as Uuid, ...touching("src") }),
+      ],
+      dispatchedIn: new Map([
+        ["A", new Set(["a"])],
+        ["B", new Set(["b"])],
+        ["C", new Set(["c"])],
+        ["D", new Set(["d"])],
+      ]),
+      deps: [
+        { itemId: "B" as Uuid, dependsOnId: "C" as Uuid },
+        { itemId: "D" as Uuid, dependsOnId: "A" as Uuid },
+      ],
+    });
+    // A, the oldest that no edge in the ring holds, goes past it; C still waits for D's place.
+    expect(dispatchBlocker(input, "A")).toBeNull();
+    expect(dispatchBlocker(input, "B")).toMatchObject({ kind: "open_dependency", dependsOnId: "C" });
+    expect(dispatchBlocker(input, "C")).toMatchObject({ kind: "touches_overlap", holderId: "D" });
+    expect(dispatchBlocker(input, "D")).toMatchObject({ kind: "open_dependency", dependsOnId: "A" });
+    expect(tick(input).map((d) => d.item.id)).toEqual(["A"]);
+    // Next tick A is under way in `b` too: the ring is gone and nobody goes past anything.
+    const after = { ...input, dispatchedIn: new Map([...input.dispatchedIn!, ["A", new Set(["a", "b"])]]) };
+    expect(dispatchBlocker(after, "C")).toMatchObject({ kind: "touches_overlap", holderId: "D" });
+    expect(tick(after).map((d) => d.item.id)).toEqual(["A"]);
+  });
+
+  it("does not let an item past an overlap wait when the only ring it is in runs through an edge holding it", () => {
+    // 859 waits on 856's place, and an edge holds 856 on 859 — but a pair a dependency path joins is
+    // left to its edges, so there is no overlap wait at all and the edge alone decides.
+    const input = board({
+      items: [
+        makeItem("856", { stepId: "todo", createdAt: 1, workspaceId: "b" as Uuid, ...touching("src") }),
+        makeItem("859", { stepId: "todo", createdAt: 2, workspaceId: "b" as Uuid, ...touching("src") }),
+      ],
+      dispatchedIn: new Map([["856", new Set(["b"])], ["859", new Set(["a"])]]),
+      deps: [{ itemId: "856" as Uuid, dependsOnId: "859" as Uuid }],
+    });
+    expect(dispatchBlocker(input, "856")).toMatchObject({ kind: "open_dependency", dependsOnId: "859" });
+    expect(dispatchBlocker(input, "859")).toBeNull();
+  });
+
   it("leaves the order to a chain of dependencies between the two, not only a direct edge", () => {
     const input = board({
       items: [...board().items, makeItem("mid", { stepId: "todo" })],
