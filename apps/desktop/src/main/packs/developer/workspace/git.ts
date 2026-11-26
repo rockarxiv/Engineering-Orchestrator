@@ -194,7 +194,8 @@ export async function listTree(repoPath: string, ref: string, path: string): Pro
  * URL git is pushing to. For a local path, git starts the repository's
  * `receive-pack` through EO's (`--receive-pack`), which goes into the
  * repository and says which one it is in before anything is sent — the
- * one that takes the push, not one a path pointed at a moment before.
+ * one that takes the push, not one a path pointed at a moment before —
+ * everywhere but Windows (`bindsLocalRepository`).
  * Wherever the push has one place EO can name, how git reaches it is
  * fixed for the push too: `receive-pack`, and for SSH the command and
  * variant git runs, are what EO read, set where no configuration git
@@ -327,7 +328,7 @@ export async function pushBranch(
 async function reachedDestination(route: PushRoute, seen: GateSeen, branch: string): Promise<string | null> {
   const [push] = seen.pushes;
   if (seen.routed || seen.pushes.length !== 1 || push === undefined || push.url !== route.url) return null;
-  if (route.local === null) return push.at === null ? route.key : null;
+  if (route.local === null || !bindsLocalRepository()) return push.at === null ? route.key : null;
   if (push.at === null) return null;
   return (await localRepository(push.at, branch)) === push.at ? destinationKey(push.at) : null;
 }
@@ -357,6 +358,26 @@ const GIT_HOOKS = [
   "sendemail-validate",
   "post-index-change",
 ];
+
+/**
+ * Whether a push to a local path is bound to the repository EO's own
+ * `receive-pack` finds itself in, as well as to the path EO resolved.
+ *
+ * Not on Windows, where the shell git runs hooks with names a directory
+ * by a path of its own (`/c/…`) that EO cannot match against the one
+ * the system gives it. There a push to a local path is recorded, and
+ * leased, by the repository EO resolved the path to and the URL git
+ * tells the gate, as every other route is. What the binding adds guards
+ * only against the remote's files being changed on disk between EO's
+ * check and the push — a symlink pointed at another repository — which
+ * is not what the lease guards against: anybody who can do that can
+ * change the branch however they like, with or without one (EO-910).
+ * The lease itself, checked by git as it writes the branch, still
+ * refuses a push by anybody else.
+ */
+function bindsLocalRepository(): boolean {
+  return process.platform !== "win32";
+}
 
 /** `value` as one word of a POSIX shell, whatever is in it. */
 function shellWord(value: string): string {
@@ -429,7 +450,8 @@ async function openGate(
     const marks = join(dir, "marks");
     await mkdir(marks);
     if (lease && route !== null) await writeFile(join(marks, "url"), route.url);
-    if (lease && route !== null && route.local !== null) await writeFile(join(marks, "expect-at"), `${route.local}\n`);
+    const bound = route !== null && route.local !== null && bindsLocalRepository();
+    if (lease && bound) await writeFile(join(marks, "expect-at"), `${route.local}\n`);
     const passOn = (name: string, stdin: string): string =>
       [`h=${shellPath(join(own, name))}`, `if [ -f "$h" ] && [ -x "$h" ]; then exec "$h" "$@"${stdin} >&2; fi`, "exit 0"].join("\n");
     for (const name of GIT_HOOKS) await writeFile(join(dir, name), `#!/bin/sh\n${passOn(name, "")}\n`, { mode: 0o755 });
@@ -470,7 +492,7 @@ async function openGate(
     if (process.platform !== "win32") await access(prePush, constants.X_OK);
 
     let receivePack: string | null = null;
-    if (route !== null && route.local !== null) {
+    if (bound) {
       const wrapper = join(dir, "receive-pack");
       await writeFile(
         wrapper,
@@ -615,8 +637,9 @@ const SSH_SCHEMES = new Set(["ssh", "git+ssh", "ssh+git"]);
  * remote helper (`<transport>::<address>`, a scheme git hands to
  * `git-remote-<scheme>`), `git://`, which `core.gitProxy` can send
  * anywhere, a `file://` URL git would decode, a path git would expand
- * (`~`), any local path on Windows, where EO cannot hold which
- * repository a push goes into — is recorded as no one place.
+ * (`~`) — is recorded as no one place. On Windows a local path is
+ * recorded the same way, by the repository it resolves to, `C:/…` and
+ * `file:///C:/…` alike (`bindsLocalRepository`).
  */
 async function reachedBy(
   repoPath: string,
@@ -625,14 +648,18 @@ async function reachedBy(
 ): Promise<{ kind: "url"; scheme: "http" | "https" } | { kind: "ssh" } | { kind: "local"; path: string } | null> {
   if (/^[A-Za-z][A-Za-z0-9+.-]*::/.test(url)) return null;
   const local = async (path: string): Promise<{ kind: "local"; path: string } | null> => {
-    if (process.platform === "win32") return null;
     const top = await git(["rev-parse", "--show-toplevel"], repoPath);
     const base = top.ok && top.stdout !== "" ? top.stdout : repoPath;
     const real = await localRepository(isAbsolute(path) ? path : `${base}${sep}${path}`, branch);
     return real === null ? null : { kind: "local", path: real };
   };
   const scheme = /^([A-Za-z][A-Za-z0-9+.-]*):\/\//.exec(url)?.[1]?.toLowerCase();
-  if (scheme === "file") return url.startsWith("file:///") && !url.includes("%") ? local(url.slice("file://".length)) : null;
+  if (scheme === "file") {
+    if (!url.startsWith("file:///") || url.includes("%")) return null;
+    // Git for Windows takes `file:///C:/…` for the path `C:/…`.
+    const path = url.slice("file://".length);
+    return local(process.platform === "win32" && /^\/[A-Za-z]:\//.test(path) ? path.slice(1) : path);
+  }
   if (scheme === "http" || scheme === "https") return { kind: "url", scheme };
   if (scheme !== undefined) return SSH_SCHEMES.has(scheme) ? { kind: "ssh" } : null;
   // Git's own test: a path unless a colon comes before any slash, which

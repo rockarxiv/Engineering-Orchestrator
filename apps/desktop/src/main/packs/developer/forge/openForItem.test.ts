@@ -71,12 +71,12 @@ const git = (args: string[], cwd: string) => execFileSync("git", args, { cwd, en
 /**
  * Where EO records a push as going: the URL — over SSH, with the command
  * and variant git reaches it by — or for a local path the repository it
- * resolves to, which on Windows is no one place EO can hold.
+ * resolves to, on every platform.
  */
 const placeOf = (destination: string, ssh?: { command: string; variant: string }): string | null => {
   if (ssh !== undefined) return destinationKey(`${destination}\0${ssh.command}\0${ssh.variant}`);
   if (/^[a-z+]+:\/\//.test(destination)) return destinationKey(destination);
-  return process.platform === "win32" ? null : destinationKey(canonicalPath(isAbsolute(destination) ? destination : join(repoPath, destination)));
+  return destinationKey(canonicalPath(isAbsolute(destination) ? destination : join(repoPath, destination)));
 };
 const pushedTo = (commit: string, destination: string | null = remotePath, ssh?: { command: string; variant: string }) => ({
   commit,
@@ -1431,23 +1431,79 @@ describe("before it opens or reuses one (EO-429)", () => {
    * else, so EO replaces it rather than sending the item back for a run
    * whose only job is the push.
    */
-  it.runIf(process.platform === "win32")("on Windows, records a push to a local path as no one place, and so refuses as diverged rather than force over it (EO-910)", async () => {
-    const item = story({ git: { branch: "eo/API-4", pullRequest: PULL_REQUEST } });
-    const worktree = worktreeFor(item);
-    await mergeRequestStep(item, onlyFinds(found));
-    const ours = remoteTip()!;
-    expect(gitStateOf(getItem(handle.db, item.id)!).pushedHead).toEqual(pushedTo(ours, null));
-    git(["commit", "--amend", "-m", "the work, rebased by the implementer"], worktree);
+  /**
+   * The same three cases on the route Windows takes to a local path, where
+   * no `receive-pack` of EO's binds the push to the repository it finds
+   * itself in (`bindsLocalRepository` in git.ts): on Windows as it is,
+   * and everywhere else as though it were, so that route runs here too.
+   */
+  describe("a branch rewritten since EO last pushed it, on the route Windows takes to a local path (EO-910)", () => {
+    const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+    beforeEach(() => {
+      Object.defineProperty(process, "platform", { ...platform, value: "win32" });
+    });
+    afterEach(() => {
+      Object.defineProperty(process, "platform", platform);
+    });
 
-    const result = await mergeRequestStep(item, onlyFinds(found));
+    /** The implementer's rebase: the same work, as a different commit. */
+    const rewriteIn = (worktree: string): void => {
+      git(["commit", "--amend", "-m", "the work, rebased by the implementer"], worktree);
+    };
 
-    expect(result).toMatchObject({ ok: true, result: "remote_diverged" });
-    expect(remoteTip()).toBe(ours);
-    expect(notes(item).at(-1)).toContain("did not force-push");
+    it("pushes over its own last push with --force-with-lease when the remote still holds exactly it, and names both heads", async () => {
+      const item = story({ git: { branch: "eo/API-4", pullRequest: PULL_REQUEST } });
+      const worktree = worktreeFor(item);
+      await mergeRequestStep(item, onlyFinds(found));
+      const old = remoteTip()!;
+      expect(gitStateOf(getItem(handle.db, item.id)!).pushedHead).toEqual(pushedTo(old));
+      rewriteIn(worktree);
+      const rewritten = localTip();
+
+      const result = await mergeRequestStep(item, onlyFinds(found));
+
+      expect(result).toMatchObject({ ok: true, result: "opened" });
+      expect(remoteTip()).toBe(rewritten);
+      expect(gitStateOf(getItem(handle.db, item.id)!).pushedHead).toEqual(pushedTo(rewritten));
+      const note = notes(item).at(-1)!;
+      expect(note).toContain(old);
+      expect(note).toContain(rewritten);
+    });
+
+    it("refuses as diverged, and forces nothing, when the remote's branch holds a commit EO did not push", async () => {
+      const item = story({ git: { branch: "eo/API-4", pullRequest: PULL_REQUEST } });
+      const worktree = worktreeFor(item);
+      await mergeRequestStep(item, onlyFinds(found));
+      const old = remoteTip()!;
+      const theirs = git(["commit-tree", `${old}^{tree}`, "-p", old, "-m", "a person's commit"], repoPath).trim();
+      git(["push", remotePath, `${theirs}:refs/heads/eo/API-4`], repoPath);
+      rewriteIn(worktree);
+
+      const result = await mergeRequestStep(item, onlyFinds(found));
+
+      expect(result).toMatchObject({ ok: true, result: "remote_diverged" });
+      expect(remoteTip()).toBe(theirs);
+      expect(notes(item).at(-1)).toContain("did not force-push");
+    });
+
+    it("refuses as diverged, and forces nothing, when it has no record of a push of its own", async () => {
+      const item = story({ git: { branch: "eo/API-4", pullRequest: PULL_REQUEST } });
+      const worktree = worktreeFor(item);
+      await mergeRequestStep(item, onlyFinds(found));
+      const old = remoteTip()!;
+      updateItem(handle.db, item.id, { git: { pushedHead: null } });
+      rewriteIn(worktree);
+
+      const result = await mergeRequestStep(item, onlyFinds(found));
+
+      expect(result).toMatchObject({ ok: true, result: "remote_diverged" });
+      expect(remoteTip()).toBe(old);
+      expect(notes(item).at(-1)).toContain("did not force-push");
+    });
   });
 
-  // On Windows a push to a local path is recorded as no one place, and
-  // every remote here is one: the test above is what is left there.
+  // Many of these drive git through shims and symlinks that are POSIX-only;
+  // the describe above is the rebase on Windows' route.
   describe.skipIf(process.platform === "win32")("a branch rewritten since EO last pushed it (EO-910)", () => {
     /** What the implementer's rebase leaves: the same work, as a different commit. */
     function rewriteIn(worktree: string): void {
