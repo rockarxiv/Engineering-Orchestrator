@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { classifyForgeError, missingCli } from "./errors.js";
+import { classifyForgeError, classifyPushError, missingCli } from "./errors.js";
 
 /**
  * Whether a failure is worth trying again (F-06).
@@ -98,5 +98,24 @@ describe("the awkward overlap", () => {
   it("does not read 'repository not found' as a missing binary", () => {
     // Both contain "not found"; only one of them means the CLI is absent.
     expect(classifyForgeError("GraphQL: Could not resolve to a Repository (404 Not Found)").message).not.toContain("PATH");
+  });
+});
+
+describe("a failed push, whose divergence git's status for the ref settles (EO-910)", () => {
+  const hook = "remote: not this branch\nerror: failed to push some refs to 'origin'\n!\tabc:refs/heads/eo/non-fast-forward-API-4\t[remote rejected] (pre-receive hook declined)";
+
+  it("is divergence when the ref's status says so", () => {
+    expect(classifyPushError("error: failed to push some refs to 'origin'", true)).toMatchObject({ final: true, diverged: true });
+  });
+
+  it("is not divergence for a hook's refusal, whatever the branch is called, and keeps git's words", () => {
+    const classified = classifyPushError(hook, false);
+    expect(classified).toMatchObject({ final: true, diverged: false });
+    expect(classified.message).not.toContain("moved on");
+    expect(classified.message).toContain("pre-receive hook declined");
+  });
+
+  it("is classified as any other failure where no rejection is in it", () => {
+    expect(classifyPushError("fatal: unable to access: Could not resolve host", false)).toEqual({ ...classifyForgeError("fatal: unable to access: Could not resolve host"), diverged: false });
   });
 });

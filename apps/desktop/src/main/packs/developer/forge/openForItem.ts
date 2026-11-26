@@ -25,8 +25,6 @@ import {
   NON_INTERACTIVE_GIT_ENV,
   pushBranch,
   rebaseOntoBase,
-  pushDestination,
-  destinationKey,
   statusPorcelain,
 } from "../workspace/git.js";
 import { resolveStackTargetWithAnswer } from "../workspace/stackAnswer.js";
@@ -35,7 +33,7 @@ import { worktreePathFor } from "../workspace/worktrees.js";
 import { itemBranchName, workNameFor } from "../workspace/workName.js";
 import type { PullRequestFacts } from "./body.js";
 import { createCliRunner, type CliRunner } from "./cli.js";
-import { classifyForgeError } from "./errors.js";
+import { classifyPushError } from "./errors.js";
 import { forgePullRequestState, resolveMergeState } from "./mergeState.js";
 import { openPullRequest, type ReviewerRequest } from "./openPullRequest.js";
 import { codeSpan } from "../../../codeSpan.js";
@@ -404,6 +402,9 @@ async function openNew(
   }
 
   const reviewers = pullRequestReviewers(db, item, workspace);
+  // What this attempt's push moved the remote's branch to, if anything:
+  // where the push then failed, it moved it at some push URLs only.
+  let published: string | null = null;
   const result = await openPullRequest({
     repoPath: workspace.config.repoPath,
     branch,
@@ -421,7 +422,10 @@ async function openNew(
     ...(signal ? { signal } : {}),
     ...(ended ? { onlyAdoptOpen: true } : {}),
     reviewers: reviewers.value,
-    onPushed: (pushed) => recordPushed(db, item, branch, pushed),
+    onPushed: (pushed) => {
+      published = pushed.head;
+      recordPushed(db, item, branch, pushed);
+    },
     // At the publish step itself, so a replaced push carries on to look
     // for and create the pull request exactly as after any push, with no
     // second push (EO-910). Never for a branch a person named.
@@ -434,7 +438,7 @@ async function openNew(
     // not equal. Here the cost of being wrong is smaller than it was in
     // the outbox: a retry is seconds away rather than half an hour, and
     // whichever way it ends the step reports it.
-    if (result.diverged && !gitStateOf(item).namedBranch) return diverged(db, item, workspace.config.forgeRemote, branch, target.baseRef);
+    if (result.diverged && !gitStateOf(item).namedBranch) return diverged(db, item, workspace.config.forgeRemote, branch, target.baseRef, published);
     // Once per attempt: a remote that moves again in the seconds between
     // is answered as it always was, rather than chased.
     if (result.diverged && !adopted && (await adoptRemoteHead(db, workspace, item, branch, options))) {
@@ -638,23 +642,24 @@ async function pushAlreadyOpen(
   // the remote in between is refused rather than lost.
   onProgress?.(`The pull request is already open, so pushing "${branch}" to ${remote}.`);
   const pushed = await pushBranch(repoPath, remote, branch, signal ? { signal } : {});
-  // Moved at some of several push URLs though it failed at another:
-  // recorded, as a push to no one place EO could force over.
-  if (!pushed.ok && pushed.published !== null) recordPushed(db, item, branch, { head: pushed.published, destination: null });
+  // Moved the branch at one of several push URLs though it failed at
+  // another: recorded all the same, as a push to no one place EO could
+  // force over.
+  if (!pushed.ok && pushed.published !== null) recordPushed(db, item, branch, { head: pushed.published, destination: pushed.destination });
   if (pushed.ok) {
     if (pushed.updated) recordPushed(db, item, branch, pushed);
     if (gitStateOf(getItem(db, item.id) ?? item).restacked) updateItem(db, item.id, { git: { restacked: false } });
     return alreadyOpen;
   }
 
-  const classified = classifyForgeError(pushed.error);
+  const classified = classifyPushError(pushed.error, pushed.rejection === "diverged");
   if (classified.diverged && !gitStateOf(item).namedBranch) {
     if (await replaceOwnPush(db, workspace, item, branch, options)) return alreadyOpen;
     const target = await resolveSendTarget(db, workspace, item, run, signal);
     if (target.kind === "escalate") {
       return { kind: "failed", reason: target.reason, ...(target.options ? { options: target.options } : {}) };
     }
-    return diverged(db, item, remote, branch, target.baseRef);
+    return diverged(db, item, remote, branch, target.baseRef, pushed.published);
   }
   if (classified.diverged && !adopted && (await adoptRemoteHead(db, workspace, item, branch, options))) {
     return pushAlreadyOpen(db, workspace, item, branch, alreadyOpen, run, options, true);
@@ -757,9 +762,12 @@ function recordPushed(db: Db, item: Item, branch: string, pushed: { head: string
  * commit EO last pushed>`. The lease is the check: the server the push
  * reaches compares its branch with that exact commit as it takes the
  * push, so a push by anybody in between — a person's above all — makes
- * git refuse rather than lose it. The push goes to the remote by name,
- * as every push of EO's does, so it reaches exactly where the rejected
- * one did.
+ * git refuse rather than lose it. And the push goes to that one URL and
+ * nowhere else: `pushBranch` reads the remote's push URL, checks it
+ * against the record, and pins the push to exactly the URL it checked,
+ * so neither a rewrite of it nor a change to the remote's configuration
+ * since can send the lease to a server where the same commit is
+ * somebody else's.
  *
  * Anything else is a no, and the caller refuses as it always has: no
  * record; a record of a push to another ref, or to another server — the
@@ -783,25 +791,27 @@ async function replaceOwnPush(db: Db, workspace: GitWorkspace, item: Item, branc
   if (pushedHead.ref !== `refs/heads/${branch}`) return refuse(`EO last pushed ${pushedHead.ref}, not this branch`);
   if (pushedHead.destination === null) return refuse("EO's last push of it did not go to one place it could check");
 
-  // The server the push goes to, not the one a fetch reads: the two can
-  // differ (`remote.<name>.pushurl`), and only the former rejected it.
-  const url = await pushDestination(repoPath, remote);
-  if (url === null) return refuse(`${remote} does not push to one URL EO can name`);
-  if (destinationKey(url) !== pushedHead.destination) return refuse(`${remote} no longer pushes to the server EO last pushed it to`);
-
   const expect = pushedHead.commit;
-  onProgress?.(`EO last pushed "${branch}" to ${remote} at ${expect.slice(0, 12)}, so pushing over it with --force-with-lease, which git refuses if anything else is there now.`);
-  const pushed = await pushBranch(repoPath, remote, branch, { ...(signal ? { signal } : {}), forceWithLease: { expect } });
-  if (!pushed.ok) {
-    if (pushed.published !== null) recordPushed(db, item, branch, { head: pushed.published, destination: null });
-    onProgress?.(`The push with --force-with-lease did not go through — "${branch}" on ${remote} is no longer only what EO pushed, or could not be reached — so nothing was overwritten.`);
-    return false;
+  const pushed = await pushBranch(repoPath, remote, branch, {
+    ...(signal ? { signal } : {}),
+    forceWithLease: { expect, destination: pushedHead.destination },
+  });
+  if (!pushed.ok && pushed.rejection === "destination") return refuse(`${remote} no longer pushes to exactly the one server EO last pushed it to`);
+  onProgress?.(`EO last pushed "${branch}" to ${remote} at ${expect.slice(0, 12)}, so pushed over it with --force-with-lease, which git refuses if anything else is there.`);
+  // One URL, one ref: what moved is what was replaced, whatever else git
+  // went on to say.
+  const replaced = pushed.ok ? (pushed.updated ? pushed.head : null) : pushed.published;
+  if (replaced === null) {
+    if (!pushed.ok) {
+      onProgress?.(`The push with --force-with-lease did not go through — "${branch}" on ${remote} is no longer only what EO pushed, or could not be reached — so nothing was overwritten.`);
+      return false;
+    }
+    // The local branch came back to the commit the remote holds: there
+    // was nothing to replace after all, and nothing is recorded or said.
+    return true;
   }
-  // The local branch came back to the commit the remote holds: there was
-  // nothing to replace after all, and nothing is recorded or said.
-  if (!pushed.updated) return true;
 
-  recordPushed(db, item, branch, pushed);
+  recordPushed(db, item, branch, { head: replaced, destination: pushed.destination });
   // A restack's rewrite, if that is what this was, is published now.
   if (gitStateOf(getItem(db, item.id) ?? item).restacked) updateItem(db, item.id, { git: { restacked: false } });
   postComment(db, {
@@ -810,7 +820,7 @@ async function replaceOwnPush(db: Db, workspace: GitWorkspace, item: Item, branc
     kind: "note",
     body:
       `\`${branch}\` had been rewritten since EO last pushed it, and \`${remote}\` still held exactly what EO had pushed, \`${expect}\`. ` +
-      `So EO replaced it with \`${pushed.head}\`, pushing with \`--force-with-lease=${branch}:${expect}\`: anything anybody else had pushed there would have been refused rather than overwritten.`,
+      `So EO replaced it with \`${replaced}\`, pushing with \`--force-with-lease=${branch}:${expect}\`: anything anybody else had pushed there would have been refused rather than overwritten.`,
   });
   return true;
 }
@@ -911,19 +921,38 @@ function sameUrl(a: string, b: string): boolean {
  * nothing of its own and the implementer this routes to reads the
  * thread (invariant #8) — with the three names it would otherwise have
  * to work out.
+ *
+ * `published` is the commit the push moved the branch to at some of the
+ * remote's push URLs though another rejected it, if it did: then the
+ * branch is out there in part, and saying nothing was pushed would be
+ * wrong (EO-910).
  */
-function diverged(db: Db, item: Item, remote: string, branch: string, baseRef: string): Attempt {
+function diverged(db: Db, item: Item, remote: string, branch: string, baseRef: string, published: string | null = null): Attempt {
+  const names = [`- Remote: \`${remote}\``, `- Branch: \`${branch}\``, `- Base ref the pull request targets: \`${baseRef}\``].join("\n");
   postComment(db, {
     itemId: item.id,
     author: { type: "engine" },
     kind: "note",
-    body: [
-      `The remote branch has diverged: \`${branch}\` on \`${remote}\` holds commits the local branch does not, so the push was rejected. EO did not force-push.`,
-      [`- Remote: \`${remote}\``, `- Branch: \`${branch}\``, `- Base ref the pull request targets: \`${baseRef}\``].join("\n"),
-      "Nothing was pushed and no pull request was opened or updated. The local branch has to be reconciled with the remote one before this step can run again.",
-    ].join("\n\n"),
+    body:
+      published === null
+        ? [
+            `The remote branch has diverged: \`${branch}\` on \`${remote}\` holds commits the local branch does not, so the push was rejected. EO did not force-push.`,
+            names,
+            "Nothing was pushed and no pull request was opened or updated. The local branch has to be reconciled with the remote one before this step can run again.",
+          ].join("\n\n")
+        : [
+            `The remote branch has diverged at some of \`${remote}\`'s push URLs: there \`${branch}\` holds commits the local branch does not, so the push was rejected. EO did not force-push.`,
+            names,
+            `At another of its push URLs the push went through, and \`${branch}\` is now \`${published}\` there; the step stopped all the same. The local branch has to be reconciled with the remote one wherever it was rejected before this step can run again.`,
+          ].join("\n\n"),
   });
-  return { kind: "remote_diverged", detail: `\`${branch}\` has diverged from \`${remote}/${branch}\`, and EO did not force-push.` };
+  return {
+    kind: "remote_diverged",
+    detail:
+      published === null
+        ? `\`${branch}\` has diverged from \`${remote}/${branch}\`, and EO did not force-push.`
+        : `\`${branch}\` has diverged from \`${remote}/${branch}\` at some of its push URLs, and EO did not force-push; it was pushed as \`${published}\` at another.`,
+  };
 }
 
 /** The reviewer's prose, from the approval that opened this pull request. */

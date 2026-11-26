@@ -31,6 +31,9 @@ export interface Classification {
 /** Git's own two names for it, as they appear on the `! [rejected]` line. */
 const DIVERGED_PUSH = /non-fast-forward|\(fetch first\)/;
 
+const DIVERGED_MESSAGE =
+  "The remote branch has moved on since EO pushed it. EO will not force-push over work it did not write — reconcile the branch by hand and this can be retried.";
+
 /** Matched against the CLI's stderr, lower-cased. Order matters only for readability. */
 const FINAL_PATTERNS: { pattern: RegExp; message: (raw: string) => string }[] = [
   {
@@ -38,8 +41,7 @@ const FINAL_PATTERNS: { pattern: RegExp; message: (raw: string) => string }[] = 
     // the remote branch has moved and only a human should decide what
     // happens to it. `--force` is not an option EO gets to take.
     pattern: /non-fast-forward|failed to push some refs|fetch first|rejected.*\(non-fast-forward\)/,
-    message: () =>
-      "The remote branch has moved on since EO pushed it. EO will not force-push over work it did not write — reconcile the branch by hand and this can be retried.",
+    message: () => DIVERGED_MESSAGE,
   },
   {
     pattern: /could not read username|authentication failed|permission denied \(publickey\)|\b403\b|\bforbidden\b|not authorized|requires authentication/,
@@ -84,4 +86,19 @@ export function classifyForgeError(raw: string): Classification {
   // Network trouble, a 5xx, a rate limit, a timeout — and anything this
   // does not recognise, which is the case that matters.
   return { final: false, diverged: false, message: text };
+}
+
+/**
+ * A failed `git push`, where whether it diverged is known from the ref's
+ * own status (`pushBranch`'s `rejection`) rather than guessed from the
+ * text, which names the branch — a branch called `…non-fast-forward…`
+ * says nothing about how it was refused (EO-910). A refusal that is not
+ * divergence — a declined hook, above all — keeps git's own words rather
+ * than being told it moved on.
+ */
+export function classifyPushError(raw: string, diverged: boolean): Classification {
+  if (diverged) return { final: true, diverged: true, message: DIVERGED_MESSAGE };
+  const classified = classifyForgeError(raw);
+  if (classified.message !== DIVERGED_MESSAGE) return { ...classified, diverged: false };
+  return { final: true, diverged: false, message: `The remote refused the push: ${raw.trim()}` };
 }

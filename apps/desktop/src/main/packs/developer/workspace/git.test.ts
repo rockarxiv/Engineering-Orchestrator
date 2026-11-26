@@ -14,6 +14,7 @@ import {
   isAncestor,
   pushBranch,
   pushDestination,
+  pushDiverged,
   pushUpdated,
   rebaseOntoBase,
   statusPorcelain,
@@ -269,8 +270,73 @@ describe("pushBranch (EO-910)", () => {
 
     const pushed = await pushBranch(repoPath, "bare", "eo/APP-1");
 
-    expect(pushed.ok).toBe(false);
+    expect(pushed).toMatchObject({ ok: false, rejection: "diverged" });
     expect(pushed.ok ? "" : pushed.error).toMatch(/non-fast-forward|fetch first/);
+  });
+
+  it("tells a hook's refusal from divergence by the ref's status, whatever the branch is called", async () => {
+    await run(["checkout", "-b", "eo/non-fast-forward-APP-1"], repoPath);
+    writeFileSync(join(barePath, "hooks", "pre-receive"), "#!/bin/sh\necho 'not today' >&2\nexit 1\n", { mode: 0o755 });
+
+    const pushed = await pushBranch(repoPath, "bare", "eo/non-fast-forward-APP-1");
+
+    expect(pushed).toMatchObject({ ok: false, rejection: "other", published: null });
+    expect(await remoteTip("eo/non-fast-forward-APP-1")).toBeNull();
+  });
+
+  it("pushes a lease nowhere when the remote no longer pushes to the destination it names", async () => {
+    const first = await pushBranch(repoPath, "bare", "eo/APP-1");
+    const old = first.ok ? first.head : "";
+    const other = join(scratch, "other.git");
+    await run(["init", "--bare", other], scratch);
+    await run(["push", other, `${old}:refs/heads/eo/APP-1`], repoPath);
+    await run(["config", "remote.bare.pushurl", other], repoPath);
+    await run(["commit", "--amend", "-m", "rewritten"], repoPath);
+
+    const leased = await pushBranch(repoPath, "bare", "eo/APP-1", { forceWithLease: { expect: old, destination: destinationKey(barePath) } });
+
+    expect(leased).toMatchObject({ ok: false, rejection: "destination", published: null, destination: destinationKey(other) });
+    expect(await run(["rev-parse", "eo/APP-1"], other)).toBe(old);
+    expect(await remoteTip("eo/APP-1")).toBe(old);
+  });
+
+  it("goes to the push URL git resolved, never rewriting it a second time (pushInsteadOf, then insteadOf)", async () => {
+    const a = join(scratch, "a.git");
+    const b = join(scratch, "b.git");
+    await run(["init", "--bare", a], scratch);
+    await run(["init", "--bare", b], scratch);
+    await run(["config", `url.${a}.pushInsteadOf`, barePath], repoPath);
+    await run(["config", `url.${b}.insteadOf`, a], repoPath);
+
+    const pushed = await pushBranch(repoPath, "bare", "eo/APP-1");
+
+    expect(pushed).toMatchObject({ ok: true, updated: true, destination: destinationKey(a) });
+    expect(await run(["rev-parse", "eo/APP-1"], a)).toBe(pushed.ok ? pushed.head : "");
+    expect(await git(["rev-parse", "--verify", "--quiet", "refs/heads/eo/APP-1"], b)).toMatchObject({ ok: false });
+    expect(await remoteTip("eo/APP-1")).toBeNull();
+  });
+
+  it("moves the remote-tracking ref as a push by the remote's name would", async () => {
+    await run(["config", "remote.bare.fetch", "+refs/heads/*:refs/remotes/bare/*"], repoPath);
+
+    const pushed = await pushBranch(repoPath, "bare", "eo/APP-1");
+
+    expect(await run(["rev-parse", "refs/remotes/bare/eo/APP-1"], repoPath)).toBe(pushed.ok ? pushed.head : "");
+  });
+
+  // Windows cannot make a directory whose name ends in a space.
+  it.skipIf(process.platform === "win32")("tells apart push URLs that differ only in trailing whitespace, and pushes to the one git names", async () => {
+    const spaced = `${barePath} `;
+    await run(["init", "--bare", spaced], scratch);
+    await run(["config", "remote.bare.pushurl", spaced], repoPath);
+
+    expect(await pushDestination(repoPath, "bare")).toBe(spaced);
+    const pushed = await pushBranch(repoPath, "bare", "eo/APP-1");
+
+    expect(pushed).toMatchObject({ ok: true, updated: true, destination: destinationKey(spaced) });
+    expect(destinationKey(spaced)).not.toBe(destinationKey(barePath));
+    expect(await run(["rev-parse", "eo/APP-1"], spaced)).toBe(pushed.ok ? pushed.head : "");
+    expect(await remoteTip("eo/APP-1")).toBeNull();
   });
 
   it("forces only over the exact commit it is leased to", async () => {
@@ -278,11 +344,12 @@ describe("pushBranch (EO-910)", () => {
     const old = first.ok ? first.head : "";
     await run(["commit", "--amend", "-m", "rewritten"], repoPath);
 
-    const wrongLease = await pushBranch(repoPath, "bare", "eo/APP-1", { forceWithLease: { expect: await run(["rev-parse", "main"], repoPath) } });
-    expect(wrongLease.ok).toBe(false);
+    const destination = destinationKey(barePath);
+    const wrongLease = await pushBranch(repoPath, "bare", "eo/APP-1", { forceWithLease: { expect: await run(["rev-parse", "main"], repoPath), destination } });
+    expect(wrongLease).toMatchObject({ ok: false, rejection: "other", published: null });
     expect(await remoteTip("eo/APP-1")).toBe(old);
 
-    const leased = await pushBranch(repoPath, "bare", "eo/APP-1", { forceWithLease: { expect: old } });
+    const leased = await pushBranch(repoPath, "bare", "eo/APP-1", { forceWithLease: { expect: old, destination } });
     expect(leased).toMatchObject({ ok: true, updated: true });
     expect(await remoteTip("eo/APP-1")).toBe(leased.ok ? leased.head : "");
   });
@@ -364,6 +431,11 @@ describe("pushDestination (EO-910)", () => {
     expect(await pushDestination(repoPath, "elsewhere")).toBe("ssh://git@example.com/acme/api.git");
   });
 
+  it("is none for a push URL it cannot read back as one line", async () => {
+    await run(["config", "remote.elsewhere.pushurl", "https://a.example.com/api.git\nhttps://b.example.com/api.git"], repoPath);
+    expect(await pushDestination(repoPath, "elsewhere")).toBeNull();
+  });
+
   it("is none for several push URLs, or a remote that does not exist", async () => {
     await run(["config", "--add", "remote.elsewhere.pushurl", "https://a.example.com/api.git"], repoPath);
     await run(["config", "--add", "remote.elsewhere.pushurl", "https://b.example.com/api.git"], repoPath);
@@ -390,6 +462,23 @@ describe("destinationKey", () => {
       "https://user:other@github.com/acme/api.git",
     ].map(destinationKey);
     expect(new Set(keys).size).toBe(keys.length);
+  });
+});
+
+describe("pushDiverged", () => {
+  const refspec = "abc:refs/heads/eo/APP-1";
+  it.each([
+    ["[rejected] (fetch first)", true],
+    ["[rejected] (non-fast-forward)", true],
+    ["[remote rejected] (pre-receive hook declined)", false],
+    ["[rejected] (stale info)", false],
+  ])("reads %j as divergence: %s", (summary, diverged) => {
+    expect(pushDiverged(`To ../bare.git\n!\t${refspec}\t${summary}\nDone`, refspec)).toBe(diverged);
+  });
+
+  it("reads nothing into a branch whose name says non-fast-forward", () => {
+    const named = "abc:refs/heads/eo/non-fast-forward-APP-1";
+    expect(pushDiverged(`To ../bare.git\n!\t${named}\t[remote rejected] (pre-receive hook declined)\nDone`, named)).toBe(false);
   });
 });
 

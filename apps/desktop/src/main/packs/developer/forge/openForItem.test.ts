@@ -1659,14 +1659,16 @@ describe("before it opens or reuses one (EO-429)", () => {
       expect(tipAt(elsewhere)).toBe(ours);
       expect(remoteTip()).toBe(ours);
       expect(notes(item).at(-1)).toContain("did not force-push");
-      expect(progress.some((line) => line.includes("no longer pushes to the server EO last pushed it to"))).toBe(true);
+      expect(progress.some((line) => line.includes("no longer pushes to exactly the one server EO last pushed it to"))).toBe(true);
       expect(progress.some((line) => line.includes(remotePath) || line.includes(elsewhere))).toBe(false);
     });
 
     /**
      * Pushes to `ssh://<user>@host/~/<repo>` reach `<root>/<user>/<repo>`,
      * through a stand-in for ssh: the user picks the repository, as a
-     * home directory does on a real server.
+     * home directory does on a real server. Any character of the user's
+     * name a file name cannot hold — `:` on Windows — becomes `_` in the
+     * directory, and only there.
      */
     function sshServer(): { root: string; url: (user: string) => string; repo: (user: string) => string } {
       const root = join(scratch, "ssh");
@@ -1675,7 +1677,7 @@ describe("before it opens or reuses one (EO-429)", () => {
         shim,
         [
           "#!/bin/sh",
-          'user="${1%@*}"',
+          'user="${1%@*}"; user=$(printf %s "$user" | tr -c "A-Za-z0-9._-" "_")',
           'cmd="$2"',
           'verb="${cmd%% *}"',
           `path="\${cmd#* }"; path="\${path#\\'}"; path="\${path%\\'}"; path="\${path#\\~/}"`,
@@ -1688,9 +1690,10 @@ describe("before it opens or reuses one (EO-429)", () => {
       git(["config", "core.sshCommand", `'${shim}'`], repoPath);
       git(["config", "ssh.variant", "simple"], repoPath);
       const repo = (user: string): string => {
-        const path = join(root, user, "api.git");
+        const home = user.replace(/[^A-Za-z0-9._-]/g, "_");
+        const path = join(root, home, "api.git");
         if (!existsSync(path)) {
-          mkdirSync(join(root, user), { recursive: true });
+          mkdirSync(join(root, home), { recursive: true });
           execFileSync("git", ["init", "--bare", path], { encoding: "utf8" });
         }
         return path;
@@ -1774,6 +1777,72 @@ describe("before it opens or reuses one (EO-429)", () => {
       expect(retries().some((line) => line.includes("nothing was overwritten"))).toBe(true);
       for (const line of retries()) expect(line).not.toContain("SYNTHETIC");
       for (const body of notes(item).filter((note) => note.includes("--force-with-lease"))) expect(body).not.toContain("SYNTHETIC");
+    });
+
+    // Windows cannot make a directory whose name ends in a space.
+    it.skipIf(process.platform === "win32")("refuses when the push URL now differs only by a trailing space, which is another repository holding the same commit", async () => {
+      const item = story({ git: { branch: "eo/API-4", pullRequest: PULL_REQUEST } });
+      const worktree = worktreeFor(item);
+      await mergeRequestStep(item, onlyFinds(found));
+      const ours = remoteTip()!;
+      const spaced = `${remotePath} `;
+      execFileSync("git", ["init", "--bare", spaced], { encoding: "utf8" });
+      execFileSync("git", ["push", spaced, `${ours}:refs/heads/eo/API-4`], { cwd: repoPath, encoding: "utf8" });
+      git(["config", "remote.origin.pushurl", spaced], repoPath);
+      rewriteIn(worktree);
+
+      const result = await mergeRequestStep(item, onlyFinds(found));
+
+      expect(result).toMatchObject({ ok: true, result: "remote_diverged" });
+      expect(tipAt(spaced)).toBe(ours);
+      expect(remoteTip()).toBe(ours);
+      expect(notes(item).at(-1)).toContain("did not force-push");
+    });
+
+    it("does not call a hook's refusal divergence because the branch's name says non-fast-forward", async () => {
+      const branch = "eo/non-fast-forward-API-4";
+      git(["branch", branch, "eo/API-4"], repoPath);
+      writeFileSync(join(remotePath, "hooks", "pre-receive"), "#!/bin/sh\necho 'not this branch' >&2\nexit 1\n", { mode: 0o755 });
+
+      for (const pullRequest of [null, PULL_REQUEST]) {
+        const item = story({ git: { branch, pullRequest } });
+        const before = notes(item);
+
+        const result = await mergeRequestStep(item, onlyFinds(found));
+
+        expect(result).not.toMatchObject({ result: "remote_diverged" });
+        expect(result.ok ? "" : result.reason).not.toContain("moved on since EO pushed it");
+        expect(remoteTip(branch)).toBeNull();
+        expect(notes(item)).toEqual(before);
+      }
+    });
+
+    it("says what went through when one push URL took the push and another rejected it as diverged", async () => {
+      // `second` holds a commit on top of the branch, which nobody here has.
+      const second = bare("second.git");
+      const start = localTip();
+      const theirs = git(["commit-tree", `${start}^{tree}`, "-p", start, "-m", "somebody else's commit"], repoPath).trim();
+      git(["push", second, `${theirs}:refs/heads/eo/API-4`], repoPath);
+      git(["config", "--add", "remote.origin.pushurl", remotePath], repoPath);
+      git(["config", "--add", "remote.origin.pushurl", second], repoPath);
+      const item = story();
+      const worktree = worktreeFor(item);
+
+      for (const pullRequest of [null, PULL_REQUEST]) {
+        updateItem(handle.db, item.id, { git: { pullRequest } });
+        commitIn(worktree, `more-${pullRequest === null ? "a" : "b"}.ts`, "more work");
+
+        const result = await mergeRequestStep(item, onlyFinds(found));
+
+        expect(result).toMatchObject({ ok: true, result: "remote_diverged" });
+        expect(remoteTip()).toBe(localTip());
+        expect(tipAt(second)).toBe(theirs);
+        expect(gitStateOf(getItem(handle.db, item.id)!).pushedHead).toEqual(pushedTo(localTip(), null));
+        const note = notes(item).at(-1)!;
+        expect(note).toContain("did not force-push");
+        expect(note).toContain(`is now \`${localTip()}\` there`);
+        expect(note).not.toContain("Nothing was pushed");
+      }
     });
 
     it("records a push that moved the branch at one of several URLs, though another refused it, and forces over neither", async () => {

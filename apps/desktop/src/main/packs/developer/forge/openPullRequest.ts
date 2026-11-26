@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { branchExists, commitsAhead, listTree, pushBranch, remoteUrl, showFile } from "../workspace/git.js";
 import { buildPullRequestBody, buildPullRequestTitle, type PullRequestFacts } from "./body.js";
 import { CLI_FOR, FORGE_COMMANDS, type CliRunner } from "./cli.js";
-import { classifyForgeError, missingCli } from "./errors.js";
+import { classifyForgeError, classifyPushError, missingCli } from "./errors.js";
 import { normaliseForgeState } from "./mergeState.js";
 import { guessForge, parseRemoteUrl, type ForgeKind } from "./remote.js";
 import { findTemplate, type TreeReader } from "./template.js";
@@ -200,10 +200,10 @@ export async function openPullRequest(input: OpenPullRequestInput): Promise<Open
   //    call, unless the caller can show it holds only EO's own last push.
   const pushed = await pushBranch(repoPath, remote, branch, input.signal ? { signal: input.signal } : {});
   if (!pushed.ok) {
-    // Moved at some of several push URLs though it failed at another: it
-    // is published all the same, to no one place EO could force over.
-    if (pushed.published !== null) input.onPushed?.({ head: pushed.published, destination: null });
-    const classified = classifyForgeError(pushed.error);
+    // Moved the branch at one of several push URLs though it failed at
+    // another: it is published all the same.
+    if (pushed.published !== null) input.onPushed?.({ head: pushed.published, destination: pushed.destination });
+    const classified = classifyPushError(pushed.error, pushed.rejection === "diverged");
     if (!(classified.diverged && input.onDiverged && (await input.onDiverged()))) {
       return { ...fail(classified.message, classified.final), diverged: classified.diverged };
     }
