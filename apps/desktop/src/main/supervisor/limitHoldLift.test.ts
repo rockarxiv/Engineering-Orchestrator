@@ -68,6 +68,8 @@ const checkAuth = vi.fn(async (): Promise<RuntimeAuthCheck> => ({ ok: true }));
 /** The plan's own window names on each backend. */
 const FIVE_HOUR: Record<BackendName, string> = { claude: "five_hour", codex: "5_hour" };
 const WEEK: Record<BackendName, string> = { claude: "seven_day", codex: "7_day" };
+/** How the limit message names the five-hour window: the backend's own name for it (`quotaWindowPhrase`). */
+const FIVE_HOUR_PHRASE: Record<BackendName, string> = { claude: "its five-hour usage window is full", codex: "its 5-hour usage window is full" };
 
 /** A Claude turn as the SDK streams it: refused, or answering. */
 function claudeTurn(refusal: Refusal | null): SDKMessage[] {
@@ -205,11 +207,11 @@ describe.each<BackendName>(["codex", "claude"])("a run on %s refused on a named 
     await heldOn(item);
 
     const [message] = limitMessages();
-    expect(message?.body).toContain("its five-hour usage window is full");
+    expect(message?.body).toContain(FIVE_HOUR_PHRASE[name]);
     expect(message?.body).toContain("2026-11-26 08:19 UTC");
     expect(message?.body).not.toContain("did not say");
     expect(message?.body).toContain("They carry on by themselves when the window refreshes");
-    expect(limitedRun(item)?.error).toContain("its five-hour usage window is full");
+    expect(limitedRun(item)?.error).toContain(FIVE_HOUR_PHRASE[name]);
     expect(limitedRun(item)?.attempt).toBe(1);
 
     // Before the reset, nothing moves.
