@@ -21,11 +21,9 @@ import {
   commitsAhead,
   git,
   isAncestor,
-  listTree,
   NETWORK_TIMEOUT_MS,
   NON_INTERACTIVE_GIT_ENV,
   pushBranch,
-  pushDestination,
   rebaseOntoBase,
   type PushDestination,
   statusPorcelain,
@@ -710,14 +708,12 @@ async function leaseOverOwnPush(db: Db, item: Item, repoPath: string, remote: st
   const state = gitStateOf(getItem(db, item.id) ?? item);
   const recorded = state.pushedHead;
   if (state.namedBranch || recorded === null || recorded.pushUrl === null) return refused;
-  const destination = await pushDestination(repoPath, remote);
-  if (destination === null || destination.urls !== 1 || destination.fingerprint !== recorded.pushUrl) return refused;
-  const submodules = await listTree(repoPath, `refs/heads/${branch}`, ".gitmodules");
-  if (!submodules.ok || submodules.stdout !== "") return refused;
 
-  onProgress?.(`"${branch}" on ${remote} holds the commit EO last pushed for ${item.key}, so pushing over it with --force-with-lease.`);
-  const pushed = await pushBranch(repoPath, remote, branch, { lease: recorded.commit, ...(signal ? { signal } : {}) });
-  if (!pushed.ok) return pushed.staleLease ? refused : { kind: "failed", error: pushed.error };
+  // The push URL and submodules are checked by the push itself, just
+  // before git runs, so nothing changes between the check and the push.
+  onProgress?.(`"${branch}" was rejected as diverged, so pushing it to ${remote} over the commit EO last pushed for ${item.key}, with --force-with-lease, if the remote still holds it.`);
+  const pushed = await pushBranch(repoPath, remote, branch, { lease: { commit: recorded.commit, destination: recorded.pushUrl }, ...(signal ? { signal } : {}) });
+  if (!pushed.ok) return pushed.leaseRefused ? refused : { kind: "failed", error: pushed.error };
   if (pushed.updated === null) return refused;
 
   recordPush(db, item, pushed.updated, pushed.destination);

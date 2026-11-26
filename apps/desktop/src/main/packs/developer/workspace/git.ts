@@ -185,25 +185,43 @@ export interface PushDestination {
 /**
  * What came of `pushBranch`.
  *
- * `updated` is the branch's commit, where git exited 0 and said, for
- * every push URL, that the branch is now there and moved it at one at
- * least (EO-910). Null where it was already there everywhere, or where
- * git said nothing EO could read: only a push git reported as updating
- * the branch counts as EO having put that commit there. `destination` is
- * where the push went, read just before it.
+ * `updated` is the commit git reported sending, where git exited 0 and
+ * said, for every push URL, that the branch is now there and moved it at
+ * one at least (EO-910). It is the commit named in git's own status line,
+ * since the push names the commit rather than the branch. Null where it
+ * was already there everywhere, or where git said nothing EO could read:
+ * only a push git reported as updating the branch counts as EO having put
+ * that commit there. `destination` is where the push went, read just
+ * before it.
  *
  * `diverged` is git's own status for the ref, `[rejected]
- * (non-fast-forward)` or `(fetch first)`; `staleLease` is `[rejected]
- * (stale info)`, a lease the server refused. Neither is ever a guess
- * from text that names the branch.
+ * (non-fast-forward)` or `(fetch first)`. `leaseRefused` is a leased push
+ * that did not go: the server refused the lease (`[rejected] (stale
+ * info)`), or the setup was no longer the ordinary case when the push was
+ * about to run. Neither is ever a guess from text that names the branch.
  */
 export type PushOutcome =
   | { ok: true; updated: string | null; destination: PushDestination | null }
-  | { ok: false; error: string; diverged: boolean; staleLease: boolean };
+  | { ok: false; error: string; diverged: boolean; leaseRefused: boolean };
+
+/**
+ * A leased push (EO-910): the commit EO recorded pushing to the branch,
+ * and the fingerprint of where it pushed it.
+ */
+export interface PushLease {
+  commit: string;
+  destination: string;
+}
 
 /**
  * Publishes a branch: one plain `git push` of it, by the remote's name,
  * with the repository's hooks and configuration as git applies them.
+ *
+ * The push names the commit the branch is at, read just before, as
+ * `<commit>:refs/heads/<branch>`, so what git reports sending is exactly
+ * the commit EO records — however the local branch moves meanwhile. The
+ * upstream `--set-upstream` would have set is set afterwards, since git
+ * sets none for a push that names a commit.
  *
  * Never `--force`: a remote branch that has diverged is a human's
  * decision, and the only thing EO could do by forcing is destroy work it
@@ -211,17 +229,33 @@ export type PushOutcome =
  * which is what makes a retry safe.
  *
  * `lease` is the one exception: a commit EO recorded pushing to this
- * branch (EO-910), sent as `--force-with-lease=<branch>:<commit>`, which
- * the server refuses unless its branch is exactly that commit. Never the
- * bare `--force-with-lease`, whose lease is the remote-tracking ref —
- * which any fetch moves to whatever somebody else pushed.
+ * branch (EO-910), sent as `--force-with-lease=<branch>:<commit>`,
+ * which the server refuses unless its branch is exactly that commit. Only
+ * in the ordinary case, checked here, just before the push runs: the
+ * remote has exactly one push URL and it is the one recorded, and the
+ * commit being pushed has no `.gitmodules`. Otherwise nothing is pushed
+ * and the lease is refused. Never the bare `--force-with-lease`, whose
+ * lease is the remote-tracking ref — which any fetch moves to whatever
+ * somebody else pushed.
  */
-export async function pushBranch(repoPath: string, remote: string, branch: string, options: NetworkGitOptions & { lease?: string } = {}): Promise<PushOutcome> {
+export async function pushBranch(repoPath: string, remote: string, branch: string, options: NetworkGitOptions & { lease?: PushLease } = {}): Promise<PushOutcome> {
   const head = await git(["rev-parse", "--verify", "--quiet", `refs/heads/${branch}^{commit}`], repoPath);
+  if (!head.ok || !/^[0-9a-f]{40,64}$/.test(head.stdout)) {
+    return { ok: false, error: `There is no branch "${branch}" to push.`, diverged: false, leaseRefused: false };
+  }
+  const commit = head.stdout;
   const destination = await pushDestination(repoPath, remote);
-  const lease = options.lease !== undefined ? [`--force-with-lease=${branch}:${options.lease}`] : [];
+  const lease = options.lease;
+  if (lease !== undefined) {
+    const refused = { ok: false as const, error: `"${branch}" was not pushed over EO's own last push: the remote is no longer the one EO pushed it to.`, diverged: false, leaseRefused: true };
+    if (destination === null || destination.urls !== 1 || destination.fingerprint !== lease.destination) return refused;
+    const submodules = await listTree(repoPath, commit, ".gitmodules");
+    if (!submodules.ok || submodules.stdout !== "") return { ...refused, error: `"${branch}" was not pushed over EO's own last push: it has submodules.` };
+  }
+  const leased = lease !== undefined ? [`--force-with-lease=${branch}:${lease.commit}`] : [];
+  const refspec = `${commit}:refs/heads/${branch}`;
   try {
-    const { stdout } = await execFileAsync("git", composeGitArgs(["push", "--porcelain", ...lease, "--set-upstream", remote, branch], process.platform), {
+    const { stdout } = await execFileAsync("git", composeGitArgs(["push", "--porcelain", ...leased, remote, refspec], process.platform), {
       cwd: repoPath,
       windowsHide: true,
       maxBuffer: 32 * 1024 * 1024,
@@ -229,12 +263,15 @@ export async function pushBranch(repoPath: string, remote: string, branch: strin
       timeout: options.timeoutMs ?? NETWORK_TIMEOUT_MS,
       ...(options.signal ? { signal: options.signal } : {}),
     });
-    const flags = pushedRefLines(stdout, branch).map((ref) => ref.flag);
+    // What `--set-upstream` sets; best effort, as a push never failed on it.
+    await git(["config", `branch.${branch}.remote`, remote], repoPath);
+    await git(["config", `branch.${branch}.merge`, `refs/heads/${branch}`], repoPath);
+    const flags = pushedRefLines(stdout, refspec).map((ref) => ref.flag);
     const moved = flags.length > 0 && flags.every((flag) => " +*=".includes(flag)) && flags.some((flag) => flag !== "=");
-    return { ok: true, updated: moved && head.ok && head.stdout !== "" ? head.stdout : null, destination };
+    return { ok: true, updated: moved ? commit : null, destination };
   } catch (error) {
     const stdout = typeof error === "object" && error !== null && typeof (error as { stdout?: unknown }).stdout === "string" ? (error as { stdout: string }).stdout : "";
-    const refs = pushedRefLines(stdout, branch);
+    const refs = pushedRefLines(stdout, refspec);
     const only = refs.length === 1 && refs[0]!.flag === "!" ? refs[0]!.summary : null;
     // Porcelain puts the ref's status on stdout, where git's plain output
     // put it on stderr, so what is classified still says how the branch
@@ -244,17 +281,16 @@ export async function pushBranch(repoPath: string, remote: string, branch: strin
       ok: false,
       error: said,
       diverged: only !== null && /^\[rejected\] \((non-fast-forward|fetch first)\)$/.test(only),
-      staleLease: only === "[rejected] (stale info)",
+      leaseRefused: only === "[rejected] (stale info)",
     };
   }
 }
 
 /**
- * The branch's lines in `git push --porcelain` output, one per push URL:
- * each one's flag and summary.
+ * The pushed ref's lines in `git push --porcelain` output, one per push
+ * URL: each one's flag and summary.
  */
-function pushedRefLines(stdout: string, branch: string): { flag: string; summary: string }[] {
-  const refspec = `refs/heads/${branch}:refs/heads/${branch}`;
+function pushedRefLines(stdout: string, refspec: string): { flag: string; summary: string }[] {
   return stdout
     .split("\n")
     .map((line) => line.replace(/\r$/, ""))

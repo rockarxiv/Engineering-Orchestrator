@@ -253,13 +253,52 @@ describe("pushBranch", () => {
     const before = await tip(barePath);
     await run(["commit", "--amend", "-m", "rebased"], repoPath);
 
-    const stale = await pushBranch(repoPath, "bare", "eo/EO-1", { lease: await tip(repoPath, "main") });
-    expect(stale).toMatchObject({ ok: false, diverged: false, staleLease: true });
+    const stale = await pushBranch(repoPath, "bare", "eo/EO-1", { lease: { commit: await tip(repoPath, "main"), destination: toBare().fingerprint } });
+    expect(stale).toMatchObject({ ok: false, diverged: false, leaseRefused: true });
     expect(await tip(barePath)).toBe(before);
 
-    const leased = await pushBranch(repoPath, "bare", "eo/EO-1", { lease: before });
+    const leased = await pushBranch(repoPath, "bare", "eo/EO-1", { lease: { commit: before, destination: toBare().fingerprint } });
     expect(leased).toEqual({ ok: true, updated: await tip(repoPath), destination: toBare() });
     expect(await tip(barePath)).toBe(await tip(repoPath));
+  });
+
+  it("refuses a lease, and pushes nothing, where the push URL is no longer the one the lease names", async () => {
+    // EO authorised the lease against `bare`; by the time the push runs,
+    // the push URL has been changed to another remote whose branch holds
+    // the very commit the lease names.
+    await pushBranch(repoPath, "bare", "eo/EO-1");
+    const before = await tip(barePath);
+    const other = join(scratch, "other.git");
+    await run(["init", "--bare", other], scratch);
+    await run(["push", other, "eo/EO-1"], repoPath);
+    await run(["commit", "--amend", "-m", "rebased"], repoPath);
+    await run(["remote", "set-url", "--push", "bare", other], repoPath);
+
+    const pushed = await pushBranch(repoPath, "bare", "eo/EO-1", { lease: { commit: before, destination: toBare().fingerprint } });
+
+    expect(pushed).toMatchObject({ ok: false, diverged: false, leaseRefused: true });
+    expect(await tip(other)).toBe(before);
+    expect(await tip(barePath)).toBe(before);
+  });
+
+  it("refuses a lease, and pushes nothing, where the commit being pushed has submodules", async () => {
+    await pushBranch(repoPath, "bare", "eo/EO-1");
+    const before = await tip(barePath);
+    writeFileSync(join(repoPath, ".gitmodules"), '[submodule "lib"]\n\tpath = lib\n\turl = ../lib.git\n');
+    await run(["add", ".gitmodules"], repoPath);
+    await run(["commit", "--amend", "-m", "rebased"], repoPath);
+
+    const pushed = await pushBranch(repoPath, "bare", "eo/EO-1", { lease: { commit: before, destination: toBare().fingerprint } });
+
+    expect(pushed).toMatchObject({ ok: false, diverged: false, leaseRefused: true });
+    expect(await tip(barePath)).toBe(before);
+  });
+
+  it("sets the branch's upstream, as --set-upstream did", async () => {
+    await pushBranch(repoPath, "bare", "eo/EO-1");
+
+    expect(await run(["config", "branch.eo/EO-1.remote"], repoPath)).toBe("bare");
+    expect(await run(["config", "branch.eo/EO-1.merge"], repoPath)).toBe("refs/heads/eo/EO-1");
   });
 
   it("is refused, and reports no commit, where a pre-push hook refuses it", async () => {
@@ -268,7 +307,7 @@ describe("pushBranch", () => {
 
     const pushed = await pushBranch(repoPath, "bare", "eo/EO-1");
 
-    expect(pushed).toMatchObject({ ok: false, diverged: false, staleLease: false });
+    expect(pushed).toMatchObject({ ok: false, diverged: false, leaseRefused: false });
     expect((await git(["rev-parse", "--verify", "--quiet", "refs/heads/eo/EO-1"], barePath)).ok).toBe(false);
   });
 
