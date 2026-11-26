@@ -344,7 +344,8 @@ describe("skills proposed by memory consolidation", () => {
   describe("the evidence it moves", () => {
     it("moves an entry the consolidation rewrote, named as evidence by the proposal call after it, and the consolidation's restore puts back what it replaced", async () => {
       const given = memory();
-      const rewritten = "To run e2e here: start Xvfb on :99 (`Xvfb :99 &`, `export DISPLAY=:99`), then `pnpm e2e`.";
+      // Corrected by the newer entry it names, so its reason holds (EO-913).
+      const rewritten = `To run e2e here: start Xvfb on :99 (\`Xvfb :99 &\`, \`export DISPLAY=:99\`), then \`pnpm e2e\`, as ${given.evidence[1]!.id} found.`;
       await run(
         () => ({
           retire: [],

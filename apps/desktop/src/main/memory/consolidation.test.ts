@@ -1,4 +1,4 @@
-import { MAX_MEMORY_NOTE_CHARS, MemoryConsolidationAnswerSchema, type MemoryEntryView } from "@eo/core";
+import { MAX_MEMORY_NOTE_CHARS, MemoryConsolidationAnswerSchema, type MemoryConsolidationAnswer, type MemoryEntryView } from "@eo/core";
 import { describe, expect, it } from "vitest";
 import type { ScopeConsolidationState, ScopeTally } from "../db/repos/memoryConsolidationsRepo.js";
 import {
@@ -7,7 +7,13 @@ import {
   CONSOLIDATION_CHANGED_RETRY_MS,
   CONSOLIDATION_DEFERRED_REASON,
   CONSOLIDATION_PAUSED_REASON,
+  checkRewriteReasons,
   consolidationAnswerSchema,
+  droppedRewritesNote,
+  namesNewerEntry,
+  quotesRepositoryFile,
+  replacesRelativeDate,
+  rewriteReasonProblem,
   consolidationDue,
   consolidationInput,
   crossBatchMergeInput,
@@ -149,6 +155,12 @@ describe("when a scope is due a consolidation (EO-480)", () => {
     it("goes on as a person's consolidation where a person's one stopped part-way, new entries or none", () => {
       const partway = state({ ...settled(NOW - HOUR), failuresSince: [failure(NOW - HOUR + 60_000, "error", { trigger: "manual" })] });
       expect(due({ state: partway, now: NOW + HOUR, fresh: 0 }).decision).toEqual({ kind: "consolidate", trigger: "manual" });
+    });
+
+    it("is never one for a cap consolidation from before EO-913 that stopped part-way: that scope waits for its day and five runs (EO-913)", () => {
+      const partway = state({ ...settled(NOW - HOUR), failuresSince: [failure(NOW - HOUR + 60_000, "error", { trigger: "cap" })] });
+      expect(due({ state: partway, now: NOW + HOUR, runs: 0 }).decision).toEqual({ kind: "none" });
+      expect(due({ state: partway, now: NOW - HOUR + DAY + 1, runs: 5 }).decision).toEqual({ kind: "consolidate", trigger: "schedule" });
     });
 
     it("is not one for a failure from before the scope was settled — a restore since, say", () => {
@@ -311,7 +323,14 @@ describe("the operations a consolidation answers with (EO-573)", () => {
     expect(without.success).toBe(false);
     expect(without.error?.issues.map((issue) => issue.path.join("."))).toContain("rewrite.0.reason");
     for (const reason of ["shorter", "tidied", "", null]) expect(accepts(answer({ rewrite: [{ ...shorter, reason }] })), String(reason)).toBe(false);
-    // One such rewrite refuses the whole answer, whatever else it holds.
+    // Each passes the schema with a reason, and is then dropped when the reason's own test fails (checkRewriteReasons).
+    const given = [{ id: "d", body: "Run `pnpm test` before pushing, and wait for it.", createdAt: 1, contradictsRepositoryFile: false }];
+    for (const reason of ["relative_date", "repository_file", "newer_entry"] as const) {
+      const checked = checkRewriteReasons(answer({ rewrite: [{ ...shorter, reason }] }) as MemoryConsolidationAnswer, { given, repositoryFiles: [{ name: "CLAUDE.md", text: "Run `pnpm test` before pushing.\n" }] });
+      expect(checked.answer.rewrite, reason).toEqual([]);
+      expect(checked.dropped.map((drop) => drop.id), reason).toEqual(["d"]);
+    }
+    // One rewrite without a reason refuses the whole answer, whatever else it holds.
     expect(accepts(answer({ retire: [{ id: "a", reason: "Stale." }], rewrite: [shorter] }))).toBe(false);
     // The shape the backend is held to says so too.
     expect(MemoryConsolidationAnswerSchema.safeParse(answer({ rewrite: [{ ...shorter, id: "anything" }] })).success).toBe(false);
@@ -356,6 +375,99 @@ describe("how long a merged or rewritten entry may be (EO-591)", () => {
   });
 });
 
+describe("the mechanical test of each rewrite's reason (EO-913)", () => {
+  const entry = (id: string, body: string, createdAt: number, contradictsRepositoryFile = false) => ({ id, body, createdAt, contradictsRepositoryFile });
+  const rewrite = (id: string, body: string, reason: "relative_date" | "repository_file" | "newer_entry", contradictsRepositoryFile = false) => ({ id, body, reason, contradictsRepositoryFile });
+  const FILE = { name: "CLAUDE.md", text: "# api\r\n\r\n- Run the tests with `pnpm test:api`.\r\n## Commands\r\n" };
+
+  describe("(a) a relative date made absolute", () => {
+    it("passes: a whole phrase from the list replaced by a YYYY-MM-DD date, and nothing else changed", () => {
+      expect(replacesRelativeDate("The ledger moved to UTC yesterday.", "The ledger moved to UTC 2026-11-19.")).toBe(true);
+      expect(replacesRelativeDate("Released 3 days ago, not 2.", "Released 2026-11-23, not 2.")).toBe(true);
+      expect(replacesRelativeDate("Due in 10 days.", "Due 2026-12-06.")).toBe(true);
+      expect(replacesRelativeDate("Today the API moved; NEXT WEEK the web does.", "2026-11-26 the API moved; 2026-12-03 the web does.")).toBe(true);
+      // One of two phrases is enough.
+      expect(replacesRelativeDate("Today the API moved; next week the web does.", "2026-11-26 the API moved; next week the web does.")).toBe(true);
+      for (const phrase of ["today", "yesterday", "tomorrow", "this week", "last week", "next week", "this month", "last month", "next month", "4 days ago", "1 week ago", "2 weeks ago", "in 1 day"]) {
+        expect(replacesRelativeDate(`Changed ${phrase}.`, "Changed 2026-11-01."), phrase).toBe(true);
+      }
+    });
+
+    it("fails: anything else changed, no phrase from the list, part of a longer number, or no real date", () => {
+      // Shortened as well.
+      expect(replacesRelativeDate("The ledger moved to UTC yesterday.", "Ledger moved to UTC 2026-11-19.")).toBe(false);
+      // Words around the phrase changed.
+      expect(replacesRelativeDate("Due in 10 days.", "Due on 2026-12-06.")).toBe(false);
+      // Nothing from the list in the original: "recently" and "two days ago" are not on it.
+      expect(replacesRelativeDate("Changed recently.", "Changed 2026-11-01.")).toBe(false);
+      expect(replacesRelativeDate("Changed two days ago.", "Changed 2026-11-24.")).toBe(false);
+      // Part of a word, or of a longer number, is not a whole phrase.
+      expect(replacesRelativeDate("Use todays build.", "Use 2026-11-26s build.")).toBe(false);
+      expect(replacesRelativeDate("This was added 1,000 days ago.", "This was added 1,2026-11-26.")).toBe(false);
+      // Not a YYYY-MM-DD date, or not a real one.
+      expect(replacesRelativeDate("Changed yesterday.", "Changed 25 Nov 2026.")).toBe(false);
+      expect(replacesRelativeDate("Changed yesterday.", "Changed 2026-02-30.")).toBe(false);
+      expect(replacesRelativeDate("Changed yesterday.", "Changed 2026-13-01.")).toBe(false);
+      // The phrase left as it was: nothing replaced.
+      expect(replacesRelativeDate("Changed yesterday.", "Changed yesterday.")).toBe(false);
+    });
+
+    it("holds the flag to what it was", () => {
+      const given = [entry("a", "Moved yesterday.", 1)];
+      expect(rewriteReasonProblem(rewrite("a", "Moved 2026-11-25.", "relative_date"), { given, repositoryFiles: [] })).toBeNull();
+      expect(rewriteReasonProblem(rewrite("a", "Moved 2026-11-25.", "relative_date", true), { given, repositoryFiles: [] })).toMatch(/flag/);
+    });
+  });
+
+  describe("(b) a disagreement with the repository file", () => {
+    it("passes: the rewrite names the file and quotes a line of it as delivered, with or without its list marker, CRLF or not", () => {
+      expect(quotesRepositoryFile("CLAUDE.md says to run the tests with `make test`, not \"- Run the tests with `pnpm test:api`.\"", [FILE])).toBe(true);
+      expect(quotesRepositoryFile("As CLAUDE.md says: Run the tests with `pnpm test:api`.", [FILE])).toBe(true);
+    });
+
+    it("fails: a file not named, a line not quoted word for word, a line too short to be a quote, or a file never delivered", () => {
+      // Quotes the line but names no file.
+      expect(quotesRepositoryFile("Run the tests with `pnpm test:api`.", [FILE])).toBe(false);
+      // Names the file, quotes nothing of it word for word.
+      expect(quotesRepositoryFile("CLAUDE.md says to run the API tests with pnpm.", [FILE])).toBe(false);
+      // A heading of two words is no quote.
+      expect(quotesRepositoryFile("CLAUDE.md, ## Commands: use make.", [FILE])).toBe(false);
+      // Names a file the call was not given: the cross-batch pass is given none.
+      expect(quotesRepositoryFile("AGENTS.md says: Run the tests with `pnpm test:api`.", [FILE])).toBe(false);
+      expect(quotesRepositoryFile("CLAUDE.md says: Run the tests with `pnpm test:api`.", [])).toBe(false);
+    });
+  });
+
+  describe("(c) a correction by a newer entry", () => {
+    const given = [entry("old", "Tests need Postgres 15.", 1_000), entry("older", "Tests need Postgres 14.", 500), entry("new", "Tests need Postgres 16.", 2_000)];
+    it("passes: the rewrite names the id of an entry of the same call written after it", () => {
+      expect(namesNewerEntry(given[0]!, "Tests need Postgres 16, as new says.", given)).toBe(true);
+    });
+
+    it("fails: an older entry, the entry itself, or one the call was not given", () => {
+      expect(namesNewerEntry(given[0]!, "Tests need Postgres 14, as older says.", given)).toBe(false);
+      expect(namesNewerEntry(given[0]!, "Tests need Postgres 15, as old says.", given)).toBe(false);
+      expect(namesNewerEntry(given[0]!, "Tests need Postgres 17, as elsewhere says.", given)).toBe(false);
+    });
+  });
+
+  it("drops each rewrite that fails its test, keeps the rest of the answer, and says which on the row", () => {
+    const given = [entry("a", "Moved yesterday.", 1), entry("b", "Run pnpm test before pushing, always.", 2), entry("c", "Use Postgres 16 for tests.", 3)];
+    const checked = checkRewriteReasons(
+      {
+        retire: [{ id: "c", reason: "Stale." }],
+        merge: [],
+        rewrite: [rewrite("a", "Moved 2026-11-25.", "relative_date"), rewrite("b", "Run pnpm test first.", "repository_file")],
+      },
+      { given, repositoryFiles: [FILE] },
+    );
+    expect(checked.answer).toEqual({ retire: [{ id: "c", reason: "Stale." }], merge: [], rewrite: [rewrite("a", "Moved 2026-11-25.", "relative_date")] });
+    expect(checked.dropped).toEqual([{ id: "b", reason: "repository_file", problem: expect.stringMatching(/repository file/) }]);
+    expect(droppedRewritesNote(checked.dropped)).toMatch(/^1 rewrite was dropped .* b \(`repository_file`: /);
+    expect(droppedRewritesNote([])).toBeNull();
+  });
+});
+
 describe("what a consolidation is told (EO-573, EO-913)", () => {
   it("asks for the changes only, and says the rules: merge entries stating the same fact; retire the stale, the contradicted and the derivable; absolute dates; the repository files", () => {
     const prompt = MEMORY_CONSOLIDATE_SYSTEM;
@@ -367,7 +479,7 @@ describe("what a consolidation is told (EO-573, EO-913)", () => {
     expect(prompt).toMatch(/all three lists empty; that is a valid answer/);
     expect(prompt).toMatch(/Merge entries that state the same fact into one/);
     expect(prompt).toMatch(/Retire what is stale, contradicted by a newer entry, or derivable from the code/);
-    expect(prompt).toMatch(/Write relative dates and times .* as absolute dates/);
+    expect(prompt).toMatch(/Write relative dates .* as absolute dates/);
     expect(prompt).toMatch(/CLAUDE\.md or AGENTS\.md is given .* treat it as current/);
     expect(prompt).toMatch(/set(ting)? contradictsRepositoryFile to true/);
     expect(prompt).toMatch(/Never suggest editing the file/);

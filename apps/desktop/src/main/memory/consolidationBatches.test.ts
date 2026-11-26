@@ -121,9 +121,10 @@ describe("a scheduled consolidation's batches (EO-913)", () => {
     expect(planNewEntryBatches([], scope, new Map())).toEqual([]);
   });
 
-  it("puts each entry in at most one batch: a neighbour two new entries share goes with the first, and a new entry already placed as one is not placed again", () => {
+  it("puts each entry in at most one batch, and gives a new entry placed as an earlier one's neighbour its own neighbours too", () => {
     const scope = entries(20, 100);
     const [a, b, c] = [scope[10]!, scope[11]!, scope[12]!];
+    // a finds b, and b finds older scope[2]: all fit one batch, so scope[2] goes with b.
     const neighbours = new Map([
       [a.id, [scope[1]!.id, b.id]],
       [b.id, [scope[1]!.id, scope[2]!.id]],
@@ -132,9 +133,25 @@ describe("a scheduled consolidation's batches (EO-913)", () => {
     const batches = planNewEntryBatches([a, b, c], scope, neighbours);
     const all = batches.flat();
     expect(new Set(ids(all)).size).toBe(all.length);
-    expect(ids(all).sort()).toEqual([scope[1]!, scope[3]!, a, b, c].map((entry) => entry.id).sort());
-    // b came with a, so its own neighbour scope[2] was never asked for.
-    expect(ids(all)).not.toContain(scope[2]!.id);
+    expect(batches).toHaveLength(1);
+    expect(ids(all).sort()).toEqual([scope[1]!, scope[2]!, scope[3]!, a, b, c].map((entry) => entry.id).sort());
+  });
+
+  it("puts a new entry into the batch that already holds its nearest neighbour, where it fits there, rather than the newest batch", () => {
+    // 1,100 characters each: the first two units, of six and nine, do not fit one batch of 15,000.
+    const scope = entries(60, 1_100);
+    const [first, second, third] = [scope[40]!, scope[50]!, scope[55]!];
+    const neighbours = new Map([
+      [first.id, scope.slice(0, 5).map((entry) => entry.id)],
+      [second.id, scope.slice(10, 18).map((entry) => entry.id)],
+      // Its nearest is in the first batch; the rest are not placed.
+      [third.id, [scope[0]!.id, scope[20]!.id]],
+    ]);
+    const batches = planNewEntryBatches([first, second, third], scope, neighbours);
+    expect(batches).toHaveLength(2);
+    expect(ids(batches[0]!)).toEqual(expect.arrayContaining([first.id, third.id, scope[0]!.id, scope[20]!.id]));
+    expect(ids(batches[1]!)).toContain(second.id);
+    for (const batch of batches) expect(charsOf(batch)).toBeLessThanOrEqual(CONSOLIDATION_BATCH_MAX_CHARS);
   });
 
   it("starts another batch where the next new entry and its neighbours would take one over its limits", () => {
