@@ -68,10 +68,21 @@ function recorder(replies: CliResult[]): { run: CliRunner; calls: string[][] } {
 const git = (args: string[], cwd: string) => execFileSync("git", args, { cwd, encoding: "utf8" });
 
 /** What EO records of a push of `eo/API-4` to `destination` — the bare remote, unless a test says otherwise (EO-910). */
-/** Where EO records a push as going: the URL, or for a local path the repository it resolves to. */
-const placeOf = (destination: string): string =>
-  destinationKey(/^[a-z+]+:\/\//.test(destination) ? destination : canonicalPath(isAbsolute(destination) ? destination : join(repoPath, destination)));
-const pushedTo = (commit: string, destination: string | null = remotePath) => ({ commit, ref: "refs/heads/eo/API-4", destination: destination === null ? null : placeOf(destination) });
+/**
+ * Where EO records a push as going: the URL — over SSH, with the command
+ * and variant git reaches it by — or for a local path the repository it
+ * resolves to, which on Windows is no one place EO can hold.
+ */
+const placeOf = (destination: string, ssh?: { command: string; variant: string }): string | null => {
+  if (ssh !== undefined) return destinationKey(`${destination}\0${ssh.command}\0${ssh.variant}`);
+  if (/^[a-z+]+:\/\//.test(destination)) return destinationKey(destination);
+  return process.platform === "win32" ? null : destinationKey(canonicalPath(isAbsolute(destination) ? destination : join(repoPath, destination)));
+};
+const pushedTo = (commit: string, destination: string | null = remotePath, ssh?: { command: string; variant: string }) => ({
+  commit,
+  ref: "refs/heads/eo/API-4",
+  destination: destination === null ? null : placeOf(destination, ssh),
+});
 
 function story(overrides: Partial<Parameters<typeof createTestItem>[1]> = {}): Item {
   return createTestItem(handle.db, {
@@ -1420,7 +1431,24 @@ describe("before it opens or reuses one (EO-429)", () => {
    * else, so EO replaces it rather than sending the item back for a run
    * whose only job is the push.
    */
-  describe("a branch rewritten since EO last pushed it (EO-910)", () => {
+  it.runIf(process.platform === "win32")("on Windows, records a push to a local path as no one place, and so refuses as diverged rather than force over it (EO-910)", async () => {
+    const item = story({ git: { branch: "eo/API-4", pullRequest: PULL_REQUEST } });
+    const worktree = worktreeFor(item);
+    await mergeRequestStep(item, onlyFinds(found));
+    const ours = remoteTip()!;
+    expect(gitStateOf(getItem(handle.db, item.id)!).pushedHead).toEqual(pushedTo(ours, null));
+    git(["commit", "--amend", "-m", "the work, rebased by the implementer"], worktree);
+
+    const result = await mergeRequestStep(item, onlyFinds(found));
+
+    expect(result).toMatchObject({ ok: true, result: "remote_diverged" });
+    expect(remoteTip()).toBe(ours);
+    expect(notes(item).at(-1)).toContain("did not force-push");
+  });
+
+  // On Windows a push to a local path is recorded as no one place, and
+  // every remote here is one: the test above is what is left there.
+  describe.skipIf(process.platform === "win32")("a branch rewritten since EO last pushed it (EO-910)", () => {
     /** What the implementer's rebase leaves: the same work, as a different commit. */
     function rewriteIn(worktree: string): void {
       git(["commit", "--amend", "-m", "the work, rebased by the implementer"], worktree);
@@ -1674,7 +1702,7 @@ describe("before it opens or reuses one (EO-429)", () => {
      * name a file name cannot hold — `:` on Windows — becomes `_` in the
      * directory, and only there.
      */
-    function sshServer(): { root: string; url: (user: string) => string; repo: (user: string) => string } {
+    function sshServer(): { root: string; url: (user: string) => string; repo: (user: string) => string; via: { command: string; variant: string } } {
       const root = join(scratch, "ssh");
       const shim = join(scratch, "ssh-shim.sh");
       writeFileSync(
@@ -1702,7 +1730,7 @@ describe("before it opens or reuses one (EO-429)", () => {
         }
         return path;
       };
-      return { root, url: (user) => `ssh://${user}@host/~/api.git`, repo };
+      return { root, url: (user) => `ssh://${user}@host/~/api.git`, repo, via: { command: `'${shim}'`, variant: "simple" } };
     }
 
     it("pushes over its own push where git sends it, though a URL handed back to git would be rewritten again (pushInsteadOf, then insteadOf)", async () => {
@@ -1739,7 +1767,7 @@ describe("before it opens or reuses one (EO-429)", () => {
       const worktree = worktreeFor(item);
       await mergeRequestStep(item, onlyFinds(found));
       const ours = tipAt(alice)!;
-      expect(gitStateOf(getItem(handle.db, item.id)!).pushedHead).toEqual(pushedTo(ours, server.url("alice")));
+      expect(gitStateOf(getItem(handle.db, item.id)!).pushedHead).toEqual(pushedTo(ours, server.url("alice"), server.via));
       // Bob has the same commit, and the remote is repointed at him.
       execFileSync("git", ["push", bob, `${ours}:refs/heads/eo/API-4`], { cwd: repoPath, encoding: "utf8" });
       git(["config", "remote.origin.pushurl", server.url("bob")], repoPath);
@@ -1749,6 +1777,33 @@ describe("before it opens or reuses one (EO-429)", () => {
 
       expect(result).toMatchObject({ ok: true, result: "remote_diverged" });
       expect(tipAt(bob)).toBe(ours);
+      expect(tipAt(alice)).toBe(ours);
+      expect(notes(item).at(-1)).toContain("did not force-push");
+    });
+
+    it("refuses when git would now reach the same SSH URL by another command, which can be another server holding the same commit", async () => {
+      const server = sshServer();
+      const alice = server.repo("alice");
+      git(["config", "remote.origin.pushurl", server.url("alice")], repoPath);
+      const item = story({ git: { branch: "eo/API-4", pullRequest: PULL_REQUEST } });
+      const worktree = worktreeFor(item);
+      await mergeRequestStep(item, onlyFinds(found));
+      const ours = tipAt(alice)!;
+      // Another server: the same shim, rooted somewhere else, holding the same commit.
+      const elsewhere = join(scratch, "elsewhere-ssh");
+      const other = join(elsewhere, "alice", "api.git");
+      mkdirSync(join(elsewhere, "alice"), { recursive: true });
+      execFileSync("git", ["init", "--bare", other], { encoding: "utf8" });
+      execFileSync("git", ["push", other, `${ours}:refs/heads/eo/API-4`], { cwd: repoPath, encoding: "utf8" });
+      const shim = join(scratch, "ssh-shim-elsewhere.sh");
+      writeFileSync(shim, readFileSync(join(scratch, "ssh-shim.sh"), "utf8").replace(server.root, elsewhere), { mode: 0o755 });
+      git(["config", "core.sshCommand", `'${shim}'`], repoPath);
+      rewriteIn(worktree);
+
+      const result = await mergeRequestStep(item, onlyFinds(found));
+
+      expect(result).toMatchObject({ ok: true, result: "remote_diverged" });
+      expect(tipAt(other)).toBe(ours);
       expect(tipAt(alice)).toBe(ours);
       expect(notes(item).at(-1)).toContain("did not force-push");
     });
@@ -2006,21 +2061,47 @@ describe("before it opens or reuses one (EO-429)", () => {
       it.skipIf(process.platform === "win32").each([
         ["on the first open", null],
         ["with the pull request already open", PULL_REQUEST],
-      ])("sends nothing in place of EO's push when the branch moves after EO checked it and before git resolves it, %s", async (_, pullRequest) => {
+      ])("sends in place of EO's push exactly the commit git refused, though the branch moves after EO checked it and before git starts, %s", async (_, pullRequest) => {
         const item = story({ git: { branch: "eo/API-4", pullRequest } });
         const worktree = worktreeFor(item);
         await firstPush(item, pullRequest);
         const ours = remoteTip()!;
         rewriteIn(worktree);
-        const replacement = git(["commit-tree", `${localTip()}^{tree}`, "-p", ours, "-m", "a commit nobody rejected"], repoPath).trim();
+        const refused = localTip();
+        const replacement = git(["commit-tree", `${refused}^{tree}`, "-p", ours, "-m", "a commit nobody rejected"], repoPath).trim();
         // The first push is the one rejected as diverged; the second is the lease.
         restore = beforeGitPush(scratch, `"$GIT" update-ref refs/heads/eo/API-4 ${replacement}`, 2);
         const before = notes(item).length;
 
         const result = await mergeRequestStep(item, onlyFinds(found));
 
+        expect(result).toMatchObject({ ok: true, result: "opened" });
+        expect(remoteTip()).toBe(refused);
+        expect(gitStateOf(getItem(handle.db, item.id)!).pushedHead).toEqual(pushedTo(refused));
+        const said = notes(item).slice(before);
+        expect(said.some((body) => body.includes(`--force-with-lease=eo/API-4:${ours}`) && body.includes(refused))).toBe(true);
+        expect(said.some((body) => body.includes(replacement))).toBe(false);
+      });
+
+      it.skipIf(process.platform === "win32").each([
+        ["on the first open", null],
+        ["with the pull request already open", PULL_REQUEST],
+      ])("refuses as diverged when the lease finds the remote already holding the commit, which shows nothing of what was there before, %s", async (_, pullRequest) => {
+        const item = story({ git: { branch: "eo/API-4", pullRequest } });
+        const worktree = worktreeFor(item);
+        await firstPush(item, pullRequest);
+        const ours = remoteTip()!;
+        rewriteIn(worktree);
+        const refused = localTip();
+        // Between the rejected push and the lease, somebody puts EO's new
+        // commit on the remote themselves.
+        restore = beforeGitPush(scratch, `"$GIT" push --force '${remotePath}' ${refused}:refs/heads/eo/API-4`, 2);
+        const before = notes(item).length;
+
+        const result = await mergeRequestStep(item, onlyFinds(found));
+
         expect(result).toMatchObject({ ok: true, result: "remote_diverged" });
-        expect(remoteTip()).toBe(ours);
+        expect(remoteTip()).toBe(refused);
         expect(gitStateOf(getItem(handle.db, item.id)!).pushedHead).toEqual(pushedTo(ours));
         const said = notes(item).slice(before);
         expect(said.at(-1)).toContain("did not force-push");

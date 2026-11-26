@@ -114,7 +114,9 @@ export function beforeGitPush(dir: string, before: string, nth = 1): () => void 
     [
       "#!/bin/sh",
       `GIT=${quote(real)}`,
-      'if [ "$1" = push ]; then',
+      // EO puts `-c <key>=<value>` ahead of the subcommand.
+      'verb=""; skip=0; for a in "$@"; do if [ "$skip" = 1 ]; then skip=0; elif [ "$a" = -c ]; then skip=1; else verb="$a"; break; fi; done',
+      'if [ "$verb" = push ]; then',
       `  c=$(cat ${quote(count)}); c=$((c + 1)); echo "$c" > ${quote(count)}`,
       `  if [ "$c" = ${nth} ]; then ${before}; fi`,
       "fi",

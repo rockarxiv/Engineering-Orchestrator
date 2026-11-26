@@ -773,9 +773,10 @@ function recordPushed(db: Db, item: Item, branch: string, pushed: { head: string
  * pushes; so neither a rewrite of the URL, nor a change to the remote's
  * configuration, nor a symlink pointed elsewhere since, can send the
  * lease to a repository where the same commit is somebody else's. And it
- * sends the commit the rejected push was to send (`rejected.head`), or
- * nothing: a branch that has moved since, before git resolves it for the
- * retry or as it does, is not what was refused.
+ * sends the commit git refused (`rejected.head`, which the rejected push
+ * named), or nothing: a branch that has moved on since is not what was
+ * refused. A retry git calls up to date proves nothing — git checks no
+ * lease where it has nothing to send — and is a no too.
  *
  * Anything else is a no, and the caller refuses as it always has: no
  * record; a record of a push to another ref, or to another place — the
@@ -826,18 +827,21 @@ async function replaceOwnPush(
   // went on to say.
   const moved = pushed.ok ? pushed.updated : pushed.published !== null;
   if (!moved) {
-    if (!pushed.ok) {
-      onProgress?.(`The push with --force-with-lease did not go through — "${branch}" on ${remote} is no longer only what EO pushed, or could not be reached — so nothing was overwritten.`);
-      return false;
-    }
-    // The local branch came back to the commit the remote holds: there
-    // was nothing to replace after all, and nothing is recorded or said.
-    return true;
+    // Git checks a lease only where it has something to send: a remote
+    // that somebody has already put the same commit on is "up to date"
+    // whatever else it held a moment before, which shows nothing of
+    // whether it was only EO's. Divergent it was, and so it stays.
+    onProgress?.(
+      pushed.ok
+        ? `The push with --force-with-lease found "${branch}" on ${remote} already at ${rejected.head.slice(0, 12)}, put there by something other than EO, so EO did not take it for its own.`
+        : `The push with --force-with-lease did not go through — "${branch}" on ${remote} is no longer only what EO pushed, or could not be reached — so nothing was overwritten.`,
+    );
+    return false;
   }
 
   // A restack's rewrite, if that is what this was, is published now.
   if (gitStateOf(getItem(db, item.id) ?? item).restacked) updateItem(db, item.id, { git: { restacked: false } });
-  // The gate let git send nothing but this commit.
+  // The push named this commit, so it is the one git sent.
   const replaced = rejected.head;
   recordPushed(db, item, branch, { head: replaced, destination: pushed.destination });
   postComment(db, {

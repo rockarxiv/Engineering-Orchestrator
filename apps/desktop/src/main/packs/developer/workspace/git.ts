@@ -174,29 +174,36 @@ export async function listTree(repoPath: string, ref: string, path: string): Pro
  * did not write. Re-pushing an unchanged branch is a no-op that exits 0,
  * which is what makes a retry safe.
  *
- * Pushed by the remote's name, as `git push <remote>` always was, so its
- * `receivepack`, the `pre-push` hook told its name and URL, and the
- * remote-tracking ref its fetch refspec moves are what they always were.
- * The URL is never on git's command line, where a timeout's error would
- * repeat it. The branch goes by its full name onto the same name —
- * `refs/heads/<branch>:refs/heads/<branch>` — so a `pre-push` hook reads
- * the branch on its stdin, no tag named like a commit's hash can stand
- * in for it, and a `remote.<name>.push` mapping cannot send it elsewhere;
- * and only that ref (`--no-follow-tags`), so a tag the destination
- * refuses cannot fail a push whose branch went through (EO-910).
+ * Pushed by the remote's name, as `git push <remote>` always was, so the
+ * `pre-push` hook told its name and URL, and the remote-tracking ref its
+ * fetch refspec moves, are what they always were. The URL is never on
+ * git's command line, where a timeout's error would repeat it. What is
+ * sent is the commit EO read, by its full hash and peeled —
+ * `<commit>^{commit}:refs/heads/<branch>` — which no ref can be named
+ * (`^` is not allowed in one), so no tag named like the hash can stand
+ * in for it, a `remote.<name>.push` mapping cannot send it elsewhere,
+ * and git sends that commit and no other whatever the branch does while
+ * it pushes: a push git refused was a refusal of that commit. Only that
+ * ref (`--no-follow-tags`), so a tag the destination refuses cannot fail
+ * a push whose branch went through (EO-910).
  *
- * What git does is checked inside the push itself, by a gate (`openGate`)
+ * Where it goes is checked inside the push itself, by a gate (`openGate`)
  * that git runs as the `pre-push` hook before it sends anything, ahead of
- * the repository's own: it is told the URL git is pushing to and the
- * commit git resolved the branch to, which no read of EO's before or
- * after the push can be. A push where git resolved the branch to any
- * commit but the one EO read (`head`) is stopped there (`rejection:
- * "changed"`), so a push that went through sent `head` and nothing else.
- * `destination` is the fingerprint of the one place it went
- * (`destinationKey` of `reachedBy`), or null where git pushed to several
- * places, to one other than EO read before it pushed, through a
- * `receivepack` or a remote helper (either of which decides for itself
- * where the push lands), or to a URL that does not name its repository.
+ * the repository's own, and set on git's command line, which nothing in
+ * the environment or any configuration file can override. It is told the
+ * URL git is pushing to. For a local path, git starts the repository's
+ * `receive-pack` through EO's (`--receive-pack`), which goes into the
+ * repository and says which one it is in before anything is sent — the
+ * one that takes the push, not one a path pointed at a moment before.
+ * Wherever the push has one place EO can name, how git reaches it is
+ * fixed for the push too: `receive-pack`, and for SSH the command and
+ * variant git runs, are what EO read, set where no configuration git
+ * reads during the push can change them (`pushRoute`). `destination` is
+ * the fingerprint of the one place it went (`destinationKey`), or null
+ * where git pushed to several places, to one other than EO read before
+ * it pushed, through a `receivepack` or a remote helper (either of which
+ * decides for itself where the push lands), or to a URL that does not
+ * name its repository.
  *
  * `updated` is whether the remote's branch actually moved, read off
  * `--porcelain`: an up-to-date push changes nothing, and its commit may
@@ -213,12 +220,11 @@ export async function listTree(repoPath: string, ref: string, path: string): Pro
  * the item (EO-910), so the lease is that exact commit, checked by the
  * server the push reaches, and anything anybody else pushed since is
  * refused rather than lost. It sends only `send` — the commit the
- * rejected push was to send — and only to `destination`, the place EO
- * recorded with that head. Where the branch is at another commit, before
- * the push or as git resolves it, nothing is sent (`"changed"`); where
- * the remote does not push to exactly that one place, before the push or
- * as git pushes, nothing is sent there or anywhere else (`"destination"`).
- * A push that git runs no gate for is never leased.
+ * rejected push sent — and only to `destination`, the place EO recorded
+ * with that head. Where the branch has moved on from it since, nothing
+ * is sent (`"changed"`); where the remote does not push to exactly that
+ * one place, before the push or as git pushes, nothing is sent there or
+ * anywhere else (`"destination"`).
  */
 export async function pushBranch(
   repoPath: string,
@@ -240,25 +246,30 @@ export async function pushBranch(
     rejection,
     status: null,
   });
-  const CHANGED = `${branch} is not at the commit EO was to push, so nothing was pushed.`;
   const ELSEWHERE = `${remote} does not push to exactly the one place EO last pushed this branch to, so nothing was pushed.`;
-  if (lease && head !== lease.send) return refused("changed", CHANGED);
+  if (lease && head !== lease.send) return refused("changed", `${branch} is not at the commit EO was to push, so nothing was pushed.`);
   const route = await pushRoute(repoPath, remote, branch);
   if (lease && route?.key !== lease.destination) return refused("destination", ELSEWHERE, route?.key ?? null);
 
-  const gate = await openGate(repoPath, { ref, head, url: lease && route ? route.url : null });
+  const source = `${head}^{commit}`;
+  const gate = await openGate(repoPath, { ref, source, head, route, lease: lease !== undefined });
   if (gate === null && lease) return refused("destination", `git would not run EO's check of where the push goes, so ${branch} was not pushed.`);
-  const refspec = `${ref}:${ref}`;
+  const refspec = `${source}:${ref}`;
   const leaseArg = lease ? [`--force-with-lease=${branch}:${lease.expect}`] : [];
+  const receiveArg = gate?.receivePack ? [`--receive-pack=${gate.receivePack}`] : [];
+  // On git's command line, after anything the environment gives it, so
+  // that no `GIT_CONFIG_PARAMETERS` and no configuration file can name
+  // another hooks directory: `-c` is read last, and the last one wins.
+  const gateArg = gate ? ["-c", `core.hooksPath=${gate.dir}`] : [];
   try {
     let stdout = "";
     let failure: unknown = null;
     try {
-      ({ stdout } = await execFileAsync("git", composeGitArgs(["push", "--porcelain", "--no-follow-tags", ...leaseArg, remote, refspec], process.platform), {
+      ({ stdout } = await execFileAsync("git", composeGitArgs([...gateArg, "push", "--porcelain", "--no-follow-tags", ...receiveArg, ...leaseArg, remote, refspec], process.platform), {
         cwd: repoPath,
         windowsHide: true,
         maxBuffer: 32 * 1024 * 1024,
-        env: { ...process.env, ...NON_INTERACTIVE_GIT_ENV, ...(gate?.env ?? {}) },
+        env: { ...process.env, ...NON_INTERACTIVE_GIT_ENV, ...(route?.env ?? {}) },
         timeout: options.timeoutMs ?? NETWORK_TIMEOUT_MS,
         ...(options.signal ? { signal: options.signal } : {}),
       }));
@@ -271,20 +282,16 @@ export async function pushBranch(
       stdout = typeof raw === "string" ? raw : "";
     }
     const seen = gate === null ? null : await gate.seen();
-    // Git ran the gate wherever it pushed, and every one of them found
-    // the branch at `head`: then `head` is what it sent.
-    const sent = seen !== null && seen.urls.length > 0 && !seen.moved ? head : null;
-    const destination =
-      route !== null && seen !== null && !seen.routed && seen.urls.length === 1 && seen.urls[0] === route.url ? route.key : null;
+    const destination = route !== null && seen !== null ? await reachedDestination(route, seen, branch) : null;
     if (failure === null) {
       // Best effort: the push has happened, and a missing upstream costs a
       // person's `git status` its ahead/behind, nothing of EO's.
       await git(["config", `branch.${branch}.remote`, remote], repoPath);
       await git(["config", `branch.${branch}.merge`, ref], repoPath);
-      return { ok: true, stdout: stdout.trim(), head: sent, updated: pushUpdated(stdout, refspec), destination };
+      return { ok: true, stdout: stdout.trim(), head, updated: pushUpdated(stdout, refspec), destination };
     }
-    const published = sent !== null && pushUpdated(stdout, refspec) ? head : null;
-    if (seen?.moved) return { ...refused("changed", CHANGED), published };
+    const published = pushUpdated(stdout, refspec) ? head : null;
+    if (seen?.moved) return { ...refused("changed", `${branch} is not at the commit EO was to push, so nothing was pushed.`), published };
     if (lease && seen?.elsewhere) return { ...refused("destination", ELSEWHERE), published };
     const stderr = extractGitError(failure);
     return {
@@ -299,6 +306,21 @@ export async function pushBranch(
   } finally {
     await gate?.close();
   }
+}
+
+/**
+ * Where a push went, as EO records it: the route's fingerprint where git
+ * pushed to exactly the one URL EO checked, through no remote helper —
+ * and, for a local path, the repository EO's `receive-pack` found itself
+ * in, which is the one that took the push, whatever the path pointed at
+ * before or after. Null for anything else.
+ */
+async function reachedDestination(route: PushRoute, seen: GateSeen, branch: string): Promise<string | null> {
+  const [push] = seen.pushes;
+  if (seen.routed || seen.pushes.length !== 1 || push === undefined || push.url !== route.url) return null;
+  if (route.local === null) return push.at === null ? route.key : null;
+  if (push.at === null) return null;
+  return (await localRepository(push.at, branch)) === push.at ? destinationKey(push.at) : null;
 }
 
 /** The hooks git runs from a repository's hooks directory, which the gate's directory passes on to the repository's own. */
@@ -338,76 +360,97 @@ function shellPath(path: string): string {
 }
 
 /**
- * What the gate saw of one push: each URL git pushed to, byte for byte
- * where they read as UTF-8; whether git had resolved the branch to any
- * commit but the expected one at any of them (`moved`); whether a
- * `receivepack` or remote helper was configured as git pushed
- * (`routed`); and whether a leased push was stopped at a URL that is not
- * the one checked (`elsewhere`).
+ * What the gate saw of one push: for each URL git pushed to, the URL
+ * byte for byte where it reads as UTF-8, and for a local path the
+ * repository EO's `receive-pack` went into (`at`); whether git was about
+ * to send anything but the expected commit onto the branch (`moved`);
+ * whether a remote helper was configured as git pushed (`routed`); and
+ * whether a leased push was stopped somewhere that is not the one place
+ * checked (`elsewhere`).
  */
 interface GateSeen {
-  urls: (string | null)[];
+  pushes: { url: string | null; at: string | null }[];
   moved: boolean;
   routed: boolean;
   elsewhere: boolean;
 }
 
 /**
- * A hooks directory for one push, and the environment that makes git run
- * it (`core.hooksPath`, after anything the environment already gives
- * git), or null where its hook could not be made something git would run.
+ * A hooks directory for one push, which `pushBranch` names to git as
+ * `core.hooksPath` on its command line, and for a local path the
+ * `receive-pack` git is to start in its place (`receivePack`, as the
+ * shell git runs it with reads it); or null where its hook could not be
+ * made something git would run.
  *
  * Its `pre-push` is the gate (EO-910). Git runs it for each URL it pushes
- * to, after it has read its configuration and resolved the branch, and
- * before it sends the remote anything; so what the gate is told — the
- * URL as `$2`, and on stdin the local ref, the commit git resolved it to
- * and the remote ref — is what git is about to send, and where. The gate
- * writes down the URL, stops the push where git resolved anything but
- * `ref` to `head` onto `ref`, notes a `receivepack` or `vcs` configured
- * for the remote by then, and — for a leased push, where `url` is set —
- * stops it at any URL but that one, or through either of those. A stop
- * there sends nothing to that URL. Only then does it run the repository's
- * own `pre-push`, if it has one, with the same arguments and stdin. Every
- * other hook in the directory runs the repository's own of that name, so
- * nothing else a push runs changes.
+ * to, once it has read its configuration, resolved what it sends and
+ * reached the remote, and before it sends the remote anything; so what
+ * the gate is told — the URL as `$2`, and on stdin what git is about to
+ * send — is what git is about to send, and where. The gate writes down
+ * the URL, stops the push where git would send anything but `head` onto
+ * `ref`, notes a remote helper (`vcs`) configured for the remote by then,
+ * and — for a leased push — stops it at any URL but the route's, through
+ * a remote helper, or, for a local path, unless EO's `receive-pack` is in
+ * exactly the repository EO checked. A stop there sends nothing to that
+ * URL. Only then does it run the repository's own `pre-push`, if it has
+ * one, with the same arguments and the stdin git gives a push of the
+ * branch — the branch's own name as the local ref — and its output on
+ * stderr, where nothing it prints can pass for git's account of the push.
+ * Every other hook in the directory runs the repository's own of that
+ * name, its output on stderr too, so nothing else a push runs changes.
+ *
+ * Its `receive-pack`, for a local path, goes into the path given it and
+ * then runs git's own there, on the directory it is in rather than the
+ * path, so a symlink on the way that is pointed elsewhere after it went
+ * in cannot take the push into another repository. It writes down the
+ * repository it is in, by the path with no symlink in it, for the gate,
+ * which comes after it, to check against the one EO checked.
  */
 async function openGate(
   repoPath: string,
-  expect: { ref: string; head: string; url: string | null },
-): Promise<{ env: Record<string, string>; seen: () => Promise<GateSeen>; close: () => Promise<void> } | null> {
+  expect: { ref: string; source: string; head: string; route: PushRoute | null; lease: boolean },
+): Promise<{ dir: string; receivePack: string | null; seen: () => Promise<GateSeen>; close: () => Promise<void> } | null> {
   const hooks = await git(["rev-parse", "--git-path", "hooks"], repoPath);
   if (!hooks.ok) return null;
   const own = resolve(repoPath, hooks.stdout);
   const dir = await mkdtemp(join(tmpdir(), "eo-push-"));
   const close = (): Promise<void> => rm(dir, { recursive: true, force: true });
+  const { route, lease } = expect;
   try {
     const marks = join(dir, "marks");
     await mkdir(marks);
-    if (expect.url !== null) await writeFile(join(marks, "url"), expect.url);
+    if (lease && route !== null) await writeFile(join(marks, "url"), route.url);
+    if (lease && route !== null && route.local !== null) await writeFile(join(marks, "expect-at"), `${route.local}\n`);
     const passOn = (name: string, stdin: string): string =>
-      [`h=${shellPath(join(own, name))}`, `if [ -f "$h" ] && [ -x "$h" ]; then exec "$h" "$@"${stdin}; fi`, "exit 0"].join("\n");
+      [`h=${shellPath(join(own, name))}`, `if [ -f "$h" ] && [ -x "$h" ]; then exec "$h" "$@"${stdin} >&2; fi`, "exit 0"].join("\n");
     for (const name of GIT_HOOKS) await writeFile(join(dir, name), `#!/bin/sh\n${passOn(name, "")}\n`, { mode: 0o755 });
+    const stop = (mark: string, why: string): string => `: > "$d/${mark}"; echo ${shellWord(`EO stopped the push: ${why}`)} >&2; exit 1`;
     const gate = [
       "#!/bin/sh",
       `d=${shellPath(marks)}`,
-      'n=$$',
-      'cat > "$d/in.$n" || exit 1',
+      "n=$$",
       'printf %s "$2" > "$d/to.$n" || exit 1',
-      'while read -r lref lsha rref rest; do',
+      'if [ -f "$d/at" ]; then mv "$d/at" "$d/at.$n" || exit 1; fi',
+      ': > "$d/in.$n" || exit 1',
+      "while read -r lref lsha rref rsha; do",
       '  [ -n "$lref" ] || continue',
-      `  if [ "$lref" != ${shellWord(expect.ref)} ] || [ "$rref" != ${shellWord(expect.ref)} ] || [ "$lsha" != ${shellWord(expect.head)} ]; then`,
-      '    : > "$d/moved"; echo "EO stopped the push: the branch is not at the commit EO was to push." >&2; exit 1',
+      `  if [ "$lref" != ${shellWord(expect.source)} ] || [ "$rref" != ${shellWord(expect.ref)} ] || [ "$lsha" != ${shellWord(expect.head)} ]; then`,
+      `    ${stop("moved", "it is not sending the commit EO was to push.")}`,
       "  fi",
-      'done < "$d/in.$n"',
-      "for key in receivepack vcs; do",
-      '  if git config --get-all "remote.$1.$key" > /dev/null 2>&1; then',
-      '    : > "$d/routed"',
-      '    if [ -f "$d/url" ]; then : > "$d/elsewhere"; echo "EO stopped the push: the remote decides for itself where it lands." >&2; exit 1; fi',
-      "  fi",
+      `  printf '%s %s %s %s\\n' ${shellWord(expect.ref)} "$lsha" "$rref" "$rsha" >> "$d/in.$n" || exit 1`,
       "done",
-      'if [ -f "$d/url" ] && [ "$2" != "$(cat "$d/url")" ]; then',
-      '  : > "$d/elsewhere"; echo "EO stopped the push: it is not going where EO checked." >&2; exit 1',
+      'if git config --get-all "remote.$1.vcs" > /dev/null 2>&1; then',
+      '  : > "$d/routed"',
+      ...(lease ? [`  ${stop("elsewhere", "the remote decides for itself where it lands.")}`] : []),
       "fi",
+      ...(lease
+        ? [
+            `if [ ! -f "$d/url" ] || [ "$2" != "$(cat "$d/url")" ]; then ${stop("elsewhere", "it is not going where EO checked.")}; fi`,
+            'if [ -f "$d/expect-at" ]; then',
+            `  if [ ! -f "$d/at.$n" ] || ! cmp -s "$d/at.$n" "$d/expect-at"; then ${stop("elsewhere", "it is not going where EO checked.")}; fi`,
+            `elif [ -f "$d/at.$n" ]; then ${stop("elsewhere", "it is not going where EO checked.")}; fi`,
+          ]
+        : []),
       passOn("pre-push", ' < "$d/in.$n"'),
       "",
     ].join("\n");
@@ -416,23 +459,53 @@ async function openGate(
     // Git skips a hook it cannot execute — a temporary directory mounted
     // noexec, say — and a push it runs no gate for is one EO cannot check.
     if (process.platform !== "win32") await access(prePush, constants.X_OK);
-    const given = Number.parseInt(process.env["GIT_CONFIG_COUNT"] ?? "", 10);
-    const index = Number.isInteger(given) && given > 0 ? given : 0;
-    const env = { GIT_CONFIG_COUNT: String(index + 1), [`GIT_CONFIG_KEY_${index}`]: "core.hooksPath", [`GIT_CONFIG_VALUE_${index}`]: dir };
+
+    let receivePack: string | null = null;
+    if (route !== null && route.local !== null) {
+      const wrapper = join(dir, "receive-pack");
+      await writeFile(
+        wrapper,
+        [
+          "#!/bin/sh",
+          `d=${shellPath(marks)}`,
+          'if [ -d "$1" ] && [ ! -e "$1/.git" ] && [ ! -L "$1/.git" ]; then',
+          '  cd -P -- "$1" || exit 1',
+          '  if [ -e .git ] || [ -L .git ]; then exit 1; fi',
+          '  pwd -P > "$d/at" || exit 1',
+          "  exec git-receive-pack .",
+          "fi",
+          // Somewhere EO did not check: git's own `receive-pack` decides
+          // where, as it always did — never for a lease.
+          lease ? "exit 1" : 'exec git-receive-pack "$1"',
+          "",
+        ].join("\n"),
+        { mode: 0o755 },
+      );
+      await access(wrapper, constants.X_OK);
+      receivePack = shellPath(wrapper);
+    } else if (route !== null) {
+      receivePack = "git-receive-pack";
+    }
+
     const seen = async (): Promise<GateSeen> => {
       const names = await readdir(marks);
-      const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
-      const urls: (string | null)[] = [];
-      for (const name of names.filter((entry) => entry.startsWith("to."))) {
+      const text = async (name: string): Promise<string | null> => {
         try {
-          urls.push(decoder.decode(await readFile(join(marks, name))));
+          return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(await readFile(join(marks, name)));
         } catch {
-          urls.push(null);
+          return null;
         }
+      };
+      const pushes: GateSeen["pushes"] = [];
+      for (const name of names.filter((entry) => entry.startsWith("to."))) {
+        const id = name.slice("to.".length);
+        const at = names.includes(`at.${id}`) ? await text(`at.${id}`) : null;
+        // `pwd -P` ends the path with one line break.
+        pushes.push({ url: await text(name), at: at !== null && at.endsWith("\n") && at.length > 1 ? at.slice(0, -1) : null });
       }
-      return { urls, moved: names.includes("moved"), routed: names.includes("routed"), elsewhere: names.includes("elsewhere") };
+      return { pushes, moved: names.includes("moved"), routed: names.includes("routed"), elsewhere: names.includes("elsewhere") };
     };
-    return { env, seen, close };
+    return { dir, receivePack, seen, close };
   } catch {
     await close();
     return null;
@@ -441,57 +514,103 @@ async function openGate(
 
 /**
  * Where a push to `remote` goes, as EO checks it before pushing: the one
- * URL git would push to (`pushDestination`) and the fingerprint of the
- * place it reaches (`reachedBy`), or null where that is no one place EO
- * can name — several push URLs, a `receivepack` or a remote helper
- * (`vcs`) of the remote's own, or a URL that does not say where it lands.
+ * URL git would push to (`pushDestination`), the fingerprint of the
+ * place it reaches (`key`), the repository a local path reaches
+ * (`local`), and what the push's environment must hold for git to reach
+ * it the way EO read (`env`).
  */
-async function pushRoute(repoPath: string, remote: string, branch: string): Promise<{ url: string; key: string } | null> {
+interface PushRoute {
+  url: string;
+  key: string;
+  local: string | null;
+  env: Record<string, string>;
+}
+
+/**
+ * The route a push to `remote` takes, or null where that is no one place
+ * EO can name — several push URLs, a `receivepack` or a remote helper
+ * (`vcs`) of the remote's own, or a URL that does not say where it lands.
+ *
+ * Over SSH the URL alone does not say: the command git runs to reach the
+ * host (`GIT_SSH_COMMAND`, `core.sshCommand`, `GIT_SSH`) and how it
+ * speaks to it (`GIT_SSH_VARIANT`, `ssh.variant`) can take the same URL
+ * to another server. So they are part of the place, and the push's
+ * environment sets them to exactly what EO read, which no configuration
+ * git reads during the push can change.
+ */
+async function pushRoute(repoPath: string, remote: string, branch: string): Promise<PushRoute | null> {
   const url = await pushDestination(repoPath, remote);
   if (url === null) return null;
   for (const key of ["receivepack", "vcs"]) {
     if ((await git(["config", "--get-all", `remote.${remote}.${key}`], repoPath)).ok) return null;
   }
   const place = await reachedBy(repoPath, url, branch);
-  return place === null ? null : { url, key: destinationKey(place) };
+  if (place === null) return null;
+  if (place.kind === "local") return { url, key: destinationKey(place.path), local: place.path, env: {} };
+  if (place.kind === "url") return { url, key: destinationKey(url), local: null, env: {} };
+  const configured = async (key: string): Promise<string | null> => {
+    const value = await git(["config", "--get", key], repoPath);
+    return value.ok ? value.stdout : null;
+  };
+  // Git's own order: the environment's command, then the configured one,
+  // then the program `GIT_SSH` names, then `ssh`.
+  const given = process.env["GIT_SSH_COMMAND"];
+  const program = process.env["GIT_SSH"];
+  const command = given ?? (await configured("core.sshCommand")) ?? shellWord(program !== undefined && program !== "" ? program : "ssh");
+  const variant = process.env["GIT_SSH_VARIANT"] ?? (await configured("ssh.variant")) ?? "auto";
+  return { url, key: destinationKey(`${url}\0${command}\0${variant}`), local: null, env: { GIT_SSH_COMMAND: command, GIT_SSH_VARIANT: variant } };
 }
 
-/** The transports whose URL alone names the repository a push reaches. */
-const ROUTED_SCHEMES = new Set(["https", "http", "ssh", "git", "git+ssh", "ssh+git"]);
+/** The transports whose URL alone names the server a push reaches. */
+const URL_SCHEMES = new Set(["https", "http"]);
+/** The transports git reaches over SSH. */
+const SSH_SCHEMES = new Set(["ssh", "git+ssh", "ssh+git"]);
 
 /**
  * The place a push of `branch` to `url` reaches, as EO records it, or
- * null where the URL alone does not say (EO-910).
+ * null where EO cannot say (EO-910).
  *
- * A network URL — `https://`, `ssh://`, `git://`, `user@host:path` — is
- * its own answer: the server it names is the one that takes the push. A
- * local path is not. A symlink anywhere in it can be pointed at another
- * repository with nothing in git's configuration changing, so a path is
- * recorded as the repository it resolves to now (`localRepository`), and
- * a push to the same path once the symlink points elsewhere is a push to
- * somewhere else. It is resolved as the system resolves it, a symlink
- * before the `..` after it, as git's own `chdir` into it does; never
- * tidied first, which would take `link/../x` for a sibling of `link`.
- * Anything else — a remote helper (`<transport>::<address>`, a scheme
- * git hands to `git-remote-<scheme>`), a `file://` URL git would decode
- * or that names a drive, a path git would expand (`~`) — decides where
- * it lands by means EO cannot check, and is recorded as no one place.
+ * An `https://` URL is its own answer: the server it names is the one
+ * that takes the push. An SSH one — `ssh://`, `user@host:path` — is
+ * that, by the command git reaches it with (`pushRoute`). A local path
+ * is not. A symlink anywhere in it can be pointed at another repository
+ * with nothing in git's configuration changing, so a path is recorded as
+ * the repository it resolves to (`localRepository`), and a push to the
+ * same path once the symlink points elsewhere is a push to somewhere
+ * else. It is resolved as the system resolves it, a symlink before the
+ * `..` after it, as git's own `chdir` into it does; never tidied first,
+ * which would take `link/../x` for a sibling of `link`; and a relative
+ * one from the top of the checkout, where git runs. Anything else — a
+ * remote helper (`<transport>::<address>`, a scheme git hands to
+ * `git-remote-<scheme>`), `git://`, which `core.gitProxy` can send
+ * anywhere, a `file://` URL git would decode, a path git would expand
+ * (`~`), any local path on Windows, where EO cannot hold which
+ * repository a push goes into — is recorded as no one place.
  */
-async function reachedBy(repoPath: string, url: string, branch: string): Promise<string | null> {
+async function reachedBy(
+  repoPath: string,
+  url: string,
+  branch: string,
+): Promise<{ kind: "url" } | { kind: "ssh" } | { kind: "local"; path: string } | null> {
   if (/^[A-Za-z][A-Za-z0-9+.-]*::/.test(url)) return null;
+  const local = async (path: string): Promise<{ kind: "local"; path: string } | null> => {
+    if (process.platform === "win32") return null;
+    const top = await git(["rev-parse", "--show-toplevel"], repoPath);
+    const base = top.ok && top.stdout !== "" ? top.stdout : repoPath;
+    const real = await localRepository(isAbsolute(path) ? path : `${base}${sep}${path}`, branch);
+    return real === null ? null : { kind: "local", path: real };
+  };
   const scheme = /^([A-Za-z][A-Za-z0-9+.-]*):\/\//.exec(url)?.[1]?.toLowerCase();
-  if (scheme === "file") {
-    return process.platform !== "win32" && url.startsWith("file:///") && !url.includes("%") ? localRepository(url.slice("file://".length), branch) : null;
-  }
-  if (scheme !== undefined) return ROUTED_SCHEMES.has(scheme) ? url : null;
+  if (scheme === "file") return url.startsWith("file:///") && !url.includes("%") ? local(url.slice("file://".length)) : null;
+  if (scheme !== undefined) return URL_SCHEMES.has(scheme) ? { kind: "url" } : SSH_SCHEMES.has(scheme) ? { kind: "ssh" } : null;
   // Git's own test: a path unless a colon comes before any slash, which
   // makes it `host:path` over SSH — a drive letter aside, on Windows.
   const colon = url.indexOf(":");
   const slash = url.indexOf("/");
   const drive = process.platform === "win32" && /^[A-Za-z]:[\\/]/.test(url);
-  if (colon !== -1 && !(slash !== -1 && slash < colon) && !drive) return url;
+  if (colon !== -1 && !(slash !== -1 && slash < colon) && !drive) return { kind: "ssh" };
   if (url.startsWith("~")) return null;
-  return localRepository(isAbsolute(url) ? url : `${repoPath}${sep}${url}`, branch);
+  return local(url);
 }
 
 /**
@@ -614,15 +733,15 @@ export function pushRefusal(porcelain: string, refspec: string): string | null {
 
 /**
  * A push that went through says which commit git sent (`head`: the one
- * EO read, since the gate stops git sending any other; null where git
- * ran no gate, so it cannot be said), whether that moved the remote's
- * branch, and where it went (`destinationKey`, or null). One that failed
- * says the commit EO read to send, what git said, which commit it
- * published anyway, if any, where it was going, and why it was refused:
+ * EO read, which is what the push names), whether that moved the
+ * remote's branch, and where it went (`destinationKey`, or null). One
+ * that failed says the commit it was to send — the one git refused,
+ * where it refused one — what git said, which commit it published
+ * anyway, if any, where it was going, and why it was refused:
  * `diverged`, refused for the ref by every account git gave;
  * `destination`, never sent, because a lease's destination does not
- * hold; `changed`, never sent where the branch was not at the commit EO
- * was to send; anything else `other` — and, in `status`, how git refused
+ * hold; `changed`, never sent where a lease's branch has moved on from
+ * the commit it was to send; anything else `other` — and, in `status`, how git refused
  * the ref (`pushRefusal`).
  */
 export type PushOutcome =
