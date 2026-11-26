@@ -40,8 +40,8 @@ catalogs:
       specifier: 5.107.1
       version: 5.107.1
     '@types/better-sqlite3':
-      specifier: 7.6.13
-      version: 7.6.13
+      specifier: 9.6.0
+      version: 9.6.0
     '@types/node':
       specifier: 26.6.6
       version: 26.6.6
@@ -191,7 +191,7 @@ importers:
         version: 13.2.0
       drizzle-orm:
         specifier: 'catalog:'
-        version: 0.45.4(@types/better-sqlite3@7.6.13)(better-sqlite3@13.2.0)
+        version: 0.45.4(@types/better-sqlite3@9.6.0)(better-sqlite3@13.2.0)
       electron-updater:
         specifier: ^6.8.11
         version: 6.8.11
@@ -240,7 +240,7 @@ importers:
         version: 16.3.3(@testing-library/dom@10.4.1)(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
       '@types/better-sqlite3':
         specifier: 'catalog:'
-        version: 7.6.13
+        version: 9.6.0
       '@types/node':
         specifier: 'catalog:'
         version: 26.6.6
@@ -1547,8 +1547,8 @@ packages:
   '@types/aria-query@5.0.4':
     resolution: {integrity: sha512-rfT93uj5s0PRL7EzccGMs3brplhcrghnDoV26NqKhCAS1hVo+WdNsPvE/yb6ilfr5hi2MEk6d5EWJTKdxg8jVw==}
 
-  '@types/better-sqlite3@7.6.13':
-    resolution: {integrity: sha512-NMv9ASNARoKksWtsq/SHakpYAYnhBrQgGD8zkLYk/jaK8jUGn08CfEdTRgYhMypUQAfzSP8W6gNLe0q19/t4VA==}
+  '@types/better-sqlite3@9.6.0':
+    resolution: {integrity: sha512-ZEEwBSgMu7GYJOynoagg5X9JbxfL6dTJDsgViJIqh67jV44kyOr9RXfmFjLK5rzC4MWssP06t9hu/JwGDnUbCg==}
 
   '@types/cacheable-request@6.0.3':
     resolution: {integrity: sha512-IQ3EbTzGxIigb1I3qPZc1rWJnH0BmSKv5QYTalEwweFvyBDLSAe24zP0le/hyi7ecGfZVlIVAg4BZqb8WBwKqw==}
@@ -5056,7 +5056,7 @@ snapshots:
 
   '@types/aria-query@5.0.4': {}
 
-  '@types/better-sqlite3@7.6.13':
+  '@types/better-sqlite3@9.6.0':
     dependencies:
       '@types/node': 26.6.6
 
@@ -5752,9 +5752,9 @@ snapshots:
       esbuild: 0.25.12
       tsx: 4.23.1
 
-  drizzle-orm@0.45.4(@types/better-sqlite3@7.6.13)(better-sqlite3@13.2.0):
+  drizzle-orm@0.45.4(@types/better-sqlite3@9.6.0)(better-sqlite3@13.2.0):
     optionalDependencies:
-      '@types/better-sqlite3': 7.6.13
+      '@types/better-sqlite3': 9.6.0
       better-sqlite3: 13.2.0
 
   dunder-proto@1.0.1:
