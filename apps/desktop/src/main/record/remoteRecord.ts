@@ -9,7 +9,7 @@ import { askAgentAbout, getComment } from "../db/repos/commentsRepo.js";
 import { mirrorRecordComment } from "./drain.js";
 import { recordAssistBoard } from "../roles/assist.js";
 import { upsertReplicaItem } from "../db/repos/replicaRepo.js";
-import { forgetMessage, upsertReplicaMessage } from "../db/repos/messagesRepo.js";
+import { forgetMessage, markMessageHeldHere, messageHolder, upsertReplicaMessage } from "../db/repos/messagesRepo.js";
 import { MessageRefusal, openMessageOf } from "../messages/messages.js";
 import { noticeOfferedAgentMissing } from "./stepAgentsHere.js";
 import { emitPush } from "../ipc/push.js";
@@ -472,6 +472,9 @@ export function createRemoteRecord(options: RemoteRecordOptions): RemoteRecord {
         if (error instanceof MessageRefusal) return { ok: false, problem: error.message };
         throw error;
       }
+      // A message already here at the upgrade that nothing proved this
+      // desktop's own or a copy (migration 0184): asked here to find out.
+      const unplaced = messageHolder(db, request.messageId) === "unknown";
       const press = { deviceId: options.deviceId, messageId: request.messageId, how: request.how, answer: request.answer };
       // A press made for this desktop's person by its assistant or an
       // outside MCP client goes on a channel of its own, carrying who
@@ -487,7 +490,9 @@ export function createRemoteRecord(options: RemoteRecordOptions): RemoteRecord {
         if (answer.unreachable) {
           return {
             ok: false,
-            problem: `This message is on your organisation's record, which could not be reached, so EO cannot say whether that was taken. The Inbox shows where the message stands once the record answers again: ${answer.problem}`,
+            problem: unplaced
+              ? `EO cannot tell whether this message is this desktop's own or your organisation's record's — it was here before EO kept which — and the record could not be reached to ask, so EO cannot say whether that was taken. Try again once the record answers: ${answer.problem}`
+              : `This message is on your organisation's record, which could not be reached, so EO cannot say whether that was taken. The Inbox shows where the message stands once the record answers again: ${answer.problem}`,
           };
         }
         // A record older than the delegated channel: it ran nothing. That
@@ -516,6 +521,13 @@ export function createRemoteRecord(options: RemoteRecordOptions): RemoteRecord {
         throw new Error(`Your organisation's record did not take that: ${answer.problem}`);
       }
       const { message, problem } = answer.data;
+      if (message === null && unplaced) {
+        // The record has no such message of this person's, so one not
+        // known to be a copy is this desktop's own (EO-918): settled as
+        // such, never deleted. The caller answers it here.
+        markMessageHeldHere(db, request.messageId);
+        return { ok: false, problem: problem ?? "Your organisation's record has no such message; it is this desktop's own." };
+      }
       if (message !== null) {
         upsertReplicaMessage(db, message);
         emitPush("messages:changed", {});

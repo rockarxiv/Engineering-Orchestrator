@@ -4092,7 +4092,8 @@ describe("0174: a side call's cache figures and fork (EO-811)", () => {
 });
 
 describe("0184: whether a message is a replica's copy of the record's (EO-918)", () => {
-  it("marks a message about a moved project written after the move, and leaves one written before it and one about no project as this desktop's own", () => {
+  /** A database at 0183 holding these messages, with a messages cursor kept or not, migrated on to today; answers each message's `from_record`. */
+  function upgraded(pulledBefore: boolean): Record<string, unknown> {
     const handle = openDb(":memory:");
     const tempDir = mkdtempSync(join(tmpdir(), "eo-message-from-record-"));
     try {
@@ -4100,28 +4101,49 @@ describe("0184: whether a message is a replica's copy of the record's (EO-918)",
       runMigrations(handle.db, tempDir);
       handle.db.run(sql`INSERT INTO projects (id, name, key_prefix, created_at, updated_at, managed_at) VALUES ('moved', 'Moved', 'MOV', 1, 1, 100)`);
       handle.db.run(sql`INSERT INTO projects (id, name, key_prefix, created_at, updated_at) VALUES ('kept', 'Kept', 'KEP', 1, 1)`);
-      for (const [id, projectId, createdAt] of [
-        ["before-the-move", "moved", 50],
-        ["after-the-move", "moved", 150],
-        ["kept-project", "kept", 150],
-        ["no-project", null, 150],
+      handle.db.run(sql`INSERT INTO projects (id, name, key_prefix, created_at, updated_at, adopting_at) VALUES ('moving', 'Moving', 'MVG', 1, 1, 90)`);
+      if (pulledBefore) handle.db.run(sql`INSERT INTO app_settings (key, value, updated_at) VALUES ('record.messagesCursor', '{"ts":5,"id":"x","deviceId":"d"}', 1)`);
+      for (const [id, projectId, createdAt, subject] of [
+        ["moved-before-the-move", "moved", 50, null],
+        ["moved-after-the-move", "moved", 150, null],
+        ["moved-with-a-subject", "moved", 150, "conflict-1"],
+        ["moving-project", "moving", 150, null],
+        ["kept-project", "kept", 150, null],
+        ["no-project", null, 150, null],
+        ["no-project-with-a-subject", null, 150, "scope-1"],
       ] as const) {
         handle.db.run(
-          sql`INSERT INTO messages (id, recipient_id, project_id, source, body, created_at, handled_at, handled_how) VALUES (${id}, 'anna', ${projectId}, 'template_conflict', 'Body', ${createdAt}, 200, 'answered')`,
+          sql`INSERT INTO messages (id, recipient_id, project_id, source, body, created_at, handled_at, handled_how, subject) VALUES (${id}, 'anna', ${projectId}, 'template_conflict', 'Body', ${createdAt}, 200, 'answered', ${subject})`,
         );
       }
 
       runMigrations(handle.db, join(dirname(fileURLToPath(import.meta.url)), "migrations"));
 
-      expect(handle.db.all(sql`SELECT id, from_record FROM messages ORDER BY id`)).toEqual([
-        { id: "after-the-move", from_record: 1 },
-        { id: "before-the-move", from_record: 0 },
-        { id: "kept-project", from_record: 0 },
-        { id: "no-project", from_record: 0 },
-      ]);
+      return Object.fromEntries(handle.db.all<{ id: string; from_record: unknown }>(sql`SELECT id, from_record FROM messages`).map((row) => [row.id, row.from_record]));
     } finally {
       handle.close();
       rmSync(tempDir, { recursive: true, force: true });
     }
+  }
+
+  it("marks a message this desktop's own only on evidence the row carries, and leaves every other one not known — whatever the clocks say", () => {
+    expect(upgraded(true)).toEqual({
+      // About a moved project: a copy, or sent here before the move —
+      // which the move's timestamp cannot tell, so neither is assumed.
+      "moved-before-the-move": null,
+      "moved-after-the-move": null,
+      // A replica's copy never has a subject.
+      "moved-with-a-subject": 0,
+      "moving-project": null,
+      // No copy is ever about a project kept here.
+      "kept-project": 0,
+      // A desktop that has pulled may hold the record's message about a job it does not hold.
+      "no-project": null,
+      "no-project-with-a-subject": 0,
+    });
+  });
+
+  it("marks a message about no project this desktop's own on a desktop that never pulled its person's messages", () => {
+    expect(upgraded(false)).toMatchObject({ "no-project": 0, "moved-after-the-move": null, "kept-project": 0 });
   });
 });

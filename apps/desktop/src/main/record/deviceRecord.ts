@@ -6,7 +6,7 @@ import type { PostCommentInput } from "../db/repos/commentsRepo.js";
 import { drainToRecord, type DrainResult } from "./drain.js";
 import { recordFor, type LocalItemRecord } from "./localRecord.js";
 import type { ItemRecord, MemoryWriteRequest, OfferWorkInput, TransitionCommand, WorkOffer } from "./record.js";
-import { getConsolidation, getItemType, getUpdateConflict, isRecordCopy, memoryEntryProjectId, memoryScopeProjectId } from "../db/repos/index.js";
+import { getConsolidation, getItemType, getUpdateConflict, memoryEntryProjectId, memoryScopeProjectId, messageHolder } from "../db/repos/index.js";
 import { sendMessageToAdmins } from "../messages/messages.js";
 import { heldByTheRecord } from "../gallery/templateUpdates.js";
 import { createRemoteRecord, type RemoteRecord } from "./remoteRecord.js";
@@ -561,9 +561,27 @@ export function createDeviceRecord(options: DeviceRecordOptions): DeviceRecord {
     // copied from the record, on the record — whatever it is about, a
     // record-held job's with no project included (EO-918); any other here,
     // one sent here before its project moved included.
-    handleMessage: (request) => {
-      const onTheRecord = options.isTheRecord !== true && isRecordCopy(db, request.messageId);
-      return (onTheRecord ? remote : local).handleMessage(request);
+    //
+    // One already here at the upgrade that nothing proved this desktop's
+    // own (migration 0184) is asked of the record first, never taken as
+    // either: the record answers it as its own, or says it has no such
+    // message — which `remote` settles as this desktop's own, and it is
+    // answered here. Signed out, nobody can say, so it is refused.
+    handleMessage: async (request) => {
+      if (options.isTheRecord === true) return local.handleMessage(request);
+      const holder = messageHolder(db, request.messageId);
+      if (holder === "record") return remote.handleMessage(request);
+      if (holder !== "unknown") return local.handleMessage(request);
+      if (!remote.linked()) {
+        return {
+          ok: false,
+          problem:
+            "This message was on this desktop before EO kept whether it is this desktop's own or your organisation's record's, and this desktop is not signed in to the organisation to ask, so nothing was changed. Sign this desktop in to the organisation again, then answer it.",
+        };
+      }
+      const there = await remote.handleMessage(request);
+      if (!there.ok && messageHolder(db, request.messageId) === "here") return local.handleMessage(request);
+      return there;
     },
 
     // The record that holds the conflict (EO-533). One this database

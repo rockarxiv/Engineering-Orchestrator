@@ -1,8 +1,9 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { HANDLED_MESSAGE_RETENTION_MS, notADesktopRefusal, type IpcPayload, type Job, type Message, type MessageSend, type Uuid } from "@eo/core";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AttachmentStorage } from "../attachments/storage.js";
 import type { DbHandle } from "../db/client.js";
@@ -62,6 +63,8 @@ interface Desktop {
   faultyRecord: boolean;
   /** Whether the record's door refuses this desktop's sign-in a delegated press, as one without a secrets key is (EO-918). */
   legacySignIn: boolean;
+  /** Whether the desktop has signed out of the organisation: no record to ask at all (EO-918). */
+  signedOut: boolean;
 }
 
 let recordDb: DbHandle;
@@ -110,7 +113,7 @@ function desktop(personId: Uuid, name: string): Desktop {
   const deviceId = issueDevice(recordDb.db, { personId, name, tokenHash: `hash-${name}`, secretsKeyHash: null }).id;
   const handle = openMigratedTestDb();
   setSetting(handle.db, MANAGED_PERSON_ID_KEY, personId);
-  const machine: Desktop = { handle, online: true, olderRecord: false, faultyRecord: false, legacySignIn: false, record: undefined as unknown as DeviceRecord };
+  const machine: Desktop = { handle, online: true, olderRecord: false, faultyRecord: false, legacySignIn: false, signedOut: false, record: undefined as unknown as DeviceRecord };
   const transport: RecordTransport = {
     async request(channel, payload) {
       if (!machine.online) return { ok: false, error: { message: "EO could not reach https://eo.example: fetch failed" } };
@@ -138,7 +141,7 @@ function desktop(personId: Uuid, name: string): Desktop {
       }
     },
   };
-  machine.record = createDeviceRecord({ db: handle.db, deviceId: () => deviceId, transport: () => transport, pullPageSize: 3 });
+  machine.record = createDeviceRecord({ db: handle.db, deviceId: () => deviceId, transport: () => (machine.signedOut ? null : transport), pullPageSize: 3 });
   return machine;
 }
 
@@ -173,6 +176,27 @@ function onTheRecord(): Message[] {
     .all()
     .map((row) => getMessage(recordDb.db, row.id))
     .filter((message): message is Message => message !== undefined);
+}
+
+/** 0184's own backfill, as the migration file has it — everything after the ALTER that adds the column. */
+const BACKFILL_0184 = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../db/migrations/0184_message_from_record.sql"), "utf8").split("--> statement-breakpoint")[1] as string;
+
+/**
+ * A desktop as a build from before 0183 left it, then upgraded (EO-918):
+ * its messages cursor in the shape kept then, who handled each message
+ * dropped as that build's pull dropped it, and where each lives as the
+ * migration decides it — null from the ALTER, then 0184's own backfill.
+ */
+function upgradeFromBefore0183(machine: Desktop): void {
+  const cursor = getSetting<Record<string, unknown>>(machine.handle.db, "record.messagesCursor", {});
+  if (cursor.ts !== undefined) setSetting(machine.handle.db, "record.messagesCursor", { ts: cursor.ts, id: cursor.id, deviceId: cursor.deviceId });
+  machine.handle.db.update(messages).set({ handledBy: null }).run();
+  machine.handle.db.update(messages).set({ fromRecord: null }).run();
+  machine.handle.db.run(sql.raw(BACKFILL_0184));
+}
+
+function fromRecordOn(machine: Desktop, id: string): boolean | null | undefined {
+  return machine.handle.db.select({ fromRecord: messages.fromRecord }).from(messages).where(eq(messages.id, id)).get()?.fromRecord;
 }
 
 function heldOn(machine: Desktop): string[] {
@@ -456,29 +480,120 @@ describe("a message about a project the organisation's record holds", () => {
     expect(getMessage(annaDesk.handle.db, aboutAJob.id)).toMatchObject({ handledHow: "answered", handledBy: { kind: "assistant", agentId: "the-assistant" } });
   });
 
-  it("is cleared from an upgraded desktop when the record swept a delegated press on one about a record-held job, and read again with who when it kept it (EO-918)", async () => {
-    const swept = insertMessage(recordDb.db, { recipientId: annaId, source: JOB_MESSAGE_SOURCE.skipped, body: "Skipped one Monday.", options: ["Leave it"] });
-    const kept = insertMessage(recordDb.db, { recipientId: annaId, source: JOB_MESSAGE_SOURCE.skipped, body: "Skipped another.", options: ["Leave it"] });
-    const at = Date.now() + 1_000;
-    markMessageHandled(recordDb.db, swept.id, "answered", "Leave it", at, { kind: "mcp_client" });
-    markMessageHandled(recordDb.db, kept.id, "dismissed", null, at + HANDLED_MESSAGE_RETENTION_MS, { kind: "assistant", agentId: "the-assistant" });
-    await annaLaptop.record.sync();
+  /** A message about a record-held job, as the record writes one — about no project — to Anna. */
+  function jobMessageOnTheRecord(body: string, at: number = Date.now()): Message {
+    return insertMessage(recordDb.db, { recipientId: annaId, source: JOB_MESSAGE_SOURCE.skipped, body, options: ["Run now", "Leave it"] }, at);
+  }
 
-    // The laptop as it stood before 0183: both pulled with who dropped,
-    // its cursor past them in the shape it kept then.
-    const cursor = getSetting<Record<string, unknown>>(annaLaptop.handle.db, "record.messagesCursor", {});
-    setSetting(annaLaptop.handle.db, "record.messagesCursor", { ts: cursor.ts, id: cursor.id, deviceId: cursor.deviceId });
-    annaLaptop.handle.db.update(messages).set({ handledBy: null }).run();
-    sweepHandledMessages(recordDb.db, at + HANDLED_MESSAGE_RETENTION_MS + 1);
-    expect(getMessage(recordDb.db, swept.id)).toBeUndefined();
+  it("asks the record about an upgraded desktop's message it cannot place before its first pull, and answers it there with who pressed (EO-918)", async () => {
+    const aboutAJob = jobMessageOnTheRecord("Monday report skipped a Monday.");
+    await annaDesk.record.sync();
+    upgradeFromBefore0183(annaDesk);
+    // About no project, on a desktop that has pulled: 0184 cannot say whose it is.
+    expect(fromRecordOn(annaDesk, aboutAJob.id)).toBeNull();
+    const { registerAllHandlers } = await import("../ipc/handlers.js");
+    registerAllHandlers(annaDesk.handle.db, undefined, { platform: fakePlatform(), record: annaDesk.record });
 
-    await annaLaptop.record.sync();
+    // Before the desktop has pulled since the upgrade.
+    const answered = await answerToolCall({ name: "message_answer", arguments: { messageId: aboutAJob.id, answer: "Leave it" } }, "admin", false, undefined, undefined, "the-assistant");
 
-    expect(getMessage(annaLaptop.handle.db, swept.id)).toBeUndefined();
-    expect(getMessage(annaLaptop.handle.db, kept.id)?.handledBy).toEqual({ kind: "assistant", agentId: "the-assistant" });
+    expect(answered.isError).toBe(false);
+    expect(getMessage(recordDb.db, aboutAJob.id)).toMatchObject({ handledHow: "answered", answer: "Leave it", handledBy: { kind: "assistant", agentId: "the-assistant" } });
+    expect(getMessage(annaDesk.handle.db, aboutAJob.id)).toMatchObject({ handledHow: "answered", handledBy: { kind: "assistant", agentId: "the-assistant" } });
+    expect(fromRecordOn(annaDesk, aboutAJob.id)).toBe(true);
   });
 
-  it("keeps a desktop's own handled message about a project it later moved across the re-read, and answers an open one there (EO-918)", async () => {
+  it("answers an upgraded desktop's own message here once the record says it has none such, and refuses one it cannot ask about signed out (EO-918)", async () => {
+    await annaDesk.record.sync();
+    // Two of the desk's own, about no project — a usage limit's, say — written here before the upgrade.
+    const limit = { recipientId: annaId, source: "runtime_limit", body: "Codex hit its plan limit.", options: ["Carry on now"] };
+    const first = await annaDesk.record.sendMessage(limit);
+    const second = await annaDesk.record.sendMessage(limit);
+    if (!first.ok || !second.ok) throw new Error("the desk did not send its own messages");
+    const [carryOn] = first.messages as [Message];
+    const [later] = second.messages as [Message];
+    upgradeFromBefore0183(annaDesk);
+    expect(fromRecordOn(annaDesk, carryOn.id)).toBeNull();
+
+    annaDesk.signedOut = true;
+    const refused = await annaDesk.record.handleMessage({ messageId: later.id, how: "dismissed", answer: null });
+    expect(refused.ok).toBe(false);
+    expect(refused.ok ? "" : refused.problem).toContain("not signed in to the organisation");
+    expect(getMessage(annaDesk.handle.db, later.id)?.handledAt).toBeNull();
+    expect(fromRecordOn(annaDesk, later.id)).toBeNull();
+    annaDesk.signedOut = false;
+
+    // The record could not be reached: nothing is claimed, nothing is settled.
+    annaDesk.online = false;
+    const unreached = await annaDesk.record.handleMessage({ messageId: later.id, how: "dismissed", answer: null });
+    expect(unreached.ok ? "" : unreached.problem).toContain("cannot tell whether this message is this desktop's own");
+    expect(fromRecordOn(annaDesk, later.id)).toBeNull();
+    annaDesk.online = true;
+
+    const pressed = await annaDesk.record.handleMessage({ messageId: carryOn.id, how: "answered", answer: "Carry on now", by: { kind: "mcp_client" } });
+
+    expect(pressed).toMatchObject({ ok: true, message: { handledHow: "answered", answer: "Carry on now", handledBy: { kind: "mcp_client" } } });
+    expect(getMessage(annaDesk.handle.db, carryOn.id)).toMatchObject({ handledHow: "answered", handledBy: { kind: "mcp_client" } });
+    expect(fromRecordOn(annaDesk, carryOn.id)).toBe(false);
+    expect(onTheRecord()).toEqual([]);
+  });
+
+  it("keeps what an upgraded desktop's first full re-read did not name as its own, and clears a delegated press the record swept (EO-918)", async () => {
+    const eightDaysAgo = Date.now() - HANDLED_MESSAGE_RETENTION_MS - 60_000;
+    const swept = jobMessageOnTheRecord("Skipped one Monday.", eightDaysAgo);
+    const kept = jobMessageOnTheRecord("Skipped another.");
+    markMessageHandled(recordDb.db, swept.id, "answered", "Leave it", eightDaysAgo + 1_000, { kind: "mcp_client" });
+    markMessageHandled(recordDb.db, kept.id, "dismissed", null, Date.now(), { kind: "assistant", agentId: "the-assistant" });
+    await annaLaptop.record.sync();
+    // And the laptop's own, about no project: one Anna answered, one open.
+    const own = await annaLaptop.record.sendMessage({ recipientId: annaId, source: "runtime_limit", body: "Codex hit its plan limit.", options: ["Carry on now"] });
+    const ownOpen = await annaLaptop.record.sendMessage({ recipientId: annaId, source: "runtime_limit", body: "Claude hit its plan limit.", options: ["Carry on now"] });
+    if (!own.ok || !ownOpen.ok) throw new Error("the laptop did not send its own messages");
+    const [answeredHere] = own.messages as [Message];
+    const [openHere] = ownOpen.messages as [Message];
+    markMessageHandled(annaLaptop.handle.db, answeredHere.id, "answered", "Carry on now", Date.now());
+    // The record's retention takes the old press while the laptop runs the old build.
+    sweepHandledMessages(recordDb.db);
+    expect(getMessage(recordDb.db, swept.id)).toBeUndefined();
+    upgradeFromBefore0183(annaLaptop);
+    for (const id of [swept.id, kept.id, answeredHere.id, openHere.id]) expect(fromRecordOn(annaLaptop, id)).toBeNull();
+
+    await annaLaptop.record.sync();
+
+    // Not left reading as Anna's press.
+    expect(getMessage(annaLaptop.handle.db, swept.id)).toBeUndefined();
+    expect(getMessage(annaLaptop.handle.db, kept.id)?.handledBy).toEqual({ kind: "assistant", agentId: "the-assistant" });
+    expect(fromRecordOn(annaLaptop, kept.id)).toBe(true);
+    // Its own, kept and settled as its own.
+    expect(getMessage(annaLaptop.handle.db, answeredHere.id)).toMatchObject({ handledHow: "answered", handledBy: { kind: "person" } });
+    expect(getMessage(annaLaptop.handle.db, openHere.id)?.handledAt).toBeNull();
+    expect(fromRecordOn(annaLaptop, answeredHere.id)).toBe(false);
+    expect(fromRecordOn(annaLaptop, openHere.id)).toBe(false);
+  });
+
+  it("clears from an upgraded desktop a delegated press the record's 100-handled cap took, over a re-read longer than one pass (EO-918)", async () => {
+    const capped = jobMessageOnTheRecord("Skipped one Monday.", Date.now() - 60_000);
+    markMessageHandled(recordDb.db, capped.id, "answered", "Leave it", Date.now() - 50_000, { kind: "mcp_client" });
+    await annaLaptop.record.sync();
+    // A hundred more of Anna's handled after it while the laptop was away, so the record's cap takes it.
+    for (let index = 0; index < 100; index += 1) {
+      const later = jobMessageOnTheRecord(`Skipped Monday ${String(index)}.`, Date.now() - 40_000);
+      markMessageHandled(recordDb.db, later.id, "dismissed", null, Date.now() - 30_000 + index);
+    }
+    sweepHandledMessages(recordDb.db);
+    expect(getMessage(recordDb.db, capped.id)).toBeUndefined();
+    upgradeFromBefore0183(annaLaptop);
+    expect(fromRecordOn(annaLaptop, capped.id)).toBeNull();
+
+    // A hundred at three a page is more than one pass reads.
+    await annaLaptop.record.sync();
+    expect(fromRecordOn(annaLaptop, capped.id)).toBeNull();
+    await annaLaptop.record.sync();
+
+    expect(getMessage(annaLaptop.handle.db, capped.id)).toBeUndefined();
+  });
+
+  it("keeps a desktop's own messages about a project it later moved, whatever the clocks say, and answers an open one there (EO-918)", async () => {
     // Anna's own project on her desk, with two messages EO sent there
     // before it moved: one she answered, one still open.
     const own = createProject(annaDesk.handle.db, { name: "Mine", keyPrefix: "MIN" });
@@ -488,25 +603,27 @@ describe("a message about a project the organisation's record holds", () => {
     const [answered] = answeredHere.messages as [Message];
     const [stillOpen] = openHere.messages as [Message];
     expect((await annaDesk.record.handleMessage({ messageId: answered.id, how: "answered", answer: "Keep mine" })).ok).toBe(true);
-    // The project moves to the record — which copies no messages.
+    // The project moves to the record — which copies no messages — and
+    // the record's clock is behind the desk's: the move reads as earlier
+    // than both messages were written.
     annaDesk.handle.db
       .update(projects)
-      .set({ managedAt: Date.now() + 1_000 })
+      .set({ managedAt: Date.now() - 60 * 60_000 })
       .where(eq(projects.id, own.id))
       .run();
-    // And a message the record sent about the project, handled by the
-    // assistant there and swept while the desk ran a build before 0183.
+    // And a message the record sent about a project of its own, handled
+    // by the assistant there and swept while the desk ran the old build.
     const fromTheRecord = await organisationProject();
     await carl.record.sendMessage(question(fromTheRecord, "local"));
     await annaDesk.record.sync();
     const copy = onTheRecord().find((message) => message.recipientId === annaId) as Message;
-    const at = Date.now() + 2_000;
-    markMessageHandled(recordDb.db, copy.id, "answered", "Take theirs", at, { kind: "assistant", agentId: "the-assistant" });
-    await annaDesk.record.sync();
-    const cursor = getSetting<Record<string, unknown>>(annaDesk.handle.db, "record.messagesCursor", {});
-    setSetting(annaDesk.handle.db, "record.messagesCursor", { ts: cursor.ts, id: cursor.id, deviceId: cursor.deviceId });
-    annaDesk.handle.db.update(messages).set({ handledBy: null }).where(eq(messages.id, copy.id)).run();
-    sweepHandledMessages(recordDb.db, at + HANDLED_MESSAGE_RETENTION_MS + 1);
+    const eightDaysAgo = Date.now() - HANDLED_MESSAGE_RETENTION_MS - 60_000;
+    markMessageHandled(recordDb.db, copy.id, "answered", "Take theirs", eightDaysAgo, { kind: "assistant", agentId: "the-assistant" });
+    // As the old build's pull wrote the press down, then.
+    annaDesk.handle.db.update(messages).set({ handledAt: eightDaysAgo, handledHow: "answered", answer: "Take theirs" }).where(eq(messages.id, copy.id)).run();
+    sweepHandledMessages(recordDb.db);
+    upgradeFromBefore0183(annaDesk);
+    for (const id of [answered.id, stillOpen.id, copy.id]) expect(fromRecordOn(annaDesk, id)).toBeNull();
 
     await annaDesk.record.sync();
 

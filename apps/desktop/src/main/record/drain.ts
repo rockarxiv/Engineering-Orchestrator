@@ -29,7 +29,7 @@ import { signedInPersonId } from "../identity/viewer.js";
 import { getComment, setCommentPinned, settleMention } from "../db/repos/commentsRepo.js";
 import { getItem } from "../db/repos/itemsRepo.js";
 import { getSetting, setSetting } from "../db/repos/settingsRepo.js";
-import { forgetHandledRecordMessages, forgetMessagesGoneFromTheRecord, upsertReplicaMessage } from "../db/repos/messagesRepo.js";
+import { forgetHandledRecordMessages, forgetMessagesGoneFromTheRecord, markUnplacedMessagesHeldHere, sweepHandledMessages, upsertReplicaMessage } from "../db/repos/messagesRepo.js";
 import { noticeMissingStepAgents, settleMissingStepAgents } from "./stepAgentsHere.js";
 import { emitPush } from "../ipc/push.js";
 import { z } from "zod";
@@ -1329,11 +1329,18 @@ const MESSAGES_CURSOR_KEY = "record.messagesCursor";
  */
 const MESSAGES_CURSOR_KEEPS_HANDLER = 1;
 
-function readMessagesCursor(db: Db, deviceId: string): RecordCursor {
-  const parsed = RecordCursorSchema.extend({ deviceId: z.string(), handledBy: z.literal(MESSAGES_CURSOR_KEEPS_HANDLER) }).safeParse(
+/**
+ * The cursor, and whether the pull it stands in is a read from the
+ * beginning not yet at its end (EO-918) — which may take more than one
+ * pass, and settles what it did not name only once it gets there.
+ */
+function readMessagesCursor(db: Db, deviceId: string): { cursor: RecordCursor; rereading: boolean } {
+  const parsed = RecordCursorSchema.extend({ deviceId: z.string(), handledBy: z.literal(MESSAGES_CURSOR_KEEPS_HANDLER), rereading: z.literal(true).optional() }).safeParse(
     getSetting<unknown>(db, MESSAGES_CURSOR_KEY, null),
   );
-  return parsed.success && parsed.data.deviceId === deviceId ? { ts: parsed.data.ts, id: parsed.data.id } : EMPTY_CURSOR;
+  return parsed.success && parsed.data.deviceId === deviceId
+    ? { cursor: { ts: parsed.data.ts, id: parsed.data.id }, rereading: parsed.data.rereading === true }
+    : { cursor: EMPTY_CURSOR, rereading: false };
 }
 
 /**
@@ -1351,8 +1358,11 @@ async function pullMessages(options: DrainOptions, pullPageSize: number, result:
   const now = options.now?.() ?? Date.now();
   let pulled = 0;
   let stillOpen: readonly string[] | null = null;
+  let reread = false;
   for (let page = 0; page < MAX_PULL_PAGES; page += 1) {
-    const cursor = readMessagesCursor(db, deviceId);
+    const kept = readMessagesCursor(db, deviceId);
+    const cursor = kept.cursor;
+    const fromTheBeginning = cursor.ts === EMPTY_CURSOR.ts && cursor.id === EMPTY_CURSOR.id;
     const pull = await options.record.ask("record:messages", { deviceId, cursor, limit: pullPageSize });
     if (!pull.ok) {
       result.offline = pull.unreachable;
@@ -1364,13 +1374,27 @@ async function pullMessages(options: DrainOptions, pullPageSize: number, result:
     // replica holds handled is replaced by what the record still keeps,
     // which this pass writes back with who handled it. A copy the record
     // has swept is not left reading as the person's press.
-    if (cursor.ts === EMPTY_CURSOR.ts && cursor.id === EMPTY_CURSOR.id) {
+    if (fromTheBeginning) {
       pulled += forgetHandledRecordMessages(db);
     }
     for (const message of pull.data.messages) pulled += place(options, "message", message.id, message, now) ? 1 : 0;
-    setSetting(db, MESSAGES_CURSOR_KEY, { ...pull.data.cursor, deviceId, handledBy: MESSAGES_CURSOR_KEEPS_HANDLER });
+    const rereading = fromTheBeginning || kept.rereading;
+    setSetting(db, MESSAGES_CURSOR_KEY, { ...pull.data.cursor, deviceId, handledBy: MESSAGES_CURSOR_KEEPS_HANDLER, ...(rereading && pull.data.more ? { rereading: true } : {}) });
     stillOpen = pull.data.open;
-    if (!pull.data.more) break;
+    if (!pull.data.more) {
+      reread = rereading;
+      break;
+    }
+  }
+  // A read from the beginning has reached its end: the record has named
+  // every message it keeps for this person, and each it named is a copy
+  // now. One already here at the upgrade and still not known to be a copy
+  // (migration 0184) is one the record does not hold — this desktop's
+  // own, settled so (EO-918), never deleted for being unknown. A handled
+  // one the record swept goes by the same retention applied here, since
+  // what the record kept is written back beside it.
+  if (reread && markUnplacedMessagesHeldHere(db) > 0) {
+    pulled += sweepHandledMessages(db, now);
   }
   // An open copy the record no longer holds open was handled elsewhere
   // and then swept there — it will never page again, and would otherwise
