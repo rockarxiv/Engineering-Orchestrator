@@ -1030,7 +1030,9 @@ git update-ref refs/heads/eo/APP-1 ${head}
     it("pushes as git would, to no one place, where its temporary directory cannot be made, and sends no lease", async () => {
       useTmp(join(scratch, "missing"));
       const pushed = await pushBranch(repoPath, "bare", "eo/APP-1");
-      expect(pushed).toMatchObject({ ok: true, updated: true, destination: null });
+      // Without the gate's line nothing tells git's account from a hook's,
+      // so the push is no receipt of EO's.
+      expect(pushed).toMatchObject({ ok: true, updated: false, destination: null });
       expect(await remoteTip("eo/APP-1")).toBe(await localTip());
 
       useTmp(tmp);
@@ -1045,6 +1047,42 @@ git update-ref refs/heads/eo/APP-1 ${head}
 
       expect(leased).toMatchObject({ ok: false, published: null, rejection: "destination" });
       expect(await remoteTip("eo/APP-1")).toBe(old);
+    });
+
+    it("takes nothing a configured hook prints for a push it refused, where its temporary directory cannot be made", async () => {
+      await pushBranch(repoPath, "bare", "eo/APP-1");
+      const receipt = await localTip();
+      await commit(repoPath, "more.ts", "// more\n");
+      // A preview of exactly the push EO makes, then a refusal of it.
+      writeFileSync(
+        join(scratch, "preview.sh"),
+        `#!/bin/sh\n[ -z "$IN_PREVIEW" ] || exit 0\nIN_PREVIEW=1; export IN_PREVIEW\nh=$(git rev-parse refs/heads/eo/APP-1)\ngit push --dry-run --porcelain --no-verify "$1" "$h^{commit}:refs/heads/eo/APP-1"\nexit 1\n`,
+        { mode: 0o755 },
+      );
+      await run(["config", "hook.preview.command", `'${join(scratch, "preview.sh")}'`], repoPath);
+      await run(["config", "hook.preview.event", "pre-push"], repoPath);
+      await ownHook("exit 1");
+      useTmp(join(scratch, "missing"));
+
+      const refused = await pushBranch(repoPath, "bare", "eo/APP-1");
+
+      expect(refused).toMatchObject({ ok: false, published: null, destination: null });
+      expect(await remoteTip("eo/APP-1")).toBe(receipt);
+    });
+
+    it("publishes no submodule commit a refused push needs, and the ones a push that went through needs, where its temporary directory cannot be made", async () => {
+      const { sub, subTip } = await withSubmodule();
+      await ownHook("exit 1");
+      useTmp(join(scratch, "missing"));
+
+      expect(await pushBranch(repoPath, "bare", "eo/APP-1")).toMatchObject({ ok: false, published: null });
+      expect(await remoteTip("eo/APP-1")).toBeNull();
+      expect(await subTip()).toBeNull();
+
+      await ownHook(":");
+      expect(await pushBranch(repoPath, "bare", "eo/APP-1")).toMatchObject({ ok: true, destination: null });
+      expect(await remoteTip("eo/APP-1")).toBe(await localTip());
+      expect(await subTip()).toBe(await run(["rev-parse", "HEAD"], sub));
     });
 
     // A directory its owner can still write to is one a root test runner
@@ -1123,6 +1161,43 @@ git update-ref refs/heads/eo/APP-1 ${head}
     expect(again).toMatchObject({ ok: true, updated: false });
   });
 
+  it("takes nothing a push run inside its own prints for git's account, though that push runs EO's gate too", async () => {
+    // A configured hook's dry run of exactly EO's push, hooks and all: it
+    // inherits the gate from git's configuration and goes through it, and
+    // then the hook refuses EO's push before EO's own gate ever runs.
+    await pushBranch(repoPath, "bare", "eo/APP-1");
+    const receipt = await localTip();
+    await commit(repoPath, "more.ts", "// more\n");
+    const previewed = join(scratch, "previewed");
+    const hooksSeen = join(scratch, "hooks-seen");
+    writeFileSync(
+      join(scratch, "preview.sh"),
+      `#!/bin/sh\n[ -z "$IN_PREVIEW" ] || exit 0\nIN_PREVIEW=1; export IN_PREVIEW\ngit config core.hooksPath > ${JSON.stringify(hooksSeen)}\nh=$(git rev-parse refs/heads/eo/APP-1)\ngit push --dry-run --porcelain "$1" "$h^{commit}:refs/heads/eo/APP-1" | tee -a ${JSON.stringify(previewed)}\nexit 1\n`,
+      { mode: 0o755 },
+    );
+    await run(["config", "hook.preview.command", `'${join(scratch, "preview.sh")}'`], repoPath);
+    await run(["config", "hook.preview.event", "pre-push"], repoPath);
+    const registers = (await git(["hook", "list", "pre-push"], repoPath)).ok;
+
+    const refused = await pushBranch(repoPath, "bare", "eo/APP-1");
+
+    // Git runs every pre-push hook before it decides: EO's gate ran for its
+    // own push, once — the dry run's run of it marked nothing.
+    expect(refused).toMatchObject({ ok: false, published: null, rejection: "other", destination: at(barePath) });
+    expect(await remoteTip("eo/APP-1")).toBe(receipt);
+    if (registers) {
+      // The dry run went through EO's gate, and printed git's line for the push it previewed.
+      expect(readFileSync(hooksSeen, "utf8")).toContain("eo-push-");
+      expect(readFileSync(previewed, "utf8")).toContain(`${await localTip()}^{commit}:refs/heads/eo/APP-1\t${receipt.slice(0, 7)}`);
+    }
+
+    // Once the hook lets EO's push go, the dry run inside it still is not EO's push.
+    writeFileSync(join(scratch, "preview.sh"), readFileSync(join(scratch, "preview.sh"), "utf8").replace("exit 1", "exit 0"));
+    const pushed = await pushBranch(repoPath, "bare", "eo/APP-1");
+    expect(pushed).toMatchObject({ ok: true, updated: true, destination: at(barePath) });
+    expect(await remoteTip("eo/APP-1")).toBe(await localTip());
+  });
+
   it("pushes through a temporary directory named relative to EO's working directory, not the checkout's", async () => {
     const saved = { cwd: process.cwd(), TMPDIR: process.env["TMPDIR"] };
     // EO's working directory and the checkout apart, and `tmp` only in EO's.
@@ -1143,7 +1218,8 @@ git update-ref refs/heads/eo/APP-1 ${head}
     }
   });
 
-  it("publishes the submodule commits a push needs where the repository pushes them on demand, and a lease still sends only its commit", async () => {
+  /** A submodule on its own bare remote, moved on by a commit the superproject's branch needs and that remote lacks. */
+  async function withSubmodule(): Promise<{ sub: string; subTip: () => Promise<string | null> }> {
     const subBare = join(scratch, "sub.git");
     await run(["init", "--bare", subBare], scratch);
     const seed = join(scratch, "sub-seed");
@@ -1168,6 +1244,11 @@ git update-ref refs/heads/eo/APP-1 ${head}
       const tip = await git(["rev-parse", "--verify", "--quiet", "refs/heads/eo/APP-1"], subBare);
       return tip.ok ? tip.stdout : null;
     };
+    return { sub, subTip };
+  }
+
+  it("publishes the submodule commits a push needs where the repository pushes them on demand, and a lease still sends only its commit", async () => {
+    const { sub, subTip } = await withSubmodule();
 
     const pushed = await pushBranch(repoPath, "bare", "eo/APP-1");
 
@@ -1191,6 +1272,24 @@ git update-ref refs/heads/eo/APP-1 ${head}
     const leased = await pushBranch(repoPath, "bare", "eo/APP-1", { forceWithLease: { expect: old, destination: pushed.destination!, send } });
     expect(leased).toMatchObject({ ok: true, updated: true, head: send });
     expect(await remoteTip("eo/APP-1")).toBe(send);
+    expect(await subTip()).toBe(await run(["rev-parse", "HEAD"], sub));
+  });
+
+  it("publishes no submodule commit where the repository's own pre-push hook refuses the push, as git does", async () => {
+    const { sub, subTip } = await withSubmodule();
+    const hooks = join(repoPath, await run(["rev-parse", "--git-path", "hooks"], repoPath));
+    mkdirSync(hooks, { recursive: true });
+    writeFileSync(join(hooks, "pre-push"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+
+    const refused = await pushBranch(repoPath, "bare", "eo/APP-1");
+
+    expect(refused).toMatchObject({ ok: false, published: null, rejection: "other" });
+    expect(await remoteTip("eo/APP-1")).toBeNull();
+    expect(await subTip()).toBeNull();
+
+    // And once it lets the push go, the submodule's commit goes before the superproject's.
+    unlinkSync(join(hooks, "pre-push"));
+    expect(await pushBranch(repoPath, "bare", "eo/APP-1")).toMatchObject({ ok: true, updated: true });
     expect(await subTip()).toBe(await run(["rev-parse", "HEAD"], sub));
   });
 

@@ -1590,6 +1590,58 @@ describe("before it opens or reuses one (EO-429)", () => {
       expect(notes(item).some((body) => body.includes("has diverged"))).toBe(false);
     });
 
+    it("keeps its record of its last push where a refused push only looked as though it moved the branch, on either path, and leases over it after", async () => {
+      const item = story({ git: { branch: "eo/API-4", pullRequest: PULL_REQUEST } });
+      const worktree = worktreeFor(item);
+      await mergeRequestStep(item, onlyFinds(found));
+      const old = remoteTip()!;
+      expect(gitStateOf(getItem(handle.db, item.id)!).pushedHead).toEqual(pushedTo(old));
+      commitIn(worktree, "more.ts", "more work");
+      // A hook its configuration registers previews exactly EO's push — by
+      // a dry run that goes through EO's gate, as git's configuration
+      // hands it on — and then refuses it.
+      const hook = join(scratch, "preview.sh");
+      writeFileSync(
+        hook,
+        `#!/bin/sh\n[ -z "$IN_PREVIEW" ] || exit 0\nIN_PREVIEW=1; export IN_PREVIEW\nh=$(git rev-parse refs/heads/eo/API-4)\ngit push --dry-run --porcelain "$1" "$h^{commit}:refs/heads/eo/API-4"\nexit 1\n`,
+        { mode: 0o755 },
+      );
+      git(["config", "hook.preview.command", `'${hook}'`], repoPath);
+      git(["config", "hook.preview.event", "pre-push"], repoPath);
+      const saved = { TMPDIR: process.env["TMPDIR"], TEMP: process.env["TEMP"], TMP: process.env["TMP"] };
+      try {
+        // With EO's gate, and where its temporary directory cannot be made.
+        for (const tmp of [saved.TMPDIR, join(scratch, "missing")]) {
+          for (const key of ["TMPDIR", "TEMP", "TMP"] as const) {
+            if (tmp === undefined) delete process.env[key];
+            else process.env[key] = tmp;
+          }
+          for (const pullRequest of [null, PULL_REQUEST]) {
+            updateItem(handle.db, item.id, { git: { pullRequest } });
+
+            const result = await mergeRequestStep(item, onlyFinds(found));
+
+            expect(result).not.toMatchObject({ ok: true, result: "opened" });
+            expect(remoteTip()).toBe(old);
+            expect(gitStateOf(getItem(handle.db, item.id)!).pushedHead).toEqual(pushedTo(old));
+          }
+        }
+      } finally {
+        for (const [key, value] of Object.entries(saved)) {
+          if (value === undefined) delete process.env[key];
+          else process.env[key] = value;
+        }
+      }
+
+      // The record still holds what the remote does, so the implementer's rebase goes over it.
+      git(["config", "--unset", "hook.preview.event"], repoPath);
+      rewriteIn(worktree);
+      const rewritten = localTip();
+      expect(await mergeRequestStep(item, onlyFinds(found))).toMatchObject({ ok: true, result: "opened" });
+      expect(remoteTip()).toBe(rewritten);
+      expect(gitStateOf(getItem(handle.db, item.id)!).pushedHead).toEqual(pushedTo(rewritten));
+    });
+
     it("carries on to open the pull request when none is recorded yet", async () => {
       // EO pushed, then the forge refused to create the pull request: the
       // push is recorded all the same, because it happened.
