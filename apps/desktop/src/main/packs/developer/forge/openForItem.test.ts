@@ -1636,6 +1636,24 @@ describe("before it opens or reuses one (EO-429)", () => {
       expect(notes(item).some((body) => body.includes("has diverged"))).toBe(false);
     });
 
+    it("answers a hook-rejected leased push as a failed push on the pass that opens the pull request, too", async () => {
+      const item = story();
+      git(["push", "origin", "eo/API-4"], repoPath);
+      const pushed = remoteTip()!;
+      updateItem(handle.db, item.id, { git: { pushedHead: { commit: pushed, pushUrl: fingerprint(remotePath) } } });
+      const worktree = worktreeFor(item);
+      writeFileSync(join(repoPath, ".git", "hooks", "pre-push"), "#!/bin/sh\nif read line; then echo 'refused by the hook' >&2; exit 1; fi\nexit 0\n", { mode: 0o755 });
+      rewriteIn(worktree);
+      const { run, calls } = recorder([noneYet, created, found]);
+
+      const result = await mergeRequestStep(item, run);
+
+      expect(result).not.toMatchObject({ result: "remote_diverged" });
+      expect(calls.some((args) => args.includes("create"))).toBe(false);
+      expect(remoteTip()).toBe(pushed);
+      expect(notes(item).some((body) => body.includes("has diverged"))).toBe(false);
+    });
+
     it("never forces a branch a person named, even over a push EO recorded", async () => {
       git(["branch", "feature/limits", "eo/API-4"], repoPath);
       const { remote } = diverge("feature/limits");
