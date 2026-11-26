@@ -106,7 +106,7 @@ describe("the plan usage store", () => {
       expect(changed).not.toHaveBeenCalled();
       store.limitLifted("codex");
       expect(windowsOf(store, "codex")).toEqual([["5_hour", "allowed"]]);
-      expect(changed).toHaveBeenCalledWith("codex");
+      expect(changed).toHaveBeenCalledWith("codex", expect.any(Number));
     });
   });
 
