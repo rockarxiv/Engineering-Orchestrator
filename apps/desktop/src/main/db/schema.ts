@@ -3463,6 +3463,15 @@ export const memoryConsolidations = sqliteTable(
      * started_at)` and one trigger.
      */
     continuesRun: integer("continues_run"),
+    /**
+     * The entry versions (`id@updated_at`) its run's read found stamped in
+     * the very millisecond it read them, `started_at` (EO-913, migration
+     * 0186): one stamped then was read, where it is listed, or written
+     * just after the read, and so new to the next scheduled run, where it
+     * is not — which the stamp alone cannot tell. Empty on most rows, and
+     * on rows from before it was recorded.
+     */
+    readTied: text("read_tied", { mode: "json" }).$type<string[]>().notNull().default([]),
   },
   (table) => [index("idx_memory_consolidations_scope").on(table.scopeKind, table.scopeId, table.startedAt)],
 );

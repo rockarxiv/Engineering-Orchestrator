@@ -608,6 +608,70 @@ describe("the operations a consolidation answers with (EO-573)", () => {
     }
   });
 
+  it("refuses a number EO cannot read, a quoted continuation or a disclaimed section as evidence, a name in another case, and sources at odds, under either source-backed reason (EO-913)", () => {
+    for (const reason of BOTH) {
+      // The reviewer's probe: a binary literal for its decimal value, and other words with a digit EO cannot read.
+      for (const [was, body, source] of [
+        ["Use mask 0b10000 for the worker. Keep logs.", "Use mask 16 for the worker. Keep logs.", "Use mask 16 for the worker."],
+        ["Use mask 16 for the worker. Keep logs.", "Use mask 0b10000 for the worker. Keep logs.", "Use mask 0b10000 for the worker."],
+        ["Hash with sha256 for the worker. Keep logs.", "Hash with sha512 for the worker. Keep logs.", "Hash with sha512 for the worker."],
+        ["Use a scale of 1e-3 for the worker. Keep logs.", "Use a scale of 0.001 for the worker. Keep logs.", "Use a scale of 0.001 for the worker."],
+      ] as const) {
+        const parsed = corrected(reason, entry("a", was, NOW - 2 * DAY), body, [source]);
+        expect(parsed.success, `${reason}: ${body}`).toBe(false);
+        expect(said(parsed), `${reason}: ${body}`).toMatch(/a notation EO cannot read/);
+      }
+      // A version is read part by part.
+      expect(corrected(reason, entry("a", "Pin pnpm 9.1.2 for the worker. Keep logs.", NOW - 2 * DAY), "Pin pnpm 9.1.3 for the worker. Keep logs.", ["Pin pnpm 9.1.3 for the worker."]).success, reason).toBe(true);
+      expect(said(corrected(reason, entry("a", "Pin pnpm 9.01.0 for the worker. Keep logs.", NOW - 2 * DAY), "Pin pnpm 9.1.0 for the worker. Keep logs.", ["Pin pnpm 9.1.0 for the worker."]))).toMatch(/same number/);
+      // The reviewer's probes: a quote's unmarked continuation, and a section an earlier sentence disclaims.
+      const tests = entry("a", "Use Postgres 15 for tests. Keep logs.", NOW - 2 * DAY);
+      const sixteen = "Use Postgres 16 for tests. Keep logs.";
+      const line = "Use Postgres 16 for tests.";
+      for (const source of [
+        `> Commands from another project.\n${line}`,
+        `Everything below is outdated.\n\nSee the notes.\n\n${line}`,
+        `Everything below is outdated. See the notes. ${line}`,
+        `## Setup\n\nEverything below is outdated.\n\n### Tests\n\n${line}`,
+        // The reviewer's probe: four spaces in do not close a fence, so its sentences are still code.
+        `~~~\nold\n    ~~~\n${line}\n~~~`,
+        `> ~~~\n> old\n~~~\n${line}`,
+        `- ~~~\n  old\n- ~~~\n  ${line}`,
+      ]) {
+        const parsed = corrected(reason, tests, sixteen, [source]);
+        expect(parsed.success, `${reason}: ${source}`).toBe(false);
+        expect(said(parsed), `${reason}: ${source}`).toMatch(/but no sentence of/);
+      }
+      // A quote ends at a blank line, a disclaimer with its section, and a fence at its own closer.
+      for (const source of [`> Commands from another project.\n\n${line}`, `## Old\n\nEverything below is outdated.\n\n## Tests\n\n${line}`, `~~~\nold\n~~~\n${line}`]) {
+        const parsed = corrected(reason, tests, sixteen, [source]);
+        expect(parsed.success, `${reason}: ${source} — ${said(parsed)}`).toBe(true);
+      }
+      // The reviewer's probe: a name in another case may be another identifier.
+      const helper = entry("a", "Use the FETCH helper. Keep logs.", NOW - 2 * DAY);
+      expect(said(corrected(reason, helper, "Use the getCache helper. Keep logs.", ["Use the getcache helper."]))).toMatch(/but no sentence of/);
+      expect(said(corrected(reason, helper, "Use the fetch helper. Keep logs.", ["Use the Fetch helper."]))).toMatch(/takes out "FETCH"|but no sentence of|still says/);
+      expect(corrected(reason, helper, "Use the getCache helper. Keep logs.", ["Use the getCache helper."]).success, reason).toBe(true);
+    }
+    // The reviewer's probe: three newer entries saying 15, 16 and 17. The newest says 17, so 16 is no correction.
+    const at = (id: string, body: string, offset: number) => entry(id, body, NOW - 10 * DAY + offset * DAY);
+    const tests = at("a", "Use Postgres 15 for tests. Keep logs.", 0);
+    const rewriting = (others: ReturnType<typeof entry>[], body: string, files: string[] = [], reason: "newer_entry" | "repository_file" = "newer_entry") =>
+      consolidationAnswerSchema([tests, ...others], { repositoryFiles: files }).safeParse(answer({ rewrite: [{ id: "a", body, contradictsRepositoryFile: false, reason }] }));
+    const three = [at("n15", "Use Postgres 15 for tests.", 1), at("n16", "Use Postgres 16 for tests.", 2), at("n17", "Use Postgres 17 for tests.", 3)];
+    expect(said(rewriting(three, "Use Postgres 16 for tests. Keep logs."))).toMatch(/also says "Use Postgres 17 for tests", as new or newer, so the sources disagree/);
+    // So too where the newer one is worded otherwise, qualified, or negates it.
+    expect(rewriting([three[1]!, at("x", "For tests, Postgres 17. It is current.", 3)], "Use Postgres 16 for tests. Keep logs.").success).toBe(false);
+    expect(rewriting([three[1]!, at("x", "Do not use Postgres 16 for tests.", 3)], "Use Postgres 16 for tests. Keep logs.").success).toBe(false);
+    // The newest one is the current word: 17 is taken, and so is 16 once only an older note said 15.
+    expect(rewriting(three, "Use Postgres 17 for tests. Keep logs.").success).toBe(true);
+    expect(rewriting(three.slice(0, 2), "Use Postgres 16 for tests. Keep logs.").success).toBe(true);
+    // Two files at odds bear out neither.
+    expect(said(rewriting([], "Use Postgres 16 for tests. Keep logs.", ["Use Postgres 16 for tests.", "Use Postgres 17 for tests."], "repository_file"))).toMatch(/the sources disagree/);
+    // Another sentence of the same source about something else is no disagreement.
+    expect(rewriting([], "Use Postgres 16 for tests. Keep logs.", ["Use Postgres 16 for tests.\n\nListen on port 5433 for the proxy."], "repository_file").success).toBe(true);
+  });
+
   it("never takes a rewrite that sets contradictsRepositoryFile, nor one that changes only the flag (EO-913)", () => {
     const always = entry("a", "Always run `pnpm test` before pushing any code. Save logs.", NOW - 2 * DAY);
     const smoke = "Browser smoke tests before pushing verify screenshots.";
@@ -664,6 +728,11 @@ describe("the operations a consolidation answers with (EO-573)", () => {
       ["Check the date with:\n- > ~~~sh\n  > echo today\n  > ~~~", "Check the date with:\n- > ~~~sh\n  > echo 2026-11-26\n  > ~~~"],
       ["Check the date with:\n> - ~~~sh\n>   echo today\n>   ~~~", "Check the date with:\n> - ~~~sh\n>   echo 2026-11-26\n>   ~~~"],
       ["Check the date with:\n1. > > ```\n   > > echo today\n   > > ```", "Check the date with:\n1. > > ```\n   > > echo 2026-11-26\n   > > ```"],
+      // The reviewer's probe: four spaces in, a line of tildes closes no fence; nor does one outside the quote, or on a new list item.
+      ["~~~sh\nx\n    ~~~\necho today\n~~~", "~~~sh\nx\n    ~~~\necho 2026-11-26\n~~~"],
+      ["~~~sh\nx\n\t~~~\necho today", "~~~sh\nx\n\t~~~\necho 2026-11-26"],
+      ["> ~~~sh\n> x\n~~~\necho today", "> ~~~sh\n> x\n~~~\necho 2026-11-26"],
+      ["- ~~~sh\n  x\n- ~~~\n  echo today", "- ~~~sh\n  x\n- ~~~\n  echo 2026-11-26"],
     ] as const) {
       const parsed = rewrite(said, body);
       expect(parsed.success, body).toBe(false);
@@ -815,6 +884,14 @@ describe("the operations a consolidation answers with (EO-573)", () => {
     expect(resolvedDate("next month", at)).toBe("2026-12");
     expect(resolvedDate("last month", Date.UTC(2027, 0, 3))).toBe("2026-12");
     for (const phrase of ["last week", "on Monday", "recently", "three weeks ago", "a few days ago", "three months ago", "last year", "tonight", "this morning", "last night"]) expect(resolvedDate(phrase, at), phrase).toBeNull();
+    // The reviewer's probe: a day past any four-digit year is no date, and refused by the schema rather than thrown (EO-913).
+    for (const phrase of ["999999999 days from now", "999999999 days ago", "99999999999999999999999 days ago"]) expect(resolvedDate(phrase, at), phrase).toBeNull();
+    expect(resolvedDate("2914 days from now", Date.UTC(2026, 0, 1))).toBe("2033-12-24");
+    const far = consolidationAnswerSchema([entry("f", "Run this 999999999 days from now.", at)], { repositoryFiles: [] }).safeParse(
+      answer({ rewrite: [{ id: "f", body: "Run this on 2026-11-27.", contradictsRepositoryFile: false, reason: "relative_date" }] }),
+    );
+    expect(far.success).toBe(false);
+    expect(far.error?.issues.map((issue) => issue.message).join(" ")).toMatch(/cannot tell what date/);
   });
 
   it("takes each reason where the change bears it out (EO-913)", () => {

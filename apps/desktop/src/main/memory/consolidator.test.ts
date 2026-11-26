@@ -1000,6 +1000,39 @@ describe("automatic memory consolidation", () => {
       expect(requests.at(-1)!.system).toBe(MEMORY_MERGE_CANDIDATES_SYSTEM);
     });
 
+    it("tells a note a run read in the millisecond it read from one written just after, in that millisecond (EO-913)", async () => {
+      // The reviewer's probe: a note, then at once a manual run that changes nothing, in one millisecond.
+      const at = Date.now() - 3 * DAY;
+      const read = byAgent(project, "Read by the run.", at);
+      const requests: AnyRequest[] = [];
+      const sideCall = vi.fn(async (request: AnyRequest): Promise<AnyAnswer> => {
+        requests.push(request);
+        return { ok: true, value: request.system === MEMORY_CONSOLIDATE_SYSTEM ? NOTHING : { groups: [] } };
+      });
+      const manual = consolidatorWith(sideCall as never, { now: () => at, neighbours: () => null });
+      manual.start();
+      expect(manual.requestNow(project).outcome).toBe("started");
+      await manual.idle();
+      manual.stop();
+      expect(requests.flatMap((request) => idsIn(request.input))).toContain(read.id);
+      expect(entriesNewSinceConsolidated(handle.db, project)).toEqual([]);
+
+      // Five runs given it two days later: nothing is new, so no scheduled run, and the note is not sent again.
+      givenToFiveRuns([read]);
+      const scheduled = consolidatorWith(sideCall as never, { neighbours: (_scope, entries) => new Map(entries.map((entry) => [entry.id, []])) });
+      requests.length = 0;
+      scheduled.start();
+      await scheduled.idle();
+      expect(requests).toEqual([]);
+
+      // A note written after the read, in the same millisecond, is new all the same: the stamp alone is no proof it was read.
+      const after = byAgent(project, "Written just after the run read.", at);
+      expect(entriesNewSinceConsolidated(handle.db, project)).toEqual([after.id]);
+      // A row from before the read was recorded lists none, so what it stamped then is new, as before.
+      handle.db.run(sql`update memory_consolidations set read_tied = '[]'`);
+      expect(entriesNewSinceConsolidated(handle.db, project).sort()).toEqual([read.id, after.id].sort());
+    });
+
     it("counts new entries from the last consolidation that finished, leaving out what consolidations and restores wrote themselves", () => {
       const at = Date.now() - 10 * DAY;
       const [a, b, c] = ["One.", "Two.", "Three."].map((body, index) => byAgent(workspace, body, at + index));

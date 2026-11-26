@@ -473,6 +473,8 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
    * counts as one after that run applied something.
    */
   let continuing: number | undefined;
+  /** The running consolidation's read's entry versions stamped in the millisecond it read them (`read_tied`). */
+  let readTied: readonly string[] = [];
   /** The running consolidation's way to stop its side call (`abortRunning`). */
   let current: AbortController | null = null;
   let timer: ReturnType<typeof setInterval> | undefined;
@@ -650,6 +652,10 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
     const interrupted = resumesRun && trigger !== "container_done" ? consolidationState(db, scope).failuresSince[0] : undefined;
     continuing = interrupted !== undefined && interrupted.trigger === trigger && interrupted.afterApplied ? interrupted.run : undefined;
     const readNow = agentEntries(scope);
+    // What the read found stamped in its own millisecond: read, and not
+    // new to the next scheduled run, unlike a note written just after it
+    // in that millisecond (`read_tied`).
+    readTied = readNow.filter((entry) => entry.updatedAt === readAt).map(versionOf);
     const facts = scopeFacts(db, scope, options.workspacesElsewhere);
     if (!facts || readNow.length === 0) {
       sequences.delete(key);
@@ -676,7 +682,7 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
     let read = readNow;
     if (onlyNew) {
       const newNow = entriesNewSinceConsolidated(db, scope);
-      const newThen = continuing === undefined ? null : new Set(entriesNewSinceConsolidated(db, scope, { until: continuing }));
+      const newThen = continuing === undefined ? null : new Set(entriesNewSinceConsolidated(db, scope, { until: { at: continuing, trigger } }));
       fresh = new Set(newThen === null ? newNow : newNow.filter((id) => newThen.has(id) || sequence.planned.has(id)));
       if (!resumes) sequence.planned = new Set(fresh);
       const later = new Set(newNow.filter((id) => !fresh!.has(id)));
@@ -803,8 +809,8 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
   }
 
   /** What a row the running consolidation starts says of its run: the run it goes on with, where it is a retry (`continuing`). */
-  function runOfRow(): { continuesRun?: number } {
-    return continuing === undefined ? {} : { continuesRun: continuing };
+  function runOfRow(): { continuesRun?: number; readTied: readonly string[] } {
+    return continuing === undefined ? { readTied } : { continuesRun: continuing, readTied };
   }
 
   /**

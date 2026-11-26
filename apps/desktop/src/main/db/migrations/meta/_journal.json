@@ -1303,6 +1303,13 @@
       "when": 1799769600000,
       "tag": "0185_memory_settled_version",
       "breakpoints": true
+    },
+    {
+      "idx": 186,
+      "version": "6",
+      "when": 1799856000000,
+      "tag": "0186_consolidation_read_tied",
+      "breakpoints": true
     }
   ]
 }
