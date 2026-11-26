@@ -26,6 +26,12 @@ export interface PlanUsageReadOptions {
  * an error in the UI. One read per backend at a time: a tick that finds
  * the last still running leaves it be.
  *
+ * A read is also how a backend held at its plan limit is seen back
+ * (EO-920): the supervisor hears every change to the store, and one that
+ * shows every window of a held backend allowed and below 100% lifts the
+ * hold, before the reset it named or when it named none. So a held
+ * backend is read like any other, and nothing here knows of the hold.
+ *
  * Returns the stop.
  */
 export function startPlanUsageReads(options: PlanUsageReadOptions): () => void {
