@@ -87,6 +87,43 @@ export function memoryUsageQuery(type: string) {
   `;
 }
 
+/**
+ * When each of `entryIds` was last given to a run other than `runId`: the
+ * `ts` of the newest `memory_delivered` event naming it (EO-914), which
+ * is the order a failed selection falls back to. An entry no such event
+ * names is not in the map.
+ *
+ * Worked out from the events each time, never stored (invariants 3 and
+ * 6). The run being dispatched is left out: what was given before it
+ * is the question, not what it was itself given.
+ */
+export function lastDeliveredAt(db: Db, entryIds: readonly string[], runId: Uuid): Map<string, number> {
+  const last = new Map<string, number>();
+  if (entryIds.length === 0) return last;
+  for (const row of db.all<{ id: string; at: number }>(lastDeliveredQuery(entryIds, runId))) last.set(row.id, row.at);
+  return last;
+}
+
+/**
+ * The statement behind it, exported for the test that holds it to the
+ * partial index (`idx_run_events_memory_delivered`, migration 0127):
+ * `type` is a literal, and the events are materialised first, so they are
+ * read once through the index before their ids are unpacked.
+ */
+export function lastDeliveredQuery(entryIds: readonly string[], runId: Uuid) {
+  return sql`
+    with events as materialized (
+      select run_id, ts, payload from ${runEvents} where type = ${sql.raw(`'${MEMORY_DELIVERED_EVENT}'`)}
+    )
+    select given.value as "id", max(e.ts) as "at"
+    from events e
+    join json_each(e.payload, '$.entryIds') given
+    where e.run_id <> ${runId}
+      and given.value in (select value from json_each(${JSON.stringify(entryIds)}))
+    group by given.value
+  `;
+}
+
 /** One entry's usage out of the map, none where it has never been counted. */
 export function usageOf(usage: ReadonlyMap<string, MemoryUsage>, id: string): MemoryUsage {
   return usage.get(id) ?? { deliveries: 0, uses: 0 };

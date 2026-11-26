@@ -204,7 +204,7 @@ export {
   type AddMemoryInput,
 } from "./memoriesRepo.js";
 export { editedPredecessors, getMemorySearchEntry, searchMemories, similarMemoryNeighbours, supersededEntries } from "./memorySearchRepo.js";
-export { memoryDeliveredToRun, memoryUsageByEntry, usageOf } from "./memoryUseRepo.js";
+export { lastDeliveredAt, memoryDeliveredToRun, memoryUsageByEntry, usageOf } from "./memoryUseRepo.js";
 export { ownRunsToSettle, skillsGivenToRunsInFlight, skillsLoadedByRun, skillUsageById, usageOfSkill } from "./skillUsageRepo.js";
 export {
   addConsolidationSlotTime,

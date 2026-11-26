@@ -3,6 +3,7 @@ import {
   MAX_SELECTED_MEMORIES,
   MEMORY_READ_TOOL_NAME,
   type MemoryEntryView,
+  type MemoryFallbackOrdering,
   type MemoryScope,
   type MemorySelection,
   type MemorySelectionMode,
@@ -27,14 +28,24 @@ export interface MemoryScopeInfo {
 
 /** What a dispatch was given, and how it was chosen. */
 export interface MemoryChoice {
-  /** The delivered entries, newest first. */
+  /** The delivered entries, in the order they were chosen. */
   delivered: MemoryEntryView[];
   mode: MemorySelectionMode;
   /** Whether a selection side call was made and answered. False for `all`, `none` and `fallback`. */
   selectionRan: boolean;
   /** Why selection did not run, on a fallback; null otherwise. */
   reason: string | null;
+  /** How a fallback ordered the candidates it delivered (EO-914); absent on every other mode. */
+  ordering?: MemoryFallbackOrdering;
 }
+
+/**
+ * When each entry was last delivered to an earlier run: the `ts` of the
+ * newest `memory_delivered` event naming it. An entry not in the map was
+ * never delivered. Read from the run events each time it is asked for,
+ * never stored (invariants 3 and 6).
+ */
+export type LastDelivered = ReadonlyMap<string, number>;
 
 /** The characters an entry costs, which is what the threshold measures. */
 export function totalChars(entries: readonly MemoryEntryView[]): number {
@@ -42,23 +53,52 @@ export function totalChars(entries: readonly MemoryEntryView[]): number {
 }
 
 /**
- * The newest entries, in order, while they fit in `limit` characters.
+ * The fallback's order (EO-914): the candidates most recently delivered
+ * to an earlier run first, by the newest `memory_delivered` event naming
+ * each, then those never delivered, newest first. Entries last delivered
+ * at the same moment — named by one event, or by two in the same
+ * millisecond — are put newest first among themselves, as are entries
+ * written at the same moment, by id.
+ *
+ * Why this order and not the newest: replayed over this installation's
+ * past selections, most recently delivered first delivered twice as many
+ * of the entries a selection picked and the run then used (34.7% against
+ * 17.7%).
+ */
+export function recentlyDeliveredFirst(entries: readonly MemoryEntryView[], lastDelivered: LastDelivered): MemoryEntryView[] {
+  const newest = (a: MemoryEntryView, b: MemoryEntryView) => b.createdAt - a.createdAt || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0);
+  return [...entries].sort((a, b) => {
+    const atA = lastDelivered.get(a.id);
+    const atB = lastDelivered.get(b.id);
+    if (atA !== undefined && atB !== undefined) return atB - atA || newest(a, b);
+    if (atA !== undefined) return -1;
+    if (atB !== undefined) return 1;
+    return newest(a, b);
+  });
+}
+
+/**
+ * The entries, in the order given, while they fit in `limit` characters.
  *
  * Stops at the first that would not fit rather than reaching past it for
- * a smaller, older one: what the fallback promises is the *newest*
- * entries, and an older entry slipped in under a newer one it skipped
+ * a smaller one further down: what the fallback promises is the entries
+ * at the head of its order, and one slipped in under an entry it skipped
  * would be a choice nobody made.
  */
-export function newestWithin(entries: readonly MemoryEntryView[], limit: number): MemoryEntryView[] {
-  const newestFirst = [...entries].sort((a, b) => b.createdAt - a.createdAt || (a.id < b.id ? 1 : -1));
+function headWithin(ordered: readonly MemoryEntryView[], limit: number): MemoryEntryView[] {
   const kept: MemoryEntryView[] = [];
   let used = 0;
-  for (const entry of newestFirst) {
+  for (const entry of ordered) {
     if (used + entry.body.length > limit) break;
     kept.push(entry);
     used += entry.body.length;
   }
   return kept;
+}
+
+/** What a fallback delivers: the candidates most recently delivered first, up to the threshold. */
+export function fallbackWithin(entries: readonly MemoryEntryView[], lastDelivered: LastDelivered, limit: number): MemoryEntryView[] {
+  return headWithin(recentlyDeliveredFirst(entries, lastDelivered), limit);
 }
 
 /**
@@ -70,14 +110,17 @@ export function newestWithin(entries: readonly MemoryEntryView[], limit: number)
  * - Otherwise what one selection picks, at most eight, held to the
  *   candidates: an id the selector made up, or repeated, is not
  *   delivered (invariant 5).
- * - And if that call fails for any reason, the newest entries up to the
- *   threshold, with the reason. This never throws and never waits past
- *   the call's own limit: a dispatch does not fail because of memory.
+ * - And if that call fails for any reason, the candidates most recently
+ *   delivered to earlier runs first, then the newest, up to the threshold
+ *   (`fallbackWithin`), with the reason. `lastDelivered` is asked only
+ *   then. This never throws and never waits past the call's own limit: a
+ *   dispatch does not fail because of memory.
  */
 export function chooseMemory(input: {
   candidates: readonly MemoryEntryView[];
   thresholdChars: number;
   select: (candidates: readonly MemoryEntryView[]) => Promise<SideCallResult<MemorySelection>>;
+  lastDelivered: (candidates: readonly MemoryEntryView[]) => LastDelivered;
 }): MemoryChoice | Promise<MemoryChoice> {
   const { candidates, thresholdChars } = input;
   // Answered on the spot, with no promise, when nothing has to be asked:
@@ -85,13 +128,14 @@ export function chooseMemory(input: {
   // really made, and has to re-check the world only then.
   if (candidates.length === 0) return { delivered: [], mode: "none", selectionRan: false, reason: null };
   if (totalChars(candidates) <= thresholdChars) return { delivered: [...candidates], mode: "all", selectionRan: false, reason: null };
-  return selectAmong(candidates, thresholdChars, input.select);
+  return selectAmong(candidates, thresholdChars, input.select, input.lastDelivered);
 }
 
 async function selectAmong(
   candidates: readonly MemoryEntryView[],
   thresholdChars: number,
   select: (candidates: readonly MemoryEntryView[]) => Promise<SideCallResult<MemorySelection>>,
+  lastDelivered: (candidates: readonly MemoryEntryView[]) => LastDelivered,
 ): Promise<MemoryChoice> {
   let answer: SideCallResult<MemorySelection>;
   try {
@@ -102,7 +146,13 @@ async function selectAmong(
     answer = { ok: false, reason: "error", message: error instanceof Error ? error.message : String(error) };
   }
   if (!answer.ok) {
-    return { delivered: newestWithin(candidates, thresholdChars), mode: "fallback", selectionRan: false, reason: `${answer.reason}: ${answer.message}` };
+    return {
+      delivered: fallbackWithin(candidates, lastDelivered(candidates), thresholdChars),
+      mode: "fallback",
+      selectionRan: false,
+      reason: `${answer.reason}: ${answer.message}`,
+      ordering: "recently_delivered",
+    };
   }
   const picked = new Set(answer.value.ids.slice(0, MAX_SELECTED_MEMORIES));
   const delivered = candidates.filter((entry) => picked.has(entry.id)).slice(0, MAX_SELECTED_MEMORIES);
@@ -235,7 +285,7 @@ export function renderMemorySection(input: {
     const count = choice.delivered.length;
     lines.push("", count === 0 ? "None of them was picked as bearing on this task." : `${count === 1 ? "This entry was" : `These ${entries(count)} were`} picked as bearing on this task.`);
   } else if (choice.mode === "fallback") {
-    lines.push("", "Selection did not run for this dispatch, so these are the newest entries rather than the ones that bear on this task.");
+    lines.push("", "Selection did not run for this dispatch, so these are the entries most recently given to earlier runs, then the newest, rather than the ones that bear on this task.");
   }
   lines.push("", `List a scope's other entries, or read one in full, with \`${MEMORY_READ}\`.`);
 

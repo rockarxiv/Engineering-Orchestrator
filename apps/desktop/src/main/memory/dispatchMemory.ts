@@ -11,12 +11,12 @@ import {
   type Uuid,
 } from "@eo/core";
 import type { Db } from "../db/client.js";
-import { activeMemoriesIn, getProject, getWorkspace, listAgents, listCommentsForItem, listRunsForItem, workspaceLabel } from "../db/repos/index.js";
+import { activeMemoriesIn, getProject, lastDeliveredAt, getWorkspace, listAgents, listCommentsForItem, listRunsForItem, workspaceLabel } from "../db/repos/index.js";
 import type { SideCaller } from "../sideCalls/sideCall.js";
 import { lastRunOf } from "../supervisor/stepAttribution.js";
 import { skillRunScope } from "../supervisor/workspaceResolution.js";
 import { containerScopeOf } from "./containerScope.js";
-import { chooseMemory, MEMORY_SELECT_SYSTEM, newestWithin, renderMemorySection, selectionInput, type MemoryChoice, type MemoryScopeInfo, type MemoryTask } from "./selection.js";
+import { chooseMemory, fallbackWithin, MEMORY_SELECT_SYSTEM, renderMemorySection, selectionInput, type MemoryChoice, type MemoryScopeInfo, type MemoryTask } from "./selection.js";
 
 /**
  * The memory a dispatch is given (EO-478, ARCHITECTURE.md, "What an agent
@@ -153,6 +153,12 @@ export function deliverMemory(input: {
     ).filter((entry) => !writtenOnItem(entry, item));
   const candidates = activeCandidates();
   const projectId = (scopes.find((info) => info.scope.kind === "project")?.scope.id as Uuid | undefined) ?? null;
+  const lastDelivered = (entries: readonly MemoryEntryView[]) =>
+    lastDeliveredAt(
+      db,
+      entries.map((entry) => entry.id),
+      input.runId,
+    );
   const choice = chooseMemory({
     candidates,
     thresholdChars: input.thresholdChars,
@@ -169,6 +175,7 @@ export function deliverMemory(input: {
         insideRunId: input.runId,
         ...(input.signal ? { signal: input.signal } : {}),
       }),
+    lastDelivered,
   });
   const finish = (chosen: MemoryChoice, current: readonly MemoryEntryView[]): DeliveredMemory => ({
     section: renderMemorySection({ scopes, candidates: current, choice: chosen, now: input.now }),
@@ -179,6 +186,7 @@ export function deliverMemory(input: {
       mode: chosen.mode,
       selectionRan: chosen.selectionRan,
       reason: chosen.reason,
+      ...(chosen.ordering ? { ordering: chosen.ordering } : {}),
     },
     choice: chosen,
   });
@@ -188,14 +196,14 @@ export function deliverMemory(input: {
     // Read again: up to twenty seconds have passed, and an entry a person
     // retired or edited meanwhile is not active any more (EO-478 review).
     // What is delivered is held to the rows as they are now — a picked
-    // entry still active, in its current text, or the newest current
-    // entries on a fallback — and the section's counts are the current
-    // ones too.
+    // entry still active, in its current text, or on a fallback the
+    // current entries in its order, the deliveries read again with them
+    // — and the section's counts are the current ones too.
     const current = activeCandidates();
     const byId = new Map(current.map((entry) => [entry.id, entry]));
     const delivered =
       chosen.mode === "fallback"
-        ? newestWithin(current, input.thresholdChars)
+        ? fallbackWithin(current, lastDelivered(current), input.thresholdChars)
         : chosen.delivered.flatMap((entry) => byId.get(entry.id) ?? []);
     return finish({ ...chosen, delivered }, current);
   });
