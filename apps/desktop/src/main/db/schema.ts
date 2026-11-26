@@ -1,5 +1,8 @@
 import { type AnySQLiteColumn, index, integer, primaryKey, real, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
+/** What a run's `dispatched_in` rests on (EO-912): see `runs.dispatchBasis`. */
+export type DispatchBasis = "stamped" | "inferred" | "legacy";
+
 // ── Configuration ─────────────────────────────────────────────
 
 export const agents = sqliteTable("agents", {
@@ -2158,6 +2161,12 @@ export const runs = sqliteTable("runs", {
   // is one of this machine's workspaces. What the overlap hold counts
   // an item as in flight by; read by `listDispatches`.
   dispatchedIn: text("dispatched_in", { mode: "json" }).$type<string[]>(),
+  // What `dispatched_in` rests on (EO-912, migration 0184): `stamped`,
+  // written as the run was made; `inferred`, read once from the item's
+  // own definition of the step for a run from before the stamp
+  // (`freezeLegacyDispatches`), which holds others but never lets the
+  // item past; `legacy`, such a run not read yet; null, none given.
+  dispatchBasis: text("dispatch_basis").$type<DispatchBasis>(),
   pid: integer("pid"),
   // One workflow-state entry, direct mention, or explicit human
   // re-authorization. Retries share it; a new initiation gets a new id.

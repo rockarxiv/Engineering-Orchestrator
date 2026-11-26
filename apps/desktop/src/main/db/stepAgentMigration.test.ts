@@ -88,13 +88,15 @@ function agent(handle: DbHandle, name: string, role: string, extra: { projectId?
  */
 function withTodaysStepColumn<T>(handle: DbHandle, act: () => T): T {
   handle.db.run(sql`ALTER TABLE pipeline_steps ADD agent_id text`);
-  // And the one 0184 adds to runs (EO-912), which today's `createRun` writes.
+  // And the two 0184 adds to runs (EO-912), which today's `createRun` writes.
   handle.db.run(sql`ALTER TABLE runs ADD dispatched_in text`);
+  handle.db.run(sql`ALTER TABLE runs ADD dispatch_basis text`);
   try {
     return act();
   } finally {
     handle.db.run(sql`ALTER TABLE pipeline_steps DROP COLUMN agent_id`);
     handle.db.run(sql`ALTER TABLE runs DROP COLUMN dispatched_in`);
+    handle.db.run(sql`ALTER TABLE runs DROP COLUMN dispatch_basis`);
   }
 }
 
@@ -239,8 +241,15 @@ describe("migration 0181: a step names its agent (EO-875)", () => {
 
     migrate(handle);
 
-    // The same rows, with the column a later migration (0184) adds to runs, empty.
-    expect(read()).toEqual({ ...before, runs: before.runs.map((run) => ({ ...(run as object), dispatched_in: null })) });
+    // The same rows, with the columns a later migration (0184) adds to runs: no place yet, and a
+    // run at a step marked as one from before the stamp, to be read once as the supervisor starts.
+    expect(read()).toEqual({
+      ...before,
+      runs: before.runs.map((run) => {
+        const row = run as { step_id: string | null; dry_run: number };
+        return { ...row, dispatched_in: null, dispatch_basis: row.step_id !== null && row.dry_run === 0 ? "legacy" : null };
+      }),
+    });
     expect(before.events).toHaveLength(2);
     // Something to compare: the transition is there, whole, before and after.
     expect(before.transitions).toEqual([expect.objectContaining({ from_step_id: "todo", to_step_id: "review", actor: implementer.id, reason: "result:done" })]);

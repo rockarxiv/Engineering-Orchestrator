@@ -206,6 +206,8 @@ import { effectiveRunMemoryMaxMb, machineMemoryMb, runScopes, type RunOutOfMemor
 import { createUsageTally, sessionTotalBefore, type ThreadUsage } from "./usageTally.js";
 import {
   createRun,
+  dispatchOf,
+  type CreateRunInput,
   itemsOnArchivedProjects,
   getRun,
   createRunEventBuffer,
@@ -299,7 +301,7 @@ import { readPolicy } from "../policy/policy.js";
 import { ownerOfItem, parkForPersonBudget } from "../policy/personBudget.js";
 import { postClarificationQuestions, unansweredQuestions } from "../roles/clarificationQuestions.js";
 import { buildTurnContext, followUpComments } from "./buildDispatchContext.js";
-import { archivedProjectBlocker, buildEligibilityInput, buildTickInput, namedBlocker, type PackScheduling } from "./buildTickInput.js";
+import { archivedProjectBlocker, buildEligibilityInput, buildTickInput, freezeLegacyDispatches, namedBlocker, type PackScheduling } from "./buildTickInput.js";
 import { createLocalRecord } from "../record/localRecord.js";
 import type { ItemRecord, WorkOffer } from "../record/record.js";
 import { LOCAL_DEVICE_ID, type Device, type DispatchAttempt, type DispatchSubject, type PreflightOutcome } from "../record/device.js";
@@ -2430,6 +2432,10 @@ export function createRunSupervisor(
   // And where a card asks whose bucket an item is in, to say what holds
   // it back for the paths it touches (EO-912).
   useCapacityKey(db, scheduling.capacityKeyOf);
+  // Where each run from before the stamp was dispatched (EO-912), read
+  // once now — before anything can move an item to another version or
+  // change where its step works — and kept as read.
+  freezeLegacyDispatches(db, scheduling.capacityKeyOf);
 
   /**
    * Where a run about to be made is dispatched (EO-912), as its row
@@ -2452,6 +2458,19 @@ export function createRunSupervisor(
     if (stepForItem(db, atStep)?.entryAction !== action) return {};
     const place = scheduling.capacityKeyOf?.(atStep) ?? null;
     return { dispatchedIn: place === null ? [] : [place] };
+  }
+
+  /**
+   * Where the run a continuation carries on was dispatched (EO-912), and
+   * on what basis, exactly as its row keeps them. A continuation works in
+   * the directory of the run it continues (`cwd`), so it was dispatched
+   * where that run was: asking `dispatchPlace` again would read the
+   * item's definition as it is now, which a move to another version or
+   * an edit of the step may have pointed elsewhere since.
+   */
+  function carriedPlace(prior: Run): Pick<CreateRunInput, "dispatchedIn" | "dispatchBasis"> {
+    const { dispatchedIn, dispatchBasis } = dispatchOf(db, prior.id);
+    return { dispatchedIn, dispatchBasis };
   }
 
   /**
@@ -10131,7 +10150,9 @@ export function createRunSupervisor(
         // The step the crashed run was dispatched from, not wherever the
         // item sits now: this run is that one continued.
         stepId: run.stepId,
-        ...dispatchPlace(item, run.stepId, run.action),
+        // And where it was dispatched, carried over with its `cwd`: this
+        // run works where that one did, not where the step points now.
+        ...carriedPlace(run),
         status: "queued",
         threadId: resumableThreadId,
         provider: run.provider,
@@ -12772,7 +12793,8 @@ export function createRunSupervisor(
       agentId: priorRun.agentId,
       action: priorRun.action,
       stepId: priorRun.stepId, // the step the parked run was dispatched from
-      ...dispatchPlace(item, priorRun.stepId, priorRun.action),
+      // Where it was dispatched, carried over with its `cwd` below (EO-912).
+      ...carriedPlace(priorRun),
 
       status: "queued",
       threadId: priorRun.threadId,

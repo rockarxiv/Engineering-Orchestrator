@@ -12,11 +12,13 @@ import {
   listAwaitingInputItemIds,
   listDispatches,
   listHeldItemIds,
+  listLegacyDispatches,
   listItemsIncludingArchived,
   listPipelineSteps,
   listRunsFailedSince,
   listRunsForItem,
   listTransitionsForItem,
+  setInferredDispatch,
   stepForItem,
   stepsByItemVersion,
   trialItemsInRunningLoops,
@@ -143,7 +145,9 @@ export function buildEligibilityInput(
     // back one about to work there for the first time whose `touches`
     // overlap its own.
     // Finished items are left out: they hold nothing and wait for nothing.
-    dispatchedIn: dispatchedPlaces(
+    // Proven places and places only believed (`claimedIn`) apart: the
+    // second hold others back but let nobody past.
+    ...dispatchedPlaces(
       db,
       items.filter((item) => stepFor(item)?.isTerminal !== true),
       scheduling.capacityKeyOf,
@@ -165,51 +169,116 @@ export function buildEligibilityInput(
 }
 
 /**
- * The places each of `items` declaring `touches` has been dispatched in
- * (EO-912), as the scheduler's `dispatchedIn` takes them, derived from
- * the item's runs on every ask and never stored.
+ * Where each of `items` declaring `touches` is in flight (EO-912), as the
+ * scheduler's `dispatchedIn` and `claimedIn` take them, derived from the
+ * item's runs on every ask and never stored.
  *
- * A run the supervisor stamped says where it was dispatched
- * (`runs.dispatched_in`, `dispatchPlace`): the bucket the item was in
- * at that step as its own version then defined it, written as the run
- * was made. Not the bucket of the step it stands on now, nor of the
+ * `dispatchedIn` is what is proven: a run the supervisor stamped as it
+ * was made (`runs.dispatched_in`, basis `stamped`, `dispatchPlace`) says
+ * the bucket the item was in at that step as its own version then
+ * defined it. Not the bucket of the step it stands on now, nor of the
  * version it is bound to now: an item whose work moved on to a step
  * that picks no disk, or that was moved to a version whose step works
- * somewhere else, still has its changes where it made them, and an
- * item that only drafted on no disk has made none anywhere.
+ * somewhere else, still has its changes where it made them, and an item
+ * that only drafted on no disk has made none anywhere.
  *
- * A run with no stamp is a dispatch only where its action is the entry
- * action of the step as the item's own version defines it, and then in
- * the bucket that definition picks — all EO has for a run from before
- * the stamp, or from another machine. Every other unstamped run (a
- * reply to a mention, a discussion) is not a dispatch.
+ * `claimedIn` is what is believed without proof, which holds others
+ * back but never lets the item past: a run from before the stamp, read
+ * once by the item's own definition of the step as it stood at the first
+ * start after the stamp came in (`freezeLegacyDispatches`, basis
+ * `inferred`) and kept as read; one of those not read yet (`legacy`);
+ * and a run with no basis at all — a run from another machine, say —
+ * read here, by the item's own definition of the step, as a dispatch
+ * where its action is that step's entry action and in the bucket that
+ * definition picks. Every other unstamped run (a reply to a mention, a
+ * discussion) is not a dispatch.
  *
  * A dispatch with no bucket adds nothing, and an item with no bucket at
- * all is left out. Without a bucket function every place is the one
- * place, the engine's own reading of an absent `capacityKeyOf`.
+ * all is left out of both. Without a bucket function every place is the
+ * one place, the engine's own reading of an absent `capacityKeyOf`.
  */
-export function dispatchedPlaces(db: Db, items: readonly Item[], capacityKeyOf: CapacityKeyOf | undefined): Map<string, Set<string>> {
-  const places = new Map<string, Set<string>>();
+export function dispatchedPlaces(db: Db, items: readonly Item[], capacityKeyOf: CapacityKeyOf | undefined): DispatchedPlaces {
+  const dispatchedIn = new Map<string, Set<string>>();
+  const claimedIn = new Map<string, Set<string>>();
   const touching = items.filter((item) => touchesOf(item).length > 0);
-  if (touching.length === 0) return places;
+  if (touching.length === 0) return { dispatchedIn, claimedIn };
   const dispatches = listDispatches(db, touching.map((item) => item.id));
   for (const item of touching) {
     const runs = dispatches.get(item.id);
     if (runs === undefined) continue;
-    const worked = new Set<string>();
+    const proven = new Set<string>();
+    const claimed = new Set<string>();
     for (const run of runs) {
-      if (run.dispatchedIn !== null) {
-        for (const place of run.dispatchedIn) worked.add(capacityKeyOf ? place : "");
-        continue;
-      }
-      const asDispatched = { ...item, stepId: run.stepId as Item["stepId"] };
-      if (stepForItem(db, asDispatched)?.entryAction !== run.action) continue;
-      const place = capacityKeyOf ? capacityKeyOf(asDispatched) : "";
-      if (place !== null) worked.add(place);
+      const places =
+        run.basis === "stamped" || run.basis === "inferred"
+          ? (run.dispatchedIn ?? [])
+          : placesByDefinition(db, item, run.stepId, run.action, capacityKeyOf);
+      for (const place of places) (run.basis === "stamped" ? proven : claimed).add(capacityKeyOf ? place : "");
     }
-    if (worked.size > 0) places.set(item.id, worked);
+    for (const place of proven) claimed.delete(place);
+    if (proven.size > 0) dispatchedIn.set(item.id, proven);
+    if (claimed.size > 0) claimedIn.set(item.id, claimed);
   }
-  return places;
+  return { dispatchedIn, claimedIn };
+}
+
+/** `dispatchedPlaces`' answer: places proven, and places only believed. */
+export interface DispatchedPlaces {
+  dispatchedIn: Map<string, Set<string>>;
+  claimedIn: Map<string, Set<string>>;
+}
+
+/**
+ * Where a run at `stepId` of `action` was dispatched, as the item's own
+ * definition of that step reads now (EO-912): `[]` where it was not the
+ * step's entry action or picks no shared disk. A reconstruction, so only
+ * ever a claim — see `dispatchedPlaces`.
+ */
+function placesByDefinition(db: Db, item: Item, stepId: string, action: string, capacityKeyOf: CapacityKeyOf | undefined): string[] {
+  const place = placeByDefinition(db, item, stepId, action, capacityKeyOf);
+  return place === null || place === undefined ? [] : [place];
+}
+
+/** The bucket, null for no shared disk, or undefined where the run was not the step's own entry action. */
+function placeByDefinition(db: Db, item: Item, stepId: string, action: string, capacityKeyOf: CapacityKeyOf | undefined): string | null | undefined {
+  const asDispatched = { ...item, stepId: stepId as Item["stepId"] };
+  if (stepForItem(db, asDispatched)?.entryAction !== action) return undefined;
+  return capacityKeyOf ? capacityKeyOf(asDispatched) : "";
+}
+
+/**
+ * Reads, once, every run from before the stamp (EO-912, basis `legacy`,
+ * migration 0184) by the item's own definition of the step as it stands
+ * now, and writes the reading down (`inferred`), so that no later move
+ * to another version, edit of the step or change of workspace can read
+ * it again differently — the reviewer's case was a holder moved to a
+ * version whose step picks no disk, which read now would have stopped
+ * holding anything.
+ *
+ * Called as the supervisor starts, before anything can move an item:
+ * the first start after the migration is the moment the definition
+ * that went with these runs is likeliest to still be the one in force.
+ * Still a reconstruction — an item moved before the upgrade is read by
+ * where it stands — and so a claim, never proof (`dispatchedPlaces`).
+ * A run of an item that is gone is left as it is. Returns how many runs
+ * it read.
+ */
+export function freezeLegacyDispatches(db: Db, capacityKeyOf: CapacityKeyOf | undefined): number {
+  const legacy = listLegacyDispatches(db);
+  if (legacy.length === 0) return 0;
+  const itemsById = new Map<string, Item | undefined>();
+  let read = 0;
+  db.transaction(() => {
+    for (const run of legacy) {
+      if (!itemsById.has(run.itemId)) itemsById.set(run.itemId, getItem(db, run.itemId));
+      const item = itemsById.get(run.itemId);
+      if (item === undefined) continue;
+      const place = placeByDefinition(db, item, run.stepId, run.action, capacityKeyOf);
+      setInferredDispatch(db, run.id, place === undefined ? null : place === null ? [] : [place]);
+      read += 1;
+    }
+  });
+  return read;
 }
 
 /**
@@ -245,7 +314,7 @@ export function touchesHoldsOf(db: Db, listed: readonly Item[], capacityKeyOf: C
     steps,
     stepsByItem,
     // Unfinished only, as the tick's: a finished item holds nothing and waits for nothing.
-    dispatchedIn: dispatchedPlaces(
+    ...dispatchedPlaces(
       db,
       candidates.filter((item) => stepFor(item)?.isTerminal !== true),
       capacityKeyOf,

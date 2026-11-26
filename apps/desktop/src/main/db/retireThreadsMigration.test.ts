@@ -129,10 +129,12 @@ function seed(db: DbHandle["db"], ids?: Partial<Seeded>): Seeded {
   db.run(sql`INSERT INTO comment_mentions (comment_id, target_type, target_id, status) VALUES (${reply}, 'agent', 'implementer', 'open')`);
   // An agent somebody mentioned there, which ran on the thread.
   const agentId = db.get<{ id: string }>(sql`SELECT id FROM agents LIMIT 1`)!.id;
-  // Made by today's repository, which writes the column 0184 adds to runs (EO-912).
+  // Made by today's repository, which writes the columns 0184 adds to runs (EO-912).
   db.run(sql`ALTER TABLE runs ADD dispatched_in text`);
+  db.run(sql`ALTER TABLE runs ADD dispatch_basis text`);
   const run = createRun(db, { itemId: notes, agentId: agentId as Uuid, action: "respond", status: "succeeded" });
   db.run(sql`ALTER TABLE runs DROP COLUMN dispatched_in`);
+  db.run(sql`ALTER TABLE runs DROP COLUMN dispatch_basis`);
   appendRunEvent(db, run.id, "output", { type: "output", text: "Looking at the notes" });
   const memoryId = uuidv7();
   db.run(sql`INSERT INTO memories (id, scope_kind, scope_id, body, source_kind, source_run_id, source_item_id, project_id, created_at, updated_at)

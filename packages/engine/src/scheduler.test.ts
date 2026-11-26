@@ -1804,6 +1804,32 @@ describe("tick — overlapping touches hold an item back while another is in fli
     expect(dispatchBlocker(input, "859")).toBeNull();
   });
 
+  it("holds others back where a place is only claimed for an item, but never lets that item past there", () => {
+    // 856's place is a reconstruction: it holds 859 there, as a proven one would.
+    const claimed = board({ dispatchedIn: new Map(), claimedIn: startedHere("856") });
+    expect(dispatchBlocker(claimed, "859")).toMatchObject({ kind: "touches_overlap", holderId: "856" });
+    // And 859, claimed there itself, is still held beside 856, which is proven there.
+    const both = board({
+      items: [makeItem("856", { stepId: "build", createdAt: 1, ...touching("src") }), makeItem("859", { stepId: "build", createdAt: 2, ...touching("src") })],
+      dispatchedIn: startedHere("856"),
+      claimedIn: startedHere("859"),
+    });
+    expect(dispatchBlocker(both, "856")).toBeNull();
+    expect(dispatchBlocker(both, "859")).toMatchObject({ kind: "touches_overlap", holderId: "856" });
+    expect(tick(both).map((d) => d.item.id)).toEqual(["856"]);
+  });
+
+  it("lets the oldest of two items only claimed in one place go first, rather than both wait for ever", () => {
+    const input = board({
+      items: [makeItem("856", { stepId: "build", createdAt: 1, ...touching("src") }), makeItem("859", { stepId: "build", createdAt: 2, ...touching("src") })],
+      dispatchedIn: new Map(),
+      claimedIn: startedHere("856", "859"),
+    });
+    expect(dispatchBlocker(input, "856")).toBeNull();
+    expect(dispatchBlocker(input, "859")).toMatchObject({ kind: "touches_overlap", holderId: "856" });
+    expect(tick(input).map((d) => d.item.id)).toEqual(["856"]);
+  });
+
   it("leaves the order to a chain of dependencies between the two, not only a direct edge", () => {
     const input = board({
       items: [...board().items, makeItem("mid", { stepId: "todo" })],

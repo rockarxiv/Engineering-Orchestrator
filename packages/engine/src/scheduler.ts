@@ -230,8 +230,20 @@ export interface EligibilityInput<R extends DispatchRefusal = DispatchRefusal> {
    * dispatches worked on no disk has changed nothing anywhere, so it
    * holds nothing and is held at the first place it would work in.
    * Absent is nobody dispatched anywhere, which holds nothing.
+   *
+   * Only places the host has proof of: where its evidence of a dispatch
+   * is a reconstruction, the place is in `claimedIn` instead.
    */
   dispatchedIn?: ReadonlyMap<string, ReadonlySet<string>>;
+  /**
+   * Places each item is believed to be in flight in without proof
+   * (EO-912): where the host could only work out, after the fact, where
+   * a dispatch worked. Such a place holds others back exactly as one in
+   * `dispatchedIn` does, since the item may well have changed files
+   * there; but it never lets the item itself past the hold there, since
+   * it may not have. Absent is none.
+   */
+  claimedIn?: ReadonlyMap<string, ReadonlySet<string>>;
   /**
    * Which bucket each item's run consumes (KAN-161).
    *
@@ -477,6 +489,8 @@ export interface TouchesHoldsInput {
   stepFor: (item: Item) => PipelineStep | undefined;
   /** `EligibilityInput.dispatchedIn`. */
   dispatchedIn: ReadonlyMap<string, ReadonlySet<string>>;
+  /** `EligibilityInput.claimedIn`: places that hold others but exempt nobody. Absent is none. */
+  claimedIn?: ReadonlyMap<string, ReadonlySet<string>>;
   /** The place an item works in at the step it stands on now; null for none shared. */
   placeOf: (item: Item) => string | null;
   /** Every dependency edge, whatever its rule. */
@@ -502,10 +516,11 @@ export interface TouchesHolds {
  * scheduler is asked about at once, exported so that a host explaining
  * a card asks the very rule the tick decides with.
  *
- * An item is in flight in each place `dispatchedIn` lists for it while
- * its step is not terminal, and holds there what it declared it touches.
- * An item is asked about at the place it would work in now, if it has
- * not been dispatched there before: an item already under way in a
+ * An item is in flight in each place `dispatchedIn` or `claimedIn`
+ * lists for it while its step is not terminal, and holds there what it
+ * declared it touches. An item is asked about at the place it would work
+ * in now, unless `dispatchedIn` proves it was dispatched there before (a
+ * place only claimed for it is no such proof): an item already under way in a
  * place carries on there, so two that started together both go on, but
  * one under way elsewhere entering a place for the first time waits
  * like any other.
@@ -537,8 +552,8 @@ export function touchesHolds(input: TouchesHoldsInput): TouchesHolds {
     else if (!claims.some((claim) => claim.item.id === item.id)) claims.push({ item, touches });
   };
   for (const item of items) {
-    const places = dispatchedIn.get(item.id);
-    if (places === undefined || places.size === 0) continue;
+    const places = [...(dispatchedIn.get(item.id) ?? []), ...(input.claimedIn?.get(item.id) ?? [])];
+    if (places.length === 0) continue;
     const step = stepFor(item);
     if (step === undefined || step.isTerminal) continue;
     for (const place of places) addClaim(item, place);
@@ -792,7 +807,7 @@ function lookupsOf(input: LookupInput): Lookups {
  * and an item waits by dependency on each edge that still holds it.
  */
 function overlapOver(
-  input: Pick<EligibilityInput, "items" | "deps" | "dispatchedIn" | "capacityKeyOf">,
+  input: Pick<EligibilityInput, "items" | "deps" | "dispatchedIn" | "claimedIn" | "capacityKeyOf">,
   lookups: Pick<Lookups, "stepFor" | "depsByItem" | "hasOpenDep">,
 ): TouchesHolds {
   const { stepFor, depsByItem, hasOpenDep } = lookups;
@@ -800,6 +815,7 @@ function overlapOver(
     items: input.items,
     stepFor,
     dispatchedIn: input.dispatchedIn ?? new Map(),
+    ...(input.claimedIn ? { claimedIn: input.claimedIn } : {}),
     placeOf: (item) => (input.capacityKeyOf ? input.capacityKeyOf(item) : ""),
     deps: input.deps,
     waitsOnDependencies: (item) => (depsByItem.get(item.id) ?? []).filter(hasOpenDep).map((edge) => edge.dependsOnId),
@@ -807,7 +823,7 @@ function overlapOver(
 }
 
 /** What `touchesHoldsOver` reads: `EligibilityInput`'s own facts about items, steps, edges and where work was dispatched. */
-export type OverlapInput = LookupInput & Pick<EligibilityInput, "dispatchedIn" | "capacityKeyOf">;
+export type OverlapInput = LookupInput & Pick<EligibilityInput, "dispatchedIn" | "claimedIn" | "capacityKeyOf">;
 
 /**
  * The overlap hold exactly as `tick()` applies it, over the part of its
