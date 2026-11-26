@@ -625,9 +625,11 @@ const PIPELINE_SAVE_TOOL: ToolSpec = withoutWebhookUnattended(
       description:
         "Publish a whole pipeline graph — every step and every route between them, in one call. There is no per-step " +
         "edit: what you send replaces what is there, and a step left out is a step removed. Read the current graph with " +
-        "pipeline_get first. A step's `watch` is the one field that leaving out keeps: a step that keeps checking stays " +
+        "pipeline_get first. A step's `watch` is one of two fields that leaving out keeps: a step that keeps checking stays " +
         "as it is, `null` makes it run once, and `{ everyMinutes, giveUpAfterHours }` sets it — `giveUpAfterHours` left out is " +
-        "a week, and `{ everyMinutes, neverGivesUp: true }` keeps checking until a result however long it takes. `entryRules` is what an " +
+        "a week, and `{ everyMinutes, neverGivesUp: true }` keeps checking until a result however long it takes. The other is a route's " +
+        "`traversalLimit`: how many times the route may be taken since a person last commented on the ticket before EO holds it and asks " +
+        "them, a whole number of 1 or more; left out keeps the route's limit, `null` removes it. `entryRules` is what an " +
         "item must have to enter: left out keeps the pipeline's rules, `[]` clears them, and eo_change_pipeline says how they are written. Where a webhook job files " +
         "onto the pipeline, a graph in which a step that acts outside EO " +
         "can be reached before a human step is refused; a person may accept that for one pipeline by pressing the button " +

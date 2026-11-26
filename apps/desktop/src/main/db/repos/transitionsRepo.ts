@@ -2,7 +2,7 @@ import { and, asc, desc, eq, inArray, or, sql } from "drizzle-orm";
 import { onProject } from "./projectScope.js";
 import { uuidv7, type Item, type PipelineStepType, type RecordCursor, type Transition, type Uuid } from "@eo/core";
 import type { Db } from "../client.js";
-import { pipelineSteps, items, transitions } from "../schema.js";
+import { comments, pipelineSteps, items, transitions } from "../schema.js";
 import { getItem, jiraStateFor } from "./itemsRepo.js";
 import { assigneeOnArrival } from "./peopleRepo.js";
 import { boundGraphForItem, versionForArrival } from "./pipelineVersionsRepo.js";
@@ -436,6 +436,67 @@ export function listTransitionsForItem(db: Db, itemId: Uuid): Transition[] {
     .orderBy(asc(transitions.ts), asc(transitions.id))
     .all()
     .map(toDomain);
+}
+
+/**
+ * The move that brought each unarchived item onto the step it stands on,
+ * where that move was made on a declared result (EO-921): the moves a
+ * route's traversal limit may hold an item after.
+ *
+ * Only an item's newest move, and only where it arrived on the step the
+ * item is on — a move by hand made since, or a mirror of another
+ * device's move, names no result and holds nothing. One indexed lookup
+ * per item, since the scheduler asks on every tick.
+ */
+export function latestResultArrivals(db: Db): { itemId: Uuid; fromStepId: string; resultKey: string; ts: number }[] {
+  return db.all<{ itemId: Uuid; fromStepId: string; resultKey: string; ts: number }>(sql`
+    select t.item_id as "itemId", t.from_step_id as "fromStepId", t.result_key as "resultKey", t.ts as "ts"
+    from ${items} i
+    join ${transitions} t on t.id = (
+      select t2.id from ${transitions} t2 where t2.item_id = i.id order by t2.ts desc, t2.id desc limit 1
+    )
+    where i.archived_at is null
+      and t.result_key is not null
+      and t.from_step_id is not null
+      and t.to_step_id = i.step_id
+  `);
+}
+
+/**
+ * When a person last commented on the item, or null where nobody has
+ * (EO-921): where a route's traversal count starts. Comments from agents,
+ * the engine and modules do not count — a person in the thread is what
+ * makes another round legitimate, as `watchRoundTrips` reads it.
+ */
+export function lastHumanCommentAt(db: Db, itemId: Uuid): number | null {
+  const row = db.get<{ at: number | null }>(sql`
+    select max(${comments.createdAt}) as "at" from ${comments}
+    where ${comments.itemId} = ${itemId} and ${comments.authorType} = 'human'
+  `);
+  return row?.at ?? null;
+}
+
+/**
+ * The item's moves along one route — from this step, on this result —
+ * after `after` (epoch ms; null for all of them), oldest first (EO-921):
+ * how many times a route's traversal limit has been used, and the runs
+ * whose results took it.
+ */
+export function listRouteTraversals(db: Db, itemId: Uuid, fromStepId: string, resultKey: string, after: number | null): { id: Uuid; runId: Uuid | null; ts: number }[] {
+  return db
+    .select({ id: transitions.id, runId: transitions.runId, ts: transitions.ts })
+    .from(transitions)
+    .where(
+      and(
+        eq(transitions.itemId, itemId),
+        eq(transitions.fromStepId, fromStepId),
+        eq(transitions.resultKey, resultKey),
+        ...(after === null ? [] : [sql`${transitions.ts} > ${after}`]),
+      ),
+    )
+    .orderBy(asc(transitions.ts), asc(transitions.id))
+    .all()
+    .map((row) => ({ id: row.id as Uuid, runId: row.runId as Uuid | null, ts: row.ts }));
 }
 
 /**

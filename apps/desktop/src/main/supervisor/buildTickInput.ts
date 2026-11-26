@@ -2,6 +2,7 @@ import type { Item, Uuid } from "@eo/core";
 import { touchesHoldsOver, touchesOf } from "@eo/engine";
 import type { CapacityKeyOf, DispatchBlocker, DispatchGate, EligibilityInput, TickInput, WatchHold } from "@eo/engine";
 import type { Db } from "../db/client.js";
+import { routeOverruns } from "./routeLimits.js";
 import {
   gateArrivals,
   getItem,
@@ -159,6 +160,9 @@ export function buildEligibilityInput(
     watchingUntil: watchingUntil(db, items, stepFor, now),
     // No check at all while offline or just after a wake (EO-457).
     watchesHeld: watchesHeld(items, stepFor, watchHold),
+    // Arrived by a route taken past its traversal limit since a person
+    // last commented (EO-921): held on the step it arrived at until one does.
+    routeLimitHolds: new Map([...routeOverruns(db, items)].map(([itemId, overrun]) => [itemId, overrun.hold] as const)),
     paused,
     pauseExemptRoles,
     ...(scheduling.dispatchGate ? { dispatchGate: scheduling.dispatchGate } : {}),

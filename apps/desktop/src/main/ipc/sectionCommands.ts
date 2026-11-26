@@ -266,6 +266,7 @@ export function restoreVersion(db: Db, pipelineId: string, version: PipelineVers
       tone: route.tone,
       target: route.target,
       position: route.position,
+      traversalLimit: route.traversalLimit,
     })),
     { entryStepId: snapshot.entryStepId, entryRules: snapshot.entryRules, republishVersionId: version.id as string },
   );

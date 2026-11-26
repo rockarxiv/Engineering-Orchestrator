@@ -2389,8 +2389,9 @@ export const transitions = sqliteTable("transitions", {
    * (EO-921, migration 0185): a route's key, or the result a person
    * pressed. What a route's traversal limit counts, by this and
    * `from_step_id`. Null on moves before it and on moves no route made.
-   * Written on the machine that made the move; the record's own copy,
-   * and a mirror of it, leave it null.
+   * Written on the machine that made the move and by the record from the
+   * move's command; a replica's mirror of another device's move leaves it
+   * null.
    */
   resultKey: text("result_key"),
   ts: integer("ts").notNull(),

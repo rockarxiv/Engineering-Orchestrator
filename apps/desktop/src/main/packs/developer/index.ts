@@ -11,6 +11,7 @@ import { createDispatchGate } from "./scheduling.js";
 import { developerSectionRenderers } from "./sections.js";
 import { commentPlanSectionRenderers } from "./forge/commentPlans.js";
 import { developerBriefRenderers } from "./briefs.js";
+import { developerRouteLimitNotes } from "./routeLimitNotes.js";
 
 /**
  * What the developer pack needs from the process to build its hooks.
@@ -107,6 +108,10 @@ export function developerPack(options: DeveloperPackOptions): CodePack {
     // (EO-828): the pull request comments beside the planned replies on
     // "Approve plan", and the pull request "Done" closes.
     briefRenderers: developerBriefRenderers(db),
+    // And what a person asked about a send-back loop is shown (EO-921):
+    // the criteria each review round found met, so they can see whether
+    // the loop is converging.
+    routeLimitNotes: developerRouteLimitNotes,
     // The words around the one server this pack has anything to say
     // about (EO-315). See `connectors.ts` for why its setup kind is
     // `none` and why it is on the list at all.

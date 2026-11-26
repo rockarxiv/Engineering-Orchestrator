@@ -1,4 +1,4 @@
-import { and, asc, count, desc, eq, gt, gte, isNull, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, gt, gte, inArray, isNull, sql } from "drizzle-orm";
 import { onProject } from "./projectScope.js";
 import {
   REVIEW_VERDICT_EVENT,
@@ -419,6 +419,27 @@ export function listReviewVerdictsByItem(db: Db): { item: string; reviews: Revie
     grouped.set(row.itemId, entry);
   }
   return [...grouped.values()];
+}
+
+/**
+ * The verdict each of these runs recorded, by run id (EO-921): what the
+ * developer pack reads a send-back loop's rounds from. A run that recorded
+ * none is absent.
+ */
+export function reviewVerdictsOfRuns(db: Db, runIds: readonly string[]): Map<string, ReviewVerdictEvent> {
+  const verdicts = new Map<string, ReviewVerdictEvent>();
+  if (runIds.length === 0) return verdicts;
+  const rows = db
+    .select({ runId: runEvents.runId, payload: runEvents.payload })
+    .from(runEvents)
+    .where(and(eq(runEvents.type, REVIEW_VERDICT_EVENT), inArray(runEvents.runId, [...runIds])))
+    .orderBy(asc(runEvents.ts), asc(runEvents.seq))
+    .all();
+  for (const row of rows) {
+    const verdict = asReviewVerdict(row.payload);
+    if (verdict) verdicts.set(row.runId, verdict);
+  }
+  return verdicts;
 }
 
 /** What one run did, counted, for the line a chat folds a finished turn behind. */

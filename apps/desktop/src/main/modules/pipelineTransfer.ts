@@ -431,6 +431,9 @@ function exportedBoard(db: Db, board: BoardToExport, exported: ReadonlySet<strin
         tone: route.tone,
         target: route.target,
         position: route.position,
+        // How often it may be taken (EO-921), written only where it has a
+        // limit, so a document of routes without one reads as before.
+        ...(route.traversalLimit === null ? {} : { traversalLimit: route.traversalLimit }),
       })),
   };
 }
@@ -1836,6 +1839,8 @@ function writeImport(
         // `mapped` leaves anything it does not know alone. A step of
         // another board is mapped like one of this board's.
         target: mapped(route.target),
+        // As the document says, and none where it says nothing (EO-921).
+        traversalLimit: route.traversalLimit ?? null,
       })),
       // Where work enters lands with the graph, inside the same
       // transaction and inside the version that freezes both (EO-327):

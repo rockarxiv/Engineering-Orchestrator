@@ -607,6 +607,7 @@ function applyDocument(
     tone: route.tone,
     target: route.target,
     position: route.position,
+    traversalLimit: route.traversalLimit ?? null,
   }));
 
   const entryStepId = document.pipeline.entryStepId;

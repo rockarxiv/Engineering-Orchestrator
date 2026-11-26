@@ -258,6 +258,8 @@ function transitionCommand(transition: AppliedTransition): RecordCommand {
     actor: transition.actor,
     runId: transition.runId,
     reason: transition.reason,
+    // The result it was made on (EO-921), so the record counts the route it took.
+    resultKey: transition.resultKey ?? null,
   };
 }
 

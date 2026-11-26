@@ -145,6 +145,14 @@ export const RecordTransitionCommandSchema = z.object({
   actor: z.string(),
   runId: z.string().nullable().default(null),
   reason: z.string().nullable().default(null),
+  /**
+   * The declared result the move was made on, where the device knew it
+   * (EO-921): what a route's traversal limit counts, so the record, which
+   * picks the work, holds a loop the device would. Optional, so a command
+   * from a device that predates it is still taken, its move counting
+   * towards no limit; a record that predates it drops it the same way.
+   */
+  resultKey: z.string().nullable().optional(),
 });
 
 /**
