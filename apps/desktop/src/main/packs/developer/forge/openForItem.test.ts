@@ -1590,6 +1590,37 @@ describe("before it opens or reuses one (EO-429)", () => {
       expect(notes(item).some((body) => body.includes("has diverged"))).toBe(false);
     });
 
+    it("records its pushes, leases over its own and refuses a person's as diverged where git is a wrapper that waits for git rather than becoming it", async () => {
+      const real = execFileSync("sh", ["-c", "command -v git"], { encoding: "utf8", windowsHide: true }).trim();
+      const bin = join(scratch, "wrapped-git");
+      mkdirSync(bin, { recursive: true });
+      writeFileSync(join(bin, "git"), `#!/bin/sh\n'${real.replace(/'/g, `'\\''`)}' "$@"\nexit $?\n`, { mode: 0o755 });
+      const path = process.env["PATH"];
+      process.env["PATH"] = `${bin}:${path ?? ""}`;
+      try {
+        const item = story({ git: { branch: "eo/API-4", pullRequest: PULL_REQUEST } });
+        const worktree = worktreeFor(item);
+        await mergeRequestStep(item, onlyFinds(found));
+        const old = remoteTip()!;
+        expect(gitStateOf(getItem(handle.db, item.id)!).pushedHead).toEqual(pushedTo(old));
+
+        rewriteIn(worktree);
+        const rewritten = localTip();
+        expect(await mergeRequestStep(item, onlyFinds(found))).toMatchObject({ ok: true, result: "opened" });
+        expect(remoteTip()).toBe(rewritten);
+        expect(gitStateOf(getItem(handle.db, item.id)!).pushedHead).toEqual(pushedTo(rewritten));
+
+        const theirs = personPushes();
+        rewriteIn(worktree);
+        expect(await mergeRequestStep(item, onlyFinds(found))).toMatchObject({ ok: true, result: "remote_diverged" });
+        expect(remoteTip()).toBe(theirs);
+        expect(notes(item).at(-1)).toContain("did not force-push");
+      } finally {
+        if (path === undefined) delete process.env["PATH"];
+        else process.env["PATH"] = path;
+      }
+    });
+
     it("keeps its record of its last push where a refused push only looked as though it moved the branch, on either path, and leases over it after", async () => {
       const item = story({ git: { branch: "eo/API-4", pullRequest: PULL_REQUEST } });
       const worktree = worktreeFor(item);
@@ -1597,9 +1628,8 @@ describe("before it opens or reuses one (EO-429)", () => {
       const old = remoteTip()!;
       expect(gitStateOf(getItem(handle.db, item.id)!).pushedHead).toEqual(pushedTo(old));
       commitIn(worktree, "more.ts", "more work");
-      // A hook its configuration registers previews exactly EO's push — by
-      // a dry run that goes through EO's gate, as git's configuration
-      // hands it on — and then refuses it.
+      // A hook its configuration registers previews exactly EO's push, by
+      // a dry run of its own, and then refuses it.
       const hook = join(scratch, "preview.sh");
       writeFileSync(
         hook,
@@ -1608,6 +1638,12 @@ describe("before it opens or reuses one (EO-429)", () => {
       );
       git(["config", "hook.preview.command", `'${hook}'`], repoPath);
       git(["config", "hook.preview.event", "pre-push"], repoPath);
+      // A git that runs no hooks a configuration registers (before 2.54) has nothing here to test.
+      try {
+        execFileSync("git", ["hook", "list", "pre-push"], { cwd: repoPath, stdio: "ignore", windowsHide: true });
+      } catch {
+        return;
+      }
       const saved = { TMPDIR: process.env["TMPDIR"], TEMP: process.env["TEMP"], TMP: process.env["TMP"] };
       try {
         // With EO's gate, and where its temporary directory cannot be made.

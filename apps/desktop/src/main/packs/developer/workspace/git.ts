@@ -207,11 +207,10 @@ export async function listTree(repoPath: string, ref: string, path: string): Pro
  * name its repository.
  *
  * `updated` is whether the remote's branch actually moved, read off
- * `--porcelain` after the gate's own line (`gitAccount`) — never where no
- * gate ran, when nothing tells git's account from a hook's, and never
- * from a run of the gate for a push some hook runs inside EO's, whose
- * parent is not the git EO started (`openGate`): an up-to-date push changes nothing, and its commit may
- * be somebody else's — so it is not EO's to record as its own. A push
+ * `--porcelain` after the gate's own line (`gitAccount`): an up-to-date
+ * push changes nothing, and its commit may be somebody else's — so it is
+ * not EO's to record as its own. Where no gate can be made, nothing would
+ * tell git's account from a hook's, so nothing is pushed at all. A push
  * that failed says in `published` the commit it sent if it moved the
  * branch at any of its URLs all the same — several push URLs can each
  * answer differently — and in `rejection` whether git refused the ref
@@ -256,16 +255,32 @@ export async function pushBranch(
   if (lease && route?.key !== lease.destination) return refused("destination", ELSEWHERE, route?.key ?? null);
 
   const source = `${head}^{commit}`;
+  const env = { ...process.env, ...NON_INTERACTIVE_GIT_ENV };
   const submodules = await pushesSubmodulesOnDemand(repoPath);
-  const gate = await openGate(repoPath, { ref, branch, source, head, route, lease: lease !== undefined, submodules });
-  if (gate === null && lease) return refused("destination", `git would not run EO's check of where the push goes, so ${branch} was not pushed.`);
+  // Hooks a configuration registers for `pre-push` are off for git's own
+  // run of the push, and the gate runs them instead, where it runs the
+  // repository's own: after its checks, with the branch's name on their
+  // stdin, and in the environment the push had before EO pinned anything
+  // — so a push one of them runs is not EO's, and goes through no gate.
+  const configured = await configuredPrePushHooks(repoPath, env);
+  const disabled = (configured ?? []).map((name) => configParameter(`hook.${name}.enabled`, "false"));
+  const gate =
+    configured === null
+      ? null
+      : await openGate(repoPath, { ref, branch, source, head, route, lease: lease !== undefined, submodules, configured: configured.length > 0, listEnv: withConfig(env, disabled) });
+  // A push EO cannot check is not one it makes: nothing would tell what
+  // git did from what a hook printed, so it could be no record of EO's.
+  if (gate === null) {
+    if (lease) return refused("destination", `git would not run EO's check of where the push goes, so ${branch} was not pushed.`);
+    return { ok: false, error: `EO could not set up its check of the push, so ${branch} was not pushed.`, head, published: null, destination: null, rejection: "other", status: null };
+  }
   const refspec = `${source}:${ref}`;
   const leaseArg = lease ? [`--force-with-lease=${branch}:${lease.expect}`] : [];
-  const receiveArg = gate?.receivePack ? [`--receive-pack=${gate.receivePack}`] : [];
+  const receiveArg = gate.receivePack ? [`--receive-pack=${gate.receivePack}`] : [];
   // On git's command line, after anything the environment gives it, so
   // that no `GIT_CONFIG_PARAMETERS` and no configuration file can name
   // another hooks directory: `-c` is read last, and the last one wins.
-  const gateArg = gate ? ["-c", `core.hooksPath=${gate.dir}`] : [];
+  const gateArg = ["-c", `core.hooksPath=${gate.dir}`];
   // A lease goes by the route's own transport and nothing else:
   // `GIT_ALLOW_PROTOCOL` overrides every `protocol.*.allow` git reads, so
   // a remote helper configured for the remote after EO read it
@@ -273,7 +288,6 @@ export async function pushBranch(
   // would take it somewhere EO never checked — and git itself refuses it,
   // before any helper runs or anything is sent.
   const leaseEnv: Record<string, string> = lease && route !== null ? { GIT_ALLOW_PROTOCOL: route.protocol } : {};
-  const env = { ...process.env, ...NON_INTERACTIVE_GIT_ENV };
   const running = { timeout: options.timeoutMs ?? NETWORK_TIMEOUT_MS, ...(options.signal ? { signal: options.signal } : {}) };
   // Git pushes on-demand submodules with the refspec the push names, which
   // in a submodule must name a ref of its own — and the commit EO sends
@@ -281,28 +295,23 @@ export async function pushBranch(
   // pushes them instead, where git would: once the repository's own hook
   // has let the push go, and before git sends anything.
   const recurseArg = submodules ? ["--recurse-submodules=no"] : [];
-  // What the gate's submodule push is to run with: the environment as it
-  // was before EO pinned anything for its own push, which is not theirs.
-  const restored = gate === null || !submodules ? {} : restoredForSubmodules(env);
-  const send = async (followRedirects: boolean): Promise<{ stdout: string; account: string | null; failure: unknown }> => {
+  // What the hooks the gate runs, and its push of the submodules, run
+  // with: the environment as it was before EO pinned anything for its own
+  // push, which is not theirs.
+  const restored = restoredForHooks(env);
+  const send = async (followRedirects: boolean): Promise<{ stdout: string; account: string; failure: unknown }> => {
     const args = composeGitArgs([...gateArg, "push", "--porcelain", "--no-follow-tags", ...recurseArg, ...receiveArg, ...leaseArg, remote, refspec], process.platform);
-    // Where the gate can tell EO's push from one a hook runs inside it,
-    // git is started by a shell that writes down its own process id and
-    // then becomes git: the gate's parent, for EO's push and no other.
-    const [command, argv] = gate?.pidFile ? ["/bin/sh", ["-c", 'printf %s "$$" > "$0" 2> /dev/null; exec git "$@"', gate.pidFile, ...args]] : ["git", args];
     // What git prints on stdout is its account of the push only after the
-    // gate's line: a hook a configuration registers runs outside the gate
-    // and prints there too, and anything it prints before is not git's.
-    // Without a gate nothing tells the two apart, so nothing is git's
-    // account of what the push moved.
-    const read = (stdout: string): { stdout: string; account: string | null } => ({ stdout, account: gate === null ? null : gitAccount(stdout, gate.marker) });
+    // gate's line, which it prints as its last act before git sends.
+    const read = (stdout: string): { stdout: string; account: string } => ({ stdout, account: gitAccount(stdout, gate.marker) });
+    const pin = followRedirects || route === null ? null : noRedirects(route);
     try {
-      const { stdout } = await execFileAsync(command, argv, {
+      const { stdout } = await execFileAsync("git", args, {
         ...running,
         cwd: repoPath,
         windowsHide: true,
         maxBuffer: 32 * 1024 * 1024,
-        env: { ...env, ...(route?.env ?? {}), ...leaseEnv, ...restored, ...(followRedirects || route === null ? {} : noRedirects(route)) },
+        env: { ...withConfig({ ...env, ...(route?.env ?? {}), ...leaseEnv, ...restored }, pin === null ? disabled : [...disabled, pin]) },
       });
       return { ...read(stdout), failure: null };
     } catch (error) {
@@ -314,25 +323,7 @@ export async function pushBranch(
     }
   };
   try {
-    // Where there is no gate to push them, they go first, by a push of the
-    // branch by its name that pushes only them — which runs the
-    // repository's hooks before it does, so their refusal still holds,
-    // though they then run again for the push of the commit. What it says
-    // is ignored: it can fail for the branch's own divergence after
-    // pushing them, and the push after it says what happened at the remote.
-    if (submodules && gate === null) {
-      await execFileAsync("git", composeGitArgs(["push", "--recurse-submodules=only", "--quiet", remote, branch], process.platform), {
-        ...running,
-        cwd: repoPath,
-        windowsHide: true,
-        maxBuffer: 32 * 1024 * 1024,
-        env,
-      }).catch(() => undefined);
-    }
-    let { stdout: printed, account, failure } = await send(false);
-    // How the push is classified reads git's account where there is one,
-    // and otherwise all it printed; what it published, only the account.
-    let stdout = account ?? printed;
+    let { account: stdout, failure } = await send(false);
     // Over HTTP every push of EO's follows no redirect, so the URL EO
     // records is the server that took it. One that failed before git
     // reached the gate or said anything of the branch — a redirect, as
@@ -347,17 +338,16 @@ export async function pushBranch(
       route !== null &&
       route.protocol.startsWith("http") &&
       refStatuses(stdout, refspec).length === 0 &&
-      (gate === null || (await seenBy(gate))?.pushes.length === 0) &&
+      (await seenBy(gate))?.pushes.length === 0 &&
       !stopped(failure, options.signal)
     ) {
-      ({ stdout: printed, account, failure } = await send(true));
-      stdout = account ?? printed;
+      ({ account: stdout, failure } = await send(true));
       redirected = true;
     }
     // What the gate saw is the evidence of where the push went. Where it
     // cannot be read, git's own account of the push stands, and the push
     // is to no one place, which no lease can follow.
-    const seen = gate === null ? null : await seenBy(gate);
+    const seen = await seenBy(gate);
     let destination: string | null = null;
     if (route !== null && seen !== null && !redirected) {
       try {
@@ -371,9 +361,9 @@ export async function pushBranch(
       // person's `git status` its ahead/behind, nothing of EO's.
       await git(["config", `branch.${branch}.remote`, remote], repoPath);
       await git(["config", `branch.${branch}.merge`, ref], repoPath);
-      return { ok: true, stdout: stdout.trim(), head, updated: account !== null && pushUpdated(account, refspec), destination };
+      return { ok: true, stdout: stdout.trim(), head, updated: pushUpdated(stdout, refspec), destination };
     }
-    const published = account !== null && pushUpdated(account, refspec) ? head : null;
+    const published = pushUpdated(stdout, refspec) ? head : null;
     if (seen?.moved) return { ...refused("changed", `${branch} is not at the commit EO was to push, so nothing was pushed.`), published };
     if (lease && seen?.elsewhere) return { ...refused("destination", ELSEWHERE), published };
     const stderr = extractGitError(failure);
@@ -387,35 +377,93 @@ export async function pushBranch(
       status: pushRefusal(stdout, refspec),
     };
   } finally {
-    await gate?.close();
+    await gate.close();
   }
 }
 
 /**
- * The environment that has git follow no HTTP redirect on `route`'s URL,
- * whatever its configuration says. `http.<url>.followRedirects` for the
- * URL itself is the most specific setting git can match it with, and of
- * two as specific the last it reads wins: so it goes last of all, after
- * anything the environment already gives git, where no configuration
- * file can follow it. In the environment rather than with `-c`, because
- * a URL can carry a credential and git's command line is quoted wherever
- * it fails.
+ * The setting that has git follow no HTTP redirect on `route`'s URL,
+ * whatever its configuration says, or null where the route is not HTTP.
+ * `http.<url>.followRedirects` for the URL itself is the most specific
+ * setting git can match it with, and of two as specific the last it reads
+ * wins: so it goes last of all, after anything the environment already
+ * gives git, where no configuration file can follow it (`withConfig`). In
+ * the environment rather than with `-c`, because a URL can carry a
+ * credential and git's command line is quoted wherever it fails.
  */
-function noRedirects(route: PushRoute): Record<string, string> {
-  if (!route.protocol.startsWith("http")) return {};
-  const pin = `${shellWord(`http.${route.url}.followredirects`)}=${shellWord("false")}`;
-  const given = process.env["GIT_CONFIG_PARAMETERS"];
-  return { GIT_CONFIG_PARAMETERS: given !== undefined && given !== "" ? `${given} ${pin}` : pin };
+function noRedirects(route: PushRoute): string | null {
+  if (!route.protocol.startsWith("http")) return null;
+  return configParameter(`http.${route.url}.followredirects`, "false");
+}
+
+/** One setting as `GIT_CONFIG_PARAMETERS` spells it, whatever is in its name. */
+function configParameter(key: string, value: string): string {
+  return `${shellWord(key)}=${shellWord(value)}`;
+}
+
+/**
+ * `env` with `parameters` read after everything else git reads: appended
+ * to the `GIT_CONFIG_PARAMETERS` it already gives git, which git reads
+ * after every configuration file, as it reads `-c`.
+ */
+function withConfig(env: NodeJS.ProcessEnv, parameters: string[]): NodeJS.ProcessEnv {
+  if (parameters.length === 0) return env;
+  const given = env["GIT_CONFIG_PARAMETERS"];
+  const added = parameters.join(" ");
+  return { ...env, GIT_CONFIG_PARAMETERS: given !== undefined && given !== "" ? `${given} ${added}` : added };
+}
+
+/**
+ * The names of the hooks a configuration registers for `pre-push`
+ * (`hook.<name>.event`, git 2.54 and later) — an empty list where git
+ * registers none, or registers no hooks at all — or null where git lists
+ * them in a way EO cannot read. Git lists each as `<scope>\t<name>`, and a
+ * disabled one as `<scope>\tdisabled\t<name>`, which a hook named
+ * `disabled\t<name>` would read the same as: so both names are given for
+ * it, and turning off one that is not there changes nothing.
+ */
+async function configuredPrePushHooks(repoPath: string, env: NodeJS.ProcessEnv): Promise<string[] | null> {
+  let stdout: Buffer;
+  try {
+    ({ stdout } = await execFileAsync("git", composeGitArgs(["hook", "list", "-z", "--show-scope", "pre-push"], process.platform), {
+      cwd: repoPath,
+      windowsHide: true,
+      encoding: "buffer",
+      maxBuffer: 1024 * 1024,
+      env,
+    }));
+  } catch {
+    // None registered (git says so by failing), or a git without them.
+    return [];
+  }
+  let listed: string;
+  try {
+    listed = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(stdout);
+  } catch {
+    return null;
+  }
+  const names: string[] = [];
+  for (const entry of listed.split("\0")) {
+    const tab = entry.indexOf("\t");
+    // `hook from hookdir`: the repository's own, which the gate runs.
+    if (tab === -1) continue;
+    const name = entry.slice(tab + 1);
+    if (name === "") return null;
+    names.push(name);
+    if (name.startsWith("disabled\t")) names.push(name.slice("disabled\t".length));
+  }
+  return names;
 }
 
 /**
  * Git's own account of a push from what it printed on stdout: for each
  * URL, the `To` line and the ref's status line straight after the gate's
  * `marker` — which the gate prints only once the push passed it and the
- * repository's own hook, as the last thing before git sends — and nothing
- * else. Hooks a configuration registers run before the gate, outside it,
- * and print onto the same stdout, so a line one prints, even one that
- * reads exactly like git's, is never taken for git's (EO-910).
+ * repository's hooks, as the last thing before git sends — and nothing
+ * else. Anything else git runs before then that prints onto the same
+ * stdout — a hook a configuration registers for another event, say —
+ * prints before the marker, so a line it prints, even one that reads
+ * exactly like git's, is never taken for git's (EO-910).
  */
 export function gitAccount(stdout: string, marker: string): string {
   const lines = stdout.split("\n");
@@ -428,22 +476,24 @@ export function gitAccount(stdout: string, marker: string): string {
   return kept.length === 0 ? "" : `${kept.join("\n")}\n`;
 }
 
-/** What EO sets in its own push's environment, which the submodules' push is not to inherit. */
+/** What EO sets in its own push's environment, which the hooks the gate runs, and its push of the submodules, are not to inherit. */
 const PINNED_FOR_PUSH = ["GIT_SSH_COMMAND", "GIT_SSH_VARIANT", "GIT_ALLOW_PROTOCOL", "GIT_CONFIG_PARAMETERS"] as const;
 
 /**
- * The environment the gate's push of the submodules restores: for each
- * variable EO pins for its own push — and `GIT_CONFIG_PARAMETERS`, which
- * git itself extends with the gate's `core.hooksPath` — its value before
- * EO pinned it, passed beside it, so that the submodules are pushed as
- * git would have pushed them. In the environment, never in the gate's
+ * The environment the gate restores before it runs the repository's
+ * hooks and pushes its submodules: for each variable EO pins for its own
+ * push — and `GIT_CONFIG_PARAMETERS`, which git itself extends with the
+ * gate's `core.hooksPath` — its value before EO pinned it, passed beside
+ * it, so that they run as git would have run them without EO. A push a
+ * hook runs then goes through no gate of EO's, and nothing it does can be
+ * taken for EO's push (EO-910). In the environment, never in the gate's
  * files: a value can carry a credential.
  */
-function restoredForSubmodules(env: NodeJS.ProcessEnv): Record<string, string> {
+function restoredForHooks(env: NodeJS.ProcessEnv): Record<string, string> {
   const restored: Record<string, string> = {};
   for (const key of PINNED_FOR_PUSH) {
     const value = env[key];
-    if (value !== undefined) restored[`EO_PUSH_SUBMODULES_${key}`] = value;
+    if (value !== undefined) restored[`EO_PUSH_RESTORE_${key}`] = value;
   }
   return restored;
 }
@@ -587,12 +637,20 @@ interface GateSeen {
  * and — for a leased push — stops it at any URL but the route's, through
  * a remote helper, or, for a local path, unless EO's `receive-pack` is in
  * exactly the repository EO checked. A stop there sends nothing to that
- * URL. Only then does it run the repository's own `pre-push`, if it has
- * one, with the same arguments and the stdin git gives a push of the
- * branch — the branch's own name as the local ref — and its output on
- * stderr, where nothing it prints can pass for git's account of the push.
- * Every other hook in the directory runs the repository's own of that
- * name, its output on stderr too, so nothing else a push runs changes.
+ * URL. It stops it too where git lists any `pre-push` hook but those EO
+ * listed for it (`listedHooks`): one a configuration registered since EO
+ * turned those off ran outside the gate. Only then does it run every
+ * `pre-push` hook of the repository's — its own, and those a
+ * configuration registers, which git's own run of the push leaves to it —
+ * with the same arguments and the stdin git gives a push of the branch,
+ * the branch's own name as the local ref; in the environment the push
+ * had before EO pinned anything, so that a push one of them runs goes
+ * through no gate of EO's; and with their output on stderr, where nothing
+ * they print can pass for git's account of the push. Then, where the
+ * repository pushes them on demand, it pushes the submodules' commits,
+ * and stops the push where one could not be. Every other hook in the
+ * directory runs the repository's own of that name, in that environment
+ * and with its output on stderr too, so nothing else a push runs changes.
  *
  * Its `receive-pack`, for a local path, goes into the path given it and
  * then runs git's own there, on the directory it is in rather than the
@@ -603,8 +661,20 @@ interface GateSeen {
  */
 async function openGate(
   repoPath: string,
-  expect: { ref: string; branch: string; source: string; head: string; route: PushRoute | null; lease: boolean; submodules: boolean },
-): Promise<{ dir: string; receivePack: string | null; marker: string; pidFile: string | null; seen: () => Promise<GateSeen>; close: () => Promise<void> } | null> {
+  expect: {
+    ref: string;
+    branch: string;
+    source: string;
+    head: string;
+    route: PushRoute | null;
+    lease: boolean;
+    submodules: boolean;
+    /** Whether a configuration registers `pre-push` hooks, which git's own run of the push leaves to the gate. */
+    configured: boolean;
+    /** The environment git's own run of the push lists its hooks in. */
+    listEnv: NodeJS.ProcessEnv;
+  },
+): Promise<{ dir: string; receivePack: string | null; marker: string; seen: () => Promise<GateSeen>; close: () => Promise<void> } | null> {
   const hooks = await hooksPath(repoPath);
   if (hooks === null) return null;
   // As git names it, joined as the system will follow it: `resolve` and
@@ -612,7 +682,7 @@ async function openGate(
   // follows `link` first and runs the hooks somewhere else entirely.
   const own = isAbsolute(hooks) ? hooks : `${repoPath}${sep}${hooks}`;
   // Made like the rest of the gate: a temporary directory that cannot be
-  // made is a push EO runs no gate for, never one that throws.
+  // made is a push EO does not make, never one that throws.
   let dir: string;
   try {
     // Absolute, whatever the temporary directory is named by: git runs
@@ -641,34 +711,22 @@ async function openGate(
     const bound = route !== null && route.local !== null && bindsLocalRepository();
     if (lease && bound) await writeFile(join(marks, "expect-at"), `${route.local}\n`);
     const ownHook = (name: string): string => `h=${shellPath(`${own}/${name}`)}`;
-    const passOn = (name: string): string => [ownHook(name), `if [ -f "$h" ] && [ -x "$h" ]; then exec "$h" "$@" >&2; fi`, "exit 0"].join("\n");
+    // The environment as it was before EO pinned anything for its push,
+    // for whatever the repository's own hooks run: a push one of them runs
+    // goes as it would without EO, through no gate of EO's.
+    const restore = [
+      ...PINNED_FOR_PUSH.map((key) => `if [ "\${EO_PUSH_RESTORE_${key}+set}" = set ]; then ${key}=$EO_PUSH_RESTORE_${key}; export ${key}; else unset ${key}; fi`),
+      `for v in ${PINNED_FOR_PUSH.map((key) => `EO_PUSH_RESTORE_${key}`).join(" ")}; do unset "$v"; done`,
+    ];
+    const passOn = (name: string): string => [...restore, ownHook(name), `if [ -f "$h" ] && [ -x "$h" ]; then exec "$h" "$@" >&2; fi`, "exit 0"].join("\n");
     for (const name of GIT_HOOKS) await writeFile(join(dir, name), `#!/bin/sh\n${passOn(name)}\n`, { mode: 0o755 });
     // Printed once the push has passed every check here and the
-    // repository's own hook, as the last thing before git sends: hooks a
-    // configuration registers (`hook.<name>.event`) run before this one,
-    // outside it, and print onto the same stdout as git's account of the
-    // push, so only what follows this line is git's (`gitAccount`).
+    // repository's hooks, as the last thing before git sends: only what
+    // follows this line is git's account of the push (`gitAccount`).
     const marker = `EO-PUSH-GATE ${randomBytes(16).toString("hex")}`;
-    // The process id of the git EO started, written by the shell that
-    // became it. A push a hook runs while git runs it — a configured
-    // hook's dry run, say — inherits the gate from git's configuration,
-    // but its gate's parent is that other git: its run is not EO's push,
-    // and goes as that push would have gone without EO, marking nothing
-    // and printing no marker. Not on Windows, whose shell has process ids
-    // of its own (`bindsLocalRepository`): there every run is EO's.
-    const pidFile = process.platform === "win32" ? null : join(dir, "pid");
     const stop = (mark: string, why: string): string => `: > "$d/${mark}"; echo ${shellWord(`EO stopped the push: ${why}`)} >&2; exit 1`;
-    const restore = PINNED_FOR_PUSH.map((key) => `  if [ "\${EO_PUSH_SUBMODULES_${key}+set}" = set ]; then ${key}=$EO_PUSH_SUBMODULES_${key}; export ${key}; else unset ${key}; fi`);
     const gate = [
       "#!/bin/sh",
-      ...(pidFile === null
-        ? []
-        : [
-            `p=$(cat ${shellPath(pidFile)} 2> /dev/null) || p=`,
-            'if [ -n "$p" ] && [ "$p" != "$PPID" ]; then',
-            `  ${passOn("pre-push").split("\n").join("\n  ")}`,
-            "fi",
-          ]),
       `d=${shellPath(marks)}`,
       "n=$$",
       'printf %s "$2" > "$d/to.$n" || exit 1',
@@ -693,21 +751,30 @@ async function openGate(
             `elif [ -f "$d/at.$n" ]; then ${stop("elsewhere", "it is not going where EO checked.")}; fi`,
           ]
         : []),
-      ownHook("pre-push"),
-      'if [ -f "$h" ] && [ -x "$h" ]; then "$h" "$@" < "$d/in.$n" >&2 || exit $?; fi',
+      // Git ran every hook it was to run before this one: the hooks a
+      // configuration registers are off for its run of the push, and they
+      // run here. One registered since EO turned them off ran outside the
+      // gate, where a push it runs could pass for EO's: so the push goes
+      // only where git lists exactly the hooks EO listed for it.
+      `git hook list -z --show-scope pre-push > "$d/hooks.$n" 2> /dev/null`,
+      `if ! cmp -s "$d/hooks" "$d/hooks.$n"; then ${stop("hooks", "a hook it did not run inside its check runs for the push.")}; fi`,
+      ...restore,
+      ...(expect.configured
+        ? // Every `pre-push` hook git would run, as git runs them, the
+          // repository's own from its hooks directory too.
+          ['git hook run --ignore-missing --to-stdin="$d/in.$n" pre-push -- "$1" "$2" >&2 || exit $?']
+        : [ownHook("pre-push"), 'if [ -f "$h" ] && [ -x "$h" ]; then "$h" "$@" < "$d/in.$n" >&2 || exit $?; fi']),
       // The submodules a push of the branch would push on demand, as git
-      // pushes them: once the repository's own hook has let the push go,
-      // and before git sends the commit that needs them. What this push
-      // says is not the account of EO's — it can fail for the branch's
-      // own divergence after pushing them — so its result is ignored, and
-      // the push of the commit says what happened at the remote.
+      // pushes them: once every hook has let the push go, and before git
+      // sends the commit that needs them. It fails for the branch's own
+      // divergence after pushing them (1), which the push of the commit
+      // says; a submodule it could not push (git dies, 128) stops the
+      // push, as it stops git's own, so no commit goes without them.
       ...(expect.submodules
         ? [
-            "(",
-            ...restore,
-            `  for v in ${PINNED_FOR_PUSH.map((key) => `EO_PUSH_SUBMODULES_${key}`).join(" ")}; do unset "$v"; done`,
-            `  git push --recurse-submodules=only --no-verify --quiet "$1" ${shellWord(expect.branch)} < /dev/null >&2`,
-            ") || :",
+            `git push --recurse-submodules=only --no-verify --quiet "$1" ${shellWord(expect.branch)} < /dev/null >&2`,
+            "s=$?",
+            `if [ "$s" -gt 1 ]; then echo ${shellWord("EO stopped the push: a submodule commit it needs could not be pushed.")} >&2; exit 1; fi`,
           ]
         : []),
       // On a line of its own, whatever a hook before it left unfinished.
@@ -720,6 +787,9 @@ async function openGate(
     // Git skips a hook it cannot execute — a temporary directory mounted
     // noexec, say — and a push it runs no gate for is one EO cannot check.
     if (process.platform !== "win32") await access(prePush, constants.X_OK);
+    // The hooks git's own run of the push lists, with the gate as the
+    // repository's: what the gate checks it is run beside.
+    await writeFile(join(marks, "hooks"), await listedHooks(repoPath, dir, expect.listEnv));
 
     let receivePack: string | null = null;
     if (bound) {
@@ -766,10 +836,31 @@ async function openGate(
       }
       return { pushes, moved: names.includes("moved"), routed: names.includes("routed"), elsewhere: names.includes("elsewhere") };
     };
-    return { dir, receivePack, marker, pidFile, seen, close };
+    return { dir, receivePack, marker, seen, close };
   } catch {
     await close();
     return null;
+  }
+}
+
+/**
+ * What `git hook list` prints for `pre-push` with `gateDir` as the hooks
+ * directory, byte for byte: empty where it prints nothing, or fails, as a
+ * git without registered hooks does.
+ */
+async function listedHooks(repoPath: string, gateDir: string, env: NodeJS.ProcessEnv): Promise<Buffer> {
+  try {
+    const { stdout } = await execFileAsync("git", composeGitArgs(["-c", `core.hooksPath=${gateDir}`, "hook", "list", "-z", "--show-scope", "pre-push"], process.platform), {
+      cwd: repoPath,
+      windowsHide: true,
+      encoding: "buffer",
+      maxBuffer: 1024 * 1024,
+      env,
+    });
+    return stdout;
+  } catch (error) {
+    const raw = typeof error === "object" && error !== null ? (error as { stdout?: unknown }).stdout : undefined;
+    return Buffer.isBuffer(raw) ? raw : Buffer.alloc(0);
   }
 }
 
