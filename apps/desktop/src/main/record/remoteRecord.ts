@@ -116,6 +116,9 @@ export interface RemoteRecord extends ItemRecord {
   linked(): boolean;
 }
 
+/** What the record's door answers for a channel it does not serve (server/http.ts): a record older than `record:handleMessageFor`. */
+const NO_DELEGATED_CHANNEL = 'EO has no channel called "record:handleMessageFor".';
+
 /** How many transcript lines one request carries when a run is sent ahead of its note. */
 const RUN_PAGE = 500;
 
@@ -475,14 +478,27 @@ export function createRemoteRecord(options: RemoteRecordOptions): RemoteRecord {
       const delegate = request.by !== undefined && request.by.kind !== "person" ? request.by : null;
       const answer = delegate === null ? await ask("record:handleMessage", press) : await ask("record:handleMessageFor", { ...press, by: delegate });
       if (!answer.ok) {
-        return {
-          ok: false,
-          problem: answer.unreachable
-            ? `This message is on your organisation's record, which could not be reached, so it is still open: ${answer.problem}`
-            : delegate !== null
-              ? `Your organisation's record did not take that, so the message is still open. A record older than this desktop cannot keep who pressed for you; the person can answer it in EO's Inbox. The record said: ${answer.problem}`
-              : `Your organisation's record did not take that: ${answer.problem}`,
-        };
+        // Not reached, or no answer in time: the press may have landed
+        // before the line went, so nothing is claimed about the message.
+        // The next pull says where it stands.
+        if (answer.unreachable) {
+          return {
+            ok: false,
+            problem: `This message is on your organisation's record, which could not be reached, so EO cannot say whether that was taken. The Inbox shows where the message stands once the record answers again: ${answer.problem}`,
+          };
+        }
+        // A record older than the delegated channel: it ran nothing, so
+        // the message is certainly still open.
+        if (delegate !== null && answer.problem === NO_DELEGATED_CHANNEL) {
+          return {
+            ok: false,
+            problem:
+              "Your organisation's record is older than this desktop and cannot keep who pressed for the person, so it was not asked and the message is still open. The person can answer it in EO's Inbox, or it can be answered here once the record is upgraded.",
+          };
+        }
+        // Anything else the record answered is a fault on its side, not a
+        // refusal (EO-918): on the ordinary error path, as one here is.
+        throw new Error(`Your organisation's record did not take that: ${answer.problem}`);
       }
       const { message, problem } = answer.data;
       if (message !== null) {

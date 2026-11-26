@@ -22,7 +22,7 @@ import {
   recordOccurrence,
   sweepHandledMessages,
 } from "../db/repos/index.js";
-import { setSetting } from "../db/repos/settingsRepo.js";
+import { getSetting, setSetting } from "../db/repos/settingsRepo.js";
 import { jobs, messages } from "../db/schema.js";
 import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import { MANAGED_PERSON_ID_KEY } from "../identity/viewer.js";
@@ -58,6 +58,8 @@ interface Desktop {
   online: boolean;
   /** Whether the record it talks to is older than `record:handleMessageFor` (EO-918). */
   olderRecord: boolean;
+  /** Whether the record fails a press on its side, as a failed write answers (EO-918). */
+  faultyRecord: boolean;
 }
 
 let recordDb: DbHandle;
@@ -106,7 +108,7 @@ function desktop(personId: Uuid, name: string): Desktop {
   const deviceId = issueDevice(recordDb.db, { personId, name, tokenHash: `hash-${name}`, secretsKeyHash: null }).id;
   const handle = openMigratedTestDb();
   setSetting(handle.db, MANAGED_PERSON_ID_KEY, personId);
-  const machine: Desktop = { handle, online: true, olderRecord: false, record: undefined as unknown as DeviceRecord };
+  const machine: Desktop = { handle, online: true, olderRecord: false, faultyRecord: false, record: undefined as unknown as DeviceRecord };
   const transport: RecordTransport = {
     async request(channel, payload) {
       if (!machine.online) return { ok: false, error: { message: "EO could not reach https://eo.example: fetch failed" } };
@@ -118,10 +120,12 @@ function desktop(personId: Uuid, name: string): Desktop {
         case "record:sendMessage":
           return { ok: true, data: serveSendMessage(serving, { ...(payload as IpcPayload<"record:sendMessage">), deviceId }) as never };
         case "record:handleMessage":
+          if (machine.faultyRecord) return { ok: false, error: { message: "Internal error" } };
           return { ok: true, data: serveHandleMessage(serving, { ...(payload as IpcPayload<"record:handleMessage">), deviceId }) as never };
         case "record:handleMessageFor":
-          // What a record from before EO-918 answers a channel it has no handler for.
-          if (machine.olderRecord) return { ok: false, error: { message: `EO has no handler registered for "${channel}".` } };
+          // What a record from before EO-918 answers a channel its contract has no entry for (server/http.ts, a 404).
+          if (machine.olderRecord) return { ok: false, error: { message: `EO has no channel called "${channel}".` } };
+          if (machine.faultyRecord) return { ok: false, error: { message: "Internal error" } };
           return { ok: true, data: serveHandleMessage(serving, { ...(payload as IpcPayload<"record:handleMessageFor">), deviceId }) as never };
         case "record:messages":
           return { ok: true, data: serveMessages(serving, { ...(payload as IpcPayload<"record:messages">), deviceId }) as never };
@@ -291,6 +295,65 @@ describe("a message about a project the organisation's record holds", () => {
     const pressed = await annaDesk.record.handleMessage({ messageId: first.id, how: "answered", answer: "Take theirs", by: { kind: "person" } });
     expect(pressed.ok).toBe(true);
     expect(getMessage(recordDb.db, first.id)).toMatchObject({ handledHow: "answered", handledBy: { kind: "person" } });
+  });
+
+  it("is read again once by a desktop whose cursor went past a delegated press before it kept who handled it (EO-918)", async () => {
+    const projectId = await organisationProject();
+    await carl.record.sendMessage(question(projectId, "local"));
+    await syncAll();
+    const mine = onTheRecord().find((message) => message.recipientId === annaId) as Message;
+    markMessageHandled(recordDb.db, mine.id, "answered", "Take theirs", Date.now() + 1_000, { kind: "assistant", agentId: "the-assistant" });
+    await annaLaptop.record.sync();
+    expect(getMessage(annaLaptop.handle.db, mine.id)?.handledBy).toEqual({ kind: "assistant", agentId: "the-assistant" });
+
+    // The laptop as it stood before 0183: the press pulled with who
+    // dropped, and its cursor past it in the shape it kept then.
+    const cursor = getSetting<Record<string, unknown>>(annaLaptop.handle.db, "record.messagesCursor", {});
+    setSetting(annaLaptop.handle.db, "record.messagesCursor", { ts: cursor.ts, id: cursor.id, deviceId: cursor.deviceId });
+    annaLaptop.handle.db.update(messages).set({ handledBy: null }).where(eq(messages.id, mine.id)).run();
+    // What the Inbox and inbox_list would say for good: the person's press.
+    expect(getMessage(annaLaptop.handle.db, mine.id)?.handledBy).toEqual({ kind: "person" });
+
+    await annaLaptop.record.sync();
+    expect(getMessage(annaLaptop.handle.db, mine.id)?.handledBy).toEqual({ kind: "assistant", agentId: "the-assistant" });
+
+    // Once: the cursor it keeps now is trusted, so the next pull starts where it stopped.
+    annaLaptop.handle.db.update(messages).set({ handledBy: null }).where(eq(messages.id, mine.id)).run();
+    await annaLaptop.record.sync();
+    expect(getMessage(annaLaptop.handle.db, mine.id)?.handledBy).toEqual({ kind: "person" });
+  });
+
+  it("is a fault, not a refusal, when the record fails the press on its side, and claims nothing when the record cannot be reached (EO-918)", async () => {
+    const projectId = await organisationProject();
+    await carl.record.sendMessage(question(projectId, "local"));
+    await syncAll();
+    const mine = onTheRecord().find((message) => message.recipientId === annaId) as Message;
+    const { registerAllHandlers } = await import("../ipc/handlers.js");
+    registerAllHandlers(annaDesk.handle.db, undefined, { platform: fakePlatform(), record: annaDesk.record });
+
+    // A record that answered with an error: on the error path, never the
+    // older-record guidance, whoever pressed.
+    annaDesk.faultyRecord = true;
+    const byClient = await answerToolCall({ name: "message_answer", arguments: { messageId: mine.id, answer: "Take theirs" } }, "external", false);
+    const byAssistant = await answerToolCall({ name: "message_dismiss", arguments: { messageId: mine.id } }, "admin", false, undefined, undefined, "the-assistant");
+    for (const failed of [byClient, byAssistant]) {
+      expect(failed.isError).toBe(true);
+      expect(JSON.stringify(failed.content)).not.toContain("older than this desktop");
+    }
+    await expect(annaDesk.record.handleMessage({ messageId: mine.id, how: "dismissed", answer: null, by: { kind: "person" } })).rejects.toThrow(
+      "Your organisation's record did not take that: Internal error",
+    );
+    annaDesk.faultyRecord = false;
+
+    // A record that could not be reached may have taken it before the line
+    // went: said as not knowing, never as "still open".
+    annaDesk.online = false;
+    const unreached = await answerToolCall({ name: "message_answer", arguments: { messageId: mine.id, answer: "Take theirs" } }, "external", false);
+    expect(unreached.isError).toBe(false);
+    const said = JSON.stringify(unreached.content);
+    expect(said).toContain("cannot say whether that was taken");
+    expect(said).not.toContain("still open");
+    expect(getMessage(recordDb.db, mine.id)?.handledAt).toBeNull();
   });
 
   it("is dismissed on the record from a desktop, through the record", async () => {

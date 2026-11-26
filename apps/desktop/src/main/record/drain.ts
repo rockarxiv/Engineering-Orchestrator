@@ -1317,8 +1317,20 @@ async function applyChanges(options: DrainOptions, changes: RecordChanges): Prom
  */
 const MESSAGES_CURSOR_KEY = "record.messagesCursor";
 
+/**
+ * Marks a cursor kept by a desktop that writes down who handled each
+ * message (EO-918, migration 0183). One kept before that may have read
+ * past a message the assistant or an outside MCP client handled and
+ * dropped who, which would read as the person's press for good: such a
+ * cursor is not trusted, so the first pull after the upgrade reads the
+ * person's retained messages again from the beginning, once.
+ */
+const MESSAGES_CURSOR_KEEPS_HANDLER = 1;
+
 function readMessagesCursor(db: Db, deviceId: string): RecordCursor {
-  const parsed = RecordCursorSchema.extend({ deviceId: z.string() }).safeParse(getSetting<unknown>(db, MESSAGES_CURSOR_KEY, null));
+  const parsed = RecordCursorSchema.extend({ deviceId: z.string(), handledBy: z.literal(MESSAGES_CURSOR_KEEPS_HANDLER) }).safeParse(
+    getSetting<unknown>(db, MESSAGES_CURSOR_KEY, null),
+  );
   return parsed.success && parsed.data.deviceId === deviceId ? { ts: parsed.data.ts, id: parsed.data.id } : EMPTY_CURSOR;
 }
 
@@ -1345,7 +1357,7 @@ async function pullMessages(options: DrainOptions, pullPageSize: number, result:
       break;
     }
     for (const message of pull.data.messages) pulled += place(options, "message", message.id, message, now) ? 1 : 0;
-    setSetting(db, MESSAGES_CURSOR_KEY, { ...pull.data.cursor, deviceId });
+    setSetting(db, MESSAGES_CURSOR_KEY, { ...pull.data.cursor, deviceId, handledBy: MESSAGES_CURSOR_KEEPS_HANDLER });
     stillOpen = pull.data.open;
     if (!pull.data.more) break;
   }
