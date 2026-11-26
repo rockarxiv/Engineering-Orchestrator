@@ -194,14 +194,14 @@ export interface PushDestination {
  * was already there everywhere, or where git said nothing EO could read
  * unambiguously: a `To` line or a status line for the branch more or
  * fewer times than there are push URLs — which is what a hook printing
- * one looks like — or a `To` line naming anything but the URLs EO read
- * just before the push, which is a push that went somewhere else. Only a
- * push git reported as updating the branch, at the destination recorded
- * with it, counts as EO having put that commit there. `destination` is
+ * one looks like. Only a push git reported as updating the branch counts
+ * as EO having put that commit there, recorded against the push URLs EO
+ * read just before it. `destination` is
  * where the push was to go, read just before it.
  *
  * `diverged` is git's own status for the ref, `[rejected]
- * (non-fast-forward)` or `(fetch first)`. `leaseRefused` is a leased push
+ * (non-fast-forward)` or `(fetch first)`, where that is the only ref git
+ * reported on — a push that also sent a tag is not a plain divergence. `leaseRefused` is a leased push
  * that did not go: the server refused the lease (`[rejected] (stale
  * info)`), or the setup was not the ordinary case when the push was
  * about to run. Neither is ever a guess from text that names the branch.
@@ -292,7 +292,13 @@ export async function pushBranch(repoPath: string, remote: string, branch: strin
   } catch (error) {
     const stdout = typeof error === "object" && error !== null && typeof (error as { stdout?: unknown }).stdout === "string" ? (error as { stdout: string }).stdout : "";
     const refs = pushedRefLines(stdout, refspec);
-    const only = refs.length === 1 && refs[0]!.flag === "!" ? refs[0]!.summary : null;
+    // A plain refusal of the branch alone: one `To` block, and no status
+    // line but the branch's. A push that also moved another ref — a tag
+    // `push.followTags` sent — partly succeeded, and is never answered
+    // with a lease (EO-910); it reads as divergence, as before.
+    const lines = stdout.split("\n").map((line) => line.replace(/\r$/, ""));
+    const plain = lines.filter((line) => line.startsWith("To ")).length === 1 && lines.filter((line) => line.length > 2 && line[1] === "\t").length === 1;
+    const only = plain && refs.length === 1 && refs[0]!.flag === "!" ? refs[0]!.summary : null;
     // Porcelain puts the ref's status on stdout, where git's plain output
     // put it on stderr, so what is classified still says how the branch
     // was refused — at every push URL, as before. What git wrote, never

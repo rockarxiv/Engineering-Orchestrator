@@ -1531,6 +1531,41 @@ describe("before it opens or reuses one (EO-429)", () => {
       expect(notes(item).at(-1)).toContain("did not force-push");
     });
 
+    it("refuses as today where the rejected push also published a tag, leaving the branch at its old head", async () => {
+      const { item, worktree, pushed } = await openedByEo();
+      rewriteIn(worktree);
+      git(["config", "push.followTags", "true"], repoPath);
+      git(["tag", "-a", "v1", "-m", "a release"], worktree);
+
+      const result = await mergeRequestStep(item, onlyFinds(found));
+
+      expect(result).toMatchObject({ ok: true, result: "remote_diverged" });
+      expect(execFileSync("git", ["rev-parse", "--verify", "refs/tags/v1"], { cwd: remotePath, encoding: "utf8" }).trim()).not.toBe("");
+      expect(remoteTip()).toBe(pushed);
+      expect(pushedHead(item)).toEqual({ commit: pushed, pushUrl: fingerprint(remotePath) });
+      expect(notes(item).at(-1)).toContain("did not force-push");
+    });
+
+    it("refuses the same on the pass that opens the pull request, and opens nothing", async () => {
+      const item = story();
+      git(["push", "origin", "eo/API-4"], repoPath);
+      const pushed = remoteTip()!;
+      updateItem(handle.db, item.id, { git: { pushedHead: { commit: pushed, pushUrl: fingerprint(remotePath) } } });
+      const worktree = worktreeFor(item);
+      rewriteIn(worktree);
+      git(["config", "push.followTags", "true"], repoPath);
+      git(["tag", "-a", "v1", "-m", "a release"], worktree);
+      const { run, calls } = recorder([noneYet, created, found]);
+
+      const result = await mergeRequestStep(item, run);
+
+      expect(result).toMatchObject({ ok: true, result: "remote_diverged" });
+      expect(calls.some((args) => args.includes("create"))).toBe(false);
+      expect(execFileSync("git", ["rev-parse", "--verify", "refs/tags/v1"], { cwd: remotePath, encoding: "utf8" }).trim()).not.toBe("");
+      expect(remoteTip()).toBe(pushed);
+      expect(pushedHead(item)?.commit).toBe(pushed);
+    });
+
     it("refuses as today where the remote has two push URLs", async () => {
       const { item, worktree, pushed } = await openedByEo();
       const second = join(scratch, "second.git");
