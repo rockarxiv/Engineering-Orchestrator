@@ -30,6 +30,7 @@ export {
   getMessage,
   insertMessage,
   isRecordCopy,
+  markEveryMessageOwn,
   listMessagesChangedSince,
   listOpenMessageIds,
   listOpenMessages,

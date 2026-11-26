@@ -9,7 +9,7 @@ import { removeRetiredAttachmentFiles } from "./attachments/retiredFiles.js";
 import { onPush } from "./ipc/push.js";
 import { AttachmentStorage } from "./attachments/storage.js";
 import { getSchemaVersion, isNewDatabase, openDb, runMigrations } from "./db/index.js";
-import { syncItemTypes } from "./db/repos/index.js";
+import { markEveryMessageOwn, syncItemTypes } from "./db/repos/index.js";
 import { migrateCarriedSchemas } from "./actionDefinitionAdoption.js";
 import { loadTemplateHistory } from "./gallery/history.js";
 import { backfillPipelineOrigins } from "./gallery/origins.js";
@@ -580,6 +580,11 @@ export function startMain(platform: Platform): RunningMain {
     const copies = split.copies.map((copy) => `${copy.pipelineId} for project ${copy.projectId} (${copy.movedItems} items moved)`).join(", ");
     console.log(`[eo] pipeline ${split.pipelineId} is project ${split.keptBy}'s now${copies === "" ? "" : `; copies: ${copies}`}`);
   }
+
+  // EO-918: the record holds no copies of anybody's messages, whatever
+  // 0184's backfill — which cannot tell its database from a desktop's —
+  // took some of them for.
+  if (!platform.hasMachine) markEveryMessageOwn(db);
 
   // EO-532: and each pipeline whose template has shipped a newer version
   // than its base is compared three ways and, where nothing conflicts,

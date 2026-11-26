@@ -114,6 +114,16 @@ export interface RemoteRecord extends ItemRecord {
   ask<K extends IpcChannel>(channel: K, payload: IpcPayload<K>): Promise<RecordAnswer<IpcResponse<K>>>;
   /** Whether there is a record to reach at all — a signed-in desktop, as opposed to a solo one. */
   linked(): boolean;
+  /**
+   * Asks on one sign-in for as long as the caller holds it (EO-918):
+   * the transport is read once, here, and every request made through
+   * the answer carries the credential it had then, even if somebody else
+   * signs in meanwhile. For a pass of several requests whose answers are
+   * one person's — the messages pull pages through them and then clears
+   * that person's copies — so a sign-in between two pages cannot splice
+   * a second person's answer into the first's. Null signed out.
+   */
+  session(): { ask: RemoteRecord["ask"] } | null;
 }
 
 /** What the record's door answers for a channel it does not serve (server/http.ts): a record older than `record:handleMessageFor`. */
@@ -148,6 +158,10 @@ export function createRemoteRecord(options: RemoteRecordOptions): RemoteRecord {
   async function ask<K extends IpcChannel>(channel: K, payload: IpcPayload<K>): Promise<RecordAnswer<IpcResponse<K>>> {
     const transport = options.transport();
     if (transport === null) return { ok: false, unreachable: false, problem: "This desktop is not signed in to a record." };
+    return askOn(transport, channel, payload);
+  }
+
+  async function askOn<K extends IpcChannel>(transport: RecordTransport, channel: K, payload: IpcPayload<K>): Promise<RecordAnswer<IpcResponse<K>>> {
     let answer;
     try {
       answer = await transport.request(channel, payload);
@@ -247,6 +261,10 @@ export function createRemoteRecord(options: RemoteRecordOptions): RemoteRecord {
     ask,
 
     linked: () => options.transport() !== null,
+    session: () => {
+      const transport = options.transport();
+      return transport === null ? null : { ask: (channel, payload) => askOn(transport, channel, payload) };
+    },
 
     async offerWork<R extends DispatchRefusal>(input: OfferWorkInput<R>): Promise<WorkOffer[]> {
       // The device's own scheduler is not consulted, and `tickInput` is

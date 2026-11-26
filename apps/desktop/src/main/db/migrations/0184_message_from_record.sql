@@ -11,9 +11,10 @@
 -- only a job this desktop holds, and the record's jobs never reach one),
 -- or the local person as its recipient (`sendMessageHere`; a desktop
 -- pulls only what is addressed to its signed-in person). And no copy is
--- about a project kept here, nor about no project on a desktop that has
--- never pulled its person's messages. A message with none of those marks
--- is one only the record writes: a copy.
+-- about a project kept here. A message with none of those marks is one
+-- only the record writes: a copy — whether or not this desktop's pull
+-- got as far as saving its cursor, which an older build wrote after the
+-- rows it paged.
 ALTER TABLE `messages` ADD `from_record` integer DEFAULT false NOT NULL;
 --> statement-breakpoint
 UPDATE `messages` SET `from_record` = 1
@@ -23,5 +24,4 @@ WHERE `subject` IS NULL
   AND NOT EXISTS (
     SELECT 1 FROM `projects`
     WHERE `projects`.`id` = `messages`.`project_id` AND `projects`.`managed_at` IS NULL AND `projects`.`adopting_at` IS NULL
-  )
-  AND (`project_id` IS NOT NULL OR EXISTS (SELECT 1 FROM `app_settings` WHERE `key` = 'record.messagesCursor'));
+  );

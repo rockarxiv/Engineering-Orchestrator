@@ -27,14 +27,21 @@ import { jobs, messages, projects, queuedMessageReceipts } from "../schema.js";
 type Row = typeof messages.$inferSelect;
 
 /**
- * Who handled it (EO-918). A message answered or dismissed before the
- * column existed, or by a build that does not write it, was the person's:
- * nobody else could. One EO resolved, or still open, has nobody.
+ * Who handled it (EO-918). A message answered or dismissed here before
+ * the column existed was the person's: nobody else could. One EO
+ * resolved, or still open, has nobody.
+ *
+ * Except a replica's copy of the record's message with nobody written:
+ * only one pulled before the upgrade has none (`upsertReplicaMessage`
+ * always writes one), and that build dropped who — which may have been
+ * the assistant or an outside client by then — so it is not known until
+ * the next pull reads it again from the record, which knows.
  */
 function handledByOf(row: Row, handledHow: MessageHandledHow | null): MessageHandledBy | null {
   if (handledHow !== "answered" && handledHow !== "dismissed") return null;
   const recorded = MessageHandledBySchema.safeParse(row.handledBy);
-  return recorded.success ? recorded.data : HANDLED_BY_PERSON;
+  if (recorded.success) return recorded.data;
+  return row.fromRecord ? null : HANDLED_BY_PERSON;
 }
 
 function toDomain(row: Row): Message {
@@ -306,7 +313,10 @@ export function upsertReplicaMessage(db: Db, message: Message): "written" | "wai
     handledAt: message.handledAt,
     handledHow: message.handledHow,
     answer: message.answer,
-    handledBy: message.handledBy,
+    // Always someone on a press: a record built before who was kept sends
+    // nobody, and nobody but the person could press there — a delegated
+    // press is a channel it does not have (EO-918).
+    handledBy: message.handledBy ?? (message.handledHow === "answered" || message.handledHow === "dismissed" ? HANDLED_BY_PERSON : null),
     // The record's to resolve, never a replica's.
     subject: null,
     // And the record's to answer: a press on it goes there (EO-918).
@@ -394,6 +404,17 @@ export function forgetHandledRecordMessages(db: Db, recipientId: string): number
     .delete(messages)
     .where(and(eq(messages.recipientId, recipientId), isNotNull(messages.handledAt), eq(messages.fromRecord, true)))
     .run().changes;
+}
+
+/**
+ * Marks every message here this database's own (EO-918), on the
+ * organisation's record at launch: the record holds no copies, and 0184's
+ * backfill — which cannot tell a record's database from a desktop's —
+ * may have taken some of its messages for one, which would read who
+ * handled a press made there before the column as not known.
+ */
+export function markEveryMessageOwn(db: Db): number {
+  return db.update(messages).set({ fromRecord: false }).where(eq(messages.fromRecord, true)).run().changes;
 }
 
 /** Deletes one message's row, where the record answered that it no longer has it (EO-726). */

@@ -79,8 +79,10 @@ export const MessageSchema = z.object({
   answer: z.string().nullable(),
   /**
    * Who answered or dismissed it (EO-918); null while open and on one EO
-   * resolved. Defaulted so a message from a record built before it still
-   * parses.
+   * resolved. Null on one answered or dismissed is not known: a
+   * desktop's copy of the record's message pulled before who handled it
+   * was kept, until its next pull reads it again. Defaulted so a message
+   * from a record built before it still parses.
    */
   handledBy: MessageHandledBySchema.nullable().default(null),
 });
@@ -90,7 +92,8 @@ export type Message = z.infer<typeof MessageSchema>;
  * How a handled message ended and who ended it, as the Inbox and EO's MCP
  * tools say it (EO-918): "Answered Carry on now · by the assistant",
  * "Dismissed · by the person" ("by you" `toThePerson`), "Resolved by EO".
- * Null while it is open.
+ * Nobody named where who is not known ("Answered Carry on now"). Null
+ * while it is open.
  */
 export function messageHandledWords(message: Pick<Message, "handledHow" | "answer" | "handledBy">, toThePerson = false): string | null {
   switch (message.handledHow) {
@@ -101,7 +104,7 @@ export function messageHandledWords(message: Pick<Message, "handledHow" | "answe
     case "answered":
     case "dismissed": {
       const how = message.handledHow === "answered" ? `Answered ${message.answer ?? ""}`.trimEnd() : "Dismissed";
-      return `${how} · by ${handledByWords(message.handledBy ?? HANDLED_BY_PERSON, toThePerson)}`;
+      return message.handledBy === null ? how : `${how} · by ${handledByWords(message.handledBy, toThePerson)}`;
     }
   }
 }

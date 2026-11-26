@@ -4146,7 +4146,7 @@ describe("0184: whether a message is a replica's copy of the record's (EO-918)",
     });
   });
 
-  it("marks a message about no project this desktop's own on a desktop that never pulled its person's messages", () => {
-    expect(upgraded(false)).toMatchObject({ "copy-about-a-record-job": 0, "copy-about-a-moved-project": 1 });
+  it("marks a copy about no project a copy where the older pull that wrote it stopped before saving its cursor", () => {
+    expect(upgraded(false)).toMatchObject({ "copy-about-a-record-job": 1, "copy-about-a-moved-project": 1, "about-a-job-here": 0, "to-the-local-person": 0 });
   });
 });

@@ -52,7 +52,7 @@ import {
   noteAttachmentRemoved,
   removeItemAttachment,
 } from "../db/repos/attachmentsRepo.js";
-import { pending, pendingWithKeyPrefix, remember, rememberLatest, settled, triedAgain, type PendingKind } from "../db/repos/recordPendingRepo.js";
+import { forgetPendingMessagesOf, pending, pendingWithKeyPrefix, remember, rememberLatest, settled, triedAgain, type PendingKind } from "../db/repos/recordPendingRepo.js";
 import { backfillDone, backfillsOutstanding, rememberBackfill, wantBackfill } from "../db/repos/recordBackfillsRepo.js";
 import { getAgent, recordStampOf } from "../db/repos/agentsRepo.js";
 import { attachArrivedTools, getAgentAttachments, type UnarrivedTools } from "../db/repos/agentAttachmentsRepo.js";
@@ -1350,13 +1350,17 @@ async function pullMessages(options: DrainOptions, pullPageSize: number, result:
   // Whose messages the record answers with: the device's person, who is
   // the person this desktop is signed in as. Every clean-up below is of
   // theirs alone (EO-918) — another person who signs in here keeps their
-  // copies until their own pull reads them.
+  // copies until their own pull reads them. And every page is asked on
+  // the sign-in read here, together with that person, so one who signs
+  // in between two pages is not answered into the first one's pass.
   const recipientId = signedInPersonId(db);
+  const session = options.record.session();
+  if (session === null) return true;
   let pulled = 0;
   let stillOpen: readonly string[] | null = null;
   for (let page = 0; page < MAX_PULL_PAGES; page += 1) {
     const cursor = readMessagesCursor(db, deviceId);
-    const pull = await options.record.ask("record:messages", { deviceId, cursor, limit: pullPageSize });
+    const pull = await session.ask("record:messages", { deviceId, cursor, limit: pullPageSize });
     if (!pull.ok) {
       result.offline = pull.unreachable;
       if (pull.unreachable) return false;
@@ -1367,8 +1371,14 @@ async function pullMessages(options: DrainOptions, pullPageSize: number, result:
     // replica holds handled of theirs is replaced by what the record
     // still keeps, which this read writes back with who handled it. A
     // copy the record has swept is not left reading as the person's press.
+    // So is what an older pass deferred of theirs (`record_pending`): a
+    // payload written before who handled it was carried, about a project
+    // that had not landed, would otherwise be placed once it does — even
+    // for a message the record has since swept. This read defers again
+    // whatever of it the record still keeps.
     if (cursor.ts === EMPTY_CURSOR.ts && cursor.id === EMPTY_CURSOR.id) {
       pulled += forgetHandledRecordMessages(db, recipientId);
+      forgetPendingMessagesOf(db, recipientId);
     }
     for (const message of pull.data.messages) pulled += place(options, "message", message.id, message, now) ? 1 : 0;
     setSetting(db, MESSAGES_CURSOR_KEY, { ...pull.data.cursor, deviceId, handledBy: MESSAGES_CURSOR_KEEPS_HANDLER });

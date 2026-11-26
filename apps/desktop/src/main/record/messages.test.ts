@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { HANDLED_MESSAGE_RETENTION_MS, notADesktopRefusal, type IpcPayload, type Job, type Message, type MessageSend, type Uuid } from "@eo/core";
+import { HANDLED_MESSAGE_RETENTION_MS, messageHandledWords, notADesktopRefusal, type IpcPayload, type Job, type Message, type MessageSend, type Uuid } from "@eo/core";
 import { eq, sql } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AttachmentStorage } from "../attachments/storage.js";
@@ -23,6 +23,7 @@ import {
   recordOccurrence,
   sweepHandledMessages,
 } from "../db/repos/index.js";
+import { pendingCount, rememberLatest } from "../db/repos/recordPendingRepo.js";
 import { getSetting, setSetting } from "../db/repos/settingsRepo.js";
 import { jobs, messages, projects } from "../db/schema.js";
 import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
@@ -69,6 +70,8 @@ interface Desktop {
   signedOut: boolean;
   /** The device the record knows it as — a new one each time somebody signs in on it. */
   deviceId: string;
+  /** Called once the record has answered a `record:messages` page, before the desktop hears it (EO-918). */
+  afterMessagesPage?: () => void;
 }
 
 let recordDb: DbHandle;
@@ -126,9 +129,10 @@ function desktop(personId: Uuid, name: string): Desktop {
     record: undefined as unknown as DeviceRecord,
   };
   signIn(machine, personId, name);
-  const transport: RecordTransport = {
+  // Bound to the device signed in when it was made, as a real client is
+  // bound to that sign-in's token (`createManagedDirectory`).
+  const transportFor = (deviceId: string): RecordTransport => ({
     async request(channel, payload) {
-      const deviceId = machine.deviceId;
       if (!machine.online) return { ok: false, error: { message: "EO could not reach https://eo.example: fetch failed" } };
       switch (channel) {
         case "record:changes":
@@ -147,14 +151,17 @@ function desktop(personId: Uuid, name: string): Desktop {
           if (machine.legacySignIn) return notADesktopRefusal(channel);
           if (machine.faultyRecord) return { ok: false, error: { message: "Internal error" } };
           return { ok: true, data: serveHandleMessage(serving, { ...(payload as IpcPayload<"record:handleMessageFor">), deviceId }) as never };
-        case "record:messages":
-          return { ok: true, data: serveMessages(serving, { ...(payload as IpcPayload<"record:messages">), deviceId }) as never };
+        case "record:messages": {
+          const page = serveMessages(serving, { ...(payload as IpcPayload<"record:messages">), deviceId });
+          machine.afterMessagesPage?.();
+          return { ok: true, data: page as never };
+        }
         default:
           return { ok: false, error: { message: `EO has no channel called "${channel}".` } };
       }
     },
-  };
-  machine.record = createDeviceRecord({ db: handle.db, deviceId: () => machine.deviceId, transport: () => (machine.signedOut ? null : transport), pullPageSize: 3 });
+  });
+  machine.record = createDeviceRecord({ db: handle.db, deviceId: () => machine.deviceId, transport: () => (machine.signedOut ? null : transportFor(machine.deviceId)), pullPageSize: 3 });
   return machine;
 }
 
@@ -383,16 +390,16 @@ describe("a message about a project the organisation's record holds", () => {
     const cursor = getSetting<Record<string, unknown>>(annaLaptop.handle.db, "record.messagesCursor", {});
     setSetting(annaLaptop.handle.db, "record.messagesCursor", { ts: cursor.ts, id: cursor.id, deviceId: cursor.deviceId });
     annaLaptop.handle.db.update(messages).set({ handledBy: null }).where(eq(messages.id, mine.id)).run();
-    // What the Inbox and inbox_list would say for good: the person's press.
-    expect(getMessage(annaLaptop.handle.db, mine.id)?.handledBy).toEqual({ kind: "person" });
+    // Not known, until the record is asked again — never the person's press.
+    expect(getMessage(annaLaptop.handle.db, mine.id)?.handledBy).toBeNull();
 
     await annaLaptop.record.sync();
     expect(getMessage(annaLaptop.handle.db, mine.id)?.handledBy).toEqual({ kind: "assistant", agentId: "the-assistant" });
 
-    // Once: the cursor it keeps now is trusted, so the next pull starts where it stopped.
+    // Once: the cursor it keeps now is trusted, so the next pull starts where it stopped and reads it no more.
     annaLaptop.handle.db.update(messages).set({ handledBy: null }).where(eq(messages.id, mine.id)).run();
     await annaLaptop.record.sync();
-    expect(getMessage(annaLaptop.handle.db, mine.id)?.handledBy).toEqual({ kind: "person" });
+    expect(getMessage(annaLaptop.handle.db, mine.id)?.handledBy).toBeNull();
   });
 
   it("is not left reading as the person's on an upgraded desktop when the record swept the delegated press while it was away, with the desktop's clock behind (EO-918)", async () => {
@@ -406,7 +413,15 @@ describe("a message about a project the organisation's record holds", () => {
     await annaLaptop.record.sync();
     // The laptop as the old build left it: the press pulled with who dropped.
     upgradeFromBefore0183(annaLaptop);
-    expect(listInbox(annaLaptop.handle.db, projectId).handledMessages.map((message) => message.handledBy)).toEqual([{ kind: "person" }]);
+    // Started offline, before it has asked the record again: who pressed is not known — in the Inbox and to an outside client — and nobody is named.
+    const { registerAllHandlers } = await import("../ipc/handlers.js");
+    registerAllHandlers(annaLaptop.handle.db, undefined, { platform: fakePlatform(), record: annaLaptop.record });
+    expect(listInbox(annaLaptop.handle.db, projectId).handledMessages.map((message) => [message.id, message.handledBy])).toEqual([[delegatedPress.id, null]]);
+    expect(messageHandledWords(getMessage(annaLaptop.handle.db, delegatedPress.id) as Message, true)).toBe("Answered Take theirs");
+    const listedBefore = await answerToolCall({ name: "inbox_list", arguments: {} }, "external", false);
+    expect(listedBefore.structuredContent).toMatchObject({ handledMessages: [{ id: delegatedPress.id, handledBy: null }] });
+    expect(JSON.stringify(listedBefore.content)).toContain("Answered Take theirs (");
+    expect(JSON.stringify(listedBefore.content)).not.toContain("by the person");
 
     // While it is away, a press from before who was kept (the person's,
     // for nobody else could make one then), and the record's retention —
@@ -424,8 +439,6 @@ describe("a message about a project the organisation's record holds", () => {
     expect(getMessage(annaLaptop.handle.db, delegatedPress.id)).toBeUndefined();
     const shown = listInbox(annaLaptop.handle.db, projectId).handledMessages;
     expect(shown.map((message) => [message.id, message.handledBy])).toEqual([[ownPress.id, { kind: "person" }]]);
-    const { registerAllHandlers } = await import("../ipc/handlers.js");
-    registerAllHandlers(annaLaptop.handle.db, undefined, { platform: fakePlatform(), record: annaLaptop.record });
     const listed = await answerToolCall({ name: "inbox_list", arguments: {} }, "external", false);
     expect(listed.structuredContent).toMatchObject({ handledMessages: [{ id: ownPress.id, handledBy: { kind: "person" } }] });
     expect(JSON.stringify(listed)).not.toContain(delegatedPress.id);
@@ -523,6 +536,68 @@ describe("a message about a project the organisation's record holds", () => {
     expect(answered.isError).toBe(false);
     expect(getMessage(recordDb.db, aboutAJob.id)).toMatchObject({ handledHow: "answered", answer: "Leave it", handledBy: { kind: "assistant", agentId: "the-assistant" } });
     expect(getMessage(annaDesk.handle.db, aboutAJob.id)).toMatchObject({ handledHow: "answered", handledBy: { kind: "assistant", agentId: "the-assistant" } });
+  });
+
+  it("sends a press to the record on an upgraded desktop's copy whose old pull stopped before saving its cursor, claiming nothing once the record has closed it (EO-918)", async () => {
+    const aboutAJob = jobMessageOnTheRecord("Monday report skipped a Monday.");
+    await annaDesk.record.sync();
+    // The old build wrote the rows it paged, then stopped before the cursor.
+    annaDesk.handle.db.run(sql`DELETE FROM app_settings WHERE key = 'record.messagesCursor'`);
+    upgradeFromBefore0183(annaDesk);
+    expect(fromRecordOn(annaDesk, aboutAJob.id)).toBe(true);
+    // Closed on the record meanwhile, by Anna on another desktop.
+    markMessageHandled(recordDb.db, aboutAJob.id, "dismissed", null, Date.now() + 1_000);
+    const { registerAllHandlers } = await import("../ipc/handlers.js");
+    registerAllHandlers(annaDesk.handle.db, undefined, { platform: fakePlatform(), record: annaDesk.record });
+
+    const answered = await answerToolCall({ name: "message_answer", arguments: { messageId: aboutAJob.id, answer: "Run now" } }, "admin", false, undefined, undefined, "the-assistant");
+
+    // The record's refusal, not a local success.
+    expect(answered.isError).toBe(false);
+    expect(JSON.stringify(answered.content)).toContain("already dismissed");
+    expect(getMessage(recordDb.db, aboutAJob.id)).toMatchObject({ handledHow: "dismissed", answer: null });
+    expect(getMessage(annaDesk.handle.db, aboutAJob.id)).toMatchObject({ handledHow: "dismissed", handledBy: { kind: "person" } });
+  });
+
+  it("clears another person's copies by nobody's open list but theirs when somebody else signs in between two of their pages (EO-918)", async () => {
+    const earlier = [jobMessageOnTheRecord("Skipped one."), jobMessageOnTheRecord("Skipped two.")];
+    await annaLaptop.record.sync();
+    // Enough more that the next pull takes two pages of three.
+    const later = [1, 2, 3, 4].map((n) => jobMessageOnTheRecord(`Skipped ${String(n + 2)}.`));
+    // And one of Ben's, so his open list is not empty.
+    insertMessage(recordDb.db, { recipientId: benId, source: JOB_MESSAGE_SOURCE.skipped, body: "Ben's.", options: ["Leave it"] });
+    let pages = 0;
+    annaLaptop.afterMessagesPage = () => {
+      pages += 1;
+      if (pages === 1) signIn(annaLaptop, benId, "anna-laptop-as-ben");
+    };
+
+    await annaLaptop.record.sync();
+
+    expect(pages).toBe(2);
+    // Every one of Anna's still open here: the second page was Anna's too, and so was the open list it was cleared by.
+    const open = listOpenMessages(annaLaptop.handle.db, [annaId]).map((message) => message.id);
+    expect(open.sort()).toEqual([...earlier, ...later].map((message) => message.id).sort());
+  });
+
+  it("does not place a deferred copy an older build kept, once the record has swept it and the desktop has read its messages again (EO-918)", async () => {
+    await annaLaptop.record.sync();
+    // What the old build deferred: Anna's press on a message about a project that had not landed here, with who dropped.
+    const notYetHere = "01a218b3-0000-7000-8000-000000000001";
+    const deferred = { ...jobMessageOnTheRecord("A template update was held."), projectId: notYetHere, jobId: null, handledAt: Date.now(), handledHow: "answered", answer: "Leave it" };
+    delete (deferred as Partial<Message>).handledBy;
+    rememberLatest(annaLaptop.handle.db, "message", deferred.id, deferred, `project ${notYetHere}`, Date.now());
+    // The record has swept it since.
+    recordDb.db.delete(messages).where(eq(messages.id, deferred.id)).run();
+    upgradeFromBefore0183(annaLaptop);
+
+    await annaLaptop.record.sync();
+    expect(pendingCount(annaLaptop.handle.db, "message")).toBe(0);
+    // The project arrives at last.
+    annaLaptop.handle.db.run(sql`INSERT INTO projects (id, name, key_prefix, created_at, updated_at, managed_at) VALUES (${notYetHere}, 'Late', 'LAT', 1, 1, 1)`);
+    await annaLaptop.record.sync();
+
+    expect(getMessage(annaLaptop.handle.db, deferred.id)).toBeUndefined();
   });
 
   it("answers an upgraded desktop's own messages here — a projectless job's and one to its local person — signed out or offline (EO-918)", async () => {
