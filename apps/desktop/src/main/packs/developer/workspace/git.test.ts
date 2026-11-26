@@ -1,9 +1,8 @@
-import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { canonicalPath, commitsAhead, composeGitArgs, currentBranch, fetchBranch, git, globalUserEmail, isAncestor, pushBranch, pushDestination, rebaseOntoBase, statusPorcelain } from "./git.js";
+import { canonicalPath, commitsAhead, composeGitArgs, currentBranch, fetchBranch, git, globalUserEmail, isAncestor, pushBranch, pushDestination, pushFingerprint, rebaseOntoBase, statusPorcelain } from "./git.js";
 import { run, initRepo } from "../../../testing/git.js";
 
 // Real repositories in a temp dir, same discipline as worktrees.test.ts:
@@ -13,6 +12,8 @@ import { run, initRepo } from "../../../testing/git.js";
 let scratch: string;
 let originPath: string;
 let repoPath: string;
+/** Where git says the checkout at `repoPath` is, which a push destination's fingerprint names. */
+let checkout: string;
 
 async function makeRepo(path: string): Promise<void> {
   await initRepo(path);
@@ -219,10 +220,11 @@ describe("pushBranch", () => {
     await run(["remote", "add", "bare", barePath], repoPath);
     await run(["checkout", "-b", "eo/EO-1"], repoPath);
     await commit(repoPath, "work.ts", "export const work = 1;\n");
+    checkout = await run(["rev-parse", "--show-toplevel"], repoPath);
   });
 
   const tip = (path: string, ref = "refs/heads/eo/EO-1") => run(["rev-parse", ref], path);
-  const fingerprint = (urls: string) => `sha256:${createHash("sha256").update(urls, "utf8").digest("hex")}`;
+  const fingerprint = (urls: string) => pushFingerprint(checkout, urls.split("\n"));
   const toBare = () => ({ fingerprint: fingerprint(barePath), urls: 1 });
 
   it("reports the commit a push put on the branch, and none where the branch was already there", async () => {
@@ -327,7 +329,10 @@ describe("pushBranch", () => {
 });
 
 describe("pushDestination", () => {
-  const fingerprint = (urls: string) => `sha256:${createHash("sha256").update(urls, "utf8").digest("hex")}`;
+  beforeEach(async () => {
+    checkout = await run(["rev-parse", "--show-toplevel"], repoPath);
+  });
+  const fingerprint = (urls: string) => pushFingerprint(checkout, urls.split("\n"));
 
   it("fingerprints a remote's push URLs exactly as git lists them, and counts them", async () => {
     const url = await run(["remote", "get-url", "--push", "origin"], repoPath);

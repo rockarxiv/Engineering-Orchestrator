@@ -1,6 +1,5 @@
 import { gitStateOf } from "@eo/core";
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -26,7 +25,7 @@ import { createBuiltinRunners } from "../builtins.js";
 import { workspaces } from "../../../db/schema.js";
 import { attachWorkspace, createTestItem, openMigratedTestDb } from "../../../db/testHelpers.js";
 import { REPOSITORY_INDEX_DIRECTORIES } from "../repositoryIntelligence/index.js";
-import { currentBranch, statusPorcelain } from "../workspace/git.js";
+import { currentBranch, pushFingerprint, statusPorcelain } from "../workspace/git.js";
 import type { CliResult, CliRunner } from "./cli.js";
 import { updateItemText } from "../../../ipc/domainCommands.js";
 import { openPullRequestForItem } from "./openForItem.js";
@@ -1425,7 +1424,7 @@ describe("before it opens or reuses one (EO-429)", () => {
    * lease pinned to that commit.
    */
   describe("a branch its own agent rewrote since EO pushed it (EO-910)", () => {
-    const fingerprint = (url: string): string => `sha256:${createHash("sha256").update(url, "utf8").digest("hex")}`;
+    const fingerprint = (url: string): string => pushFingerprint(git(["rev-parse", "--show-toplevel"], repoPath).trim(), [url]);
     const pushedHead = (item: Item) => gitStateOf(getItem(handle.db, item.id)!).pushedHead;
     const rewriteIn = (worktree: string, message = "the work, rebased by its agent") => git(["commit", "--amend", "-m", message], worktree);
 
