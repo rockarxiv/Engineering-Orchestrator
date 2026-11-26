@@ -1226,6 +1226,7 @@ git update-ref refs/heads/eo/APP-1 ${head}
     await run(["clone", subBare, seed], scratch);
     await run(["config", "user.email", "eo@example.com"], seed);
     await run(["config", "user.name", "EO Test"], seed);
+    await run(["config", "commit.gpgsign", "false"], seed);
     await commit(seed, "lib.ts", "// lib\n");
     await run(["push", "origin", "HEAD"], seed);
     await run(["-c", "protocol.file.allow=always", "submodule", "add", subBare, "sub"], repoPath);
@@ -1233,6 +1234,7 @@ git update-ref refs/heads/eo/APP-1 ${head}
     const sub = join(repoPath, "sub");
     await run(["config", "user.email", "eo@example.com"], sub);
     await run(["config", "user.name", "EO Test"], sub);
+    await run(["config", "commit.gpgsign", "false"], sub);
     // Git pushes a submodule to its remote of the same name as the superproject's.
     await run(["remote", "add", "bare", subBare], sub);
     await run(["checkout", "-b", "eo/APP-1"], sub);
