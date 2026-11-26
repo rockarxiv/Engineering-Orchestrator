@@ -258,8 +258,18 @@ import { SpecShapeSchema } from "./specShape.js";
  * chose. The shape is a version-15 build's, so it parses the document
  * and refuses it at its format check. Reading an older document is
  * unchanged: its `ownerRole` was always a role, and a role is a kind.
+ *
+ * **17 (EO-921).** A route may carry a **traversal limit**
+ * (`traversalLimit`): how many times it may be taken since a person last
+ * commented on the item before EO holds the item and asks.
+ *
+ * Bumped for version 4's reason: a version-16 build strips the key and
+ * imports the route unbounded, so the loop its author stopped runs on,
+ * and nothing says so. The key is one a version-16 build drops rather
+ * than refuses, so it parses the document and reaches its format check.
+ * Reading an older document is unchanged: no route in it has a limit.
  */
-export const PIPELINE_EXPORT_VERSION = 16;
+export const PIPELINE_EXPORT_VERSION = 17;
 
 /**
  * An action a role defines, as the document carries it (EO-424).
@@ -754,7 +764,14 @@ export const ExportedStepSchema = PipelineStepViewSchema.omit({ pipelineId: true
   brief: StepBriefSchema.optional(),
 });
 /** A route as the document carries it. Its target is a step of any board in the document, or a sentinel. */
-export const ExportedRouteSchema = StepRouteViewSchema.omit({ id: true, pipelineId: true });
+/*
+ * Its traversal limit (EO-921, format 17) is optional and written only
+ * where a route has one, so a document of routes without limits reads as
+ * it did before the field.
+ */
+export const ExportedRouteSchema = StepRouteViewSchema.omit({ id: true, pipelineId: true, traversalLimit: true }).extend({
+  traversalLimit: z.number().int().min(1).optional(),
+});
 
 /**
  * A board the document carries besides its first (EO-762,

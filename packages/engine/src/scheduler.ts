@@ -172,6 +172,17 @@ export interface EligibilityInput<R extends DispatchRefusal = DispatchRefusal> {
    */
   watchesHeld?: ReadonlyMap<string, WatchHold>;
   /**
+   * Items that arrived on the step they stand on by a route taken more
+   * times than its traversal limit allows since a person last commented
+   * on them (EO-921, `RouteLimitHold`).
+   *
+   * The host counts, because the count is read off the item's moves and
+   * comments and this package reads neither. It counts routes, by the step
+   * they leave and the result they are for, and nothing about what the
+   * step was. Absent means none is held.
+   */
+  routeLimitHolds?: ReadonlyMap<string, RouteLimitHold>;
+  /**
    * Every step of every pipeline, flat (KAN-56).
    *
    * Flat rather than pre-grouped because each row already knows its
@@ -407,6 +418,12 @@ export type DispatchBlocker<R extends DispatchRefusal = DispatchRefusal> =
    */
   | ({ kind: "watch_held" } & WatchHold)
   /**
+   * It arrived here by a route taken more often than the route's
+   * traversal limit allows since a person last commented (EO-921), and
+   * waits for one to say something.
+   */
+  | ({ kind: "route_limit" } & RouteLimitHold)
+  /**
    * The `agent` step names no agent (EO-875), so nobody can run it until
    * somebody chooses one.
    */
@@ -434,6 +451,26 @@ export type DispatchBlocker<R extends DispatchRefusal = DispatchRefusal> =
    * declared no criteria.
    */
   | R;
+
+/**
+ * A route taken past its traversal limit (EO-921, ARCHITECTURE.md,
+ * "Guardrails"): the route by the step it leaves, its result and its
+ * label, how many times it has been taken since `since` — the newest
+ * comment from a person on the item, epoch ms, or null where nobody has
+ * commented — and the limit it carries.
+ *
+ * The move that took it past the limit still happened; this holds the
+ * item on the step it arrived at until a person says something, which
+ * starts the count again.
+ */
+export interface RouteLimitHold {
+  fromStepId: string;
+  resultKey: string;
+  label: string;
+  count: number;
+  limit: number;
+  since: number | null;
+}
 
 /**
  * Why no check may run for a step that keeps checking, whatever its
@@ -923,6 +960,13 @@ function eligibility<R extends DispatchRefusal>(input: EligibilityInput<R>) {
     if (heldItemIds.has(item.id)) return { kind: "held" }; // manually parked; not awaiting an answer and still on this step
 
     if (activeRunItemIds.has(item.id)) return { kind: "run_active" }; // 4. already working
+
+    // A send-back loop that has gone round more often than its route
+    // allows (EO-921). Below `run_active`, so the run that made the move
+    // still reports itself while it winds down, and above the waits that
+    // end on their own: this one ends only when a person says something.
+    const overrun = input.routeLimitHolds?.get(item.id);
+    if (overrun !== undefined) return { kind: "route_limit", ...overrun };
 
     // Its last run failed and the retry is not due yet. A fact the host
     // works out with its own clock — this function has none — and hands

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { ADMIN_GRANT_REFUSAL, ExportedModuleSchema, ExportedStepSchema, PIPELINE_EXPORT_VERSION, PipelineExportSchema } from "./pipelineExport.js";
+import { ADMIN_GRANT_REFUSAL, ExportedModuleSchema, ExportedRouteSchema, ExportedStepSchema, PIPELINE_EXPORT_VERSION, PipelineExportSchema } from "./pipelineExport.js";
 
 /**
  * The pack format and its gate (EO-314, `ARCHITECTURE.md`, "One document",
@@ -137,7 +137,7 @@ describe("a watch that never gives up, in a document", () => {
   });
 
   it("parses under the watch a version-9 build reads, so that build reaches its format check and refuses it there", () => {
-    expect(neverGivesUp.eoPipelineExport).toBe(16);
+    expect(neverGivesUp.eoPipelineExport).toBe(17);
     // `StepWatchSchema` as format 9 had it.
     const version9Watch = z.object({ everyMinutes: z.number().finite(), giveUpAfterHours: z.number().finite().default(168) });
     const watch = (JSON.parse(JSON.stringify(neverGivesUp)) as { steps: { watch: unknown }[] }).steps[0]!.watch;
@@ -181,7 +181,7 @@ describe("a pinned module version, in a document", () => {
   });
 
   it("parses under the step and module schemas a version-13 build reads, so that build reaches its format check and refuses it there", () => {
-    expect(pinned.eoPipelineExport).toBe(16);
+    expect(pinned.eoPipelineExport).toBe(17);
     const version13Step = ExportedStepSchema.omit({ moduleVersion: true });
     const version13Module = ExportedModuleSchema.omit({ version: true });
     expect(version13Step.safeParse(step).success).toBe(true);
@@ -221,7 +221,7 @@ describe("a person step's brief, in a document", () => {
   const approve = { id: "approve", position: 1, name: "Approve", type: "user", ownerRole: null, entryAction: null, instructionsSummary: null, isTerminal: true, planMode: false, brief };
 
   it("parses under the step schema a version-14 build reads, so that build reaches its format check", () => {
-    expect(PIPELINE_EXPORT_VERSION).toBe(16);
+    expect(PIPELINE_EXPORT_VERSION).toBe(17);
     expect(ExportedStepSchema.omit({ brief: true }).safeParse(approve).success).toBe(true);
   });
 
@@ -245,10 +245,10 @@ describe("a person step's brief, in a document", () => {
  */
 describe("a step's kind, in a document", () => {
   it("parses under the step schema a version-15 build reads, so that build reaches its format check", () => {
-    expect(PIPELINE_EXPORT_VERSION).toBe(16);
+    expect(PIPELINE_EXPORT_VERSION).toBe(17);
     // No key was added: the step a version-15 build reads is this one.
     expect(ExportedStepSchema.safeParse(document().steps[0]).success).toBe(true);
-    expect(PipelineExportSchema.parse(document()).eoPipelineExport).toBe(16);
+    expect(PipelineExportSchema.parse(document()).eoPipelineExport).toBe(17);
   });
 
   it("carries a kind and never an agent's id", () => {
@@ -259,5 +259,36 @@ describe("a step's kind, in a document", () => {
 
   it.each([1, 13, 15])("reads a format-%i document's ownerRole as the kind", (format) => {
     expect(PipelineExportSchema.parse(document({ eoPipelineExport: format })).steps[0]?.ownerRole).toBe("triager");
+  });
+});
+
+/**
+ * Format 17 (EO-921): a route may carry its traversal limit. A version-16
+ * build strips the key rather than refusing it, so it parses the document
+ * and refuses it at its format check instead of importing the loop
+ * unbounded.
+ */
+describe("a route's traversal limit, in a document", () => {
+  const steps = [
+    { id: "work", position: 0, name: "Work", type: "agent", ownerRole: "implementer", entryAction: "implement", instructionsSummary: null, isTerminal: false, planMode: false },
+    { id: "check", position: 1, name: "Check", type: "agent", ownerRole: "reviewer", entryAction: "review", instructionsSummary: null, isTerminal: false, planMode: false },
+  ];
+  const sendBack = { fromStepId: "check", resultKey: "changes_requested", label: "Changes requested", tone: "warning", target: "work", position: 0, traversalLimit: 4 };
+  const bounded = document({ steps, routes: [sendBack] });
+
+  it("parses under the route schema a version-16 build reads, so that build reaches its format check", () => {
+    expect(bounded.eoPipelineExport).toBe(17);
+    expect(ExportedRouteSchema.omit({ traversalLimit: true }).safeParse(sendBack).success).toBe(true);
+  });
+
+  it("reads the limit back unchanged, and a route without one as having none", () => {
+    const parsed = PipelineExportSchema.parse(JSON.parse(JSON.stringify(document({ steps, routes: [sendBack, { ...sendBack, resultKey: "approved", traversalLimit: undefined }] }))));
+    expect(parsed.routes[0]?.traversalLimit).toBe(4);
+    expect(parsed.routes[1]).not.toHaveProperty("traversalLimit");
+  });
+
+  it("refuses a limit below 1 or not a whole number", () => {
+    expect(PipelineExportSchema.safeParse(document({ steps, routes: [{ ...sendBack, traversalLimit: 0 }] })).success).toBe(false);
+    expect(PipelineExportSchema.safeParse(document({ steps, routes: [{ ...sendBack, traversalLimit: 1.5 }] })).success).toBe(false);
   });
 });

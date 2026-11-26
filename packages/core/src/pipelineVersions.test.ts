@@ -33,7 +33,7 @@ function step(overrides: Partial<VersionStep> = {}): VersionStep {
 }
 
 function route(overrides: Partial<VersionRoute> = {}): VersionRoute {
-  return { fromStepId: "review", resultKey: "approved", label: "Approve", target: "done", tone: "success", position: 0, ...overrides };
+  return { fromStepId: "review", resultKey: "approved", label: "Approve", target: "done", tone: "success", position: 0, traversalLimit: null, ...overrides };
 }
 
 const STEPS = [step(), step({ id: "done", position: 2, name: "Done", isTerminal: true })];
@@ -168,6 +168,15 @@ describe("the difference between two versions", () => {
       { field: "tone", before: null, after: "success" },
       { field: "position", before: null, after: "0" },
     ]);
+  });
+
+  /** A limit on how often a route may be taken is part of the route (EO-921). */
+  it("reports a traversal limit set, changed and cleared, and lists one on an added route only where it has one", () => {
+    expect(between([route()], [route({ traversalLimit: 4 })]).routes[0]?.fields).toEqual([{ field: "traversalLimit", before: "no limit", after: "4" }]);
+    expect(between([route({ traversalLimit: 4 })], [route({ traversalLimit: 2 })]).routes[0]?.fields).toEqual([{ field: "traversalLimit", before: "4", after: "2" }]);
+    expect(between([route({ traversalLimit: 4 })], [route()]).routes[0]?.fields).toEqual([{ field: "traversalLimit", before: "4", after: "no limit" }]);
+    expect(between([], [route({ traversalLimit: 3 })]).routes[0]?.fields.at(-1)).toEqual({ field: "traversalLimit", before: null, after: "3" });
+    expect(between([route({ traversalLimit: 3 })], []).routes[0]?.fields.at(-1)).toEqual({ field: "traversalLimit", before: "3", after: null });
   });
 
   it("says what a removed route was", () => {

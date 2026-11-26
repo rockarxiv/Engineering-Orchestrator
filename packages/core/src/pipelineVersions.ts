@@ -282,6 +282,8 @@ export const VersionRouteSchema = z.object({
   target: z.string(),
   tone: z.string(),
   position: z.number(),
+  /** How many times it may be taken since a person last commented (EO-921). Defaulted, so an older version reads as unlimited. */
+  traversalLimit: z.number().nullable().default(null),
 });
 export type VersionRoute = z.infer<typeof VersionRouteSchema>;
 
@@ -376,7 +378,7 @@ const DIFFED_FIELDS = ["name", "type", "agentId", "entryAction", "instructionsSu
  * other three are what the branch is called, how it is drawn, and where
  * in the list it is offered.
  */
-const DIFFED_ROUTE_FIELDS = ["target", "label", "tone", "position"] as const;
+const DIFFED_ROUTE_FIELDS = ["target", "label", "tone", "position", "traversalLimit"] as const;
 
 function shown(value: unknown): string | null {
   if (value === null || value === undefined) return null;
@@ -533,14 +535,25 @@ export function diffVersions(
   // `user_attention`) name no step and read as themselves, which is what
   // the fallback gives.
   const shownFor = (field: (typeof DIFFED_ROUTE_FIELDS)[number], route: VersionRoute): string | null =>
-    field === "target" ? (names.get(route.target) ?? route.target) : shown(route[field]);
+    field === "target"
+      ? (names.get(route.target) ?? route.target)
+      : field === "traversalLimit"
+        ? route.traversalLimit == null
+          ? "no limit"
+          : String(route.traversalLimit)
+        : shown(route[field]);
+
+  // An added or removed route lists its fields, but not a limit it does
+  // not have (EO-921): "traversalLimit: none" on every new branch would
+  // be a line about nothing.
+  const listedFields = (route: VersionRoute) => DIFFED_ROUTE_FIELDS.filter((field) => field !== "traversalLimit" || route.traversalLimit != null);
 
   const routes: VersionDiff["routes"] = [];
   for (const [key, route] of afterRoutes) {
     const was = beforeRoutes.get(key);
     const head = { fromStepName: names.get(route.fromStepId) ?? route.fromStepId, resultKey: route.resultKey };
     if (!was) {
-      routes.push({ ...head, change: "added", fields: DIFFED_ROUTE_FIELDS.map((field) => ({ field, before: null, after: shownFor(field, route) })) });
+      routes.push({ ...head, change: "added", fields: listedFields(route).map((field) => ({ field, before: null, after: shownFor(field, route) })) });
       continue;
     }
     const fields = DIFFED_ROUTE_FIELDS.flatMap((field) =>
@@ -554,7 +567,7 @@ export function diffVersions(
       fromStepName: names.get(route.fromStepId) ?? route.fromStepId,
       resultKey: route.resultKey,
       change: "removed",
-      fields: DIFFED_ROUTE_FIELDS.map((field) => ({ field, before: shownFor(field, route), after: null })),
+      fields: listedFields(route).map((field) => ({ field, before: shownFor(field, route), after: null })),
     });
   }
 
