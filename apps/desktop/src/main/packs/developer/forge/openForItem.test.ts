@@ -1372,21 +1372,19 @@ describe("before it opens or reuses one (EO-429)", () => {
       expect(note).toContain("`origin/main`");
     });
 
-    it("pushes with --force-with-lease when a restack rewrote the branch since its last push (EO-780), and forgets that it did", async () => {
+    it("refuses as today after a restack where EO has no record of pushing the branch (EO-780, EO-910)", async () => {
       // What a restack leaves: the remote holds the branch as it was before
-      // it was carried onto its dependency's new tip.
+      // it was carried onto its dependency's new tip — but nothing says
+      // that commit was EO's.
       const item = story({ git: { branch: "eo/API-4", pullRequest: PULL_REQUEST, restacked: true } });
       const { remote } = diverge();
       worktreeFor(item);
-      const progress: string[] = [];
 
-      const result = await mergeRequestStep(item, onlyFinds(found), (text) => progress.push(text));
+      const result = await mergeRequestStep(item, onlyFinds(found));
 
-      expect(result).toMatchObject({ ok: true, result: "opened" });
-      expect(remoteTip()).toBe(localTip());
-      expect(remoteTip()).not.toBe(remote);
-      expect(progress.some((line) => line.includes("--force-with-lease"))).toBe(true);
-      expect(gitStateOf(getItem(handle.db, item.id)!).restacked).toBe(false);
+      expect(result).toMatchObject({ ok: true, result: "remote_diverged" });
+      expect(remoteTip()).toBe(remote);
+      expect(notes(item).at(-1)).toContain("did not force-push");
     });
 
     it("says it once, not once per attempt", async () => {
@@ -1574,6 +1572,68 @@ describe("before it opens or reuses one (EO-429)", () => {
 
       expect(result).toMatchObject({ ok: true, result: "remote_diverged" });
       expect(remoteTip()).toBe(pushed);
+    });
+
+    it("pushes over its own last push after a restack, with the same lease, and forgets the restack", async () => {
+      const { item, worktree, pushed } = await openedByEo();
+      rewriteIn(worktree, "the work, restacked");
+      updateItem(handle.db, item.id, { git: { restacked: true } });
+      const rewritten = localTip();
+
+      const result = await mergeRequestStep(item, onlyFinds(found));
+
+      expect(result).toMatchObject({ ok: true, result: "opened" });
+      expect(remoteTip()).toBe(rewritten);
+      expect(pushedHead(item)?.commit).toBe(rewritten);
+      expect(gitStateOf(getItem(handle.db, item.id)!).restacked).toBe(false);
+      expect(notes(item).at(-1)).toContain(`--force-with-lease=eo/API-4:${pushed}`);
+    });
+
+    it("refuses as today after a restack where the remote holds a person's commit, even one already fetched", async () => {
+      const { item, worktree, pushed } = await openedByEo();
+      const theirs = pushedBySomeoneElse();
+      // The remote-tracking ref now says the person's commit: a bare
+      // --force-with-lease would take it as the lease and overwrite it.
+      git(["fetch", "origin"], repoPath);
+      rewriteIn(worktree, "the work, restacked");
+      updateItem(handle.db, item.id, { git: { restacked: true } });
+
+      const result = await mergeRequestStep(item, onlyFinds(found));
+
+      expect(result).toMatchObject({ ok: true, result: "remote_diverged" });
+      expect(remoteTip()).toBe(theirs);
+      expect(pushedHead(item)?.commit).toBe(pushed);
+      expect(notes(item).at(-1)).toContain("did not force-push");
+    });
+
+    it("refuses as today where the push URL now differs from the recorded one only by a trailing space", async () => {
+      const { item, worktree, pushed } = await openedByEo();
+      // A different repository, holding the same commit by coincidence.
+      const spaced = `${remotePath} `;
+      execFileSync("git", ["clone", "--bare", remotePath, spaced], { encoding: "utf8" });
+      git(["remote", "set-url", "--push", "origin", spaced], repoPath);
+      rewriteIn(worktree);
+
+      const result = await mergeRequestStep(item, onlyFinds(found));
+
+      expect(result).toMatchObject({ ok: true, result: "remote_diverged" });
+      expect(execFileSync("git", ["rev-parse", "refs/heads/eo/API-4"], { cwd: spaced, encoding: "utf8" }).trim()).toBe(pushed);
+      expect(remoteTip()).toBe(pushed);
+    });
+
+    it("answers a leased push a hook rejected as a failed push, not as divergence", async () => {
+      const { item, worktree, pushed } = await openedByEo();
+      // Refuses any push that has a ref to send — the leased one; git turns
+      // the plain push away as non-fast-forward before the hook is asked.
+      writeFileSync(join(repoPath, ".git", "hooks", "pre-push"), "#!/bin/sh\nif read line; then echo 'refused by the hook' >&2; exit 1; fi\nexit 0\n", { mode: 0o755 });
+      rewriteIn(worktree);
+
+      const result = await mergeRequestStep(item, onlyFinds(found));
+
+      expect(result).not.toMatchObject({ result: "remote_diverged" });
+      expect(remoteTip()).toBe(pushed);
+      expect(pushedHead(item)?.commit).toBe(pushed);
+      expect(notes(item).some((body) => body.includes("has diverged"))).toBe(false);
     });
 
     it("never forces a branch a person named, even over a push EO recorded", async () => {

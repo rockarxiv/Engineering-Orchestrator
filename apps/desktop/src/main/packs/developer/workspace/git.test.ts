@@ -222,16 +222,18 @@ describe("pushBranch", () => {
   });
 
   const tip = (path: string, ref = "refs/heads/eo/EO-1") => run(["rev-parse", ref], path);
+  const fingerprint = (urls: string) => `sha256:${createHash("sha256").update(urls, "utf8").digest("hex")}`;
+  const toBare = () => ({ fingerprint: fingerprint(barePath), urls: 1 });
 
   it("reports the commit a push put on the branch, and none where the branch was already there", async () => {
     const first = await pushBranch(repoPath, "bare", "eo/EO-1");
-    expect(first).toEqual({ ok: true, updated: await tip(repoPath) });
+    expect(first).toEqual({ ok: true, updated: await tip(repoPath), destination: toBare() });
     expect(await tip(barePath)).toBe(await tip(repoPath));
 
-    expect(await pushBranch(repoPath, "bare", "eo/EO-1")).toEqual({ ok: true, updated: null });
+    expect(await pushBranch(repoPath, "bare", "eo/EO-1")).toEqual({ ok: true, updated: null, destination: toBare() });
 
     await commit(repoPath, "more.ts", "export const more = 1;\n");
-    expect(await pushBranch(repoPath, "bare", "eo/EO-1")).toEqual({ ok: true, updated: await tip(repoPath) });
+    expect(await pushBranch(repoPath, "bare", "eo/EO-1")).toEqual({ ok: true, updated: await tip(repoPath), destination: toBare() });
   });
 
   it("says a rewritten branch was refused as diverged, by git's status for the ref, and moves nothing", async () => {
@@ -252,11 +254,11 @@ describe("pushBranch", () => {
     await run(["commit", "--amend", "-m", "rebased"], repoPath);
 
     const stale = await pushBranch(repoPath, "bare", "eo/EO-1", { lease: await tip(repoPath, "main") });
-    expect(stale).toMatchObject({ ok: false, diverged: false });
+    expect(stale).toMatchObject({ ok: false, diverged: false, staleLease: true });
     expect(await tip(barePath)).toBe(before);
 
     const leased = await pushBranch(repoPath, "bare", "eo/EO-1", { lease: before });
-    expect(leased).toEqual({ ok: true, updated: await tip(repoPath) });
+    expect(leased).toEqual({ ok: true, updated: await tip(repoPath), destination: toBare() });
     expect(await tip(barePath)).toBe(await tip(repoPath));
   });
 
@@ -266,21 +268,53 @@ describe("pushBranch", () => {
 
     const pushed = await pushBranch(repoPath, "bare", "eo/EO-1");
 
-    expect(pushed).toMatchObject({ ok: false, diverged: false });
+    expect(pushed).toMatchObject({ ok: false, diverged: false, staleLease: false });
     expect((await git(["rev-parse", "--verify", "--quiet", "refs/heads/eo/EO-1"], barePath)).ok).toBe(false);
+  });
+
+  it("reports the commit where git exited 0 and moved the branch at one push URL of several, with where it went", async () => {
+    const second = join(scratch, "second.git");
+    await run(["init", "--bare", second], scratch);
+    await pushBranch(repoPath, "bare", "eo/EO-1");
+    await run(["remote", "set-url", "--add", "--push", "bare", barePath], repoPath);
+    await run(["remote", "set-url", "--add", "--push", "bare", second], repoPath);
+
+    // Up to date at the first URL, a new branch at the second.
+    const pushed = await pushBranch(repoPath, "bare", "eo/EO-1");
+
+    expect(pushed).toEqual({ ok: true, updated: await tip(repoPath), destination: { fingerprint: fingerprint(`${barePath}\n${second}`), urls: 2 } });
+    expect(await tip(second)).toBe(await tip(repoPath));
   });
 });
 
 describe("pushDestination", () => {
-  it("fingerprints a remote's one push URL, and gives none for several", async () => {
-    const url = (await run(["remote", "get-url", "--push", "origin"], repoPath));
-    expect(await pushDestination(repoPath, "origin")).toBe(`sha256:${createHash("sha256").update(url, "utf8").digest("hex")}`);
+  const fingerprint = (urls: string) => `sha256:${createHash("sha256").update(urls, "utf8").digest("hex")}`;
 
+  it("fingerprints a remote's push URLs exactly as git lists them, and counts them", async () => {
+    const url = await run(["remote", "get-url", "--push", "origin"], repoPath);
+    expect(await pushDestination(repoPath, "origin")).toEqual({ fingerprint: fingerprint(url), urls: 1 });
+
+    const elsewhere = join(scratch, "elsewhere.git");
     await run(["remote", "set-url", "--add", "--push", "origin", url], repoPath);
-    await run(["remote", "set-url", "--add", "--push", "origin", join(scratch, "elsewhere.git")], repoPath);
-    expect(await pushDestination(repoPath, "origin")).toBeNull();
+    await run(["remote", "set-url", "--add", "--push", "origin", elsewhere], repoPath);
+    expect(await pushDestination(repoPath, "origin")).toEqual({ fingerprint: fingerprint(`${url}\n${elsewhere}`), urls: 2 });
 
     expect(await pushDestination(repoPath, "no-such-remote")).toBeNull();
+  });
+
+  it("tells a URL with a trailing space from the one without it", async () => {
+    const target = join(scratch, "target.git");
+    await run(["remote", "add", "spaced", `${target} `], repoPath);
+    await run(["remote", "add", "plain", target], repoPath);
+
+    expect(await pushDestination(repoPath, "spaced")).toEqual({ fingerprint: fingerprint(`${target} `), urls: 1 });
+    expect((await pushDestination(repoPath, "spaced"))?.fingerprint).not.toBe((await pushDestination(repoPath, "plain"))?.fingerprint);
+  });
+
+  it("gives no destination for a URL holding a control character", async () => {
+    await run(["remote", "add", "tabbed", join(scratch, "tar\tget.git")], repoPath);
+
+    expect(await pushDestination(repoPath, "tabbed")).toBeNull();
   });
 });
 
