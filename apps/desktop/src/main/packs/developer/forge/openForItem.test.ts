@@ -26,6 +26,7 @@ import { workspaces } from "../../../db/schema.js";
 import { attachWorkspace, createTestItem, openMigratedTestDb } from "../../../db/testHelpers.js";
 import { REPOSITORY_INDEX_DIRECTORIES } from "../repositoryIntelligence/index.js";
 import { canonicalPath, currentBranch, destinationKey, statusPorcelain } from "../workspace/git.js";
+import { beforeGitPush } from "../../../testing/git.js";
 import type { CliResult, CliRunner } from "./cli.js";
 import { updateItemText } from "../../../ipc/domainCommands.js";
 import { openPullRequestForItem } from "./openForItem.js";
@@ -1995,6 +1996,144 @@ describe("before it opens or reuses one (EO-429)", () => {
       expect(result).toMatchObject({ ok: true, result: "remote_diverged" });
       expect(remoteTip()).toBe(ours);
       expect(gitStateOf(getItem(handle.db, item.id)!).pushedHead).toEqual(pushedTo(ours));
+      expect(notes(item).at(-1)).toContain("did not force-push");
+    });
+
+    describe("when the branch or the remote changes between EO's checks and git's own reads", () => {
+      let restore: () => void = () => {};
+      afterEach(() => restore());
+
+      it.skipIf(process.platform === "win32").each([
+        ["on the first open", null],
+        ["with the pull request already open", PULL_REQUEST],
+      ])("sends nothing in place of EO's push when the branch moves after EO checked it and before git resolves it, %s", async (_, pullRequest) => {
+        const item = story({ git: { branch: "eo/API-4", pullRequest } });
+        const worktree = worktreeFor(item);
+        await firstPush(item, pullRequest);
+        const ours = remoteTip()!;
+        rewriteIn(worktree);
+        const replacement = git(["commit-tree", `${localTip()}^{tree}`, "-p", ours, "-m", "a commit nobody rejected"], repoPath).trim();
+        // The first push is the one rejected as diverged; the second is the lease.
+        restore = beforeGitPush(scratch, `"$GIT" update-ref refs/heads/eo/API-4 ${replacement}`, 2);
+        const before = notes(item).length;
+
+        const result = await mergeRequestStep(item, onlyFinds(found));
+
+        expect(result).toMatchObject({ ok: true, result: "remote_diverged" });
+        expect(remoteTip()).toBe(ours);
+        expect(gitStateOf(getItem(handle.db, item.id)!).pushedHead).toEqual(pushedTo(ours));
+        const said = notes(item).slice(before);
+        expect(said.at(-1)).toContain("did not force-push");
+        expect(said.some((body) => body.includes("--force-with-lease="))).toBe(false);
+      });
+
+      it.skipIf(process.platform === "win32").each([
+        ["on the first open", null],
+        ["with the pull request already open", PULL_REQUEST],
+      ])("sends the lease nowhere when the remote is given another push URL after EO checked where it pushes, %s", async (_, pullRequest) => {
+        const item = story({ git: { branch: "eo/API-4", pullRequest } });
+        const worktree = worktreeFor(item);
+        await firstPush(item, pullRequest);
+        const ours = remoteTip()!;
+        const other = bare("other.git");
+        git(["push", other, `${ours}:refs/heads/eo/API-4`], repoPath);
+        rewriteIn(worktree);
+        restore = beforeGitPush(scratch, `"$GIT" config --add remote.origin.pushurl '${other}'`, 2);
+
+        const result = await mergeRequestStep(item, onlyFinds(found));
+
+        expect(result).toMatchObject({ ok: true, result: "remote_diverged" });
+        expect(remoteTip()).toBe(ours);
+        expect(tipAt(other)).toBe(ours);
+        expect(gitStateOf(getItem(handle.db, item.id)!).pushedHead).toEqual(pushedTo(ours));
+        expect(notes(item).at(-1)).toContain("did not force-push");
+      });
+      it.skipIf(process.platform === "win32")("replaces its push only at the URL it checked when another is added beside it, and records that as no one place to force at again", async () => {
+        const a = bare("a.git");
+        git(["config", "remote.origin.pushurl", a], repoPath);
+        const item = story({ git: { branch: "eo/API-4", pullRequest: PULL_REQUEST } });
+        const worktree = worktreeFor(item);
+        await mergeRequestStep(item, onlyFinds(found));
+        const ours = tipAt(a)!;
+        const other = bare("other.git");
+        git(["push", other, `${ours}:refs/heads/eo/API-4`], repoPath);
+        rewriteIn(worktree);
+        restore = beforeGitPush(scratch, `"$GIT" config --add remote.origin.pushurl '${other}'`, 2);
+
+        const result = await mergeRequestStep(item, onlyFinds(found));
+
+        expect(result).toMatchObject({ ok: true, result: "opened" });
+        expect(tipAt(a)).toBe(localTip());
+        expect(tipAt(other)).toBe(ours);
+        expect(gitStateOf(getItem(handle.db, item.id)!).pushedHead).toEqual(pushedTo(localTip(), null));
+        expect(notes(item).at(-1)).toContain(`--force-with-lease=eo/API-4:${ours}`);
+      });
+    });
+
+    it.each([
+      ["on the first open", null],
+      ["with the pull request already open", PULL_REQUEST],
+    ])("records the commit git sent, though a hook moved the branch once git had read it, %s", async (_, pullRequest) => {
+      const item = story({ git: { branch: "eo/API-4", pullRequest } });
+      worktreeFor(item);
+      const sent = localTip();
+      const elsewhere = git(["rev-parse", "main"], repoPath).trim();
+      const hook = join(repoPath, git(["rev-parse", "--git-path", "hooks"], repoPath).trim(), "pre-push");
+      writeFileSync(hook, `#!/bin/sh\ngit update-ref refs/heads/eo/API-4 ${elsewhere}\n`, { mode: 0o755 });
+
+      await firstPush(item, pullRequest);
+
+      expect(remoteTip()).toBe(sent);
+      expect(gitStateOf(getItem(handle.db, item.id)!).pushedHead).toEqual(pushedTo(sent));
+    });
+
+    it.each([
+      ["on the first open", null],
+      ["with the pull request already open", PULL_REQUEST],
+    ])("replaces EO's push with the commit it was rejected for, records it, and names it, though a hook moves the branch during the lease, %s", async (_, pullRequest) => {
+      const item = story({ git: { branch: "eo/API-4", pullRequest } });
+      const worktree = worktreeFor(item);
+      await firstPush(item, pullRequest);
+      const old = remoteTip()!;
+      rewriteIn(worktree);
+      const rewritten = localTip();
+      const replacement = git(["commit-tree", `${rewritten}^{tree}`, "-p", old, "-m", "a hook's commit"], repoPath).trim();
+      // Runs for the rejected push, then for the lease, where it moves the
+      // branch once git has read it.
+      const count = join(scratch, "count");
+      const hook = join(repoPath, git(["rev-parse", "--git-path", "hooks"], repoPath).trim(), "pre-push");
+      writeFileSync(hook, `#!/bin/sh\necho x >> '${count}'\n[ "$(wc -l < '${count}')" -eq 2 ] && git update-ref refs/heads/eo/API-4 ${replacement}\nexit 0\n`, { mode: 0o755 });
+
+      const result = await mergeRequestStep(item, pullRequest === null ? recorder([noneYet, created, found]).run : onlyFinds(found));
+
+      expect(result).toMatchObject({ ok: true, result: "opened" });
+      expect(remoteTip()).toBe(rewritten);
+      expect(gitStateOf(getItem(handle.db, item.id)!).pushedHead).toEqual(pushedTo(rewritten));
+      expect(notes(item).some((body) => body.includes(`--force-with-lease=eo/API-4:${old}`) && body.includes(rewritten))).toBe(true);
+    });
+
+    // Windows symlinks need a privilege a test runner rarely has.
+    it.skipIf(process.platform === "win32").each([
+      ["on the first open", null],
+      ["with the pull request already open", PULL_REQUEST],
+    ])("refuses when the remote's refs now lead into another repository holding the same commit, though its path and configuration never changed, %s", async (_, pullRequest) => {
+      const item = story({ git: { branch: "eo/API-4", pullRequest } });
+      const worktree = worktreeFor(item);
+      await firstPush(item, pullRequest);
+      const ours = remoteTip()!;
+      // Somebody else's repository, seeded with the same commit; the
+      // remote's `refs/heads` is pointed at its own.
+      const other = bare("other.git");
+      git(["push", other, `${ours}:refs/heads/eo/API-4`], repoPath);
+      rmSync(join(remotePath, "refs", "heads"), { recursive: true });
+      symlinkSync(join(other, "refs", "heads"), join(remotePath, "refs", "heads"));
+      rewriteIn(worktree);
+
+      const result = await mergeRequestStep(item, onlyFinds(found));
+
+      expect(result).toMatchObject({ ok: true, result: "remote_diverged" });
+      expect(tipAt(other)).toBe(ours);
+      expect(remoteTip()).toBe(ours);
       expect(notes(item).at(-1)).toContain("did not force-push");
     });
 

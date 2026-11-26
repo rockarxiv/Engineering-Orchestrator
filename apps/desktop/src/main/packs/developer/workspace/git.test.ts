@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -20,7 +20,7 @@ import {
   rebaseOntoBase,
   statusPorcelain,
 } from "./git.js";
-import { run, initRepo } from "../../../testing/git.js";
+import { beforeGitPush, run, initRepo } from "../../../testing/git.js";
 
 // Real repositories in a temp dir, same discipline as worktrees.test.ts:
 // the point of G-01 is that these git invocations behave against real
@@ -224,6 +224,8 @@ describe("a git command that reaches the network", () => {
 describe("pushBranch (EO-910)", () => {
   let barePath: string;
   const localTip = (): Promise<string> => run(["rev-parse", "refs/heads/eo/APP-1"], repoPath);
+  /** The commit a push that went through sent. */
+  const sentBy = (pushed: Awaited<ReturnType<typeof pushBranch>>): string => (pushed.ok ? (pushed.head ?? "") : "");
   // Where a push to a local path goes: the repository it resolves to.
   const at = (path: string): string => destinationKey(canonicalPath(path));
   const remoteTip = async (branch: string): Promise<string | null> => {
@@ -264,7 +266,7 @@ describe("pushBranch (EO-910)", () => {
     const pushed = await pushBranch(repoPath, "bare", "eo/APP-1");
 
     expect(pushed.ok).toBe(true);
-    expect(await remoteTip("eo/APP-1")).toBe(pushed.ok ? pushed.head : "");
+    expect(await remoteTip("eo/APP-1")).toBe(sentBy(pushed));
     expect(await remoteTip("elsewhere")).toBeNull();
   });
 
@@ -290,7 +292,7 @@ describe("pushBranch (EO-910)", () => {
 
   it("pushes a lease nowhere when the remote no longer pushes to the destination it names", async () => {
     const first = await pushBranch(repoPath, "bare", "eo/APP-1");
-    const old = first.ok ? first.head : "";
+    const old = sentBy(first);
     const other = join(scratch, "other.git");
     await run(["init", "--bare", other], scratch);
     await run(["push", other, `${old}:refs/heads/eo/APP-1`], repoPath);
@@ -315,7 +317,7 @@ describe("pushBranch (EO-910)", () => {
     const pushed = await pushBranch(repoPath, "bare", "eo/APP-1");
 
     expect(pushed).toMatchObject({ ok: true, updated: true, destination: at(a) });
-    expect(await run(["rev-parse", "eo/APP-1"], a)).toBe(pushed.ok ? pushed.head : "");
+    expect(await run(["rev-parse", "eo/APP-1"], a)).toBe(sentBy(pushed));
     expect(await git(["rev-parse", "--verify", "--quiet", "refs/heads/eo/APP-1"], b)).toMatchObject({ ok: false });
     expect(await remoteTip("eo/APP-1")).toBeNull();
   });
@@ -325,7 +327,7 @@ describe("pushBranch (EO-910)", () => {
 
     const pushed = await pushBranch(repoPath, "bare", "eo/APP-1");
 
-    expect(await run(["rev-parse", "refs/remotes/bare/eo/APP-1"], repoPath)).toBe(pushed.ok ? pushed.head : "");
+    expect(await run(["rev-parse", "refs/remotes/bare/eo/APP-1"], repoPath)).toBe(sentBy(pushed));
   });
 
   it("tells apart push URLs that differ only by a leading byte-order mark, and pushes to the one git names", async () => {
@@ -335,7 +337,7 @@ describe("pushBranch (EO-910)", () => {
     await run(["init", "--bare", join(repoPath, plain)], scratch);
     await run(["init", "--bare", join(repoPath, marked)], scratch);
     const first = await pushBranch(repoPath, "bare", "eo/APP-1");
-    const old = first.ok ? first.head : "";
+    const old = sentBy(first);
     for (const path of [plain, marked]) await run(["push", join(repoPath, path), `${old}:refs/heads/eo/APP-1`], repoPath);
     await run(["remote", "set-url", "bare", marked], repoPath);
     await run(["commit", "--amend", "-m", "rewritten"], repoPath);
@@ -349,7 +351,7 @@ describe("pushBranch (EO-910)", () => {
 
     const pushed = await pushBranch(repoPath, "bare", "eo/APP-1", { forceWithLease: { expect: old, destination: at(join(repoPath, marked)), send: await localTip() } });
     expect(pushed).toMatchObject({ ok: true, updated: true, destination: at(join(repoPath, marked)) });
-    expect(await run(["rev-parse", "eo/APP-1"], join(repoPath, marked))).toBe(pushed.ok ? pushed.head : "");
+    expect(await run(["rev-parse", "eo/APP-1"], join(repoPath, marked))).toBe(sentBy(pushed));
     expect(await run(["rev-parse", "eo/APP-1"], join(repoPath, plain))).toBe(old);
   });
 
@@ -372,8 +374,8 @@ describe("pushBranch (EO-910)", () => {
     const received = await pushBranch(repoPath, "bare", "eo/APP-1");
 
     expect(received).toMatchObject({ ok: true, updated: true, destination: null });
-    expect(await run(["rev-parse", "eo/APP-1"], landed)).toBe(received.ok ? received.head : "");
-    expect(await remoteTip("eo/APP-1")).toBe(pinned.ok ? pinned.head : "");
+    expect(await run(["rev-parse", "eo/APP-1"], landed)).toBe(sentBy(received));
+    expect(await remoteTip("eo/APP-1")).toBe(sentBy(pinned));
     expect(readFileSync(told, "utf8")).toBe("bare\nbare\n");
   });
 
@@ -386,7 +388,7 @@ describe("pushBranch (EO-910)", () => {
     const pushed = await pushBranch(repoPath, "bare", "eo/APP-1");
     expect(pushed).toMatchObject({ ok: true, updated: true });
     expect(await run(["rev-parse", "main"], repoPath)).toBe(main);
-    expect(await run(["rev-parse", "refs/remotes/bare/eo/APP-1"], repoPath)).toBe(pushed.ok ? pushed.head : "");
+    expect(await run(["rev-parse", "refs/remotes/bare/eo/APP-1"], repoPath)).toBe(sentBy(pushed));
   });
 
   // Windows cannot make a directory whose name ends in a space.
@@ -400,13 +402,13 @@ describe("pushBranch (EO-910)", () => {
 
     expect(pushed).toMatchObject({ ok: true, updated: true, destination: at(spaced) });
     expect(at(spaced)).not.toBe(at(barePath));
-    expect(await run(["rev-parse", "eo/APP-1"], spaced)).toBe(pushed.ok ? pushed.head : "");
+    expect(await run(["rev-parse", "eo/APP-1"], spaced)).toBe(sentBy(pushed));
     expect(await remoteTip("eo/APP-1")).toBeNull();
   });
 
   it("forces only over the exact commit it is leased to", async () => {
     const first = await pushBranch(repoPath, "bare", "eo/APP-1");
-    const old = first.ok ? first.head : "";
+    const old = sentBy(first);
     await run(["commit", "--amend", "-m", "rewritten"], repoPath);
 
     const destination = at(barePath);
@@ -416,7 +418,7 @@ describe("pushBranch (EO-910)", () => {
 
     const leased = await pushBranch(repoPath, "bare", "eo/APP-1", { forceWithLease: { expect: old, destination, send: await localTip() } });
     expect(leased).toMatchObject({ ok: true, updated: true });
-    expect(await remoteTip("eo/APP-1")).toBe(leased.ok ? leased.head : "");
+    expect(await remoteTip("eo/APP-1")).toBe(sentBy(leased));
   });
   it("pushes only the branch, so a tag the remote refuses cannot fail a push whose branch went through", async () => {
     await run(["config", "push.followTags", "true"], repoPath);
@@ -427,7 +429,7 @@ describe("pushBranch (EO-910)", () => {
     const pushed = await pushBranch(repoPath, "bare", "eo/APP-1");
 
     expect(pushed).toMatchObject({ ok: true, updated: true });
-    expect(await remoteTip("eo/APP-1")).toBe(pushed.ok ? pushed.head : "");
+    expect(await remoteTip("eo/APP-1")).toBe(sentBy(pushed));
     expect(await run(["tag", "--list"], barePath)).toBe("");
   });
 
@@ -452,7 +454,7 @@ describe("pushBranch (EO-910)", () => {
     const pushed = await pushBranch(repoPath, "bare", "eo/APP-1");
 
     expect(pushed).toMatchObject({ ok: true, updated: true, destination: null });
-    expect(await run(["rev-parse", "eo/APP-1"], second)).toBe(pushed.ok ? pushed.head : "");
+    expect(await run(["rev-parse", "eo/APP-1"], second)).toBe(sentBy(pushed));
   });
 
   it("says what a failed push published all the same, at the one of several URLs that took it", async () => {
@@ -477,7 +479,7 @@ describe("pushBranch (EO-910)", () => {
   });
 
   // Windows symlinks need a privilege a test runner rarely has.
-  it.skipIf(process.platform === "win32")("pins a local path to the repository it resolves to, so a symlink pointed elsewhere is somewhere else", async () => {
+  it.skipIf(process.platform === "win32")("records a local path as the repository it resolves to, so a symlink pointed elsewhere is somewhere else", async () => {
     const a = join(scratch, "a.git");
     const b = join(scratch, "b.git");
     const link = join(scratch, "link.git");
@@ -486,8 +488,8 @@ describe("pushBranch (EO-910)", () => {
     symlinkSync(a, link);
     await run(["remote", "set-url", "bare", link], repoPath);
     const first = await pushBranch(repoPath, "bare", "eo/APP-1");
-    expect(first).toMatchObject({ ok: true, updated: true, confirmed: true, destination: at(a) });
-    const old = first.ok ? first.head : "";
+    expect(first).toMatchObject({ ok: true, updated: true, destination: at(a) });
+    const old = sentBy(first);
     // B holds the same commit, put there by somebody else.
     await run(["push", b, `${old}:refs/heads/eo/APP-1`], repoPath);
     unlinkSync(link);
@@ -504,7 +506,7 @@ describe("pushBranch (EO-910)", () => {
     expect(await run(["rev-parse", "eo/APP-1"], b)).toBe(old);
   });
 
-  it("pins nothing where a local path might reach another repository's refs", async () => {
+  it("records no place where a local path might reach another repository's refs", async () => {
     const elsewhere = join(scratch, "elsewhere.git");
     await run(["init", "--bare", elsewhere], scratch);
     writeFileSync(join(barePath, "commondir"), `${elsewhere}\n`);
@@ -512,31 +514,29 @@ describe("pushBranch (EO-910)", () => {
     expect(await pushBranch(repoPath, "bare", "eo/APP-1")).toMatchObject({ ok: true, destination: null });
   });
 
-  it("pins a remote's own push URL only where git can clear the list it had, and pushes unpinned elsewhere", async () => {
-    // Git 2.46 is the first that an empty push URL in the environment
-    // clears the list for; an older one keeps what it had beside it.
-    const [major = 0, minor = 0] = (await run(["version"], repoPath)).replace(/^git version /, "").split(".").map(Number);
-    const clears = major > 2 || (major === 2 && minor >= 46);
+  it("records a remote's own push URL, on any git — no older one needs to clear what the environment never sets", async () => {
     const a = join(scratch, "a.git");
     await run(["init", "--bare", a], scratch);
     await run(["config", "remote.bare.pushurl", a], repoPath);
 
     const pushed = await pushBranch(repoPath, "bare", "eo/APP-1");
 
-    expect(pushed).toMatchObject({ ok: true, updated: true, destination: clears ? at(a) : null });
-    expect(await run(["rev-parse", "eo/APP-1"], a)).toBe(pushed.ok ? pushed.head : "");
+    expect(pushed).toMatchObject({ ok: true, updated: true, destination: at(a) });
+    expect(await run(["rev-parse", "eo/APP-1"], a)).toBe(sentBy(pushed));
     expect(await remoteTip("eo/APP-1")).toBeNull();
   });
 
-  it("pins a file:/// URL to the repository it names", async () => {
-    await run(["remote", "set-url", "bare", `file://${barePath}`], repoPath);
+  it("records a file:/// URL as the repository it names, and one with a drive letter in it as no one place", async () => {
+    // Git for Windows takes `file:///C:/…`; EO does not try to say where that lands.
+    const url = process.platform === "win32" ? `file:///${barePath.replace(/\\/g, "/")}` : `file://${barePath}`;
+    await run(["remote", "set-url", "bare", url], repoPath);
     const pushed = await pushBranch(repoPath, "bare", "eo/APP-1");
 
-    expect(pushed).toMatchObject({ ok: true, updated: true, destination: at(barePath) });
-    expect(await remoteTip("eo/APP-1")).toBe(pushed.ok ? pushed.head : "");
+    expect(pushed).toMatchObject({ ok: true, updated: true, destination: process.platform === "win32" ? null : at(barePath) });
+    expect(await remoteTip("eo/APP-1")).toBe(sentBy(pushed));
   });
 
-  it("pins nothing to a remote helper, which decides for itself where a push goes", async () => {
+  it("records no place for a remote helper, which decides for itself where a push goes", async () => {
     await run(["remote", "add", "helped", "ext::git %S '/nowhere'"], repoPath);
     const pushed = await pushBranch(repoPath, "helped", "eo/APP-1");
     expect(pushed).toMatchObject({ ok: false, destination: null });
@@ -549,7 +549,7 @@ describe("pushBranch (EO-910)", () => {
 
     const pushed = await pushBranch(repoPath, "bare", "eo/APP-1");
 
-    expect(pushed).toMatchObject({ ok: true, head, updated: true, confirmed: true });
+    expect(pushed).toMatchObject({ ok: true, head, updated: true });
     expect(await remoteTip("eo/APP-1")).toBe(head);
   });
 
@@ -565,7 +565,7 @@ describe("pushBranch (EO-910)", () => {
     expect({ localRef, localSha, remoteRef }).toEqual({ localRef: "refs/heads/eo/APP-1", localSha: head, remoteRef: "refs/heads/eo/APP-1" });
   });
 
-  it("does not confirm the commit it sent where the branch moved while git pushed", async () => {
+  it("knows the commit it sent, though a hook moved the branch once git had read it", async () => {
     const head = await localTip();
     const main = await run(["rev-parse", "main"], repoPath);
     const hook = join(repoPath, await run(["rev-parse", "--git-path", "hooks"], repoPath), "pre-push");
@@ -573,12 +573,162 @@ describe("pushBranch (EO-910)", () => {
 
     const pushed = await pushBranch(repoPath, "bare", "eo/APP-1");
 
-    expect(pushed).toMatchObject({ ok: true, head, updated: true, confirmed: false });
+    expect(pushed).toMatchObject({ ok: true, head, updated: true, destination: at(barePath) });
+    expect(await remoteTip("eo/APP-1")).toBe(head);
+    expect(await localTip()).toBe(main);
+  });
+
+  describe("when the repository changes between EO's checks and git's own reads", () => {
+    let restore: () => void = () => {};
+    afterEach(() => restore());
+
+    it.skipIf(process.platform === "win32")("stops a push, sending nothing, where git resolves the branch to another commit than the one EO read", async () => {
+      const head = await localTip();
+      const main = await run(["rev-parse", "main"], repoPath);
+      restore = beforeGitPush(scratch, `"$GIT" update-ref refs/heads/eo/APP-1 ${main}`);
+
+      const pushed = await pushBranch(repoPath, "bare", "eo/APP-1");
+
+      expect(pushed).toMatchObject({ ok: false, head, rejection: "changed", published: null });
+      expect(await remoteTip("eo/APP-1")).toBeNull();
+    });
+
+    it.skipIf(process.platform === "win32")("sends a lease nothing where the branch moves after EO checked it, before git resolves it", async () => {
+      const first = await pushBranch(repoPath, "bare", "eo/APP-1");
+      const old = sentBy(first);
+      await run(["commit", "--amend", "-m", "rewritten"], repoPath);
+      const rejected = await localTip();
+      const replacement = await run(["commit-tree", `${rejected}^{tree}`, "-p", old, "-m", "a commit nobody rejected"], repoPath);
+      restore = beforeGitPush(scratch, `"$GIT" update-ref refs/heads/eo/APP-1 ${replacement}`);
+
+      const leased = await pushBranch(repoPath, "bare", "eo/APP-1", { forceWithLease: { expect: old, destination: at(barePath), send: rejected } });
+
+      expect(leased).toMatchObject({ ok: false, rejection: "changed", published: null });
+      expect(await remoteTip("eo/APP-1")).toBe(old);
+    });
+
+    it.skipIf(process.platform === "win32")("sends a lease nowhere when the remote is given a push URL after EO checked where it pushes", async () => {
+      const first = await pushBranch(repoPath, "bare", "eo/APP-1");
+      const old = sentBy(first);
+      const other = join(scratch, "other.git");
+      await run(["init", "--bare", other], scratch);
+      await run(["push", other, `${old}:refs/heads/eo/APP-1`], repoPath);
+      await run(["commit", "--amend", "-m", "rewritten"], repoPath);
+      restore = beforeGitPush(scratch, `"$GIT" config --add remote.bare.pushurl '${other}'`);
+
+      const leased = await pushBranch(repoPath, "bare", "eo/APP-1", { forceWithLease: { expect: old, destination: at(barePath), send: await localTip() } });
+
+      expect(leased).toMatchObject({ ok: false, rejection: "destination", published: null });
+      expect(await run(["rev-parse", "eo/APP-1"], other)).toBe(old);
+      expect(await remoteTip("eo/APP-1")).toBe(old);
+    });
+
+    it.skipIf(process.platform === "win32")("replaces EO's push only at the URL it checked when another is added beside it", async () => {
+      const a = join(scratch, "a.git");
+      const other = join(scratch, "other.git");
+      await run(["init", "--bare", a], scratch);
+      await run(["init", "--bare", other], scratch);
+      await run(["config", "remote.bare.pushurl", a], repoPath);
+      const first = await pushBranch(repoPath, "bare", "eo/APP-1");
+      const old = sentBy(first);
+      await run(["push", other, `${old}:refs/heads/eo/APP-1`], repoPath);
+      await run(["commit", "--amend", "-m", "rewritten"], repoPath);
+      restore = beforeGitPush(scratch, `"$GIT" config --add remote.bare.pushurl '${other}'`);
+
+      const leased = await pushBranch(repoPath, "bare", "eo/APP-1", { forceWithLease: { expect: old, destination: at(a), send: await localTip() } });
+
+      expect(leased).toMatchObject({ ok: false, rejection: "destination", published: await localTip(), destination: null });
+      expect(await run(["rev-parse", "eo/APP-1"], a)).toBe(await localTip());
+      expect(await run(["rev-parse", "eo/APP-1"], other)).toBe(old);
+    });
+
+    it.skipIf(process.platform === "win32")("sends a lease nowhere when the remote is given a receivepack after EO checked it", async () => {
+      const first = await pushBranch(repoPath, "bare", "eo/APP-1");
+      const old = sentBy(first);
+      const landed = join(scratch, "landed.git");
+      await run(["init", "--bare", landed], scratch);
+      await run(["push", landed, `${old}:refs/heads/eo/APP-1`], repoPath);
+      const receive = join(scratch, "receive.sh");
+      writeFileSync(receive, `#!/bin/sh\nexec git receive-pack '${landed}'\n`, { mode: 0o755 });
+      await run(["commit", "--amend", "-m", "rewritten"], repoPath);
+      restore = beforeGitPush(scratch, `"$GIT" config remote.bare.receivepack "'${receive}'"`);
+
+      const leased = await pushBranch(repoPath, "bare", "eo/APP-1", { forceWithLease: { expect: old, destination: at(barePath), send: await localTip() } });
+
+      expect(leased).toMatchObject({ ok: false, rejection: "destination", published: null });
+      expect(await run(["rev-parse", "eo/APP-1"], landed)).toBe(old);
+      expect(await remoteTip("eo/APP-1")).toBe(old);
+    });
+
+    it.skipIf(process.platform === "win32")("records the URL git pushed to, not the one EO read before it pushed", async () => {
+      const other = join(scratch, "other.git");
+      await run(["init", "--bare", other], scratch);
+      restore = beforeGitPush(scratch, `"$GIT" remote set-url bare '${other}'`);
+
+      const pushed = await pushBranch(repoPath, "bare", "eo/APP-1");
+
+      expect(pushed).toMatchObject({ ok: true, updated: true, destination: null });
+      expect(await run(["rev-parse", "eo/APP-1"], other)).toBe(sentBy(pushed));
+    });
+  });
+
+  it("runs the repository's own hooks beside its gate, with what git gave them", async () => {
+    const told = join(scratch, "told.log");
+    const hooks = join(repoPath, await run(["rev-parse", "--git-path", "hooks"], repoPath));
+    writeFileSync(join(hooks, "pre-push"), `#!/bin/sh\necho "pre-push $1 $2" >> '${told}'\ncat >> '${told}'\n`, { mode: 0o755 });
+    writeFileSync(join(hooks, "reference-transaction"), `#!/bin/sh\n[ "$1" = committed ] && cat >> '${told}'\nexit 0\n`, { mode: 0o755 });
+    await run(["config", "remote.bare.fetch", "+refs/heads/*:refs/remotes/bare/*"], repoPath);
+    const head = await localTip();
+
+    await pushBranch(repoPath, "bare", "eo/APP-1");
+
+    const lines = readFileSync(told, "utf8").trim().split("\n");
+    expect(lines[0]).toBe(`pre-push bare ${barePath}`);
+    expect(lines[1]).toMatch(new RegExp(`^refs/heads/eo/APP-1 ${head} refs/heads/eo/APP-1 0+$`));
+    expect(lines.some((line) => line.endsWith(` ${head} refs/remotes/bare/eo/APP-1`))).toBe(true);
+  });
+
+  it("records no place where the remote's refs, or the branch's own file, lead into another repository", async () => {
+    const elsewhere = join(scratch, "elsewhere.git");
+    await run(["init", "--bare", elsewhere], scratch);
+    const pushed = await pushBranch(repoPath, "bare", "eo/APP-1");
+    expect(pushed).toMatchObject({ ok: true, destination: at(barePath) });
+    await run(["push", elsewhere, `${sentBy(pushed)}:refs/heads/eo/APP-1`], repoPath);
+    await commit(repoPath, "more.ts", "// more\n");
+
+    // The branch's directory, then `refs/heads` itself, pointed at the other repository's.
+    rmSync(join(barePath, "refs", "heads", "eo"), { recursive: true });
+    symlinkSync(join(elsewhere, "refs", "heads", "eo"), join(barePath, "refs", "heads", "eo"));
+    expect(await pushBranch(repoPath, "bare", "eo/APP-1")).toMatchObject({ ok: true, destination: null });
+
+    rmSync(join(barePath, "refs", "heads"), { recursive: true });
+    symlinkSync(join(elsewhere, "refs", "heads"), join(barePath, "refs", "heads"));
+    await commit(repoPath, "again.ts", "// again\n");
+    expect(await pushBranch(repoPath, "bare", "eo/APP-1")).toMatchObject({ ok: true, destination: null });
+    expect(await run(["rev-parse", "eo/APP-1"], elsewhere)).toBe(await localTip());
+  });
+
+  it.skipIf(process.platform === "win32")("resolves a local path's symlink before the `..` after it, as git does, and records the repository git reached", async () => {
+    // `link/..` is `nested`, where the link points, not `scratch`, where the link is.
+    const nested = join(scratch, "nested");
+    mkdirSync(nested);
+    const target = join(nested, "target.git");
+    const besideTarget = join(nested, "elsewhere.git");
+    const besideLink = join(scratch, "elsewhere.git");
+    for (const path of [target, besideTarget, besideLink]) await run(["init", "--bare", path], scratch);
+    symlinkSync(target, join(scratch, "link"));
+    await run(["remote", "set-url", "bare", `${scratch}/link/../elsewhere.git`], repoPath);
+
+    const pushed = await pushBranch(repoPath, "bare", "eo/APP-1");
+
+    expect(pushed).toMatchObject({ ok: true, updated: true, destination: at(besideTarget) });
+    expect(await run(["rev-parse", "eo/APP-1"], besideTarget)).toBe(sentBy(pushed));
+    expect(await git(["rev-parse", "--verify", "--quiet", "refs/heads/eo/APP-1"], besideLink)).toMatchObject({ ok: false });
   });
 
   it("sends nothing on a lease where the branch is no longer at the commit it is to send", async () => {
     const first = await pushBranch(repoPath, "bare", "eo/APP-1");
-    const old = first.ok ? first.head : "";
+    const old = sentBy(first);
     await run(["commit", "--amend", "-m", "rewritten"], repoPath);
     const rejectedHead = await localTip();
     await run(["commit", "--amend", "-m", "rewritten again"], repoPath);

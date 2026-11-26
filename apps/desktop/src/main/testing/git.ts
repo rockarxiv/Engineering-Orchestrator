@@ -1,5 +1,6 @@
+import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { git, statusPorcelain } from "../packs/developer/workspace/git.js";
 
 /**
@@ -90,4 +91,42 @@ export async function makeRepo(scratch: string, name: string, options: MakeRepoO
   await run(["add", "-A"], path);
   await run(["commit", "-m", options.message ?? "initial"], path);
   return path;
+}
+
+/**
+ * Puts a stand-in for `git` first on PATH that runs `before`, a shell
+ * command, once — just ahead of the `nth` `git push` from now — and then
+ * runs the real git, which `before` can call as `"$GIT"`. It is what
+ * another process changing a repository between EO's own checks and the
+ * moment git reads it looks like (EO-910), made to happen every time.
+ * POSIX only: Windows does not run a shell script as `git`. Returns what
+ * takes the stand-in away again.
+ */
+export function beforeGitPush(dir: string, before: string, nth = 1): () => void {
+  const real = execFileSync("sh", ["-c", "command -v git"], { encoding: "utf8", windowsHide: true }).trim();
+  const quote = (value: string): string => `'${value.replace(/'/g, `'\\''`)}'`;
+  const bin = join(dir, "git-before-push");
+  mkdirSync(bin, { recursive: true });
+  const count = join(bin, "count");
+  writeFileSync(count, "0\n");
+  writeFileSync(
+    join(bin, "git"),
+    [
+      "#!/bin/sh",
+      `GIT=${quote(real)}`,
+      'if [ "$1" = push ]; then',
+      `  c=$(cat ${quote(count)}); c=$((c + 1)); echo "$c" > ${quote(count)}`,
+      `  if [ "$c" = ${nth} ]; then ${before}; fi`,
+      "fi",
+      'exec "$GIT" "$@"',
+      "",
+    ].join("\n"),
+    { mode: 0o755 },
+  );
+  const path = process.env["PATH"];
+  process.env["PATH"] = `${bin}${delimiter}${path ?? ""}`;
+  return () => {
+    if (path === undefined) delete process.env["PATH"];
+    else process.env["PATH"] = path;
+  };
 }

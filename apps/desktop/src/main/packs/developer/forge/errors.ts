@@ -101,10 +101,13 @@ export function classifyForgeError(raw: string): Classification {
  * no status, `raw` only chooses which sentence, and whether it is worth
  * trying again; what it does not recognise — a git that speaks another
  * language, above all — is the retryable default, as everywhere here.
+ * `changed` is a push EO's own gate stopped because git had resolved the
+ * branch to a commit other than the one EO read (`pushBranch`).
  */
-export function classifyPushError(raw: string, diverged: boolean, status: string | null): Classification {
+export function classifyPushError(raw: string, diverged: boolean, status: string | null, changed = false): Classification {
   if (diverged) return { final: true, diverged: true, message: DIVERGED_MESSAGE };
   const said = (final: boolean, message: string): Classification => ({ final, diverged: false, message });
+  if (changed) return said(false, "The branch moved while EO pushed it, so git was stopped before it sent anything. Nothing was forced, and this can be retried.");
   if (status !== null) return said(true, `The remote refused the push: git reported the branch as ${status}. EO did not force-push.`);
   const lower = raw.toLowerCase();
   if (/\benoent\b/.test(lower)) return said(true, "git could not be started for the push: it is not on PATH, or the worktree it runs in is gone.");

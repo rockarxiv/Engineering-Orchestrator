@@ -141,6 +141,13 @@ describe("a failed push, whose divergence git's status for the ref settles (EO-9
     expect(classifyPushError("fatal: unable to access: Could not resolve host", false, null)).toMatchObject({ final: false, diverged: false });
   });
 
+  it("says a push EO's gate stopped, because the branch moved, is worth trying again, and repeats nothing git printed", () => {
+    const classified = classifyPushError("EO stopped the push\nerror: failed to push some refs to 'ssh://tok:SYNTHETIC_SECRET@host/r'", false, null, true);
+    expect(classified).toMatchObject({ final: false, diverged: false });
+    expect(classified.message).toContain("branch moved");
+    expect(classified.message).not.toContain("SYNTHETIC");
+  });
+
   it("stops where the credentials were refused, or the source is ambiguous, saying which in its own words", () => {
     expect(classifyPushError("fatal: Authentication failed for 'https://example.com/'", false, null).message).toContain("credentials");
     expect(classifyPushError("error: src refspec refs/heads/eo/API-4 matches more than one\nerror: failed to push some refs", false, null)).toMatchObject({
