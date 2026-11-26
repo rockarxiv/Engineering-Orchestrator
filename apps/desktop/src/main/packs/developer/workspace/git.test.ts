@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { canonicalPath, commitsAhead, composeGitArgs, currentBranch, fetchBranch, git, globalUserEmail, isAncestor, pushBranch, pushDestination, pushFingerprint, rebaseOntoBase, statusPorcelain } from "./git.js";
+import { canonicalPath, commitsAhead, composeGitArgs, currentBranch, fetchBranch, git, globalUserEmail, isAncestor, namesPushUrl, pushBranch, pushDestination, pushFingerprint, rebaseOntoBase, statusPorcelain } from "./git.js";
 import { run, initRepo } from "../../../testing/git.js";
 
 // Real repositories in a temp dir, same discipline as worktrees.test.ts:
@@ -365,6 +365,47 @@ describe("pushBranch", () => {
 
     expect(pushed).toMatchObject({ ok: false, diverged: false, leaseRefused: true });
     expect(await tip(join(scratch, "deeper", "target.git"))).toBe(before);
+  });
+
+  it("records a push to an SSH remote with a user, whose `To` line git prints without it, and leases over it", async () => {
+    // No sshd: git hands `alice@forge.test` and `git-receive-pack '…'` to
+    // the shim, which serves the bare repository whatever it is asked for.
+    const served = join(scratch, "served.git");
+    await run(["init", "--bare", served], scratch);
+    const shim = join(scratch, "ssh-shim");
+    writeFileSync(shim, `#!/bin/sh\nexec git receive-pack '${served}'\n`, { mode: 0o755 });
+    await run(["config", "core.sshCommand", `'${shim}'`], repoPath);
+    await run(["config", "ssh.variant", "simple"], repoPath);
+    await run(["remote", "add", "forge", "alice@forge.test:acme/app.git"], repoPath);
+    const toForge = { fingerprint: fingerprint("alice@forge.test:acme/app.git"), urls: 1 };
+
+    expect(await pushBranch(repoPath, "forge", "eo/EO-1")).toEqual({ ok: true, updated: await tip(repoPath), destination: toForge });
+    const before = await tip(served);
+    await run(["commit", "--amend", "-m", "rebased"], repoPath);
+
+    const leased = await pushBranch(repoPath, "forge", "eo/EO-1", { lease: { commit: before, destination: toForge.fingerprint } });
+
+    expect(leased).toEqual({ ok: true, updated: await tip(repoPath), destination: toForge });
+    expect(await tip(served)).toBe(await tip(repoPath));
+  });
+});
+
+describe("namesPushUrl", () => {
+  it("matches a `To` line to the URL read, as git prints it without who signs in", () => {
+    expect(namesPushUrl("forge.test:acme/app.git", "alice@forge.test:acme/app.git")).toBe(true);
+    expect(namesPushUrl("https://forge.test/acme/app.git", "https://alice:token@forge.test/acme/app.git")).toBe(true);
+    expect(namesPushUrl("ssh://forge.test/acme/app.git", "ssh://git@forge.test/acme/app.git")).toBe(true);
+    expect(namesPushUrl("/srv/git/app.git", "/srv/git/app.git")).toBe(true);
+    expect(namesPushUrl("C:/git/app.git", "C:/git/app.git")).toBe(true);
+  });
+
+  it("matches nothing that names another host or repository", () => {
+    expect(namesPushUrl("forge.test:acme/other.git", "alice@forge.test:acme/app.git")).toBe(false);
+    expect(namesPushUrl("other.test:acme/app.git", "alice@forge.test:acme/app.git")).toBe(false);
+    expect(namesPushUrl("/srv/git/app.git", "/srv/git/app.git ")).toBe(false);
+    // An `@` in a path is not who signs in.
+    expect(namesPushUrl("b/c.git", "/srv/a@b/c.git")).toBe(false);
+    expect(namesPushUrl("forge.test/x.git", "https://forge.test/a@forge.test/x.git")).toBe(false);
   });
 });
 

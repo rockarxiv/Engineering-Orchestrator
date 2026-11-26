@@ -9,10 +9,8 @@ import { initRepo, run } from "../../../testing/git.js";
 // awaited ahead of every git invocation git.ts makes through its
 // promisified execFile. Everything else passes straight through to the
 // real git — the push goes to a real bare remote, with no hooks.
-// `args`, where set, rewrites a command's arguments before it runs.
 const between = vi.hoisted(() => ({
   before: null as ((args: readonly string[]) => Promise<void>) | null,
-  args: null as ((args: readonly string[]) => readonly string[]) | null,
 }));
 
 vi.mock("node:child_process", async (importOriginal) => {
@@ -23,7 +21,7 @@ vi.mock("node:child_process", async (importOriginal) => {
     [promisify.custom]: async (file: string, args: readonly string[], options: object) => {
       const before = between.before;
       if (before) await before(args);
-      return real(file, between.args ? between.args(args) : args, options);
+      return real(file, args, options);
     },
   });
   return { ...actual, execFile };
@@ -50,7 +48,6 @@ beforeEach(async () => {
 
 afterEach(() => {
   between.before = null;
-  between.args = null;
   rmSync(scratch, { recursive: true, force: true, maxRetries: 5 });
 });
 
@@ -74,7 +71,7 @@ describe("pushBranch, while the local branch moves", () => {
   });
 });
 
-describe("pushBranch, while the push URL changes", () => {
+describe("pushBranch, while where the push goes changes", () => {
   let other: string;
   let before: string;
 
@@ -89,66 +86,59 @@ describe("pushBranch, while the push URL changes", () => {
     await run(["commit", "--amend", "-m", "rebased"], repoPath);
   });
 
-  /** The push URL moves to `other` after EO read it, just before the push runs. */
-  function moveThePushUrlBeforeThePush(): void {
+  /** Sends pushes to `other` after EO read the push URL, just before the push runs. */
+  function redirectBeforeThePush(how: "set-url" | "insteadOf"): void {
     between.before = async (args) => {
       if (!args.includes("push")) return;
       between.before = null;
-      await run(["remote", "set-url", "--push", "bare", other], repoPath);
+      if (how === "set-url") await run(["remote", "set-url", "--push", "bare", other], repoPath);
+      else await run(["config", `url.${other}.insteadOf`, barePath], repoPath);
     };
   }
 
-  it("still pushes where EO read, and records it, where the URL changes between EO's read and git's", async () => {
-    const destination = await pushDestination(repoPath, "bare");
-    // A fast-forward from what `bare` holds, so the plain push goes.
-    await run(["reset", "--hard", before], repoPath);
-    await run(["commit", "--allow-empty", "-m", "more"], repoPath);
-    const sent = await run(["rev-parse", "refs/heads/eo/EO-1"], repoPath);
-    moveThePushUrlBeforeThePush();
+  for (const how of ["set-url", "insteadOf"] as const) {
+    it(`records nothing for a push that went elsewhere, where ${how} changes it between EO's read and git's`, async () => {
+      const destination = await pushDestination(repoPath, "bare");
+      // A fast-forward from what both remotes hold, so the plain push goes.
+      await run(["reset", "--hard", before], repoPath);
+      await run(["commit", "--allow-empty", "-m", "more"], repoPath);
+      const sent = await run(["rev-parse", "refs/heads/eo/EO-1"], repoPath);
+      redirectBeforeThePush(how);
 
-    const pushed = await pushBranch(repoPath, "bare", "eo/EO-1");
+      const pushed = await pushBranch(repoPath, "bare", "eo/EO-1");
 
-    expect(pushed).toEqual({ ok: true, updated: sent, destination });
-    expect(await run(["rev-parse", "refs/heads/eo/EO-1"], barePath)).toBe(sent);
-    expect(await run(["rev-parse", "refs/heads/eo/EO-1"], other)).toBe(before);
-  });
+      expect(pushed).toEqual({ ok: true, updated: null, destination });
+      expect(await run(["rev-parse", "refs/heads/eo/EO-1"], other)).toBe(sent);
+      expect(await run(["rev-parse", "refs/heads/eo/EO-1"], barePath)).toBe(before);
+    });
 
-  it("sends a leased push only to the URL it checked, however the remote's URL changes before git runs", async () => {
-    const destination = (await pushDestination(repoPath, "bare"))!;
-    const rewritten = await run(["rev-parse", "refs/heads/eo/EO-1"], repoPath);
-    moveThePushUrlBeforeThePush();
+    it(`replaces nothing but the commit its lease names wherever ${how} sends it: a person's commit there is refused`, async () => {
+      // A person's commit on `other`'s branch, on top of EO's.
+      const person = await run(["commit-tree", `${before}^{tree}`, "-p", before, "-m", "a person's commit"], repoPath);
+      await run(["push", other, `${person}:refs/heads/eo/EO-1`], repoPath);
+      const destination = (await pushDestination(repoPath, "bare"))!;
+      redirectBeforeThePush(how);
 
-    const pushed = await pushBranch(repoPath, "bare", "eo/EO-1", { lease: { commit: before, destination: destination.fingerprint } });
+      const pushed = await pushBranch(repoPath, "bare", "eo/EO-1", { lease: { commit: before, destination: destination.fingerprint } });
 
-    expect(pushed).toEqual({ ok: true, updated: rewritten, destination });
-    expect(await run(["rev-parse", "refs/heads/eo/EO-1"], barePath)).toBe(rewritten);
-    expect(await run(["rev-parse", "refs/heads/eo/EO-1"], other)).toBe(before);
-  });
+      expect(pushed).toMatchObject({ ok: false, diverged: false, leaseRefused: true });
+      expect(await run(["rev-parse", "refs/heads/eo/EO-1"], other)).toBe(person);
+      expect(await run(["rev-parse", "refs/heads/eo/EO-1"], barePath)).toBe(before);
+    });
 
-  /** Git before 2.46, which adds an empty push URL where newer git empties the list. */
-  function gitThatCannotEmptyTheList(): void {
-    between.args = (args) => args.map((arg) => (arg === "remote.bare.pushurl=" ? `remote.bare.pushurl=${other}` : arg));
+    it(`records nothing for a leased push ${how} sent elsewhere, where all it could replace was EO's own commit`, async () => {
+      // No git command holds a push to the URL EO read once a rewrite
+      // rule or the remote changes in between; the lease is what bounds
+      // it, and git's `To` line is what tells EO it went elsewhere.
+      const destination = (await pushDestination(repoPath, "bare"))!;
+      const rewritten = await run(["rev-parse", "refs/heads/eo/EO-1"], repoPath);
+      redirectBeforeThePush(how);
+
+      const pushed = await pushBranch(repoPath, "bare", "eo/EO-1", { lease: { commit: before, destination: destination.fingerprint } });
+
+      expect(pushed).toEqual({ ok: true, updated: null, destination });
+      expect(await run(["rev-parse", "refs/heads/eo/EO-1"], other)).toBe(rewritten);
+      expect(await run(["rev-parse", "refs/heads/eo/EO-1"], barePath)).toBe(before);
+    });
   }
-
-  it("records nothing for a push it cannot hold to the URL it read", async () => {
-    await run(["reset", "--hard", before], repoPath);
-    await run(["commit", "--allow-empty", "-m", "more"], repoPath);
-    gitThatCannotEmptyTheList();
-
-    const pushed = await pushBranch(repoPath, "bare", "eo/EO-1");
-
-    expect(pushed).toMatchObject({ ok: true, updated: null });
-    expect(await run(["rev-parse", "refs/heads/eo/EO-1"], other)).toBe(before);
-  });
-
-  it("refuses a lease, and pushes nothing, where it cannot hold the push to the URL it checked", async () => {
-    const destination = (await pushDestination(repoPath, "bare"))!;
-    gitThatCannotEmptyTheList();
-
-    const pushed = await pushBranch(repoPath, "bare", "eo/EO-1", { lease: { commit: before, destination: destination.fingerprint } });
-
-    expect(pushed).toMatchObject({ ok: false, diverged: false, leaseRefused: true });
-    expect(await run(["rev-parse", "refs/heads/eo/EO-1"], barePath)).toBe(before);
-    expect(await run(["rev-parse", "refs/heads/eo/EO-1"], other)).toBe(before);
-  });
 });
