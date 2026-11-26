@@ -4091,13 +4091,13 @@ describe("0174: a side call's cache figures and fork (EO-811)", () => {
   });
 });
 
-describe("0184: whether a message is a replica's copy of the record's (EO-918)", () => {
-  /** A database at 0183 holding these messages, with a messages cursor kept or not, migrated on to today; answers each message's `from_record`. */
+describe("0185: whether a message is a replica's copy of the record's (EO-918)", () => {
+  /** A database at 0184 holding these messages, with a messages cursor kept or not, migrated on to today; answers each message's `from_record`. */
   function upgraded(pulledBefore: boolean): Record<string, unknown> {
     const handle = openDb(":memory:");
     const tempDir = mkdtempSync(join(tmpdir(), "eo-message-from-record-"));
     try {
-      writeMigrationSetBefore(tempDir, "0184_message_from_record");
+      writeMigrationSetBefore(tempDir, "0185_message_from_record");
       runMigrations(handle.db, tempDir);
       handle.db.run(sql`INSERT INTO projects (id, name, key_prefix, created_at, updated_at, managed_at) VALUES ('moved', 'Moved', 'MOV', 1, 1, 100)`);
       handle.db.run(sql`INSERT INTO projects (id, name, key_prefix, created_at, updated_at) VALUES ('kept', 'Kept', 'KEP', 1, 1)`);

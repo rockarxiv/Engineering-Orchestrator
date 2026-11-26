@@ -3563,7 +3563,7 @@ export const messages = sqliteTable(
     /** The option an answer chose. */
     answer: text("answer"),
     /**
-     * `MessageHandledBy` as JSON (EO-918, migration 0183): who answered or
+     * `MessageHandledBy` as JSON (EO-918, migration 0184): who answered or
      * dismissed it — the person, the assistant, or an outside MCP client.
      * Null while open, on one EO resolved, and on every message handled
      * before the column, which reads as the person — or, on a replica's
@@ -3578,7 +3578,7 @@ export const messages = sqliteTable(
      */
     subject: text("subject"),
     /**
-     * Where the message lives (EO-918, migration 0184): true for a
+     * Where the message lives (EO-918, migration 0185): true for a
      * replica's copy of one the organisation's record holds — written by
      * the pull, or by a send or press the record answered — false for one
      * this database wrote itself. A press on a copy goes to the record, and

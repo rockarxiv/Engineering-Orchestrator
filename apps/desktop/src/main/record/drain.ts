@@ -1319,7 +1319,7 @@ const MESSAGES_CURSOR_KEY = "record.messagesCursor";
 
 /**
  * Marks a cursor kept by a desktop that writes down who handled each
- * message (EO-918, migration 0183). One kept before that may have read
+ * message (EO-918, migration 0184). One kept before that may have read
  * past a message the assistant or an outside MCP client handled and
  * dropped who, which would read as the person's press for good: such a
  * cursor is not trusted, so the first pull after the upgrade reads the
