@@ -325,7 +325,7 @@ describe("pipeline versions", () => {
     // the tone could not tell a save that renamed a button from one that
     // changed nothing (EO-327).
     expect(versionGraph(handle.db, v1.id)?.routes).toEqual([
-      { fromStepId: steps[1]!.id, resultKey: "yes", label: "Yes", target: steps[2]!.id, tone: "info", position: 0 },
+      { fromStepId: steps[1]!.id, resultKey: "yes", label: "Yes", target: steps[2]!.id, tone: "info", position: 0, traversalLimit: null },
     ]);
     expect(versionGraph(handle.db, v1.id)?.steps.map((step) => step.name)).toEqual(["Intake", "Decide", "First", "Second"]);
   });
