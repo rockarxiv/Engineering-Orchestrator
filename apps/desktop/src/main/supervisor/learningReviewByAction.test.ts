@@ -331,6 +331,9 @@ describe.each<BackendName>(["claude", "codex"])("the learning review of an assis
       now: () => clock,
       agentWriteBridge: writes.agentWriteBridge,
       sideCalls: { provider: () => provider, smallModel: async () => null },
+      onRunSucceeded: (item, agent, action, parsedResult, runId) => {
+        if (action === ASSIST_ACTION) postAssistReply(handle.db, item, agent.id, runId, parsedResult);
+      },
     });
     writes.serve(supervisor);
     await supervisor.runOnce();
@@ -365,6 +368,46 @@ describe.each<BackendName>(["claude", "codex"])("the learning review of an assis
     expect(over.forks()).toBe(1);
     expect(eventsOf(first)).toEqual([expect.objectContaining({ outcome: "nothing_to_save" })]);
     expect(eventsOf(second)).toEqual([expect.objectContaining({ outcome: "skipped", skip: "action_off", forkThreadId: null })]);
+  });
+
+  it("leaves the threads still to go owed, recording no skip, where the person carries the chat on during one thread's review before a tick could cancel it", async () => {
+    updateAgent(handle.db, systemAgent().id, { provider: name });
+    const first = endedChatRun("thread-a");
+    const second = endedChatRun("thread-b");
+    const over = backend(name, CHAT_ANSWER);
+    // During the first thread's fork the person turns reviews off and then
+    // writes to the chat: no tick runs between that and the second thread.
+    const provider = new Proxy(over.provider, {
+      get(target, property) {
+        const value: unknown = Reflect.get(target, property, target);
+        if (property === "fork" && typeof value === "function") {
+          return (...args: unknown[]) => {
+            setActionLearningReview(handle.db, SYSTEM_ROLE, ASSIST_ACTION, false);
+            postComment(handle.db, { itemId: chat.id, author: { type: "human" }, body: "One more thing.", mentions: [{ type: "agent", agentId: systemAgent().id }] });
+            return (value as (...a: unknown[]) => unknown).apply(target, args);
+          };
+        }
+        return typeof value === "function" ? (value as (...a: unknown[]) => unknown).bind(target) : value;
+      },
+    });
+
+    await quietPass(provider);
+
+    expect(over.forks()).toBe(1);
+    // The first review is dropped, and the second thread is not settled
+    // by a skip: the setting at the next quiet period decides it. The
+    // person's message started the chat's next turn, so it is not quiet.
+    expect(chatRuns().map((run) => run.status)).toEqual(["succeeded", "succeeded", "succeeded"]);
+    expect(eventsOf(first)).toEqual([]);
+    expect(eventsOf(second)).toEqual([]);
+
+    // Once the chat is quiet again, the setting then decides: still off,
+    // so both are skipped, and nothing more is forked.
+    clock += CHAT_IDLE_BEFORE_REVIEW_MS + 1_000;
+    await quietPass(provider);
+    expect(over.forks()).toBe(1);
+    expect(eventsOf(first)).toEqual([expect.objectContaining({ outcome: "skipped", skip: "action_off" })]);
+    expect(eventsOf(second)).toEqual([expect.objectContaining({ outcome: "skipped", skip: "action_off" })]);
   });
 
   it("reviews an older thread's run that is still owed, where a newer thread's run carries a skip (the skip settles its own run only)", async () => {

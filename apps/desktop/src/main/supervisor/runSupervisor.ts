@@ -3689,6 +3689,12 @@ export function createRunSupervisor(
         if (chat.kind === "settled") settledChats.set(itemId, newest);
         if (chat.kind === "waiting" && chat.dueAt !== null) soonest = Math.min(soonest, chat.dueAt);
         if (chat.kind !== "due") continue;
+        // Nor is a chat quiet while a message of the person's waits for
+        // its answer: the answer's run is written a few awaits after this
+        // tick offered it, and a review started meanwhile — or a skip
+        // recorded for the setting now (EO-911) — would be of a chat
+        // being carried on.
+        if (findPendingResponses(db, [itemId]).length > 0) continue;
         startQuietChatReview(item, chat.threads);
         return;
       }
@@ -3731,7 +3737,11 @@ export function createRunSupervisor(
    */
   async function reviewQuietChat(item: Item, threads: readonly QuietThreadReview[], review: QuietChatReview): Promise<void> {
     for (const thread of threads) {
-      if (review.controller.signal.aborted || shuttingDown) return;
+      // Asked of the chat itself too, not only of the signal: the tick
+      // that aborts it may not have come yet, and a thread whose turn the
+      // person has carried on is owed what the next quiet period decides
+      // — not a skip recorded now for the setting in force now (EO-911).
+      if (review.controller.signal.aborted || shuttingDown || chatCarriedOn(item.id, review.spoken)) return;
       const hold: QuietReviewHold = {
         signal: review.controller.signal,
         stillQuiet: () => !chatCarriedOn(item.id, review.spoken),

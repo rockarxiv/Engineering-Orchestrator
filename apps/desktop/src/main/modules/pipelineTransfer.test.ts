@@ -31,6 +31,7 @@ import {
   listActionDefinitions,
   saveActionDefinition,
   getActionLearningReview,
+  setActionLearningReview,
   archiveAgent,
   createAgent,
   createDisconnectedConnector,
@@ -2426,6 +2427,29 @@ describe("the pack", () => {
       expect(getActionLearningReview(already.db, "triager", "sort")).toBeUndefined();
     } finally {
       already.close();
+    }
+  });
+
+  it("carries a definition's learning review where it was set on, so it replaces an off setting the pair inherits where it lands (EO-911)", () => {
+    const { pipeline } = packInstallation(handle.db);
+    expect(saveActionDefinition(handle.db, { role: "triager", ...SORT_DEFINITION, learningReview: true }).ok).toBe(true);
+    const built = exportPipeline(handle.db, pipeline.id);
+    if (!built.ok) throw new Error(built.reason);
+    expect(built.document.roles.find((role) => role.slug === "triager")?.actions).toContainEqual({ ...SORT_DEFINITION, learningReview: true });
+
+    // Off for the pair where it lands, with no definition of it there.
+    const fresh = openMigratedTestDb();
+    try {
+      const project = createProject(fresh.db, { name: "Support", keyPrefix: "SUP" });
+      setActionLearningReview(fresh.db, "triager", "sort", false);
+      const parsed = parseExport(JSON.stringify(built.document));
+      if (!parsed.ok) throw new Error(parsed.reason);
+      const imported = importPipeline(fresh.db, { document: parsed.document, projectId: project.id, signedInBackends: ["claude"] });
+      if (!imported.ok) throw new Error(imported.reason);
+      expect(getActionLearningReview(fresh.db, "triager", "sort")).toBe(true);
+      expect(actionLearningReviewed(registryForProject(fresh.db, project.id), "triager", "sort")).toBe(true);
+    } finally {
+      fresh.close();
     }
   });
 

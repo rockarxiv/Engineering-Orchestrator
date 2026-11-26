@@ -286,8 +286,9 @@ export const ExportedActionSchema = z.object({
   fields: z.record(z.string(), z.unknown()).default({}),
   /**
    * Whether its runs get a learning review (EO-911). Written only where
-   * it is off, so a file of definitions nobody changed is the document it
-   * always was; absent — every file written before this — is on. An
+   * somebody set it, off or on, so a file of definitions nobody changed
+   * is the document it always was; absent — every file written before
+   * this — is as the pair's pack ships it, on unless it says otherwise. An
    * import gives it to the definition it creates, and never to one this
    * installation already has.
    */
