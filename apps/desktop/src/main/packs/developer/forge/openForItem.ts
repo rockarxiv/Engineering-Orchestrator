@@ -669,11 +669,18 @@ async function pushAlreadyOpen(
   if (classified.diverged && !gitStateOf(item).namedBranch) {
     const replaced = await replaceOwnPush(db, workspace, item, branch, { destination: pushed.destination, head: pushed.head }, options);
     if (replaced === true) return alreadyOpen;
+    const published = replaced.published ?? pushed.published;
+    const forced = replaced.published !== null ? replaced.forced : null;
     const target = await resolveSendTarget(db, workspace, item, run, signal);
     if (target.kind === "escalate") {
-      return { kind: "failed", reason: target.reason, ...(target.options ? { options: target.options } : {}) };
+      // A push that wrote somewhere is said on the item whatever became
+      // of the base: the remote's branch is not where it was, and the
+      // escalation alone would not say so.
+      const said = published !== null ? diverged(db, item, remote, branch, null, published, forced) : null;
+      const reason = said?.kind === "remote_diverged" ? `${target.reason}\n\n${said.detail}` : target.reason;
+      return { kind: "failed", reason, ...(target.options ? { options: target.options } : {}) };
     }
-    return diverged(db, item, remote, branch, target.baseRef, replaced.published ?? pushed.published, replaced.published !== null ? replaced.forced : null);
+    return diverged(db, item, remote, branch, target.baseRef, published, forced);
   }
   if (classified.diverged && !adopted && (await adoptRemoteHead(db, workspace, item, branch, options))) {
     return pushAlreadyOpen(db, workspace, item, branch, alreadyOpen, run, options, true);
@@ -986,11 +993,12 @@ function diverged(
   item: Item,
   remote: string,
   branch: string,
-  baseRef: string,
+  baseRef: string | null,
   published: string | null = null,
   forced: { over: string } | null = null,
 ): Attempt {
-  const names = [`- Remote: \`${remote}\``, `- Branch: \`${branch}\``, `- Base ref the pull request targets: \`${baseRef}\``].join("\n");
+  // No base ref where EO could not resolve it, which is said beside this.
+  const names = [`- Remote: \`${remote}\``, `- Branch: \`${branch}\``, ...(baseRef === null ? [] : [`- Base ref the pull request targets: \`${baseRef}\``])].join("\n");
   if (published !== null && forced !== null) {
     // EO's lease went through at one push URL before the push failed at
     // another: a forced write did happen, and the item says so.

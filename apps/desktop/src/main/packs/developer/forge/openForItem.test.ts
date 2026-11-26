@@ -2254,6 +2254,33 @@ describe("before it opens or reuses one (EO-429)", () => {
         expect(progress.some((line) => line.includes("so pushed over it"))).toBe(false);
         expect(progress.some((line) => line.includes("over its own last push") && line.includes("did not go through at another"))).toBe(true);
       });
+      it.skipIf(process.platform === "win32")("says on the item that its lease went through at the URL it checked though the pull request's base can no longer be found, and names the two heads beside the missing base", async () => {
+        const a = bare("a.git");
+        git(["config", "remote.origin.pushurl", a], repoPath);
+        // A base set on the item that no remote has: asked for only once the push diverged.
+        const item = story({ git: { branch: "eo/API-4", pullRequest: PULL_REQUEST, baseBranch: "release/gone" } });
+        const worktree = worktreeFor(item);
+        await firstPush(item, PULL_REQUEST);
+        const ours = tipAt(a)!;
+        const other = bare("other.git");
+        git(["push", other, `${ours}:refs/heads/eo/API-4`], repoPath);
+        rewriteIn(worktree);
+        restore = beforeGitPush(scratch, `"$GIT" config --add remote.origin.pushurl '${other}'`, 2);
+
+        const outcome = await mergeRequestStep(item, onlyFinds(found));
+
+        expect(outcome.ok).toBe(false);
+        const reason = outcome.ok ? "" : outcome.reason;
+        expect(reason).toContain("release/gone");
+        expect(reason).toContain(`over EO's own \`${ours}\` as \`${localTip()}\``);
+        expect(tipAt(a)).toBe(localTip());
+        expect(tipAt(other)).toBe(ours);
+        expect(gitStateOf(getItem(handle.db, item.id)!).pushedHead).toEqual(pushedTo(localTip(), null));
+        const said = notes(item).at(-1)!;
+        expect(said).toContain(`--force-with-lease=eo/API-4:${ours}`);
+        expect(said).toContain(`replaced it with \`${localTip()}\``);
+        expect(said).not.toContain("Base ref the pull request targets");
+      });
     });
 
     it.each([

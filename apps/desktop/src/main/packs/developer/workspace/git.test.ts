@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -1001,6 +1001,72 @@ git update-ref refs/heads/eo/APP-1 ${head}
       expect(leased).toMatchObject({ ok: false, published: null });
       expect(await tipIn(a)).toBe(old);
       expect(await tipIn(b)).toBe(old);
+    });
+  });
+
+  describe("when EO's own temporary files cannot be made, read or removed", () => {
+    const saved = { TMPDIR: process.env["TMPDIR"], TEMP: process.env["TEMP"], TMP: process.env["TMP"] };
+    let tmp: string;
+    const useTmp = (dir: string): void => {
+      for (const key of ["TMPDIR", "TEMP", "TMP"] as const) process.env[key] = dir;
+    };
+    const ownHook = async (body: string): Promise<void> => {
+      const hooks = join(repoPath, await run(["rev-parse", "--git-path", "hooks"], repoPath));
+      mkdirSync(hooks, { recursive: true });
+      writeFileSync(join(hooks, "pre-push"), `#!/bin/sh\n${body}\nexit 0\n`, { mode: 0o755 });
+    };
+    beforeEach(() => {
+      tmp = join(scratch, "tmp");
+      mkdirSync(tmp);
+    });
+    afterEach(() => {
+      chmodSync(tmp, 0o755);
+      for (const [key, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    });
+
+    it("pushes as git would, to no one place, where its temporary directory cannot be made, and sends no lease", async () => {
+      useTmp(join(scratch, "missing"));
+      const pushed = await pushBranch(repoPath, "bare", "eo/APP-1");
+      expect(pushed).toMatchObject({ ok: true, updated: true, destination: null });
+      expect(await remoteTip("eo/APP-1")).toBe(await localTip());
+
+      useTmp(tmp);
+      await commit(repoPath, "more.ts", "// more\n");
+      const checked = await pushBranch(repoPath, "bare", "eo/APP-1");
+      const old = sentBy(checked);
+      expect(checked.destination).not.toBeNull();
+      await run(["commit", "--amend", "-m", "rewritten"], repoPath);
+      useTmp(join(scratch, "missing"));
+
+      const leased = await pushBranch(repoPath, "bare", "eo/APP-1", { forceWithLease: { expect: old, destination: checked.destination!, send: await localTip() } });
+
+      expect(leased).toMatchObject({ ok: false, published: null, rejection: "destination" });
+      expect(await remoteTip("eo/APP-1")).toBe(old);
+    });
+
+    // A directory its owner can still write to is one a root test runner
+    // can remove whatever its mode says.
+    it.skipIf(process.platform === "win32" || process.getuid?.() === 0)("says what git did where its temporary directory cannot be removed afterwards", async () => {
+      useTmp(tmp);
+      await ownHook(`chmod 555 ${JSON.stringify(tmp)}`);
+
+      const pushed = await pushBranch(repoPath, "bare", "eo/APP-1");
+
+      expect(pushed).toMatchObject({ ok: true, updated: true, head: await localTip() });
+      expect(await remoteTip("eo/APP-1")).toBe(await localTip());
+    });
+
+    it.skipIf(process.platform === "win32")("keeps the commit git pushed, as a push to no one place, where what its check saw of the push cannot be read", async () => {
+      useTmp(tmp);
+      await ownHook(`rm -rf ${JSON.stringify(tmp)}/eo-push-*/marks`);
+
+      const pushed = await pushBranch(repoPath, "bare", "eo/APP-1");
+
+      expect(pushed).toMatchObject({ ok: true, updated: true, head: await localTip(), destination: null });
+      expect(await remoteTip("eo/APP-1")).toBe(await localTip());
     });
   });
 

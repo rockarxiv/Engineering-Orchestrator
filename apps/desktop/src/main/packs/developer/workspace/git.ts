@@ -304,14 +304,24 @@ export async function pushBranch(
       route !== null &&
       route.protocol.startsWith("http") &&
       refStatuses(stdout, refspec).length === 0 &&
-      (gate === null || (await gate.seen()).pushes.length === 0) &&
+      (gate === null || (await seenBy(gate))?.pushes.length === 0) &&
       !stopped(failure, options.signal)
     ) {
       ({ stdout, failure } = await send(true));
       redirected = true;
     }
-    const seen = gate === null ? null : await gate.seen();
-    const destination = route !== null && seen !== null && !redirected ? await reachedDestination(route, seen, branch) : null;
+    // What the gate saw is the evidence of where the push went. Where it
+    // cannot be read, git's own account of the push stands, and the push
+    // is to no one place, which no lease can follow.
+    const seen = gate === null ? null : await seenBy(gate);
+    let destination: string | null = null;
+    if (route !== null && seen !== null && !redirected) {
+      try {
+        destination = await reachedDestination(route, seen, branch);
+      } catch {
+        destination = null;
+      }
+    }
     if (failure === null) {
       // Best effort: the push has happened, and a missing upstream costs a
       // person's `git status` its ahead/behind, nothing of EO's.
@@ -352,6 +362,15 @@ function noRedirects(route: PushRoute): Record<string, string> {
   const pin = `${shellWord(`http.${route.url}.followredirects`)}=${shellWord("false")}`;
   const given = process.env["GIT_CONFIG_PARAMETERS"];
   return { GIT_CONFIG_PARAMETERS: given !== undefined && given !== "" ? `${given} ${pin}` : pin };
+}
+
+/** What the gate saw of a push, or null where that cannot be read. */
+async function seenBy(gate: { seen: () => Promise<GateSeen> }): Promise<GateSeen | null> {
+  try {
+    return await gate.seen();
+  } catch {
+    return null;
+  }
 }
 
 /** Whether a push failed because it was stopped — timed out or aborted — rather than refused. */
@@ -488,8 +507,23 @@ async function openGate(
   // `join` would tidy `link/../hooks` into a sibling of `link`, where git
   // follows `link` first and runs the hooks somewhere else entirely.
   const own = isAbsolute(hooks) ? hooks : `${repoPath}${sep}${hooks}`;
-  const dir = await mkdtemp(join(tmpdir(), "eo-push-"));
-  const close = (): Promise<void> => rm(dir, { recursive: true, force: true });
+  // Made like the rest of the gate: a temporary directory that cannot be
+  // made is a push EO runs no gate for, never one that throws.
+  let dir: string;
+  try {
+    dir = await mkdtemp(join(tmpdir(), "eo-push-"));
+  } catch {
+    return null;
+  }
+  // Best effort: a directory left behind costs disk, and must never
+  // stand in for what git said of the push.
+  const close = async (): Promise<void> => {
+    try {
+      await rm(dir, { recursive: true, force: true });
+    } catch {
+      // Left for the system's own temporary-file cleanup.
+    }
+  };
   const { route, lease } = expect;
   try {
     const marks = join(dir, "marks");
