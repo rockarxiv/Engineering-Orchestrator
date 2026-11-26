@@ -710,7 +710,8 @@ async function leaseOverOwnPush(db: Db, item: Item, repoPath: string, remote: st
   if (state.namedBranch || recorded === null || recorded.pushUrl === null) return refused;
 
   // The push URL and submodules are checked by the push itself, just
-  // before git runs, so nothing changes between the check and the push.
+  // before git runs; wherever git sends it, the lease lets it replace
+  // nothing but the recorded commit.
   onProgress?.(`"${branch}" was rejected as diverged, so pushing it to ${remote} over the commit EO last pushed for ${item.key}, with --force-with-lease, if the remote still holds it.`);
   const pushed = await pushBranch(repoPath, remote, branch, { lease: { commit: recorded.commit, destination: recorded.pushUrl }, ...(signal ? { signal } : {}) });
   if (!pushed.ok) return pushed.leaseRefused ? refused : { kind: "failed", error: pushed.error };
