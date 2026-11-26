@@ -30,7 +30,9 @@ export interface PlanUsageReadOptions {
  * (EO-920): the supervisor hears every change to the store, and one that
  * shows every window of a held backend allowed and below 100% lifts the
  * hold, before the reset it named or when it named none. So a held
- * backend is read like any other, and nothing here knows of the hold.
+ * backend is read like any other, and nothing here knows of the hold —
+ * except that a read says when it was asked (`store.mark()`), so that
+ * one asked before the hold began cannot lift it.
  *
  * Returns the stop.
  */
@@ -42,11 +44,15 @@ export function startPlanUsageReads(options: PlanUsageReadOptions): () => void {
   const readOne = async (reader: PlanUsageReader): Promise<void> => {
     if (reading.has(reader.provider)) return;
     reading.add(reader.provider);
+    // Taken before anything is asked: the answer is the account as it
+    // stood then, and must not overwrite a refusal that arrives while the
+    // read is in flight, nor lift the hold that refusal begins (EO-920).
+    const askedAt = store.mark();
     try {
       const runtime = await options.status(reader.provider);
       if (stopped || !runtime || !planUsageRuntimeQualifies(runtime)) return;
       const answer = await reader.read(runtime.path);
-      if (!stopped && answer.ok) store.recordRead(reader.provider, answer);
+      if (!stopped && answer.ok) store.recordRead(reader.provider, answer, askedAt);
     } catch {
       // Kept quiet on purpose: the last reading stands, and the next tick tries again.
     } finally {

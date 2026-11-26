@@ -1,10 +1,12 @@
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
-import type { Agent, AgentEvent, AgentProvider, Item } from "@eo/core";
+import type { Agent, AgentEvent, AgentProvider, Item, RuntimeStatusView } from "@eo/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DbHandle } from "../db/client.js";
 import { getItem, listAgents, listRunsForItem, updateAgent } from "../db/repos/index.js";
 import { createTestItem, messagesFrom, openMigratedTestDb, REVIEWABLE_SPEC } from "../db/testHelpers.js";
+import { startPlanUsageReads } from "../planUsage/poller.js";
 import { createPlanUsageStore, type PlanUsageStore } from "../planUsage/store.js";
+import type { PlanUsageAnswer } from "../providers/planUsageReaders.js";
 import { createClaudeProvider } from "../providers/claude.js";
 import { createCodexProvider } from "../providers/codex.js";
 import { CodexClient, dropWarmCodexThread } from "../providers/codexClient.js";
@@ -295,5 +297,39 @@ describe.each<BackendName>(["codex", "claude"])("a %s hold seen back by a usage 
     expect(turns).toEqual(["start"]);
     expect(limitMessages()).toHaveLength(1);
     expect(limitMessages()[0]?.handledAt).toBeNull();
+  });
+
+  it("is not lifted by a read asked before the hold began whose answer came back after it", async () => {
+    const item = forImplementer();
+    const { turns } = supervising(name, "named and unnamed");
+
+    // The five-minute read is asked while the backend still has room, and
+    // its answer is slow to come back.
+    let answerStale: (answer: PlanUsageAnswer) => void = () => {};
+    const stale = new Promise<PlanUsageAnswer>((resolve) => (answerStale = resolve));
+    const read = vi.fn((): Promise<PlanUsageAnswer> => stale);
+    const signedIn = { path: EXECUTABLE, state: "ready", enabled: true, auth: { state: "signed_in", kind: "subscription" } } as RuntimeStatusView;
+    let stopReads = startPlanUsageReads({ readers: [{ provider: name, read }], status: async () => signedIn, store, intervalMs: 3_600_000 });
+    await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(1), WAIT);
+
+    // Meanwhile a run reaches the limit and the hold begins.
+    await heldOn(item);
+    // Then the read answers with what it saw before.
+    answerStale({ ok: true, ...allBack() });
+    await someTicks();
+
+    expect(turns).toEqual(["start"]);
+    expect(limitMessages()[0]?.handledAt).toBeNull();
+    // Nor does the Usage block take the older answer over the refusal.
+    expect(shownWindows(name)).toContainEqual([FIVE_HOUR[name], "rejected"]);
+    stopReads();
+
+    // A read asked after the hold began, showing every window back, lifts it.
+    read.mockImplementation(async () => ({ ok: true, ...allBack() }));
+    stopReads = startPlanUsageReads({ readers: [{ provider: name, read }], status: async () => signedIn, store, intervalMs: 3_600_000 });
+    await vi.waitFor(() => expect(turns).toEqual(["start", "resume"]), WAIT);
+    expect(limitMessages()[0]?.handledAt).not.toBeNull();
+    expect(limitMessages()[0]?.answer).toBeNull();
+    stopReads();
   });
 });

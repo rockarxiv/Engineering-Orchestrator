@@ -11216,6 +11216,12 @@ export function createRunSupervisor(
     resetAt: number | null;
     /** When this episode began, on the wall clock comments are stamped with. */
     since: number;
+    /**
+     * Where in the Usage store's order of readings the last refusal it
+     * took was (`PlanUsageStore.mark`): only a reading taken after it can
+     * say the backend is back (EO-920).
+     */
+    heardAt: number;
     messageId: string | null;
   }
   const limitBlocks = new Map<RuntimeId, LimitBlock>();
@@ -11244,6 +11250,7 @@ export function createRunSupervisor(
     const resetAt = quotaResetAt(quota.resetsAt, now());
     const standing = limitBlocks.get(runtime);
     if (standing) {
+      standing.heardAt = planUsage.mark();
       if (standing.resetAt !== null && (resetAt === null || resetAt > standing.resetAt)) {
         standing.quota = quota;
         standing.resetAt = resetAt;
@@ -11256,7 +11263,7 @@ export function createRunSupervisor(
     }
     const open = openMessageAbout(db, RUNTIME_LIMIT_SOURCE, runtime);
     const since = open?.createdAt ?? Date.now();
-    const block: LimitBlock = { runtime, quota, resetAt, since, messageId: open?.id ?? null };
+    const block: LimitBlock = { runtime, quota, resetAt, since, heardAt: planUsage.mark(), messageId: open?.id ?? null };
     limitBlocks.set(runtime, block);
     if (open) return;
 
@@ -11289,12 +11296,13 @@ export function createRunSupervisor(
    * back, whatever reset it named before: an early reset, or another
    * account or plan. The hold lifts as a reached reset lifts it; a next
    * run refused anyway holds it again, with no attempt spent. Event by
-   * event rather than read on the tick, so that only a reading taken
-   * after the hold began can lift it.
+   * event, and only by a reading taken after the hold's last refusal: a
+   * read asked before it, whose answer came back after, is the account as
+   * it stood before the limit was reached, not evidence it is back.
    */
-  function usageRead(provider: string): void {
+  function usageRead(provider: string, takenAt: number): void {
     for (const block of [...limitBlocks.values()]) {
-      if (block.quota.provider === provider && planUsage.allowed(provider, now())) liftLimitBlock(block.runtime);
+      if (block.quota.provider === provider && takenAt > block.heardAt && planUsage.allowed(provider, now())) liftLimitBlock(block.runtime);
     }
   }
 
@@ -11502,7 +11510,7 @@ export function createRunSupervisor(
     // A sign-in EO completed lifts a block on that runtime (EO-796).
     stopHearingSignIns = onRuntimeSignedIn?.((runtime) => runtimeSignedIn(runtime));
     // A reading showing a held backend back lifts its plan-limit block (EO-920).
-    stopHearingUsage = planUsage.onChange((provider) => usageRead(provider));
+    stopHearingUsage = planUsage.onChange((provider, takenAt) => usageRead(provider, takenAt));
     // A plan-limit block is this process's (EO-798), so one left open by
     // the last is over: the next dispatch to that runtime runs, or finds
     // the limit again and says so afresh.

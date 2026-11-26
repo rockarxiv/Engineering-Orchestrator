@@ -123,4 +123,33 @@ describe("the plan usage store", () => {
     store.record({ type: "quota", provider: "codex", window: "7_day", utilization: 100, status: "allowed" });
     expect(store.allowed("codex", NOW)).toBe(false);
   });
+
+  it("keeps a reading that arrived while a read was in flight over that read's answer (EO-920)", () => {
+    const store = createPlanUsageStore(() => NOW);
+    const heard = vi.fn();
+    store.onChange(heard);
+    const askedAt = store.mark();
+    // A run is refused while the read is being answered.
+    store.record(reading({ provider: "codex", window: "5_hour", utilization: 100, status: "rejected", resetsAt: (NOW + HOUR) / 1000 }));
+    store.record({ type: "quota", provider: "codex", window: "unknown", status: "rejected" });
+    const refusedAt = heard.mock.lastCall?.[1] as number;
+    expect(refusedAt).toBeGreaterThan(askedAt);
+
+    store.recordRead("codex", { limitsApply: true, readings: [reading({ window: "5_hour", utilization: 30 }), reading({ window: "7_day", utilization: 20 })] }, askedAt);
+    expect(heard).toHaveBeenLastCalledWith("codex", askedAt);
+    expect(store.view().backends[0]?.windows.map((window) => [window.window, window.status, window.utilization])).toEqual([
+      ["5_hour", "rejected", 100],
+      ["unknown", "rejected", null],
+      ["7_day", "allowed", 20],
+    ]);
+    expect(store.allowed("codex", NOW)).toBe(false);
+
+    // A read asked after them replaces them.
+    store.recordRead("codex", { limitsApply: true, readings: [reading({ window: "5_hour", utilization: 0 })] }, store.mark());
+    expect(store.view().backends[0]?.windows.map((window) => [window.window, window.status])).toEqual([
+      ["5_hour", "allowed"],
+      ["7_day", "allowed"],
+    ]);
+    expect(store.allowed("codex", NOW)).toBe(true);
+  });
 });
