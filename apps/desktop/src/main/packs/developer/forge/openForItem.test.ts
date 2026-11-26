@@ -26,7 +26,7 @@ import { workspaces } from "../../../db/schema.js";
 import { attachWorkspace, createTestItem, openMigratedTestDb } from "../../../db/testHelpers.js";
 import { REPOSITORY_INDEX_DIRECTORIES } from "../repositoryIntelligence/index.js";
 import { canonicalPath, currentBranch, destinationKey, statusPorcelain } from "../workspace/git.js";
-import { beforeGitPush } from "../../../testing/git.js";
+import { beforeGitPush, gitHttpServer, type GitHttpRoute } from "../../../testing/git.js";
 import type { CliResult, CliRunner } from "./cli.js";
 import { updateItemText } from "../../../ipc/domainCommands.js";
 import { openPullRequestForItem } from "./openForItem.js";
@@ -2110,6 +2110,41 @@ describe("before it opens or reuses one (EO-429)", () => {
       expect(notes(item).at(-1)).toContain("did not force-push");
     });
 
+    it.each([
+      ["on the first open", null],
+      ["with the pull request already open", PULL_REQUEST],
+    ])("will not force over a push the server redirected, though its URL now reaches another repository holding the same commit, %s", async (_, pullRequest) => {
+      const root = join(scratch, "web");
+      mkdirSync(root);
+      const a = bare("web/a.git");
+      const b = bare("web/b.git");
+      const routes = new Map<string, GitHttpRoute>([["alias.git", { redirect: "a.git" }]]);
+      const web = await gitHttpServer(root, routes);
+      try {
+        git(["remote", "set-url", "origin", `${web.url}/alias.git`], repoPath);
+        const item = story({ git: { branch: "eo/API-4", pullRequest } });
+        const worktree = worktreeFor(item);
+        await firstPush(item, pullRequest);
+        const ours = tipAt(a)!;
+        expect(ours).toBe(localTip());
+        // Followed to a.git, so not a push to the one place the URL names.
+        expect(gitStateOf(getItem(handle.db, item.id)!).pushedHead).toEqual(pushedTo(ours, null));
+        // The URL now reaches somebody else's repository, holding the same commit.
+        git(["push", b, `${ours}:refs/heads/eo/API-4`], repoPath);
+        routes.set("alias.git", { serve: "b.git" });
+        rewriteIn(worktree);
+
+        const result = await mergeRequestStep(item, onlyFinds(found));
+
+        expect(result).toMatchObject({ ok: true, result: "remote_diverged" });
+        expect(tipAt(a)).toBe(ours);
+        expect(tipAt(b)).toBe(ours);
+        expect(notes(item).at(-1)).toContain("did not force-push");
+      } finally {
+        await web.close();
+      }
+    });
+
     describe("when the branch or the remote changes between EO's checks and git's own reads", () => {
       let restore: () => void = () => {};
       afterEach(() => restore());
@@ -2185,25 +2220,38 @@ describe("before it opens or reuses one (EO-429)", () => {
         expect(gitStateOf(getItem(handle.db, item.id)!).pushedHead).toEqual(pushedTo(ours));
         expect(notes(item).at(-1)).toContain("did not force-push");
       });
-      it.skipIf(process.platform === "win32")("stops the step when its lease went through only at the URL it checked and not at another added beside it, names what it published, and records that as no one place to force at again", async () => {
+      it.skipIf(process.platform === "win32").each([
+        ["on the first open", null],
+        ["with the pull request already open", PULL_REQUEST],
+      ])("stops the step when its lease went through only at the URL it checked and not at another added beside it, says it force-pushed there, and records that as no one place to force at again, %s", async (_, pullRequest) => {
         const a = bare("a.git");
         git(["config", "remote.origin.pushurl", a], repoPath);
-        const item = story({ git: { branch: "eo/API-4", pullRequest: PULL_REQUEST } });
+        const item = story({ git: { branch: "eo/API-4", pullRequest } });
         const worktree = worktreeFor(item);
-        await mergeRequestStep(item, onlyFinds(found));
+        await firstPush(item, pullRequest);
         const ours = tipAt(a)!;
         const other = bare("other.git");
         git(["push", other, `${ours}:refs/heads/eo/API-4`], repoPath);
         rewriteIn(worktree);
         restore = beforeGitPush(scratch, `"$GIT" config --add remote.origin.pushurl '${other}'`, 2);
+        const progress: string[] = [];
 
-        const result = await mergeRequestStep(item, onlyFinds(found));
+        const result = await mergeRequestStep(item, onlyFinds(found), (text) => progress.push(text));
 
         expect(result).toMatchObject({ ok: true, result: "remote_diverged" });
+        const detail = (result as { detail?: string }).detail ?? "";
+        expect(detail).toContain(`over EO's own \`${ours}\` as \`${localTip()}\``);
+        expect(detail).not.toContain("did not force-push");
         expect(tipAt(a)).toBe(localTip());
         expect(tipAt(other)).toBe(ours);
         expect(gitStateOf(getItem(handle.db, item.id)!).pushedHead).toEqual(pushedTo(localTip(), null));
-        expect(notes(item).at(-1)).toContain(`is now \`${localTip()}\` there; the step stopped all the same`);
+        const said = notes(item).at(-1)!;
+        expect(said).toContain(`--force-with-lease=eo/API-4:${ours}`);
+        expect(said).toContain(`replaced it with \`${localTip()}\``);
+        expect(said).not.toContain("did not force-push");
+        // Said only once it was so: here, as the partial push it was.
+        expect(progress.some((line) => line.includes("so pushed over it"))).toBe(false);
+        expect(progress.some((line) => line.includes("over its own last push") && line.includes("did not go through at another"))).toBe(true);
       });
     });
 

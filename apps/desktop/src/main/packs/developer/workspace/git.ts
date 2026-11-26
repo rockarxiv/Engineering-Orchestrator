@@ -262,37 +262,56 @@ export async function pushBranch(
   // that no `GIT_CONFIG_PARAMETERS` and no configuration file can name
   // another hooks directory: `-c` is read last, and the last one wins.
   const gateArg = gate ? ["-c", `core.hooksPath=${gate.dir}`] : [];
-  // A lease goes by the route's own transport and nothing else, and
-  // follows no redirect: a remote helper configured for the remote after
-  // EO read it (`remote.<name>.vcs`), or a server that sends the push on
-  // to another URL, would each take it somewhere EO never checked — so
-  // git itself refuses them, before any helper runs or anything is sent.
-  const routeArg =
-    lease && route !== null
-      ? ["-c", "protocol.allow=never", "-c", `protocol.${route.protocol}.allow=always`, "-c", "http.followRedirects=false"]
-      : [];
-  try {
-    let stdout = "";
-    let failure: unknown = null;
+  // A lease goes by the route's own transport and nothing else:
+  // `GIT_ALLOW_PROTOCOL` overrides every `protocol.*.allow` git reads, so
+  // a remote helper configured for the remote after EO read it
+  // (`remote.<name>.vcs`), even one its configuration allows outright,
+  // would take it somewhere EO never checked — and git itself refuses it,
+  // before any helper runs or anything is sent.
+  const leaseEnv: Record<string, string> = lease && route !== null ? { GIT_ALLOW_PROTOCOL: route.protocol } : {};
+  const send = async (followRedirects: boolean): Promise<{ stdout: string; failure: unknown }> => {
     try {
-      ({ stdout } = await execFileAsync("git", composeGitArgs([...gateArg, ...routeArg, "push", "--porcelain", "--no-follow-tags", ...receiveArg, ...leaseArg, remote, refspec], process.platform), {
+      const { stdout } = await execFileAsync("git", composeGitArgs([...gateArg, "push", "--porcelain", "--no-follow-tags", ...receiveArg, ...leaseArg, remote, refspec], process.platform), {
         cwd: repoPath,
         windowsHide: true,
         maxBuffer: 32 * 1024 * 1024,
-        env: { ...process.env, ...NON_INTERACTIVE_GIT_ENV, ...(route?.env ?? {}) },
+        env: { ...process.env, ...NON_INTERACTIVE_GIT_ENV, ...(route?.env ?? {}), ...leaseEnv, ...(followRedirects || route === null ? {} : noRedirects(route)) },
         timeout: options.timeoutMs ?? NETWORK_TIMEOUT_MS,
         ...(options.signal ? { signal: options.signal } : {}),
-      }));
+      });
+      return { stdout, failure: null };
     } catch (error) {
-      failure = error;
       // `--porcelain` prints each ref's status on stdout, and that status
       // is what tells divergence from any other refusal. Read untrimmed:
       // the first line's flag may be a space.
       const raw = typeof error === "object" && error !== null ? (error as { stdout?: unknown }).stdout : undefined;
-      stdout = typeof raw === "string" ? raw : "";
+      return { stdout: typeof raw === "string" ? raw : "", failure: error };
+    }
+  };
+  try {
+    let { stdout, failure } = await send(false);
+    // Over HTTP every push of EO's follows no redirect, so the URL EO
+    // records is the server that took it. One that failed before git
+    // reached the gate or said anything of the branch — a redirect, as
+    // like as not: a repository the forge renamed — goes again as git
+    // would push it, and is recorded as a push to no one place, which no
+    // lease can follow. A lease never does: it goes where EO checked, or
+    // nowhere.
+    let redirected = false;
+    if (
+      failure !== null &&
+      !lease &&
+      route !== null &&
+      route.protocol.startsWith("http") &&
+      refStatuses(stdout, refspec).length === 0 &&
+      (gate === null || (await gate.seen()).pushes.length === 0) &&
+      !stopped(failure, options.signal)
+    ) {
+      ({ stdout, failure } = await send(true));
+      redirected = true;
     }
     const seen = gate === null ? null : await gate.seen();
-    const destination = route !== null && seen !== null ? await reachedDestination(route, seen, branch) : null;
+    const destination = route !== null && seen !== null && !redirected ? await reachedDestination(route, seen, branch) : null;
     if (failure === null) {
       // Best effort: the push has happened, and a missing upstream costs a
       // person's `git status` its ahead/behind, nothing of EO's.
@@ -316,6 +335,29 @@ export async function pushBranch(
   } finally {
     await gate?.close();
   }
+}
+
+/**
+ * The environment that has git follow no HTTP redirect on `route`'s URL,
+ * whatever its configuration says. `http.<url>.followRedirects` for the
+ * URL itself is the most specific setting git can match it with, and of
+ * two as specific the last it reads wins: so it goes last of all, after
+ * anything the environment already gives git, where no configuration
+ * file can follow it. In the environment rather than with `-c`, because
+ * a URL can carry a credential and git's command line is quoted wherever
+ * it fails.
+ */
+function noRedirects(route: PushRoute): Record<string, string> {
+  if (!route.protocol.startsWith("http")) return {};
+  const pin = `${shellWord(`http.${route.url}.followredirects`)}=${shellWord("false")}`;
+  const given = process.env["GIT_CONFIG_PARAMETERS"];
+  return { GIT_CONFIG_PARAMETERS: given !== undefined && given !== "" ? `${given} ${pin}` : pin };
+}
+
+/** Whether a push failed because it was stopped — timed out or aborted — rather than refused. */
+function stopped(failure: unknown, signal: AbortSignal | undefined): boolean {
+  if (signal?.aborted === true) return true;
+  return typeof failure === "object" && failure !== null && (failure as { killed?: unknown }).killed === true;
 }
 
 /**
@@ -442,7 +484,10 @@ async function openGate(
 ): Promise<{ dir: string; receivePack: string | null; seen: () => Promise<GateSeen>; close: () => Promise<void> } | null> {
   const hooks = await hooksPath(repoPath);
   if (hooks === null) return null;
-  const own = resolve(repoPath, hooks);
+  // As git names it, joined as the system will follow it: `resolve` and
+  // `join` would tidy `link/../hooks` into a sibling of `link`, where git
+  // follows `link` first and runs the hooks somewhere else entirely.
+  const own = isAbsolute(hooks) ? hooks : `${repoPath}${sep}${hooks}`;
   const dir = await mkdtemp(join(tmpdir(), "eo-push-"));
   const close = (): Promise<void> => rm(dir, { recursive: true, force: true });
   const { route, lease } = expect;
@@ -453,7 +498,7 @@ async function openGate(
     const bound = route !== null && route.local !== null && bindsLocalRepository();
     if (lease && bound) await writeFile(join(marks, "expect-at"), `${route.local}\n`);
     const passOn = (name: string, stdin: string): string =>
-      [`h=${shellPath(join(own, name))}`, `if [ -f "$h" ] && [ -x "$h" ]; then exec "$h" "$@"${stdin} >&2; fi`, "exit 0"].join("\n");
+      [`h=${shellPath(`${own}/${name}`)}`, `if [ -f "$h" ] && [ -x "$h" ]; then exec "$h" "$@"${stdin} >&2; fi`, "exit 0"].join("\n");
     for (const name of GIT_HOOKS) await writeFile(join(dir, name), `#!/bin/sh\n${passOn(name, "")}\n`, { mode: 0o755 });
     const stop = (mark: string, why: string): string => `: > "$d/${mark}"; echo ${shellWord(`EO stopped the push: ${why}`)} >&2; exit 1`;
     const gate = [

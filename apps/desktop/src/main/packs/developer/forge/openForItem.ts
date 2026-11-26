@@ -405,6 +405,8 @@ async function openNew(
   // What this attempt's push moved the remote's branch to, if anything:
   // where the push then failed, it moved it at some push URLs only.
   let published: string | null = null;
+  // Whether that was EO's lease over its own last push.
+  let forced: { over: string } | null = null;
   const result = await openPullRequest({
     repoPath: workspace.config.repoPath,
     branch,
@@ -434,7 +436,10 @@ async function openNew(
       : {
           onDiverged: async (rejected) => {
             const replaced = await replaceOwnPush(db, workspace, item, branch, rejected, options);
-            if (replaced !== true && replaced.published !== null) published = replaced.published;
+            if (replaced !== true && replaced.published !== null) {
+              published = replaced.published;
+              forced = replaced.forced;
+            }
             return replaced === true;
           },
         }),
@@ -446,7 +451,7 @@ async function openNew(
     // not equal. Here the cost of being wrong is smaller than it was in
     // the outbox: a retry is seconds away rather than half an hour, and
     // whichever way it ends the step reports it.
-    if (result.diverged && !gitStateOf(item).namedBranch) return diverged(db, item, workspace.config.forgeRemote, branch, target.baseRef, published);
+    if (result.diverged && !gitStateOf(item).namedBranch) return diverged(db, item, workspace.config.forgeRemote, branch, target.baseRef, published, forced);
     // Once per attempt: a remote that moves again in the seconds between
     // is answered as it always was, rather than chased.
     if (result.diverged && !adopted && (await adoptRemoteHead(db, workspace, item, branch, options))) {
@@ -668,7 +673,7 @@ async function pushAlreadyOpen(
     if (target.kind === "escalate") {
       return { kind: "failed", reason: target.reason, ...(target.options ? { options: target.options } : {}) };
     }
-    return diverged(db, item, remote, branch, target.baseRef, replaced.published ?? pushed.published);
+    return diverged(db, item, remote, branch, target.baseRef, replaced.published ?? pushed.published, replaced.published !== null ? replaced.forced : null);
   }
   if (classified.diverged && !adopted && (await adoptRemoteHead(db, workspace, item, branch, options))) {
     return pushAlreadyOpen(db, workspace, item, branch, alreadyOpen, run, options, true);
@@ -809,12 +814,12 @@ async function replaceOwnPush(
   branch: string,
   rejected: { destination: string | null; head: string | null },
   options: OpenForItemOptions,
-): Promise<true | { published: string | null }> {
+): Promise<true | { published: string | null; forced: { over: string } | null }> {
   const { signal, onProgress } = options;
   const { repoPath, forgeRemote: remote } = workspace.config;
-  const refuse = (reason: string): { published: null } => {
+  const refuse = (reason: string): { published: null; forced: null } => {
     onProgress?.(`"${branch}" has diverged on ${remote}, and ${reason}, so EO will not force-push.`);
-    return { published: null };
+    return { published: null, forced: null };
   };
   // Read fresh: the attempt's item predates the push this run may have
   // recorded a moment ago.
@@ -837,11 +842,12 @@ async function replaceOwnPush(
   // through there all the same, and is answered below as what it is.
   if (!pushed.ok && pushed.published === null && pushed.rejection === "changed") return refuse(`the branch is no longer at ${rejected.head.slice(0, 12)}, the commit whose push was rejected`);
   if (!pushed.ok && pushed.published === null && pushed.rejection === "destination") return refuse(`${remote} no longer pushes to exactly the one place EO last pushed it to`);
-  onProgress?.(`EO last pushed "${branch}" to ${remote} at ${expect.slice(0, 12)}, so pushed over it with --force-with-lease, which git refuses if anything else is there.`);
   if (!pushed.ok && pushed.published !== null) {
     recordPushed(db, item, branch, { head: pushed.published, destination: null });
-    onProgress?.(`The push with --force-with-lease went through at one of ${remote}'s push URLs and not at another, so the step stops.`);
-    return { published: pushed.published };
+    onProgress?.(
+      `EO pushed "${branch}" over its own last push, ${expect.slice(0, 12)}, with --force-with-lease at one of ${remote}'s push URLs, and the push did not go through at another, so the step stops.`,
+    );
+    return { published: pushed.published, forced: { over: expect } };
   }
   if (!pushed.ok || !pushed.updated) {
     // Git checks a lease only where it has something to send: a remote
@@ -853,8 +859,9 @@ async function replaceOwnPush(
         ? `The push with --force-with-lease found "${branch}" on ${remote} already at ${rejected.head.slice(0, 12)}, put there by something other than EO, so EO did not take it for its own.`
         : `The push with --force-with-lease did not go through — "${branch}" on ${remote} is no longer only what EO pushed, or could not be reached — so nothing was overwritten.`,
     );
-    return { published: null };
+    return { published: null, forced: null };
   }
+  onProgress?.(`EO last pushed "${branch}" to ${remote} at ${expect.slice(0, 12)}, so pushed over it with --force-with-lease, which git refuses if anything else is there.`);
 
   // A restack's rewrite, if that is what this was, is published now.
   if (gitStateOf(getItem(db, item.id) ?? item).restacked) updateItem(db, item.id, { git: { restacked: false } });
@@ -974,8 +981,34 @@ function sameUrl(a: string, b: string): boolean {
  * branch is out there in part, and saying nothing was pushed would be
  * wrong (EO-910).
  */
-function diverged(db: Db, item: Item, remote: string, branch: string, baseRef: string, published: string | null = null): Attempt {
+function diverged(
+  db: Db,
+  item: Item,
+  remote: string,
+  branch: string,
+  baseRef: string,
+  published: string | null = null,
+  forced: { over: string } | null = null,
+): Attempt {
   const names = [`- Remote: \`${remote}\``, `- Branch: \`${branch}\``, `- Base ref the pull request targets: \`${baseRef}\``].join("\n");
+  if (published !== null && forced !== null) {
+    // EO's lease went through at one push URL before the push failed at
+    // another: a forced write did happen, and the item says so.
+    postComment(db, {
+      itemId: item.id,
+      author: { type: "engine" },
+      kind: "note",
+      body: [
+        `The push of \`${branch}\` to \`${remote}\` went only part of the way. At the one push URL EO last pushed it to, \`${remote}\` still held exactly what EO had pushed, \`${forced.over}\`, and EO replaced it with \`${published}\`, pushing with \`--force-with-lease=${branch}:${forced.over}\`. At another of its push URLs the push did not go through.`,
+        names,
+        "No pull request was opened or updated, and the step stopped. The remote has to push to one place again, or the branch be reconciled wherever the push did not go through, before this step can run again.",
+      ].join("\n\n"),
+    });
+    return {
+      kind: "remote_diverged",
+      detail: `\`${branch}\` was force-pushed with a lease over EO's own \`${forced.over}\` as \`${published}\` at one of \`${remote}\`'s push URLs, and did not go through at another.`,
+    };
+  }
   postComment(db, {
     itemId: item.id,
     author: { type: "engine" },

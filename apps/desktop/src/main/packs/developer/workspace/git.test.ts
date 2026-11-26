@@ -20,7 +20,7 @@ import {
   rebaseOntoBase,
   statusPorcelain,
 } from "./git.js";
-import { beforeGitPush, run, initRepo } from "../../../testing/git.js";
+import { beforeGitPush, gitHttpServer, run, initRepo, type GitHttpRoute } from "../../../testing/git.js";
 
 // Real repositories in a temp dir, same discipline as worktrees.test.ts:
 // the point of G-01 is that these git invocations behave against real
@@ -664,9 +664,13 @@ git update-ref refs/heads/eo/APP-1 ${head}
       expect(await remoteTip("eo/APP-1")).toBe(old);
     });
 
-    it.skipIf(process.platform === "win32")("sends a lease through no remote helper configured for the remote after EO checked where it pushes", async () => {
+    it.skipIf(process.platform === "win32").each([
+      ["", false],
+      [", though the configuration allows that helper outright", true],
+    ])("sends a lease through no remote helper configured for the remote after EO checked where it pushes%s", async (_, allowed) => {
       const first = await pushBranch(repoPath, "bare", "eo/APP-1");
       const old = sentBy(first);
+      if (allowed) await run(["config", "protocol.elsewhere.allow", "always"], repoPath);
       await run(["commit", "--amend", "-m", "rewritten"], repoPath);
       const helpers = join(scratch, "helpers");
       mkdirSync(helpers);
@@ -920,6 +924,84 @@ git update-ref refs/heads/eo/APP-1 ${head}
 
     expect(await pushBranch(repoPath, "bare", "eo/APP-1")).toMatchObject({ ok: false, published: null });
     expect(await git(["rev-parse", "--verify", "--quiet", "refs/heads/eo/APP-1"], barePath)).toMatchObject({ ok: false });
+  });
+
+  // Windows symlinks need a privilege a test runner rarely has.
+  it.skipIf(process.platform === "win32")("runs the repository's own hook from a core.hooksPath with `..` after a symlink, where git follows the symlink first", async () => {
+    // `link/../hooks` is `nested/hooks` to the system, and `hooks` beside
+    // `link` only to a path tidied before it is followed.
+    mkdirSync(join(repoPath, "nested", "inner"), { recursive: true });
+    mkdirSync(join(repoPath, "nested", "hooks"));
+    mkdirSync(join(repoPath, "hooks"));
+    symlinkSync(join(repoPath, "nested", "inner"), join(repoPath, "link"));
+    writeFileSync(join(repoPath, "nested", "hooks", "pre-push"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+    await run(["config", "core.hooksPath", "link/../hooks"], repoPath);
+
+    expect(await pushBranch(repoPath, "bare", "eo/APP-1")).toMatchObject({ ok: false, published: null });
+    expect(await remoteTip("eo/APP-1")).toBeNull();
+  });
+
+  describe("over HTTP", () => {
+    const routes = new Map<string, GitHttpRoute>();
+    let web: { url: string; close: () => Promise<void> };
+    let a: string;
+    let b: string;
+    const tipIn = async (repo: string): Promise<string | null> => {
+      const tip = await git(["rev-parse", "--verify", "--quiet", "refs/heads/eo/APP-1"], repo);
+      return tip.ok ? tip.stdout : null;
+    };
+
+    beforeEach(async () => {
+      const root = join(scratch, "web");
+      mkdirSync(root);
+      a = join(root, "a.git");
+      b = join(root, "b.git");
+      await run(["init", "--bare", a], scratch);
+      await run(["init", "--bare", b], scratch);
+      routes.clear();
+      web = await gitHttpServer(root, routes);
+      await run(["remote", "add", "web", `${web.url}/alias.git`], repoPath);
+    });
+    afterEach(async () => {
+      await web.close();
+    });
+
+    it("records a push to the URL it names as a push there", async () => {
+      routes.set("alias.git", { serve: "a.git" });
+
+      const pushed = await pushBranch(repoPath, "web", "eo/APP-1");
+
+      expect(pushed).toMatchObject({ ok: true, updated: true, destination: destinationKey(`${web.url}/alias.git`) });
+      expect(await tipIn(a)).toBe(await localTip());
+    });
+
+    it("pushes to a URL the server redirects, as git would, and records it as a push to no one place", async () => {
+      routes.set("alias.git", { redirect: "a.git" });
+
+      const pushed = await pushBranch(repoPath, "web", "eo/APP-1");
+
+      expect(pushed).toMatchObject({ ok: true, updated: true, destination: null });
+      expect(await tipIn(a)).toBe(await localTip());
+      expect(await tipIn(b)).toBeNull();
+    });
+
+    it("sends a lease along no redirect, though the repository's configuration says to follow them for that very URL", async () => {
+      routes.set("alias.git", { serve: "a.git" });
+      const first = await pushBranch(repoPath, "web", "eo/APP-1");
+      const old = sentBy(first);
+      const destination = first.destination!;
+      // Somebody else's repository holding the same commit, which the URL now redirects to.
+      await run(["push", b, `${old}:refs/heads/eo/APP-1`], repoPath);
+      routes.set("alias.git", { redirect: "b.git" });
+      await run(["config", `http.${web.url}/alias.git.followRedirects`, "true"], repoPath);
+      await run(["commit", "--amend", "-m", "rewritten"], repoPath);
+
+      const leased = await pushBranch(repoPath, "web", "eo/APP-1", { forceWithLease: { expect: old, destination, send: await localTip() } });
+
+      expect(leased).toMatchObject({ ok: false, published: null });
+      expect(await tipIn(a)).toBe(old);
+      expect(await tipIn(b)).toBe(old);
+    });
   });
 
   it("takes nothing its own hook prints for git's account of the push", async () => {

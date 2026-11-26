@@ -1,4 +1,6 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import { git, statusPorcelain } from "../packs/developer/workspace/git.js";
@@ -130,5 +132,85 @@ export function beforeGitPush(dir: string, before: string, nth = 1): () => void 
   return () => {
     if (path === undefined) delete process.env["PATH"];
     else process.env["PATH"] = path;
+  };
+}
+
+/** What a loopback git server does with requests for one repository name. */
+export type GitHttpRoute = { serve: string } | { redirect: string };
+
+/**
+ * A git smart-HTTP server on 127.0.0.1, `git http-backend` behind Node's
+ * own `http`, serving the bare repositories directly under `root`. Each
+ * first path segment (`alias.git`) is looked up in `routes`, which the
+ * test may change at any time, and one with no route there is served as
+ * itself: `serve` answers it from that repository,
+ * `redirect` sends a 302 to another name — what a forge does for a
+ * repository it renamed, and what a reviewer used to send a push
+ * somewhere else (EO-910). Anonymous pushes are let in.
+ */
+export async function gitHttpServer(root: string, routes: Map<string, GitHttpRoute>): Promise<{ url: string; close: () => Promise<void> }> {
+  const server = createServer((request, response) => {
+    const [pathname = "", query = ""] = (request.url ?? "").split("?", 2) as [string?, string?];
+    const [, name = "", ...rest] = pathname.split("/");
+    // A name with no route is the repository of that name.
+    const route = routes.get(name) ?? { serve: name };
+    const tail = rest.length > 0 ? `/${rest.join("/")}` : "";
+    if ("redirect" in route) {
+      response.writeHead(302, { Location: `/${route.redirect}${tail}${query ? `?${query}` : ""}` }).end();
+      return;
+    }
+    const header = (key: string): string => {
+      const value = request.headers[key];
+      return typeof value === "string" ? value : "";
+    };
+    const child = spawn("git", ["http-backend"], {
+      windowsHide: true,
+      env: {
+        ...process.env,
+        GIT_PROJECT_ROOT: root,
+        GIT_HTTP_EXPORT_ALL: "1",
+        PATH_INFO: `/${route.serve}${tail}`,
+        REQUEST_METHOD: request.method ?? "GET",
+        QUERY_STRING: query,
+        CONTENT_TYPE: header("content-type"),
+        HTTP_CONTENT_ENCODING: header("content-encoding"),
+        REMOTE_USER: "eo",
+        REMOTE_ADDR: "127.0.0.1",
+      },
+    });
+    const chunks: Buffer[] = [];
+    child.stdout.on("data", (chunk: Buffer) => chunks.push(chunk));
+    child.on("close", () => {
+      const out = Buffer.concat(chunks);
+      const end = out.indexOf("\r\n\r\n");
+      const split = end === -1 ? out.indexOf("\n\n") : end;
+      const gap = end === -1 ? 2 : 4;
+      if (split === -1) {
+        response.writeHead(500).end();
+        return;
+      }
+      const headers: Record<string, string> = {};
+      let status = 200;
+      for (const line of out.subarray(0, split).toString("utf8").split(/\r?\n/)) {
+        const colon = line.indexOf(":");
+        if (colon === -1) continue;
+        const key = line.slice(0, colon).trim();
+        const value = line.slice(colon + 1).trim();
+        if (key.toLowerCase() === "status") status = Number.parseInt(value, 10);
+        else headers[key] = value;
+      }
+      response.writeHead(status, headers).end(out.subarray(split + gap));
+    });
+    request.pipe(child.stdin);
+  });
+  await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
+  const { port } = server.address() as AddressInfo;
+  return {
+    url: `http://127.0.0.1:${port}`,
+    close: () =>
+      new Promise<void>((done) => {
+        server.closeAllConnections();
+        server.close(() => done());
+      }),
   };
 }
