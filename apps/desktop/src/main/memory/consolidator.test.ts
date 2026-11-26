@@ -77,7 +77,7 @@ import { createMemoryConsolidator, readRepositoryFiles, systemAgentSetup, type M
  */
 const HOUR = 60 * 60 * 1000;
 const DAY = 24 * HOUR;
-const CLAUDE_MD = "# api\n\nRun the tests with `pnpm test:api`.\n";
+const CLAUDE_MD = "# api\n\nRun the api tests with `pnpm test:api`.\n";
 
 type Answer = SideCallResult<MemoryConsolidationAnswer>;
 type ConsolidateRequest = SideCallRequest<MemoryConsolidationAnswer>;
@@ -349,7 +349,7 @@ describe("automatic memory consolidation", () => {
       expect(request.input).not.toContain("A person wrote this.");
       expect(request.input).not.toContain("And this.");
       expect(request.input).toContain("## The workspace's CLAUDE.md");
-      expect(request.input).toContain("Run the tests with `pnpm test:api`.");
+      expect(request.input).toContain("Run the api tests with `pnpm test:api`.");
       // No size to reach (EO-913).
       expect(request.input).not.toMatch(/target/i);
     });
@@ -357,12 +357,12 @@ describe("automatic memory consolidation", () => {
     it("retires, merges and rewrites under one consolidation id, leaves what it does not name, keeps the newest replaced entry's age, and restore puts the earlier set back", async () => {
       const at = Date.now() - 3 * DAY;
       const agents = Array.from({ length: 18 }, (_, index) =>
-        byAgent(workspace, index === 3 ? `Run the tests with \`make test\`. Agent note 3: ${"z".repeat(600)}` : `Agent note ${index}: ${"z".repeat(600)}`, at + index * HOUR),
+        byAgent(workspace, index === 3 ? `Run the api tests with \`make test\`. Agent note 3: ${"z".repeat(600)}` : `Agent note ${index}: ${"z".repeat(600)}`, at + index * HOUR),
       );
       const people = [byPerson(workspace, "A person wrote this.", at), byPerson(workspace, "And this.", at)];
       const before = listMemories(handle.db, workspace).map((entry) => [entry.id, entry.body, entry.createdAt]);
       // Held to the real schema: the rewrite puts the CLAUDE.md's sentence in place of the one it corrects.
-      const rewritten = `Run the tests with \`pnpm test:api\`. Agent note 3: ${"z".repeat(600)}`;
+      const rewritten = `Run the api tests with \`pnpm test:api\`. Agent note 3: ${"z".repeat(600)}`;
       const sideCall = answeringWith({
         // agents[0] is in no operation: it stays as it was.
         retire: agents.slice(4).map((entry) => ({ id: entry.id, reason: "Stale: the flow it describes is gone." })),
@@ -488,7 +488,7 @@ describe("automatic memory consolidation", () => {
 
       expect(sideCall).toHaveBeenCalledTimes(1);
       expect(sideCall.mock.calls[0]![0].input).toContain(`## The workspace "api"'s CLAUDE.md`);
-      expect(sideCall.mock.calls[0]![0].input).toContain("Run the tests with `pnpm test:api`.");
+      expect(sideCall.mock.calls[0]![0].input).toContain("Run the api tests with `pnpm test:api`.");
       expect(listMemories(handle.db, project).find((entry) => entry.body.startsWith("Run the API tests"))).toMatchObject({ contradictsRepositoryFile: true });
     });
   });

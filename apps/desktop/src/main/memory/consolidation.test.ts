@@ -280,7 +280,7 @@ describe("the operations a consolidation answers with (EO-573)", () => {
   ];
   /** An entry as a call is given it, unflagged unless said. */
   const entry = (id: string, body: string, createdAt: number, contradictsRepositoryFile = false) => ({ id, body, createdAt, contradictsRepositoryFile });
-  const FILE = "## Testing\n\nRun `pnpm test` before you push. The ledger is kept in local time, not UTC.";
+  const FILE = "## Ledger\n\nRun `pnpm test` before you push. The ledger is kept in local time, not UTC.";
   const schema = consolidationAnswerSchema(sent, { repositoryFiles: [FILE] });
   const answer = (overrides: Record<string, unknown> = {}) => ({ retire: [], merge: [], rewrite: [], ...overrides });
   const accepts = (value: unknown) => schema.safeParse(value).success;
@@ -541,6 +541,73 @@ describe("the operations a consolidation answers with (EO-573)", () => {
     }
   });
 
+  it("refuses a quantity in another unit EO cannot tell changed, a source in a narrower section or an example, and a path or code in another case or spacing, under either source-backed reason (EO-913)", () => {
+    for (const reason of BOTH) {
+      // The reviewer's probe: the same size in binary units, and its kin.
+      for (const [was, body, source, refusal] of [
+        ["Use a 1024KiB buffer for the build. Save logs.", "Use a 1MiB buffer for the build. Save logs.", "Use a 1MiB buffer for the build.", /same number written another way/],
+        ["Use a 1024 KiB buffer for the build. Save logs.", "Use a 1 MiB buffer for the build. Save logs.", "Use a 1 MiB buffer for the build.", /same number written another way|takes out "KiB"/],
+        ["Use a 1024KB buffer for the build. Save logs.", "Use a 1MB buffer for the build. Save logs.", "Use a 1MB buffer for the build.", /same number written another way/],
+        ["Use a timeout of 2 days for the build. Save logs.", "Use a timeout of 48 hours for the build. Save logs.", "Use a timeout of 48 hours for the build.", /same number written another way|takes out "days"/],
+        ["Use a timeout of 2d for the build. Save logs.", "Use a timeout of 48h for the build. Save logs.", "Use a timeout of 48h for the build.", /same number written another way/],
+        // A bare number given a unit, or a unit EO does not know changed: it cannot tell the value changed.
+        ["Use a timeout of 4 for the build. Save logs.", "Use a timeout of 4000ms for the build. Save logs.", "Use a timeout of 4000ms for the build.", /a unit EO cannot convert/],
+        ["Use a 18qz buffer for the build. Save logs.", "Use a 18zq buffer for the build. Save logs.", "Use a 18zq buffer for the build.", /a unit EO cannot convert/],
+      ] as const) {
+        const parsed = corrected(reason, entry("a", was, NOW - 2 * DAY), body, [source]);
+        expect(parsed.success, `${reason}: ${body}`).toBe(false);
+        expect(said(parsed), `${reason}: ${body}`).toMatch(refusal);
+      }
+      // A value really changed in a unit EO knows is a correction.
+      for (const [was, body, source] of [
+        ["Use a 1024KiB buffer for the build. Save logs.", "Use a 2MiB buffer for the build. Save logs.", "Use a 2MiB buffer for the build."],
+        ["Use a timeout of 4000ms for the build. Save logs.", "Use a timeout of 5s for the build. Save logs.", "Use a timeout of 5s for the build."],
+      ] as const) {
+        const parsed = corrected(reason, entry("a", was, NOW - 2 * DAY), body, [source]);
+        expect(parsed.success, `${reason}: ${body} — ${said(parsed)}`).toBe(true);
+      }
+      // The reviewer's probes: 16 said under a narrower heading, or in an example the source warns against.
+      const local = entry("a", "Use Postgres 15 for local database testing. Save logs.", NOW - 2 * DAY);
+      const sixteen = "Use Postgres 16 for local database testing. Save logs.";
+      const line = "Use Postgres 16 for local database testing.";
+      for (const source of [
+        `## Remote testing\n\n${line}`,
+        `# Remote testing\n\n${line}`,
+        `## Testing\n\n### Remote\n\n${line}`,
+        `Remote testing\n--------------\n\n${line}`,
+        `**Remote testing**\n\n${line}`,
+        `**Remote testing.** ${line}`,
+        `For remote runs:\n\n- Run the seed first.\n- ${line}`,
+        `## Not for local database testing\n\n${line}`,
+        `Do not follow the bad example below.\n\n\`\`\`\n${line}\n\`\`\``,
+        `Do not follow the bad example below.\n\n    ${line}`,
+        `Do not follow this example.\n\n${line}`,
+        `> ${line}`,
+        `<!--\n${line}\n-->`,
+      ]) {
+        const parsed = corrected(reason, local, sixteen, [source]);
+        expect(parsed.success, `${reason}: ${source}`).toBe(false);
+        expect(said(parsed), `${reason}: ${source}`).toMatch(/but no sentence of/);
+      }
+      // A heading the entry is about bears out what is under it, and one closed by a heading of its level no longer narrows.
+      for (const source of [`## Database testing\n\n${line}`, `## Remote testing\n\nUse the cluster.\n\n## Local database testing\n\n${line}`, `**Testing.** ${line}`]) {
+        const parsed = corrected(reason, local, sixteen, [source]);
+        expect(parsed.success, `${reason}: ${source} — ${said(parsed)}`).toBe(true);
+      }
+      // The reviewer's probe: a path in another case is another path, and code with other spacing another command.
+      for (const [was, body, source] of [
+        ["Write the build logs to /tmp/old for local runs. Save logs.", "Write the build logs to /tmp/NEW for local runs. Save logs.", "Write the build logs to /tmp/new for local runs."],
+        ["Write the build logs to `/tmp/old` for local runs. Save logs.", "Write the build logs to `/tmp/NEW` for local runs. Save logs.", "Write the build logs to `/tmp/new` for local runs."],
+        ["Run `pnpm test` before pushing. Save logs.", "Run `pnpm  lint` before pushing. Save logs.", "Run `pnpm lint` before pushing."],
+      ] as const) {
+        const parsed = corrected(reason, entry("a", was, NOW - 2 * DAY), body, [source]);
+        expect(parsed.success, `${reason}: ${body}`).toBe(false);
+        expect(said(parsed), `${reason}: ${body}`).toMatch(/but no sentence of/);
+      }
+      expect(corrected(reason, entry("a", "Write the build logs to /tmp/old for local runs. Save logs.", NOW - 2 * DAY), "Write the build logs to /tmp/new for local runs. Save logs.", ["Write the build logs to /tmp/new for local runs."]).success, reason).toBe(true);
+    }
+  });
+
   it("never takes a rewrite that sets contradictsRepositoryFile, nor one that changes only the flag (EO-913)", () => {
     const always = entry("a", "Always run `pnpm test` before pushing any code. Save logs.", NOW - 2 * DAY);
     const smoke = "Browser smoke tests before pushing verify screenshots.";
@@ -589,6 +656,10 @@ describe("the operations a consolidation answers with (EO-573)", () => {
       ["Check the date with:\n- ~~~sh\n  echo today\n  ~~~", "Check the date with:\n- ~~~sh\n  echo 2026-11-26\n  ~~~"],
       ["Check the date with:\n1. ```sh\n   echo today\n   ```", "Check the date with:\n1. ```sh\n   echo 2026-11-26\n   ```"],
       ["Check the date with:\n>\n>     echo today", "Check the date with:\n>\n>     echo 2026-11-26"],
+      // The reviewer's probe: a space and a tab reach the fourth column, as does a tab after a quote's marker.
+      ["Check the date with:\n\n \techo today", "Check the date with:\n\n \techo 2026-11-26"],
+      ["Check the date with:\n\n  \techo today", "Check the date with:\n\n  \techo 2026-11-26"],
+      ["Check the date with:\n>\n> \techo today", "Check the date with:\n>\n> \techo 2026-11-26"],
       // The reviewer's probe: a fence in a block quote in a list item, and the other way round.
       ["Check the date with:\n- > ~~~sh\n  > echo today\n  > ~~~", "Check the date with:\n- > ~~~sh\n  > echo 2026-11-26\n  > ~~~"],
       ["Check the date with:\n> - ~~~sh\n>   echo today\n>   ~~~", "Check the date with:\n> - ~~~sh\n>   echo 2026-11-26\n>   ~~~"],
@@ -631,7 +702,21 @@ describe("the operations a consolidation answers with (EO-573)", () => {
     // Days counted in words and numbers, either way, and "today".
     expect(rewrite("Released 2026-11-23.", entry("r", "Released three days ago.", written)).success).toBe(true);
     expect(rewrite("Released 2026-11-22.", entry("r", "Released three days ago.", written)).success).toBe(false);
-    expect(rewrite("Due 2026-11-28.", entry("r", "Due in 2 days.", written)).success).toBe(true);
+    expect(rewrite("Due 2026-11-28.", entry("r", "Due 2 days from now.", written)).success).toBe(true);
+    // The reviewer's probe: "in N days" is as often a span behind as a day ahead, so it stays.
+    for (const [said, body] of [
+      ["I have not seen a timeout in two days.", "I have not seen a timeout on 2026-11-28."],
+      ["I have not seen a timeout in two days.", "I have not seen a timeout 2026-11-24."],
+      ["Due in 2 days.", "Due 2026-11-28."],
+      // ...and a phrase a word before makes a span.
+      ["No failures over the last month.", "No failures over the 2026-10."],
+      ["Ship within two days from now.", "Ship within 2026-11-28."],
+      ["Errors fell throughout this month.", "Errors fell throughout 2026-11."],
+    ] as const) {
+      const parsed = rewrite(body, entry("s", said, written));
+      expect(parsed.success, body).toBe(false);
+      expect(parsed.error?.issues.map((issue) => issue.message).join(" "), body).toMatch(/cannot tell what date/);
+    }
     expect(rewrite("Fixed on 2026-11-26.", entry("r", "Fixed today.", written)).success).toBe(true);
     // Written late in the day UTC: the day is the one the model is shown, UTC.
     expect(rewrite("Released 2026-11-26.", entry("r", "Released yesterday.", Date.UTC(2026, 10, 27, 0, 30))).success).toBe(true);
@@ -723,7 +808,7 @@ describe("the operations a consolidation answers with (EO-573)", () => {
     expect(resolvedDate("Tomorrow", at)).toBe("2026-11-27");
     expect(resolvedDate("a day ago", at)).toBe("2026-11-25");
     expect(resolvedDate("10 days ago", at)).toBe("2026-11-16");
-    expect(resolvedDate("in two days", at)).toBe("2026-11-28");
+    expect(resolvedDate("in two days", at)).toBeNull();
     expect(resolvedDate("five days from now", at)).toBe("2026-12-01");
     expect(resolvedDate("last month", at)).toBe("2026-10");
     expect(resolvedDate("this month", at)).toBe("2026-11");
@@ -826,8 +911,12 @@ describe("what a consolidation is told (EO-573, EO-913)", () => {
     expect(prompt).toMatch(/never "Use Postgres 16 for tests\."/);
     expect(prompt).toMatch(/"before" for "prior to", `pnpm test` for `pnpm {2}test`/);
     expect(prompt).toMatch(/"tonight" or "this morning", whose time of day a date would lose/);
-    expect(prompt).toMatch(/a word in code \(inside a code span, however many backticks open it, a fenced code block opened with backticks or tildes, a line indented four spaces — either also inside block quotes or list items, nested in any order/);
-    expect(prompt).toMatch(/the same value in another notation \("CI" for "continuous integration", "2" for "two", "4 seconds" for "4\.0 seconds", "4s" for "4000ms", "18" for "v18", code as prose\)/);
+    expect(prompt).toMatch(/a word in code \(inside a code span, however many backticks open it, a fenced code block opened with backticks or tildes, a line indented four spaces or with a tab in its indent — either also inside block quotes or list items, nested in any order/);
+    expect(prompt).toMatch(/the same value in another notation \("CI" for "continuous integration", "2" for "two", "4 seconds" for "4\.0 seconds", "4s" for "4000ms", "1MiB" for "1024KiB", "18" for "v18", code as prose\), a number given a unit EO cannot convert it to/);
+    expect(prompt).toMatch(/a name, path or piece of code in the same case and with the same spaces/);
+    expect(prompt).toMatch(/under a heading, bold lead or line ending in a colon whose words the entry does not have/);
+    expect(prompt).toMatch(/or inside the file's code blocks, block quotes or HTML comments/);
+    expect(prompt).toMatch(/"in two days" \(a time ahead or a span behind\)/);
     expect(prompt).toMatch(/must be word for word a sentence of the file standing on its own — the same instruction under the same conditions/);
     expect(prompt).toMatch(/A negation is borne out only by a sentence that negates the same action/);
     expect(prompt).toMatch(/never "Released before 2026-11-25\."/);

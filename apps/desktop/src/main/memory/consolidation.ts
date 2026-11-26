@@ -306,6 +306,47 @@ export function absoluteDates(body: string): Set<string> {
  * the end of the text: a literal EO cannot place is left as it is.
  */
 function codeSpans(text: string): [number, number][] {
+  const blocks = codeBlocks(text);
+  const blank = (spans: readonly [number, number][], from: string) => {
+    let out = from;
+    for (const [start, end] of spans) out = out.slice(0, start) + " ".repeat(end - start) + out.slice(end);
+    return out;
+  };
+  const rest = blank(blocks, text);
+  const runs = [...rest.matchAll(/`+/g)];
+  for (let at = 0; at < runs.length; at += 1) {
+    const open = runs[at]!;
+    const close = runs.findIndex((run, index) => index > at && run[0].length === open[0].length);
+    if (close === -1) {
+      blocks.push([open.index, text.length]);
+      break;
+    }
+    blocks.push([open.index, runs[close]!.index + runs[close]![0].length]);
+    at = close;
+  }
+  return blocks.sort((a, b) => a[0] - b[0]);
+}
+
+/**
+ * Whether a line's leading whitespace makes it indented code (EO-913):
+ * four columns or more, a tab counted to the next multiple of four, or any
+ * tab at all among it. A tab after a space reaches the fourth column, and
+ * where it falls after a quote's or a list's marker EO does not reckon the
+ * columns, so a tab in an indent is taken as code: over-reach only leaves
+ * more text as it is.
+ */
+function indentsAsCode(line: string): boolean {
+  const indent = /^[ \t]*/.exec(line)![0];
+  return indent.includes("\t") || indent.length >= 4;
+}
+
+/**
+ * Where a text's code blocks are, delimiters included (EO-913): fenced
+ * blocks, indented lines and `<pre>` and `<code>` elements, as `codeSpans`
+ * reads them, but not inline code spans — the part of a source that is an
+ * example rather than something it says.
+ */
+function codeBlocks(text: string): [number, number][] {
   const blocks: [number, number][] = [];
   let fence: { char: string; length: number; start: number } | null = null;
   for (let at = 0; at < text.length; ) {
@@ -327,30 +368,14 @@ function codeSpans(text: string): [number, number][] {
     } else {
       const open = /^[ \t]*(`{3,}|~{3,})/.exec(inner);
       if (open !== null && !(open[1]![0] === "`" && inner.slice(open[0].length).includes("`"))) fence = { char: open[1]![0]!, length: open[1]!.length, start: at };
-      else if ((/^(?: {4}|\t)/.test(inner) || /^(?: {4}|\t)/.test(line)) && inner.trim() !== "") blocks.push([at, at + line.length]);
+      else if ((indentsAsCode(inner) || indentsAsCode(line)) && inner.trim() !== "") blocks.push([at, at + line.length]);
     }
     at = next;
   }
   if (fence !== null) blocks.push([fence.start, text.length]);
-  const blank = (spans: readonly [number, number][], from: string) => {
-    let out = from;
-    for (const [start, end] of spans) out = out.slice(0, start) + " ".repeat(end - start) + out.slice(end);
-    return out;
-  };
-  let rest = blank(blocks, text);
+  let rest = text;
+  for (const [start, end] of blocks) rest = rest.slice(0, start) + " ".repeat(end - start) + rest.slice(end);
   for (const element of rest.matchAll(/<(code|pre)\b[^>]*>[\s\S]*?(?:<\/\1\s*>|$)/gi)) blocks.push([element.index, element.index + element[0].length]);
-  rest = blank(blocks, text);
-  const runs = [...rest.matchAll(/`+/g)];
-  for (let at = 0; at < runs.length; at += 1) {
-    const open = runs[at]!;
-    const close = runs.findIndex((run, index) => index > at && run[0].length === open[0].length);
-    if (close === -1) {
-      blocks.push([open.index, text.length]);
-      break;
-    }
-    blocks.push([open.index, runs[close]!.index + runs[close]![0].length]);
-    at = close;
-  }
   return blocks.sort((a, b) => a[0] - b[0]);
 }
 
@@ -544,13 +569,7 @@ function changedRuns(from: readonly Token[], to: readonly Token[]): { from: [num
 
 /** Whether a word says a value no synonym stands for: code (`codeSpans`), a number, a name or path, or an acronym. */
 function isConcrete(token: Token, code: readonly [number, number][]): boolean {
-  const word = token.text.replace(/^[-+]/, "");
-  return code.some(([start, end]) => token.start >= start && token.start < end) || /\p{N}/u.test(token.text) || /[._:/]/.test(word) || /^\p{Lu}[\p{Lu}\p{N}]+$/u.test(word);
-}
-
-/** A text as it is looked for in a source: no backticks, whitespace collapsed, lowercased. */
-function flattened(text: string): string {
-  return text.replace(/`/g, "").replace(/\s+/g, " ").trim().toLowerCase();
+  return code.some(([start, end]) => token.start >= start && token.start < end) || isConcreteWord(token.text);
 }
 
 /** A text's terms, as a correction's context is compared by: its words, lowercased, less the common ones (`COMMON_WORDS`), each in one spelling (`terms`). */
@@ -572,35 +591,135 @@ function terms(text: string): Set<string> {
   return found;
 }
 
-/** A sentence as it is compared with another: a list, quote or heading marker off its start, backticks gone, whitespace collapsed, lowercased, one closing mark off. */
+/** Whether a word says a value no synonym stands for, as `isConcrete` reads one in prose: a number, a name or path, or an acronym. */
+function isConcreteWord(word: string): boolean {
+  const bare = word.replace(/^[-+]/, "");
+  return /\p{N}/u.test(word) || /[._:/]/.test(bare) || /^\p{Lu}[\p{Lu}\p{N}]+$/u.test(bare);
+}
+
+/**
+ * A sentence as it is compared with another (EO-913): a list, quote or
+ * heading marker off its start, one closing mark off, backticks gone, and
+ * prose with its whitespace collapsed and its plain words lowercased. Code
+ * is kept exactly as written, its case and its whitespace, and so is the
+ * case of a number, a name, a path or an acronym in prose: `/tmp/NEW` is
+ * another path than `/tmp/new` on a case-sensitive filesystem, and
+ * `pnpm  test` another command line than `pnpm test`.
+ */
 function sentenceKey(text: string): string {
-  return flattened(text.replace(/^\s*(?:(?:[-*+>#]+|\d{1,9}[.)])\s+)+/, ""))
-    .replace(/[.!?;:,]$/, "")
-    .trim();
+  const bare = text.replace(/^\s*(?:(?:[-*+>#]+|\d{1,9}[.)])\s+)+/, "");
+  const prose = (part: string) => part.replace(/\s+/g, " ").replace(CONCRETE_WORD, (word) => (isConcreteWord(word) ? word : word.toLowerCase()));
+  let key = "";
+  let at = 0;
+  for (const [start, end] of codeSpans(bare)) {
+    if (start < at) continue;
+    key += prose(bare.slice(at, start)) + bare.slice(start, end).replace(/`/g, "");
+    at = end;
+  }
+  key += prose(bare.slice(at));
+  return key.trim().replace(/[.!?;:,]$/, "").trim();
 }
 
 /** A word that opens a sentence by qualifying the one before it: "It is only a fallback.", "Unless CI is down." */
 const QUALIFYING_START = /^(?:it|its|this|that|these|those|they|then|only|but|however|unless|except|although|though|if|when|whereas|otherwise|still|yet|instead)(?![\p{L}\p{N}_])/iu;
 
+/** A word by which a sentence points at what follows it as an example, or as what no longer holds: "Do not follow the bad example below." */
+const POINTING = /(?<![\p{L}\p{N}_])(?:examples?|samples?|below|following|e\.g|for instance|such as|like this|outdated|deprecated|obsolete|legacy|old|wrong|incorrect|bad)(?![\p{L}\p{N}_])/iu;
+
 /**
- * The sentences of a source that say something on their own (EO-913), as
- * `sentenceKey` compares them: not one that a sentence before it ending
- * in a colon or semicolon heads ("For remote testing: use Postgres 16."),
- * not one that runs on into the next with a colon, semicolon or comma,
- * and not one whose next sentence opens by qualifying it ("It is only a
- * fallback."). What such a sentence says holds only with words it does
- * not have, so it bears out no correction.
+ * A source with what it shows rather than says blanked out, its line
+ * breaks kept (EO-913): code blocks (`codeBlocks`), HTML comments and
+ * block-quoted lines. A sentence of a fenced example, a commented-out
+ * line or a quotation is not the source's instruction, whatever it reads.
  */
-function standingSentences(source: string): string[] {
-  const spans = sentenceSpans(source);
+function saidPart(source: string): string {
+  const spans = [...codeBlocks(source)];
+  for (const comment of source.matchAll(/<!--[\s\S]*?(?:-->|$)/g)) spans.push([comment.index, comment.index + comment[0].length]);
+  for (const quote of source.matchAll(/^[ \t]{0,3}>.*$/gm)) spans.push([quote.index, quote.index + quote[0].length]);
+  let out = source;
+  for (const [start, end] of spans) out = out.slice(0, start) + out.slice(start, end).replace(/[^\n]/g, " ") + out.slice(end);
+  return out;
+}
+
+/**
+ * The sentences of a source that say something on their own about what
+ * `entry` is about (EO-913), as `sentenceKey` compares them.
+ *
+ * - Not one of the source's code, comments or quotations (`saidPart`).
+ * - Not one under a heading narrower than the entry, nor under a lead
+ *   that narrows it: an ATX or setext heading, until one of its level or
+ *   above; a line wholly in bold, or one ending in a colon, until the next
+ *   heading; a bold phrase opening a paragraph, until the paragraph ends.
+ *   Each must negate nothing, and every term it has (`terms`) must be one
+ *   the entry has, so "Use Postgres 16 for local database testing." under
+ *   "## Remote testing" says nothing of an entry about local testing, and
+ *   under "## Testing" it may. A title such as "# EO — working agreement"
+ *   narrows as any heading does, which costs corrections from a file with
+ *   one, never a fact.
+ * - Not one a sentence before it ending in a colon or semicolon heads
+ *   ("For remote testing: use Postgres 16."), nor one that sentence points
+ *   at as an example or as what no longer holds (`POINTING`), not one that
+ *   runs on into the next with a colon, semicolon or comma, and not one
+ *   whose next sentence opens by qualifying it ("It is only a fallback.").
+ *
+ * What such a sentence says holds only with words it does not have, so it
+ * bears out no correction.
+ */
+function standingSentences(source: string, entry: string): string[] {
+  const text = saidPart(source);
+  const about = terms(entry);
+  const narrows = (lead: string) => negates(lead) || [...terms(lead)].some((term) => !about.has(term));
+  const lines: { start: number; end: number }[] = [];
+  for (let at = 0; at <= text.length; ) {
+    const breakAt = text.indexOf("\n", at);
+    const end = breakAt === -1 ? text.length : breakAt;
+    lines.push({ start: at, end });
+    if (breakAt === -1) break;
+    at = breakAt + 1;
+  }
+  // Whether each line may be a source at all, from the headings and leads over it.
+  const open = new Array<boolean>(lines.length).fill(false);
+  const headings: { level: number; narrows: boolean }[] = [];
+  let paragraph = false;
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = text.slice(lines[index]!.start, lines[index]!.end);
+    if (line.trim() === "") {
+      paragraph = false;
+      continue;
+    }
+    const atx = /^ {0,3}(#{1,6})(?:[ \t]+(.*?))?[ \t#]*$/.exec(line);
+    const underline = index + 1 < lines.length ? /^ {0,3}(=+|-+)[ \t]*$/.exec(text.slice(lines[index + 1]!.start, lines[index + 1]!.end)) : null;
+    const heading = atx !== null ? { level: atx[1]!.length, said: atx[2] ?? "" } : underline !== null && !/^\s*(?:[-*+]|\d{1,9}[.)])\s/.test(line) ? { level: underline[1]![0] === "=" ? 1 : 2, said: line } : null;
+    if (heading !== null) {
+      while (headings.length > 0 && headings[headings.length - 1]!.level >= heading.level) headings.pop();
+      headings.push({ level: heading.level, narrows: narrows(heading.said) });
+      paragraph = false;
+      if (atx === null) index += 1;
+      continue;
+    }
+    const bare = line.replace(/^\s*(?:(?:[-*+]|\d{1,9}[.)])\s+)?/, "");
+    const bold = /^(\*\*|__)(.+?)\1(.*)$/.exec(bare);
+    const boldLine = bold !== null && /^\s*:?\s*$/.test(bold[3]!);
+    // A bold phrase opening a paragraph leads the rest of its own line too.
+    if (bold !== null && !boldLine && narrows(bold[2]!)) paragraph = true;
+    open[index] = !(headings.some((over) => over.narrows) || paragraph);
+    // A lead over what follows, to the next heading.
+    if (boldLine || /:\s*$/.test(line)) headings.push({ level: 7, narrows: narrows(boldLine ? bold[2]! : line) });
+  }
+  const lineOf = (at: number) => lines.findIndex((line) => at >= line.start && at <= line.end);
+  const spans = sentenceSpans(text);
   const found: string[] = [];
   for (const [index, [start, end]] of spans.entries()) {
-    const text = source.slice(start, end);
-    const before = index > 0 ? source.slice(spans[index - 1]![0], spans[index - 1]![1]) : "";
-    const after = index + 1 < spans.length ? source.slice(spans[index + 1]![0], spans[index + 1]![1]) : "";
-    if (/[:;]$/.test(before) || /[:;,]$/.test(text)) continue;
+    if (!open[lineOf(start)]) continue;
+    const said = text.slice(start, end);
+    // A paragraph's own bold lead says nothing of itself.
+    if (/^\s*(?:(?:[-*+]|\d{1,9}[.)])\s+)?(\*\*|__).+\1\s*$/.test(said)) continue;
+    const before = index > 0 ? text.slice(spans[index - 1]![0], spans[index - 1]![1]) : "";
+    const after = index + 1 < spans.length ? text.slice(spans[index + 1]![0], spans[index + 1]![1]) : "";
+    if (/[:;]$/.test(before) || POINTING.test(before) || /[:;,]$/.test(said)) continue;
     if (QUALIFYING_START.test(after.replace(/^\s*(?:(?:[-*+>#]+|\d{1,9}[.)])\s+)+/, "").replace(/^[^\p{L}\p{N}]+/u, ""))) continue;
-    found.push(sentenceKey(text));
+    // A bold lead the line opens with is no part of the sentence after it: "**Testing.** Use Postgres 16 …".
+    found.push(sentenceKey(said.replace(/^(\s*(?:(?:[-*+]|\d{1,9}[.)])\s+)?)(\*\*|__)(.+?)\2\s+(?=\S)/, "$1")));
   }
   return found;
 }
@@ -628,34 +747,105 @@ function bornOut(said: string, start: number, end: number, changeEnd: number, re
   if (squashed(rest) === "") cuts.push(changeEnd);
   for (const cut of cuts) {
     if (cut < end && negates(said.slice(cut, end))) continue;
-    const head = sentenceKey(said.slice(start, cut));
-    if (sources.has(head)) return true;
+    const head = said.slice(start, cut);
+    if (sources.has(sentenceKey(head))) return true;
     if (replaced !== null && (cut === changeEnd || squashed(said.slice(changeEnd, cut)) === "")) {
-      const old = flattened(replaced);
-      if (CONTRASTS.some((contrast) => sources.has(sentenceKey(`${head}${contrast}${old}${contrast.includes("(") ? ")" : ""}`)))) return true;
+      const old = replaced.trim();
+      if (CONTRASTS.some((contrast) => sources.has(sentenceKey(`${head.trimEnd()}${contrast}${old}${contrast.includes("(") ? ")" : ""}`)))) return true;
     }
   }
   return false;
 }
 
-/** Units a number may be written with, as a multiple of the base one, so "4000ms" and "4s", "50%" and "0.5", are one value. */
-const UNIT_SCALE: Readonly<Record<string, number>> = { "%": 0.01, ms: 0.001, s: 1, sec: 1, secs: 1, min: 60, mins: 60, h: 3600, hr: 3600, hrs: 3600, k: 1e3, kb: 1e3, mb: 1e6, gb: 1e9 };
-
-/** The numbers a text says, each as its value: "4.0" and "4", "1,000" and "1000", "0x10" and "16", "+1" and "1" are one; "-1" is not "1". */
-function numbersOf(text: string): number[] {
-  const plain = text.replace(/`/g, "").replace(/(\d)[,_](?=\d{3}(?!\d))/g, "$1");
-  const values: number[] = [];
-  for (const match of plain.matchAll(/(?:(?<![\p{L}\p{N}_])([-+]))?(0x[0-9a-f]+|\d+(?:\.\d+)?(?:e[-+]?\d+)?)(%|[a-z]+)?/giu)) {
-    const [, sign, digits, unit] = match;
-    const value = Number(digits) * (sign === "-" ? -1 : 1) * (UNIT_SCALE[(unit ?? "").toLowerCase()] ?? 1);
-    if (Number.isFinite(value)) values.push(value);
+/**
+ * Units a number may be written with, by what they measure and as the
+ * multiples of its base unit they may mean, so "4000ms" and "4s", "50%"
+ * and "0.5", "1024KiB" and "1MiB" are one value. A decimal byte unit may
+ * mean its binary multiple too, so "1024KB" and "1MB" are one value as
+ * well. A bare number counts. Matched lowercased.
+ */
+const UNITS: Readonly<Record<string, { measures: string; scales: readonly number[] }>> = (() => {
+  const table: Record<string, { measures: string; scales: readonly number[] }> = { "": { measures: "count", scales: [1] } };
+  const add = (measures: string, scales: readonly number[], ...names: string[]) => {
+    for (const name of names) table[name] = { measures, scales };
+  };
+  add("count", [0.01], "%", "percent");
+  add("count", [1e3], "k", "thousand");
+  add("count", [1e6], "million");
+  add("count", [1e9], "billion");
+  add("time", [1e-9], "ns", "nanosecond", "nanoseconds");
+  add("time", [1e-6], "us", "µs", "microsecond", "microseconds");
+  add("time", [1e-3], "ms", "msec", "msecs", "millisecond", "milliseconds");
+  add("time", [1], "s", "sec", "secs", "second", "seconds");
+  add("time", [60], "min", "mins", "minute", "minutes");
+  add("time", [3600], "h", "hr", "hrs", "hour", "hours");
+  add("time", [86400], "d", "day", "days");
+  add("time", [604800], "w", "wk", "wks", "week", "weeks");
+  add("bytes", [1], "b", "byte", "bytes");
+  for (const [power, prefix] of ["k", "m", "g", "t", "p"].entries()) {
+    add("bytes", [1000 ** (power + 1), 1024 ** (power + 1)], `${prefix}b`);
+    add("bytes", [1024 ** (power + 1)], `${prefix}ib`, `${prefix}i`);
   }
-  return values.sort((a, b) => a - b);
+  return table;
+})();
+
+/** A number a text says, as `numbersOf` reads it: its value in its unit, what the unit measures (or the unit itself, where EO does not know it), and the multiples it may mean. */
+interface Quantity {
+  value: number;
+  measures: string;
+  scales: readonly number[];
 }
 
-/** Whether two sorted lists of numbers are one list of values. */
-function sameNumbers(a: readonly number[], b: readonly number[]): boolean {
-  return a.length === b.length && a.every((value, index) => Math.abs(value - b[index]!) <= 1e-9 * Math.max(1, Math.abs(value)));
+/**
+ * The numbers a text says (EO-913), each with its unit, attached ("4s",
+ * "1024KiB", "50%") or after a space where EO knows the word ("4 seconds",
+ * "1 MiB"): "4.0" and "4", "1,000" and "1000", "0x10" and "16", "+1" and
+ * "1" are one value; "-1" is not "1". A unit EO does not know is kept as
+ * itself, so "18x" and "18y" measure different things it cannot convert.
+ */
+function numbersOf(text: string): Quantity[] {
+  const plain = text.replace(/`/g, "").replace(/(\d)[,_](?=\d{3}(?!\d))/g, "$1");
+  const found: Quantity[] = [];
+  for (const match of plain.matchAll(/(?:(?<![\p{L}\p{N}_])([-+]))?(0x[0-9a-f]+|\d+(?:\.\d+)?(?:e[-+]?\d+)?)(%|[\p{L}µ]+(?![\p{L}\p{N}_]))?/giu)) {
+    const [whole, sign, digits, attached] = match;
+    let unit = (attached ?? "").toLowerCase();
+    if (unit === "") {
+      const spaced = /^[ \t]+(%|[\p{L}µ]+)(?![\p{L}\p{N}_])/u.exec(plain.slice(match.index + whole.length));
+      if (spaced !== null && UNITS[spaced[1]!.toLowerCase()] !== undefined) unit = spaced[1]!.toLowerCase();
+    }
+    const value = Number(digits) * (sign === "-" ? -1 : 1);
+    if (!Number.isFinite(value)) continue;
+    const known = UNITS[unit];
+    found.push(known === undefined ? { value, measures: `unit ${unit}`, scales: [1] } : { value, measures: known.measures, scales: known.scales });
+  }
+  return found;
+}
+
+/**
+ * Whether what a run took out and what it put in say the same numbers
+ * (EO-913): "same" where, measure by measure, the values are one list
+ * under some reading of their units — "1024KB" for "1MB" read in binary
+ * multiples; "unconvertible" where they do not measure the same things,
+ * a unit EO does not know changed or a bare number given a unit ("4" for
+ * "4000ms"), so EO cannot tell whether the value changed; "changed" where
+ * EO can see that it did. Two lists of different lengths say different
+ * numbers.
+ */
+function compareNumbers(out: readonly Quantity[], into: readonly Quantity[]): "same" | "changed" | "unconvertible" {
+  if (out.length !== into.length) return "changed";
+  const measures = (list: readonly Quantity[]) => list.map((quantity) => quantity.measures).sort().join("\n");
+  if (measures(out) !== measures(into)) return "unconvertible";
+  const values = (list: readonly Quantity[], reading: number) =>
+    list
+      .map((quantity) => ({ measure: quantity.measures, value: quantity.value * quantity.scales[Math.min(reading, quantity.scales.length - 1)]! }))
+      .sort((a, b) => (a.measure === b.measure ? a.value - b.value : a.measure < b.measure ? -1 : 1));
+  const one = (a: readonly { value: number }[], b: readonly { value: number }[]) => a.every((item, index) => Math.abs(item.value - b[index]!.value) <= 1e-9 * Math.max(1, Math.abs(item.value)));
+  for (const outReading of [0, 1]) {
+    for (const intoReading of [0, 1]) {
+      if (one(values(out, outReading), values(into, intoReading))) return "same";
+    }
+  }
+  return "changed";
 }
 
 /**
@@ -707,7 +897,7 @@ function correctionProblem(rewrite: string, entry: string, sources: readonly str
   const to = tokensOf(said);
   const codeFrom = codeSpans(had);
   const sentences = sentenceSpans(said);
-  const sourceSentences = new Set(sources.flatMap(standingSentences));
+  const sourceSentences = new Set(sources.flatMap((source) => standingSentences(source, had)));
   let unborne: string | null = null;
   for (const run of changedRuns(from, to)) {
     const out = from.slice(run.from[0], run.from[1]);
@@ -741,8 +931,12 @@ function correctionProblem(rewrite: string, entry: string, sources: readonly str
         return `changes ${shown}, which takes out "${reworded.map((token) => token.text).join(" ")}": a correction replaces only a number, name, path, piece of code, acronym or negation the source contradicts, and keeps every other word of the entry as it was`;
       }
       const values = numbersOf(outText);
-      if (values.length > 0 && sameNumbers(values, numbersOf(intoText))) {
+      const numbers = values.length > 0 ? compareNumbers(values, numbersOf(intoText)) : "changed";
+      if (numbers === "same") {
         return `changes ${shown}, which says the same number${values.length === 1 ? "" : "s"} written another way, so it corrects no value: where EO cannot see a value change, the entry is left as it is`;
+      }
+      if (numbers === "unconvertible") {
+        return `changes ${shown}, which changes what a number is measured in to a unit EO cannot convert it to, so EO cannot tell that the value changed: where EO cannot see a value change, the entry is left as it is`;
       }
       const says = sayer(intoText);
       lost = outWords.filter((token) => isConcrete(token, codeFrom) && !says(token.text)).map((token) => token.text);
@@ -778,11 +972,13 @@ const COUNT = "(\\d+|an?|one|two|three|four|five|six|seven|eight|nine|ten)";
  * The date a relative date means, counted from the day its entry was
  * written as the model is shown it (UTC, `isoDay`), where EO can tell:
  * as a day (`YYYY-MM-DD`) for "today", "yesterday", "tomorrow", "N days
- * ago" and "in N days"; as a month (`YYYY-MM`) for "this month", "last
- * month" and "next month". Null for one it cannot — "last week", "on
- * Monday", "recently", "three months ago" — and for one a date cannot
- * stand for without losing what it says of the time of day, "tonight" or
- * "this morning": a `relative_date` rewrite leaves those as they are.
+ * ago" and "N days from now"; as a month (`YYYY-MM`) for "this month",
+ * "last month" and "next month". Null for one it cannot — "last week", "on
+ * Monday", "recently", "three months ago" — for one a date cannot stand
+ * for without losing what it says of the time of day, "tonight" or "this
+ * morning", and for "in N days", which says a time ahead ("ships in two
+ * days") as often as a span behind ("no timeout in two days"): a
+ * `relative_date` rewrite leaves those as they are.
  */
 export function resolvedDate(phrase: string, writtenAt: number): string | null {
   const said = phrase.toLowerCase().trim().replace(/\s+/g, " ");
@@ -793,8 +989,8 @@ export function resolvedDate(phrase: string, writtenAt: number): string | null {
   const count = (word: string) => (/^\d+$/.test(word) ? Number(word) : NUMBER_WORDS[word]!);
   const ago = new RegExp(`^${COUNT} days? (?:ago|back)$`).exec(said);
   if (ago) return day(-count(ago[1]!));
-  const ahead = new RegExp(`^(?:in ${COUNT} days?|${COUNT} days? from now)$`).exec(said);
-  if (ahead) return day(count((ahead[1] ?? ahead[2])!));
+  const ahead = new RegExp(`^${COUNT} days? from now$`).exec(said);
+  if (ahead) return day(count(ahead[1]!));
   const month = /^(this|last|previous|next|coming) month$/.exec(said);
   if (month) {
     const offset = { this: 0, last: -1, previous: -1, next: 1, coming: 1 }[month[1] as "this" | "last" | "previous" | "next" | "coming"];
@@ -804,6 +1000,9 @@ export function resolvedDate(phrase: string, writtenAt: number): string | null {
   }
   return null;
 }
+
+/** A word before a relative date that makes it a span rather than a day or month: "over the last month", "within two days from now", "throughout this month". */
+const DURATION_BEFORE = /(?<![\p{L}\p{N}_])(?:the|within|over|throughout|past|all)\s+$/iu;
 
 /** The one word a date put for a relative one may have before it, so it says what the phrase did and no more: "on" a day, "in" or "during" a month. */
 const DAY_PREPOSITIONS = new Set(["on"]);
@@ -868,7 +1067,8 @@ function relativeDateProblem(rewrite: { body: string; contradictsRepositoryFile:
   for (const [index, phrase] of phrases.entries()) {
     const put = puts[index]!;
     if (put === phrase[0]) continue;
-    const meant = resolvedDate(phrase[0], entry.createdAt);
+    // "over the last month", "within two days from now": a span, which a date is not.
+    const meant = DURATION_BEFORE.test(body.slice(Math.max(0, phrase.index - 20), phrase.index)) ? null : resolvedDate(phrase[0], entry.createdAt);
     if (meant === null) return `gives relative_date, but EO cannot tell what date "${phrase[0]}" in an entry written ${written} meant, so it stays as it is, not "${put}"`;
     replaced += 1;
     const dates = [...put.matchAll(ABSOLUTE_DATE)];
@@ -1033,12 +1233,12 @@ const OPERATION_RULES = [
   "Answer with the changes to make, not with the entries to keep. Name only what changes: an entry you do not mention stays exactly as it is, so never list an entry just to keep it. There are three operations:",
   "- `retire`: `{ id, reason }` — retire one entry, saying in a few words why.",
   "- `merge`: `{ from, body, contradictsRepositoryFile }` — fold two or more entries (`from` holds at least two ids) into one new entry whose text is `body`.",
-  `- \`rewrite\`: \`{ id, body, reason, contradictsRepositoryFile }\` — replace one entry's text with \`body\`. \`reason\` is one of ${MEMORY_CONSOLIDATION_REWRITE_REASONS.map((reason) => `\`${reason}\``).join(", ")}: a relative date or time the entry says made absolute, a disagreement with a repository file you are given put right, or a correction by an entry you are given that was written after it. EO checks each reason against the change itself and refuses the whole answer where one does not hold. A \`relative_date\` rewrite replaces only the relative date or time with the date it meant, counted from the date the entry was written, and changes not one other character of the entry — not a space, a backtick or a letter's case — nor contradictsRepositoryFile: a day as YYYY-MM-DD, alone or after "on", for "today", "yesterday", "tomorrow", "N days ago" or "in N days" — "yesterday" in an entry written 2026-11-26 is 2026-11-25, so "Released yesterday." becomes "Released 2026-11-25." or "Released on 2026-11-25.", never "Released before 2026-11-25." — and a month as YYYY-MM, alone or after "in" or "during", for "this month", "last month" or "next month". Any other relative phrase — "last week", "on Monday", "recently", "three months ago", and "tonight" or "this morning", whose time of day a date would lose — stays exactly as it is, and so does a word in code (inside a code span, however many backticks open it, a fenced code block opened with backticks or tildes, a line indented four spaces — either also inside block quotes or list items, nested in any order —, a <code> or <pre> element, or part of a name or path such as \`today_count\` or \`today.json\`). A \`repository_file\` rewrite puts right a value the file says otherwise, and nothing else: it replaces a number, a name or path, a piece of code or an acronym of the entry with what the file says in its place, written exactly as one sentence of the file writes it — \`16\` for \`15\`, \`-1\` for \`1\`, "\`pnpm lint\`" for "\`pnpm test\`", "local time" for "UTC" — or adds or takes off a negation ("Do not run" for "Run") where the file's sentence negates otherwise. Every other character of the entry stays exactly as it was: every other word, clause and sentence, every mark and every space, even in a sentence it corrects — "Use Postgres 15 for tests and keep backups." becomes "Use Postgres 16 for tests and keep backups.", never "Use Postgres 16 for tests." The corrected sentence, as it then reads from its start to at least the end of the change, must be word for word a sentence of the file standing on its own — the same instruction under the same conditions, not one about another environment, only as a fallback, after a heading clause such as "When CI is down:", or qualified by the sentence after it ("It is only a fallback."); the entry's own clause after the change, ", …" or " and …", may follow, and so may ", not" and the old value in the file's sentence ("local time, not UTC"). A negation is borne out only by a sentence that negates the same action: "Do not skip the smoke tests" bears out nothing about "Run the smoke tests". A change of wording, spacing or punctuation alone ("before" for "prior to", \`pnpm test\` for \`pnpm  test\`), the same value in another notation ("CI" for "continuous integration", "2" for "two", "4 seconds" for "4.0 seconds", "4s" for "4000ms", "18" for "v18", code as prose), a command in plain words changed for another (pnpm lint for pnpm test, outside code), a word dropped or a detail added is no correction, and is refused: leave the entry as it is. An entry that would say only what the file says is retired instead. A \`newer_entry\` rewrite does the same with a sentence of the newer entry. A rewrite keeps the entry's contradictsRepositoryFile as it is, except that a \`repository_file\` rewrite may clear it; it never sets it, and an entry is never rewritten only to change it. There is no other reason to rewrite an entry: never rewrite one only to shorten it, reword it or tidy its style.`,
+  `- \`rewrite\`: \`{ id, body, reason, contradictsRepositoryFile }\` — replace one entry's text with \`body\`. \`reason\` is one of ${MEMORY_CONSOLIDATION_REWRITE_REASONS.map((reason) => `\`${reason}\``).join(", ")}: a relative date or time the entry says made absolute, a disagreement with a repository file you are given put right, or a correction by an entry you are given that was written after it. EO checks each reason against the change itself and refuses the whole answer where one does not hold. A \`relative_date\` rewrite replaces only the relative date or time with the date it meant, counted from the date the entry was written, and changes not one other character of the entry — not a space, a backtick or a letter's case — nor contradictsRepositoryFile: a day as YYYY-MM-DD, alone or after "on", for "today", "yesterday", "tomorrow", "N days ago" or "N days from now" — "yesterday" in an entry written 2026-11-26 is 2026-11-25, so "Released yesterday." becomes "Released 2026-11-25." or "Released on 2026-11-25.", never "Released before 2026-11-25." — and a month as YYYY-MM, alone or after "in" or "during", for "this month", "last month" or "next month". Any other relative phrase — "last week", "on Monday", "recently", "three months ago", "in two days" (a time ahead or a span behind), one that is a span ("over the last month", "within two days from now"), and "tonight" or "this morning", whose time of day a date would lose — stays exactly as it is, and so does a word in code (inside a code span, however many backticks open it, a fenced code block opened with backticks or tildes, a line indented four spaces or with a tab in its indent — either also inside block quotes or list items, nested in any order —, a <code> or <pre> element, or part of a name or path such as \`today_count\` or \`today.json\`). A \`repository_file\` rewrite puts right a value the file says otherwise, and nothing else: it replaces a number, a name or path, a piece of code or an acronym of the entry with what the file says in its place, written exactly as one sentence of the file writes it, a name, path or piece of code in the same case and with the same spaces — \`16\` for \`15\`, \`-1\` for \`1\`, "\`pnpm lint\`" for "\`pnpm test\`", "local time" for "UTC" — or adds or takes off a negation ("Do not run" for "Run") where the file's sentence negates otherwise. Every other character of the entry stays exactly as it was: every other word, clause and sentence, every mark and every space, even in a sentence it corrects — "Use Postgres 15 for tests and keep backups." becomes "Use Postgres 16 for tests and keep backups.", never "Use Postgres 16 for tests." The corrected sentence, as it then reads from its start to at least the end of the change, must be word for word a sentence of the file standing on its own — the same instruction under the same conditions, not one about another environment, only as a fallback, after a heading clause such as "When CI is down:", qualified by the sentence after it ("It is only a fallback."), under a heading, bold lead or line ending in a colon whose words the entry does not have ("## Remote testing" over an entry about local testing), introduced as an example or as what no longer holds ("Do not follow the bad example below."), or inside the file's code blocks, block quotes or HTML comments; the entry's own clause after the change, ", …" or " and …", may follow, and so may ", not" and the old value in the file's sentence ("local time, not UTC"). A negation is borne out only by a sentence that negates the same action: "Do not skip the smoke tests" bears out nothing about "Run the smoke tests". A change of wording, spacing or punctuation alone ("before" for "prior to", \`pnpm test\` for \`pnpm  test\`), the same value in another notation ("CI" for "continuous integration", "2" for "two", "4 seconds" for "4.0 seconds", "4s" for "4000ms", "1MiB" for "1024KiB", "18" for "v18", code as prose), a number given a unit EO cannot convert it to ("4000ms" for "4"), a command in plain words changed for another (pnpm lint for pnpm test, outside code), a word dropped or a detail added is no correction, and is refused: leave the entry as it is. An entry that would say only what the file says is retired instead. A \`newer_entry\` rewrite does the same with a sentence of the newer entry. A rewrite keeps the entry's contradictsRepositoryFile as it is, except that a \`repository_file\` rewrite may clear it; it never sets it, and an entry is never rewritten only to change it. There is no other reason to rewrite an entry: never rewrite one only to shorten it, reword it or tidy its style.`,
   "Every id you name must be one of the entries you are given, and each id may appear only once in the whole answer — in one retire, one merge's `from`, or one rewrite. An answer with nothing to change has all three lists empty; that is a valid answer, and often the right one.",
   "What to change, and nothing else:",
   `- Merge entries that state the same fact into one, keeping every detail any of them adds. Keep each entry you merge or rewrite to one fact, at most ${MAX_MEMORY_NOTE_CHARS} characters: an answer with a longer one is refused whole. Entries about one topic that state different facts are not duplicates; leave them as they are.`,
   "- Retire what is stale, contradicted by a newer entry, or derivable from the code itself — what an agent would see by reading the repository. Between two entries that disagree, the newer one is current.",
-  "- Write the relative dates EO can date (\"yesterday\", \"in two days\", \"last month\") as absolute dates, using the date each entry was written, as the rewrite rule above says; leave every other relative phrase as it is.",
+  "- Write the relative dates EO can date (\"yesterday\", \"two days ago\", \"last month\") as absolute dates, using the date each entry was written, as the rewrite rule above says; leave every other relative phrase as it is.",
   "- When the workspace's CLAUDE.md or AGENTS.md is given — for a project, those of each of its workspaces — treat it as current: an entry that disagrees with it is rewritten to agree, or retired. The one exception is an entry that is plainly newer than the file and says it corrects it; keep it, and where you merge it set contradictsRepositoryFile to true on the merge that carries it. An entry already flagged stays flagged. Never suggest editing the file.",
   "- Do not invent anything an entry does not say.",
   "- How many entries there are, and how long they are, is no reason to change any of them. A distinct, current, useful entry stays exactly as it is, and a change you are unsure of is better left out.",
