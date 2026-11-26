@@ -2412,9 +2412,6 @@ export function writeAdoptedPage(db: Db, project: RecordProject, page: RecordAdo
      * not, as a run whose agent is missing is: what the entry says is the
      * part that matters.
      */
-    // Which of them the sender's last consolidation had settled (EO-913),
-    // by the version sent: an entry that has changed here since is not.
-    const settled = new Map(page.memorySettled.map((one) => [one.id, one.version]));
     for (const entry of page.memories) {
       const here = db.select({ projectId: memories.projectId }).from(memories).where(eq(memories.id, entry.id)).get();
       if (here !== undefined && here.projectId !== project.id) {
@@ -2435,11 +2432,6 @@ export function writeAdoptedPage(db: Db, project: RecordProject, page: RecordAdo
             }
           : entry.source;
       writeArrivedMemory(db, { ...entry, source, projectId: project.id });
-      const version = settled.get(entry.id);
-      db.update(memories)
-        .set({ settledVersion: version === entry.updatedAt ? version : null })
-        .where(eq(memories.id, entry.id))
-        .run();
     }
 
     /**
@@ -2605,14 +2597,7 @@ export function writeAdoptedProject(
       // …and its memory, for the same reason (EO-482): the feed leaves
       // out a project still arriving, and a cursor that moved past its
       // entries meanwhile has to be offered them again.
-      // What the sender had settled, still as it arrived, stays settled
-      // through that stamp (EO-913): its `settled_version` moves with it,
-      // so the record's scheduled consolidation does not take the whole
-      // project for new.
-      db.update(memories)
-        .set({ settledVersion: sql`case when ${memories.settledVersion} = ${memories.updatedAt} then ${at} else null end`, updatedAt: at })
-        .where(eq(memories.projectId, project.id))
-        .run();
+      db.update(memories).set({ updatedAt: at }).where(eq(memories.projectId, project.id)).run();
       // …and its skills, for the same reason (EO-513) — by the stamp the
       // feed pages on and never by `updated_at`, which is the sender's
       // version: the sweep that follows this commit may still carry an

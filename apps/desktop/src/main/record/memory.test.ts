@@ -28,7 +28,6 @@ import {
   createRun,
   createWorkspace,
   editedPredecessors,
-  entriesNewSinceConsolidated,
   getMemory,
   getMemorySearchEntry,
   getRun,
@@ -37,9 +36,7 @@ import {
   listConsolidations,
   listMemories,
   listRunsForItem,
-  markConsolidationRunFinished,
   postComment,
-  restoreMemory,
   retireMemory,
   setItemHeld,
   startConsolidation,
@@ -766,117 +763,6 @@ describe("handing a solo project to the record", () => {
     expect(listMemories(laptop.handle.db, scope).map((entry) => entry.body).sort()).toEqual(
       ["Releases go out on Tuesdays.", "The tests need Postgres 16.", "Written after the move."].sort(),
     );
-  });
-});
-
-describe("a moved project's consolidated memory (EO-913)", () => {
-  it("arrives settled where this desktop had settled it, so only what was new here, or is written there after, is new on the record", async () => {
-    const project = createProject(anna.handle.db, { name: "Settled", keyPrefix: "SET" });
-    const item = createTestItem(anna.handle.db, { type: "story", title: "Learned something", stepId: "todo", projectId: project.id });
-    const run = createRun(anna.handle.db, { itemId: item.id, agentId: null, action: "implement" });
-    updateRun(anna.handle.db, run.id, { status: "succeeded", endedAt: Date.now() });
-    const scope = projectScope(project.id);
-    const source = { type: "run" as const, runId: run.id, itemId: item.id };
-    const at = Date.now() - 60_000;
-    const kept = addMemory(anna.handle.db, { scope, body: "The tests need Postgres 16.", source, now: at });
-    if (!kept.ok) throw new Error("the fixture's memory was not written");
-    // This desktop's last consolidation finished, and settled the entry.
-    const row = startConsolidation(anna.handle.db, { scope, trigger: "schedule", now: at + 1_000 });
-    const applied = applyConsolidation(anna.handle.db, { id: row.id, sent: [], answer: { retire: [], merge: [], rewrite: [] }, note: null, now: at + 2_000 });
-    if (!applied.ok) throw new Error(applied.problem);
-    markConsolidationRunFinished(anna.handle.db, row.id);
-    const later = addMemory(anna.handle.db, { scope, body: "Releases are cut from the release branch.", source, now: at + 3_000 });
-    if (!later.ok) throw new Error("the fixture's memory was not written");
-    expect(entriesNewSinceConsolidated(anna.handle.db, scope)).toEqual([later.entry.id]);
-
-    const moved = await moveProjectToRecord({
-      db: anna.handle.db,
-      projectId: project.id,
-      personId: annaPersonId,
-      personName: "Anna",
-      send: async (request) => {
-        const served = (await serveAdopt(serving, {
-          deviceId: anna.deviceId,
-          project: request.project,
-          keyNextValue: request.keyNextValue,
-          final: request.final,
-          abandon: request.abandon,
-          page: request.page,
-        })) as { accepted: RecordAdoptCounts; problem: string | null };
-        return served.problem !== null ? { ok: false, problem: served.problem } : { ok: true, accepted: served.accepted };
-      },
-    });
-    if (!moved.ok) throw new Error(moved.problem);
-
-    // Finalising stamped both as changed, and the history stayed behind:
-    // still only the note that was new here is new there.
-    expect(getMemory(recordDb.db, kept.entry.id)?.updatedAt).toBe(getMemory(recordDb.db, later.entry.id)?.updatedAt);
-    expect(listConsolidations(recordDb.db, scope)).toEqual([]);
-    expect(entriesNewSinceConsolidated(recordDb.db, scope)).toEqual([later.entry.id]);
-
-    // An entry written on the record after the move is new, and so is a
-    // settled one changed there.
-    const written = addMemory(recordDb.db, { scope, body: "Staging runs on Fridays.", source: { type: "person", personId: null } });
-    const byAgent = addMemory(recordDb.db, { scope, body: "The linter is Biome now.", source: { type: "run", runId: null, itemId: null } });
-    if (!written.ok || !byAgent.ok) throw new Error("the record's memory was not written");
-    expect(entriesNewSinceConsolidated(recordDb.db, scope).sort()).toEqual([later.entry.id, byAgent.entry.id].sort());
-    retireMemory(recordDb.db, kept.entry.id, { reason: "retired" });
-    restoreMemory(recordDb.db, kept.entry.id, Date.now() + 500);
-    expect(entriesNewSinceConsolidated(recordDb.db, scope).sort()).toEqual([kept.entry.id, later.entry.id, byAgent.entry.id].sort());
-
-    // Once the record finishes a run of its own, it counts from that.
-    const own = startConsolidation(recordDb.db, { scope, trigger: "schedule", now: Date.now() + 1_000 });
-    const done = applyConsolidation(recordDb.db, { id: own.id, sent: [], answer: { retire: [], merge: [], rewrite: [] }, note: null, now: Date.now() + 2_000 });
-    if (!done.ok) throw new Error(done.problem);
-    markConsolidationRunFinished(recordDb.db, own.id);
-    expect(entriesNewSinceConsolidated(recordDb.db, scope)).toEqual([]);
-  });
-
-  it("carries a settlement the desktop makes while the move goes on, though it changes no entry's stamp", async () => {
-    const project = createProject(anna.handle.db, { name: "Settling", keyPrefix: "STL" });
-    const item = createTestItem(anna.handle.db, { type: "story", title: "Learned something", stepId: "todo", projectId: project.id });
-    const run = createRun(anna.handle.db, { itemId: item.id, agentId: null, action: "implement" });
-    updateRun(anna.handle.db, run.id, { status: "succeeded", endedAt: Date.now() });
-    const scope = projectScope(project.id);
-    const at = Date.now() - 60_000;
-    const note = addMemory(anna.handle.db, { scope, body: "The tests need Postgres 16.", source: { type: "run", runId: run.id, itemId: item.id }, now: at });
-    if (!note.ok) throw new Error("the fixture's memory was not written");
-    expect(entriesNewSinceConsolidated(anna.handle.db, scope)).toEqual([note.entry.id]);
-
-    let settled = false;
-    const moved = await moveProjectToRecord({
-      db: anna.handle.db,
-      projectId: project.id,
-      personId: annaPersonId,
-      personName: "Anna",
-      send: async (request) => {
-        const served = (await serveAdopt(serving, {
-          deviceId: anna.deviceId,
-          project: request.project,
-          keyNextValue: request.keyNextValue,
-          final: request.final,
-          abandon: request.abandon,
-          page: request.page,
-        })) as { accepted: RecordAdoptCounts; problem: string | null };
-        // Once the entry has gone as new, a consolidation here finishes
-        // and changes nothing: the entry is settled, its stamp as it was.
-        if (!settled && request.page.memories.length > 0) {
-          settled = true;
-          const row = startConsolidation(anna.handle.db, { scope, trigger: "schedule", now: at + 1_000 });
-          const applied = applyConsolidation(anna.handle.db, { id: row.id, sent: [], answer: { retire: [], merge: [], rewrite: [] }, note: null, now: at + 2_000 });
-          if (!applied.ok) throw new Error(applied.problem);
-          markConsolidationRunFinished(anna.handle.db, row.id);
-        }
-        return served.problem !== null ? { ok: false, problem: served.problem } : { ok: true, accepted: served.accepted };
-      },
-    });
-    if (!moved.ok) throw new Error(moved.problem);
-
-    expect(settled).toBe(true);
-    expect(getMemory(anna.handle.db, note.entry.id)?.updatedAt).toBe(at);
-    expect(entriesNewSinceConsolidated(anna.handle.db, scope)).toEqual([]);
-    // Nothing was new here when it was handed over, so nothing is there.
-    expect(entriesNewSinceConsolidated(recordDb.db, scope)).toEqual([]);
   });
 });
 

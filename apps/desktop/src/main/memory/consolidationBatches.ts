@@ -117,22 +117,14 @@ export const NEW_ENTRY_NEIGHBOURS = 8;
  * rest of the scope is not sent, so what it costs follows the new notes,
  * not the size of memory.
  *
- * Each new entry's own list — itself and its neighbours — goes into one
- * batch whole wherever it fits a batch at all: into the batch being
- * filled where what it adds to it fits there, the next batch otherwise.
- * An entry already in the batch is not counted again, so new entries whose
- * lists overlap share it; an entry in an earlier batch is given again
- * wherever a later new entry ranks it, since that new entry's context is
- * the point. A list too long for any batch is cut: the new entry and its
- * neighbours best first, as far as they fit, never past `limits`. Lists
- * that share entries are taken one after another, in order of their
- * oldest new entry, so overlapping ones tend to share a batch. A new entry
- * that one batch already gave as a neighbour is still given again with
- * its own list where that did not fit there. What an earlier batch of the
- * run retired or replaced is put right before a later one is sent
- * (`refreshBatch`), so no batch is given an entry as it no longer is.
- * Without neighbours — the index could not be asked — the new entries go
- * alone, by age.
+ * New entries are taken oldest first, each with its neighbours, into the
+ * batch being filled; one whose unit — itself and its neighbours not yet
+ * in a batch — would take that batch over `limits` starts the next, and a
+ * unit larger than a batch is a batch on its own. Every entry is in at
+ * most one batch, so a new entry already placed as an earlier one's
+ * neighbour is not placed again, and a neighbour two new entries share
+ * goes with the first. Without neighbours — the index could not be asked
+ * — the new entries go alone, by age.
  */
 export function planNewEntryBatches<T extends BatchableEntry>(
   fresh: readonly T[],
@@ -140,131 +132,34 @@ export function planNewEntryBatches<T extends BatchableEntry>(
   neighbours: EntryNeighbours | null,
   limits: BatchLimits = CONSOLIDATION_BATCH_LIMITS,
 ): T[][] {
-  return planNewEntryBatchGroups(fresh, entries, neighbours, limits).map((planned) => planned.entries);
-}
-
-/** One batch `planNewEntryBatchGroups` plans: what it is given, and the new entries whose own list it holds. */
-export interface PlannedNewEntryBatch<T> {
-  entries: T[];
-  /**
-   * The new entries this batch is for (EO-913): each one whose own list —
-   * itself and its neighbours — was placed in it. A new entry another's
-   * list brings into a batch as a neighbour is context there, not done,
-   * and is given again with its own list in the batch that holds it.
-   */
-  owns: string[];
-}
-
-/** `planNewEntryBatches`, with each batch's `owns`: what a run counts as handled once that batch is applied. */
-export function planNewEntryBatchGroups<T extends BatchableEntry>(
-  fresh: readonly T[],
-  entries: readonly T[],
-  neighbours: EntryNeighbours | null,
-  limits: BatchLimits = CONSOLIDATION_BATCH_LIMITS,
-): PlannedNewEntryBatch<T>[] {
   const byId = new Map(entries.map((entry) => [entry.id, entry]));
   for (const entry of fresh) byId.set(entry.id, entry);
-  // Each new entry's own list: itself and its nearest neighbours, best first.
-  const units = [...new Map(fresh.map((entry) => [entry.id, entry])).values()].sort(byAge).map((entry) => {
+  const placed = new Set<string>();
+  const batches: T[][] = [];
+  let batch: T[] = [];
+  let chars = 0;
+  for (const entry of [...fresh].sort(byAge)) {
+    if (placed.has(entry.id)) continue;
     const unit = [entry];
     for (const id of neighbours?.get(entry.id) ?? []) {
       if (unit.length > NEW_ENTRY_NEIGHBOURS) break;
       const neighbour = byId.get(id);
-      if (neighbour !== undefined && !unit.includes(neighbour)) unit.push(neighbour);
+      if (neighbour !== undefined && !placed.has(id) && !unit.includes(neighbour)) unit.push(neighbour);
     }
-    return unit;
-  });
-  // Lists that share an entry are taken one after another, so they tend to share a batch.
-  const parent = new Map<string, string>();
-  const root = (id: string): string => {
-    let at = id;
-    while (parent.get(at) !== at) at = parent.get(at)!;
-    parent.set(id, at);
-    return at;
-  };
-  for (const unit of units) {
-    for (const member of unit) if (!parent.has(member.id)) parent.set(member.id, member.id);
-    for (const member of unit.slice(1)) parent.set(root(member.id), root(unit[0]!.id));
-  }
-  const groups = new Map<string, T[][]>();
-  for (const unit of units) {
-    const key = root(unit[0]!.id);
-    groups.set(key, [...(groups.get(key) ?? []), unit]);
-  }
-
-  const batches: PlannedNewEntryBatch<T>[] = [];
-  let batch: T[] = [];
-  let owns: string[] = [];
-  let chars = 0;
-  const flush = () => {
-    if (batch.length > 0) batches.push({ entries: batch.sort(byAge), owns });
-    batch = [];
-    owns = [];
-    chars = 0;
-  };
-  const add = (member: T) => {
-    batch.push(member);
-    chars += member.body.length;
-  };
-  const fits = (count: number, size: number) => batch.length + count <= limits.maxEntries && chars + size <= limits.maxChars;
-  const sizeOf = (members: readonly T[]) => members.reduce((sum, member) => sum + member.body.length, 0);
-  for (const unit of [...groups.values()].flat()) {
-    const missing = unit.filter((member) => !batch.includes(member));
-    if (fits(missing.length, sizeOf(missing))) {
-      missing.forEach(add);
-      owns.push(unit[0]!.id);
-      continue;
+    const size = unit.reduce((sum, member) => sum + member.body.length, 0);
+    if (batch.length > 0 && (batch.length + unit.length > limits.maxEntries || chars + size > limits.maxChars)) {
+      batches.push(batch.sort(byAge));
+      batch = [];
+      chars = 0;
     }
-    flush();
-    // Too long for any batch: the new entry, then its neighbours best
-    // first while they fit.
-    const [head, ...rest] = unit as [T, ...T[]];
-    add(head);
-    owns.push(head.id);
-    for (const member of rest) if (fits(1, member.body.length)) add(member);
+    for (const member of unit) {
+      batch.push(member);
+      placed.add(member.id);
+    }
+    chars += size;
   }
-  flush();
+  if (batch.length > 0) batches.push(batch.sort(byAge));
   return batches;
-}
-
-/**
- * A planned batch as it is to be sent, once the batches of its run before
- * it have been applied (EO-913): an entry one of them retired is left out,
- * and in its place go the entries it was folded or rewritten into, still
- * active and not already in the batch, as far as they fit `limits` — so a
- * neighbour two batches shared reaches the second as the first left it,
- * and no batch is given an entry as it no longer is. `replaced` maps each
- * entry the run retired to what it wrote from it, `current` reads an
- * entry as it is now (undefined once it is retired).
- */
-export function refreshBatch<T extends BatchableEntry>(
-  batch: readonly T[],
-  replaced: ReadonlyMap<string, readonly string[]>,
-  current: (id: string) => T | undefined,
-  limits: BatchLimits = CONSOLIDATION_BATCH_LIMITS,
-): T[] {
-  if (!batch.some((entry) => replaced.has(entry.id))) return [...batch];
-  const kept = batch.filter((entry) => !replaced.has(entry.id));
-  const ids = new Set(kept.map((entry) => entry.id));
-  let chars = kept.reduce((sum, entry) => sum + entry.body.length, 0);
-  const into = (id: string, seen: Set<string>): string[] => {
-    if (seen.has(id)) return [];
-    seen.add(id);
-    const next = replaced.get(id);
-    return next === undefined ? [id] : next.flatMap((one) => into(one, seen));
-  };
-  for (const entry of batch) {
-    if (!replaced.has(entry.id)) continue;
-    for (const id of into(entry.id, new Set())) {
-      if (ids.has(id)) continue;
-      const now = current(id);
-      if (now === undefined || kept.length + 1 > limits.maxEntries || chars + now.body.length > limits.maxChars) continue;
-      kept.push(now);
-      ids.add(id);
-      chars += now.body.length;
-    }
-  }
-  return kept.sort(byAge);
 }
 
 /** An entry's first line, as the cross-batch pass is shown it. */

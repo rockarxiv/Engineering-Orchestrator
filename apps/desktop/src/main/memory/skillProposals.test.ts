@@ -32,7 +32,7 @@ import {
 } from "../db/repos/index.js";
 import { attachWorkspace, createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import type { SideCallRequest } from "../sideCalls/sideCall.js";
-import { MEMORY_PROPOSE_SKILLS_SYSTEM, resolvedDate } from "./consolidation.js";
+import { MEMORY_PROPOSE_SKILLS_SYSTEM } from "./consolidation.js";
 import { createMemoryConsolidator } from "./consolidator.js";
 import { sql } from "drizzle-orm";
 import { coveringEntries } from "./skillProposals.js";
@@ -108,7 +108,7 @@ describe("skills proposed by memory consolidation", () => {
   /** Six agent-written entries — the cap — two of which are the e2e procedure, written by two agents' runs. */
   function memory(at = Date.now() - 3 * DAY): { evidence: MemoryEntryView[]; facts: MemoryEntryView[] } {
     const evidence = [
-      note("To run e2e here: `Xvfb :99 &`, `export DISPLAY=:99`, then `pnpm e2e`. Checked yesterday.", implementerRun, at),
+      note("To run e2e here: `Xvfb :99 &`, `export DISPLAY=:99`, then `pnpm e2e`.", implementerRun, at),
       note("e2e failed with Missing X server again; started Xvfb and reran one spec with `pnpm e2e --debug`.", reviewerRun, at + 1),
     ];
     const facts = [1, 2, 3, 4].map((index) => note(`The ledger is in UTC (${index}).`, implementerRun, at + 10 + index));
@@ -344,13 +344,12 @@ describe("skills proposed by memory consolidation", () => {
   describe("the evidence it moves", () => {
     it("moves an entry the consolidation rewrote, named as evidence by the proposal call after it, and the consolidation's restore puts back what it replaced", async () => {
       const given = memory();
-      // Its "yesterday" made the date it meant, as a relative_date rewrite must (EO-913).
-      const rewritten = given.evidence[0]!.body.replace("yesterday", resolvedDate("yesterday", given.evidence[0]!.createdAt)!);
+      const rewritten = "To run e2e here: start Xvfb on :99 (`Xvfb :99 &`, `export DISPLAY=:99`), then `pnpm e2e`.";
       await run(
         () => ({
           retire: [],
           merge: [{ body: "The ledger is in UTC.", from: given.facts.map((entry) => entry.id), contradictsRepositoryFile: false }],
-          rewrite: [{ id: given.evidence[0]!.id, body: rewritten, contradictsRepositoryFile: false, reason: "relative_date" }],
+          rewrite: [{ id: given.evidence[0]!.id, body: rewritten, contradictsRepositoryFile: false, reason: "newer_entry" }],
         }),
         // The proposal call is given the entries as the consolidation left them: the rewritten one, not the one it replaced.
         (request) => {

@@ -1291,7 +1291,6 @@ function nothing(): IpcPayload<"record:adopt">["page"] {
     extensions: [],
     attachments: [],
     memories: [],
-    memorySettled: [],
     skills: [],
   };
 }

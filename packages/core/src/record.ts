@@ -2165,16 +2165,6 @@ export const RecordAdoptPageSchema = z.object({
    * items an entry may name as its source.
    */
   memories: z.array(RecordMemorySchema).max(500).default([]),
-  /**
-   * Which of `memories` the sender's last finished consolidation had
-   * settled (EO-913): active agent-written entries that are not new since
-   * it, each as the version (`updatedAt`) sent. A project's consolidation
-   * history does not travel and finalising the move stamps every entry it
-   * brought, so without this a record's scheduled consolidation would take
-   * a settled scope for new through and through. Empty from a sender that
-   * predates it, which leaves every entry new, as before.
-   */
-  memorySettled: z.array(z.object({ id: z.string(), version: z.number().int() })).max(500).default([]),
 });
 export type RecordAdoptPage = z.infer<typeof RecordAdoptPageSchema>;
 

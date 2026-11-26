@@ -3378,16 +3378,6 @@ export const memories = sqliteTable(
      * on every other row. No foreign key, for `replaces_id`'s reason.
      */
     supersededIds: text("superseded_ids", { mode: "json" }).$type<string[]>().notNull().default([]),
-    /**
-     * On an organisation's record, for an entry a project move brought
-     * that the sender's last consolidation had settled (EO-913, migration
-     * 0185): the version (`updated_at`) it arrived as, and once the move
-     * is finalised that moment, which finalising stamps it with. Equal to
-     * `updated_at` while the entry is still what the handover carried, so
-     * a scheduled consolidation does not take it for new. Null on every
-     * other entry, and never sent anywhere.
-     */
-    settledVersion: integer("settled_version"),
   },
   (table) => [
     index("idx_memories_scope").on(table.scopeKind, table.scopeId, table.retiredAt),
@@ -3444,34 +3434,6 @@ export const memoryConsolidations = sqliteTable(
      * own note for a scope on no project. Null otherwise.
      */
     stuckNoticedAt: integer("stuck_noticed_at"),
-    /**
-     * Whether it is the last row of a run that finished (EO-913, migration
-     * 0183): every batch it planned applied, and the cross-batch pass where
-     * it had one. A run is the rows sharing `started_at`; the newest
-     * finished one is what a scheduled consolidation's new entries are
-     * counted from (`entriesNewSinceConsolidated`). False on every other
-     * row; null on rows from before it was recorded, whose run is read as
-     * finished where none of its rows failed.
-     */
-    endsRun: integer("ends_run", { mode: "boolean" }),
-    /**
-     * The `started_at` of the run it goes on with, on a row of a retry of
-     * a run that stopped part-way (EO-913, migration 0184): the retry reads
-     * its entries at its own moment, but is the same run, so a failure of
-     * its first batch is still one after that run applied something. Null
-     * on a run's own rows. A run is the rows with one `coalesce(continues_run,
-     * started_at)` and one trigger.
-     */
-    continuesRun: integer("continues_run"),
-    /**
-     * The entry versions (`id@updated_at`) its run's read found stamped in
-     * the very millisecond it read them, `started_at` (EO-913, migration
-     * 0186): one stamped then was read, where it is listed, or written
-     * just after the read, and so new to the next scheduled run, where it
-     * is not — which the stamp alone cannot tell. Empty on most rows, and
-     * on rows from before it was recorded.
-     */
-    readTied: text("read_tied", { mode: "json" }).$type<string[]>().notNull().default([]),
   },
   (table) => [index("idx_memory_consolidations_scope").on(table.scopeKind, table.scopeId, table.startedAt)],
 );
