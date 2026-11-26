@@ -298,11 +298,11 @@ export async function pushBranch(
     const read = (stdout: string): { stdout: string; account: string | null } => ({ stdout, account: gate === null ? null : gitAccount(stdout, gate.marker) });
     try {
       const { stdout } = await execFileAsync(command, argv, {
+        ...running,
         cwd: repoPath,
         windowsHide: true,
         maxBuffer: 32 * 1024 * 1024,
         env: { ...env, ...(route?.env ?? {}), ...leaseEnv, ...restored, ...(followRedirects || route === null ? {} : noRedirects(route)) },
-        ...running,
       });
       return { ...read(stdout), failure: null };
     } catch (error) {
@@ -322,11 +322,11 @@ export async function pushBranch(
     // pushing them, and the push after it says what happened at the remote.
     if (submodules && gate === null) {
       await execFileAsync("git", composeGitArgs(["push", "--recurse-submodules=only", "--quiet", remote, branch], process.platform), {
+        ...running,
         cwd: repoPath,
         windowsHide: true,
         maxBuffer: 32 * 1024 * 1024,
         env,
-        ...running,
       }).catch(() => undefined);
     }
     let { stdout: printed, account, failure } = await send(false);
