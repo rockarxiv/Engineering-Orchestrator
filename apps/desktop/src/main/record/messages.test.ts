@@ -527,8 +527,14 @@ describe("a message about a project the organisation's record holds", () => {
 
   it("answers an upgraded desktop's own messages here — a projectless job's and one to its local person — signed out or offline (EO-918)", async () => {
     await annaDesk.record.sync();
-    // A job of Anna's own on the desk, about no project, which skipped a run.
-    const created = createJob(annaDesk.handle.db, { projectId: null, name: "Tidy up", trigger: { kind: "manual" }, ownerId: annaId });
+    // A job of the desk's own, owned by its local person and about no project, which skipped a run.
+    const created = createJob(annaDesk.handle.db, {
+      projectId: null,
+      name: "Tidy up",
+      trigger: { kind: "manual" },
+      pipelineId: "default",
+      template: { type: "developer:story", title: "{{job}} for {{date}}", body: null },
+    });
     if (!created.ok) throw new Error(created.problem);
     const skipped = messageJobOwner(annaDesk.handle.db, created.job, '"Tidy up" skipped a run.', { source: JOB_MESSAGE_SOURCE.skipped, options: ["Run now", "Leave it"] });
     // And one EO sent this machine's person, as `sendMessageHere` does.
@@ -575,8 +581,9 @@ describe("a message about a project the organisation's record holds", () => {
     registerAllHandlers(annaLaptop.handle.db, undefined, { platform: fakePlatform(), record: annaLaptop.record });
 
     const before = await answerToolCall({ name: "message_answer", arguments: { messageId: pressedBefore.id, answer: "Take theirs" } }, "external", false);
+    // The record's own refusal, and the copy that kept it open here gone with it.
     expect(before.isError).toBe(false);
-    expect(JSON.stringify(before.content)).toContain("no longer has that message");
+    expect(JSON.stringify(before.content)).toContain("not one of yours, or it has been deleted");
     expect(getMessage(annaLaptop.handle.db, pressedBefore.id)).toBeUndefined();
 
     await annaLaptop.record.sync();

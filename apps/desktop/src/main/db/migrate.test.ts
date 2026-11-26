@@ -4102,10 +4102,8 @@ describe("0184: whether a message is a replica's copy of the record's (EO-918)",
       handle.db.run(sql`INSERT INTO projects (id, name, key_prefix, created_at, updated_at, managed_at) VALUES ('moved', 'Moved', 'MOV', 1, 1, 100)`);
       handle.db.run(sql`INSERT INTO projects (id, name, key_prefix, created_at, updated_at) VALUES ('kept', 'Kept', 'KEP', 1, 1)`);
       handle.db.run(sql`INSERT INTO projects (id, name, key_prefix, created_at, updated_at, adopting_at) VALUES ('moving', 'Moving', 'MVG', 1, 1, 90)`);
-      // A job of this desktop's own; its owner and thread do not matter here.
-      handle.db.run(sql`PRAGMA foreign_keys = OFF`);
       handle.db.run(
-        sql`INSERT INTO jobs (id, project_id, name, trigger, owner_id, thread_item_id, created_at, updated_at) VALUES ('job', NULL, 'Tidy', '{"kind":"manual"}', 'anna', 'thread', 1, 1)`,
+        sql`INSERT INTO jobs (id, project_id, name, trigger, owner_id, created_at, updated_at) VALUES ('job', NULL, 'Tidy', '{"kind":"manual"}', ${LOCAL_PERSON_ID}, 1, 1)`,
       );
       if (pulledBefore) handle.db.run(sql`INSERT INTO app_settings (key, value, updated_at) VALUES ('record.messagesCursor', '{"ts":5,"id":"x","deviceId":"d"}', 1)`);
       for (const [id, recipientId, projectId, jobId, subject] of [
