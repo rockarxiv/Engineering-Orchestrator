@@ -31,9 +31,6 @@ export interface Classification {
 /** Git's own two names for it, as they appear on the `! [rejected]` line. */
 const DIVERGED_PUSH = /non-fast-forward|\(fetch first\)/;
 
-const DIVERGED_MESSAGE =
-  "The remote branch has moved on since EO pushed it. EO will not force-push over work it did not write — reconcile the branch by hand and this can be retried.";
-
 /** Matched against the CLI's stderr, lower-cased. Order matters only for readability. */
 const FINAL_PATTERNS: { pattern: RegExp; message: (raw: string) => string }[] = [
   {
@@ -41,7 +38,8 @@ const FINAL_PATTERNS: { pattern: RegExp; message: (raw: string) => string }[] = 
     // the remote branch has moved and only a human should decide what
     // happens to it. `--force` is not an option EO gets to take.
     pattern: /non-fast-forward|failed to push some refs|fetch first|rejected.*\(non-fast-forward\)/,
-    message: () => DIVERGED_MESSAGE,
+    message: () =>
+      "The remote branch has moved on since EO pushed it. EO will not force-push over work it did not write — reconcile the branch by hand and this can be retried.",
   },
   {
     pattern: /could not read username|authentication failed|permission denied \(publickey\)|\b403\b|\bforbidden\b|not authorized|requires authentication/,
@@ -86,40 +84,4 @@ export function classifyForgeError(raw: string): Classification {
   // Network trouble, a 5xx, a rate limit, a timeout — and anything this
   // does not recognise, which is the case that matters.
   return { final: false, diverged: false, message: text };
-}
-
-/**
- * A failed `git push`, where whether it diverged is known from the ref's
- * own status (`pushBranch`'s `rejection`) rather than guessed from the
- * text, which names the branch — a branch called `…non-fast-forward…`
- * says nothing about how it was refused (EO-910).
- *
- * Every message is EO's own sentence, never git's words: what git
- * printed carries whatever a hook or the server chose to print beside
- * it, a URL with its credential included, in any language. A refused ref
- * is said from its status alone (`pushRefusal`). Where git gave the ref
- * no status, `raw` only chooses which sentence, and whether it is worth
- * trying again; what it does not recognise — a git that speaks another
- * language, above all — is the retryable default, as everywhere here.
- * `changed` is a push EO's own gate stopped because git had resolved the
- * branch to a commit other than the one EO read (`pushBranch`).
- */
-export function classifyPushError(raw: string, diverged: boolean, status: string | null, changed = false): Classification {
-  if (diverged) return { final: true, diverged: true, message: DIVERGED_MESSAGE };
-  const said = (final: boolean, message: string): Classification => ({ final, diverged: false, message });
-  if (changed) return said(false, "The branch moved while EO pushed it, so git was stopped before it sent anything. Nothing was forced, and this can be retried.");
-  if (status !== null) return said(true, `The remote refused the push: git reported the branch as ${status}. EO did not force-push.`);
-  const lower = raw.toLowerCase();
-  if (/\benoent\b/.test(lower)) return said(true, "git could not be started for the push: it is not on PATH, or the worktree it runs in is gone.");
-  if (/src refspec .* matches more than one/.test(lower)) {
-    return said(true, "git would not push the branch because another ref has the same name (a tag `refs/tags/refs/heads/…`, say). EO did not force-push.");
-  }
-  if (/could not read username|authentication failed|permission denied \(publickey\)|\b403\b|not authorized|requires authentication/.test(lower)) {
-    return said(true, "The remote refused the credentials git pushed with. Sign git in to the forge again, and this can be retried.");
-  }
-  if (/repository not found|does not appear to be a git repository|\b404\b/.test(lower)) return said(true, "git could not find the repository it was pushing to.");
-  if (/failed to push some refs/.test(lower)) {
-    return said(true, "git refused the push without the remote saying anything of the branch — a local pre-push hook, most likely. EO did not force-push.");
-  }
-  return said(false, "git could not push the branch — the remote may be unreachable, or git said something EO does not recognise. Nothing was forced.");
 }

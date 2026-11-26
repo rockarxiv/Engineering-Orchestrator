@@ -243,36 +243,29 @@ export const GitItemStateSchema = z.object({
    */
   stackedOn: z.object({ itemId: z.string(), commit: z.string() }).nullable().default(null),
   /**
-   * A restack rewrote this branch since it was last pushed (EO-780).
-   * False — the ordinary state — for every branch whose history EO has
-   * not rewritten. Cleared by the push that follows.
-   *
-   * A record only, no longer a licence to force: the push after a
-   * restack is an ordinary one, and its rejection replaces the remote's
-   * history only through `pushedHead`'s check (EO-910), like any other
-   * rewrite of EO's own push.
+   * A restack rewrote this branch since it was last pushed (EO-780), so
+   * the next push to a pull request already open has to replace the
+   * remote's history: `--force-with-lease`. False — the ordinary state —
+   * for every branch whose history EO has not rewritten. Cleared by the
+   * push that follows.
    */
   restacked: z.boolean().default(false),
   /**
-   * What EO last pushed for this item (EO-910), null until EO first
-   * pushes it: the `commit`, the `ref` it went to, and a fingerprint of
-   * the push URL it went to (`destination`, `sha256:<hex>` of the URL as
-   * git resolved it, so no credential in it is kept), null where the push
-   * went to several or git could not name one. Written by every push of
-   * EO's that moved the remote's branch — at any of its push URLs, even
-   * one that failed at another — and by nothing else.
+   * The commit EO last pushed to this item's branch, and where it pushed
+   * it (EO-910); null until a push of EO's moves the remote branch.
+   * `pushUrl` is `sha256:<hex>` of the remote's one push URL at the time
+   * (`git remote get-url --push --all`), so a credential in the URL is
+   * never kept, and null where the remote had several. Written only by a
+   * push git exited 0 for and reported as having updated the branch.
    *
-   * What lets EO tell its own history on the remote from anybody
-   * else's. When the item's agent rebases a branch EO cut, the remote
-   * still holds what EO pushed before, and the push is rejected as
-   * diverged; if the push goes to this same destination and ref, and the
-   * branch there is still exactly this commit, nothing but EO's own push
-   * is there to replace, so EO pushes with `--force-with-lease=<branch>:
-   * <commit>` — a lease the server refuses if its branch is anything but
-   * that commit. Anything else is refused as divergence: a commit that
-   * matches on a server EO never pushed it to is not EO's.
+   * What lets EO tell its own history on the remote from anybody else's:
+   * when the item's agent rebases the branch, the remote still holds what
+   * EO pushed before, and the push is rejected as diverged. Where the
+   * remote still has this one push URL, EO pushes again with
+   * `--force-with-lease=<branch>:<commit>`, which the server refuses
+   * unless its branch is exactly this commit.
    */
-  pushedHead: z.object({ commit: z.string(), ref: z.string(), destination: z.string().nullable() }).nullable().default(null),
+  pushedHead: z.object({ commit: z.string(), pushUrl: z.string().nullable() }).nullable().default(null),
 });
 
 export type GitItemState = z.infer<typeof GitItemStateSchema>;

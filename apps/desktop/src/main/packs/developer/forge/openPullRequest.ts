@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { branchExists, commitsAhead, listTree, pushBranch, remoteUrl, showFile } from "../workspace/git.js";
 import { buildPullRequestBody, buildPullRequestTitle, type PullRequestFacts } from "./body.js";
 import { CLI_FOR, FORGE_COMMANDS, type CliRunner } from "./cli.js";
-import { classifyForgeError, classifyPushError, missingCli } from "./errors.js";
+import { classifyForgeError, missingCli } from "./errors.js";
 import { normaliseForgeState } from "./mergeState.js";
 import { guessForge, parseRemoteUrl, type ForgeKind } from "./remote.js";
 import { findTemplate, type TreeReader } from "./template.js";
@@ -76,25 +76,19 @@ export interface OpenPullRequestInput {
    */
   reviewers?: readonly string[];
   /**
-   * Told the commit the push published and where it went, the moment
-   * it moves the remote's branch (EO-910) — before anything else here
-   * can fail, since a pull request the forge then refuses to create
-   * does not unpush the branch.
-   * Not told of a push that found the branch already there: that commit
-   * may be somebody else's.
+   * Told the commit the push put on the remote branch (EO-910), before
+   * anything after it can fail: a pull request the forge then refuses to
+   * create does not unpush the branch. Not told of a push that found the
+   * branch already there, since that commit may be somebody else's.
    */
-  onPushed?: (pushed: { head: string; destination: string | null }) => void;
+  onPushed?: (commit: string) => Promise<void>;
   /**
    * Asked when the push is rejected as diverged, before that is reported
-   * (EO-910). True means the caller has published the branch itself — EO
-   * replacing its own last push — and this carries on exactly as after a
-   * push that went through, without pushing again. Told where the push
-   * was rejected (`destinationKey`, or null for no one place) and the
-   * commit EO read to send (null where it could not read the branch), so
-   * that the push replacing it sends that commit there, or nothing
-   * anywhere.
+   * (EO-910). True means the caller has pushed the branch itself, over
+   * EO's own last push, and this carries on exactly as after a push that
+   * went through.
    */
-  onDiverged?: (rejected: { destination: string | null; head: string | null }) => Promise<boolean>;
+  onDiverged?: () => Promise<boolean>;
 }
 
 /** What came of asking for reviewers, on a pull request this created. */
@@ -204,15 +198,12 @@ export async function openPullRequest(input: OpenPullRequestInput): Promise<Open
   //    call, unless the caller can show it holds only EO's own last push.
   const pushed = await pushBranch(repoPath, remote, branch, input.signal ? { signal: input.signal } : {});
   if (!pushed.ok) {
-    // Moved the branch at one of several push URLs though it failed at
-    // another: it is published all the same.
-    if (pushed.published !== null) input.onPushed?.({ head: pushed.published, destination: pushed.destination });
-    const classified = classifyPushError(pushed.error, pushed.rejection === "diverged", pushed.status, pushed.rejection === "changed");
-    if (!(classified.diverged && input.onDiverged && (await input.onDiverged({ destination: pushed.destination, head: pushed.head })))) {
+    const classified = classifyForgeError(pushed.error);
+    if (!(classified.diverged && pushed.diverged && input.onDiverged && (await input.onDiverged()))) {
       return { ...fail(classified.message, classified.final), diverged: classified.diverged };
     }
-  } else if (pushed.updated && pushed.head !== null) {
-    input.onPushed?.({ head: pushed.head, destination: pushed.destination });
+  } else if (pushed.updated !== null) {
+    await input.onPushed?.(pushed.updated);
   }
 
   // 5. Is one already open? Covers the crash the database cannot see.

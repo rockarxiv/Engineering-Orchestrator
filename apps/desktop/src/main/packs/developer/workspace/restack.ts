@@ -135,9 +135,8 @@ export async function restackOnDependency(db: Db, workspace: GitWorkspace, item:
     };
   }
 
-  // The history it replaced may be on the remote already. The push that
-  // follows replaces it only where the remote still holds exactly what EO
-  // last pushed (`pushedHead`, EO-910).
+  // The history it replaced may be on the remote already, which is what
+  // `restacked` tells the next push to a pull request (`--force-with-lease`).
   if (mergeState === "merged") updateItem(db, item.id, { git: { stackedOn: null, restacked: true } });
   else updateItem(db, item.id, { git: { stackedOn: { itemId: dependency.id, commit: target }, restacked: true } });
   onProgress?.(mergeState === "merged" ? `Restacked "${branch}" onto ${targetName}; it is no longer stacked on ${dependency.key}.` : `Restacked "${branch}" onto ${short(target)}.`);
