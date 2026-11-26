@@ -29,7 +29,7 @@ import { signedInPersonId } from "../identity/viewer.js";
 import { getComment, setCommentPinned, settleMention } from "../db/repos/commentsRepo.js";
 import { getItem } from "../db/repos/itemsRepo.js";
 import { getSetting, setSetting } from "../db/repos/settingsRepo.js";
-import { forgetMessagesGoneFromTheRecord, upsertReplicaMessage } from "../db/repos/messagesRepo.js";
+import { forgetHandledRecordMessages, forgetMessagesGoneFromTheRecord, upsertReplicaMessage } from "../db/repos/messagesRepo.js";
 import { noticeMissingStepAgents, settleMissingStepAgents } from "./stepAgentsHere.js";
 import { emitPush } from "../ipc/push.js";
 import { z } from "zod";
@@ -1323,7 +1323,9 @@ const MESSAGES_CURSOR_KEY = "record.messagesCursor";
  * past a message the assistant or an outside MCP client handled and
  * dropped who, which would read as the person's press for good: such a
  * cursor is not trusted, so the first pull after the upgrade reads the
- * person's retained messages again from the beginning, once.
+ * person's retained messages again from the beginning, once — and, as
+ * every pull from the beginning does, first drops the handled copies the
+ * record may have swept since, so none is left reading as the person's.
  */
 const MESSAGES_CURSOR_KEEPS_HANDLER = 1;
 
@@ -1350,11 +1352,20 @@ async function pullMessages(options: DrainOptions, pullPageSize: number, result:
   let pulled = 0;
   let stillOpen: readonly string[] | null = null;
   for (let page = 0; page < MAX_PULL_PAGES; page += 1) {
-    const pull = await options.record.ask("record:messages", { deviceId, cursor: readMessagesCursor(db, deviceId), limit: pullPageSize });
+    const cursor = readMessagesCursor(db, deviceId);
+    const pull = await options.record.ask("record:messages", { deviceId, cursor, limit: pullPageSize });
     if (!pull.ok) {
       result.offline = pull.unreachable;
       if (pull.unreachable) return false;
       break;
+    }
+    // Read from the beginning — a desktop new to this person, or one
+    // whose cursor predates who handled each message (EO-918): what this
+    // replica holds handled is replaced by what the record still keeps,
+    // which this pass writes back with who handled it. A copy the record
+    // has swept is not left reading as the person's press.
+    if (cursor.ts === EMPTY_CURSOR.ts && cursor.id === EMPTY_CURSOR.id) {
+      pulled += forgetHandledRecordMessages(db, (projectId) => projectMovedToTheRecord(db, projectId as Uuid));
     }
     for (const message of pull.data.messages) pulled += place(options, "message", message.id, message, now) ? 1 : 0;
     setSetting(db, MESSAGES_CURSOR_KEY, { ...pull.data.cursor, deviceId, handledBy: MESSAGES_CURSOR_KEEPS_HANDLER });

@@ -8168,6 +8168,35 @@ export const DEVICE_SCOPED_CHANNELS = [
   "record:messages",
 ] as const satisfies readonly RecordChannel[];
 
+/**
+ * The device-scoped channels only a desktop may ask (EO-918): a press a
+ * desktop makes for its person on behalf of its assistant or an outside
+ * MCP client, carrying who in `by`. The door can vouch for the device
+ * and not for that word, so it takes the word only from a credential
+ * the served renderer never holds — a device that signed in running work
+ * (`SignInRequest.runsWork`, which a browser is never granted) — and
+ * never from a request a browser made. A browser's press goes on
+ * `record:handleMessage`, as the person's.
+ */
+export const DESKTOP_ONLY_CHANNELS = ["record:handleMessageFor"] as const satisfies readonly (typeof DEVICE_SCOPED_CHANNELS)[number][];
+
+/** Whether only a desktop that runs work may ask this channel. */
+export function isDesktopOnlyChannel(channel: string): channel is (typeof DESKTOP_ONLY_CHANNELS)[number] {
+  return (DESKTOP_ONLY_CHANNELS as readonly string[]).includes(channel);
+}
+
+/** What a caller that is not a desktop running work is told on those channels. */
+export function notADesktopRefusal(channel: string): IpcErr {
+  return {
+    ok: false,
+    error: {
+      message:
+        `"${channel}" is something only a desktop signed in to this organisation asks, and this request did not come from one. ` +
+        `Answer the message in EO's Inbox, or sign the desktop in to this organisation again.`,
+    },
+  };
+}
+
 /** Whether this channel's payload names the device that is asking. */
 export function isDeviceScopedChannel(channel: string): channel is (typeof DEVICE_SCOPED_CHANNELS)[number] {
   return (DEVICE_SCOPED_CHANNELS as readonly string[]).includes(channel);

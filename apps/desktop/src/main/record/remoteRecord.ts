@@ -487,13 +487,14 @@ export function createRemoteRecord(options: RemoteRecordOptions): RemoteRecord {
             problem: `This message is on your organisation's record, which could not be reached, so EO cannot say whether that was taken. The Inbox shows where the message stands once the record answers again: ${answer.problem}`,
           };
         }
-        // A record older than the delegated channel: it ran nothing, so
-        // the message is certainly still open.
+        // A record older than the delegated channel: it ran nothing. That
+        // says this press changed nothing, not where the message stands —
+        // another desktop may have handled it since this one last synced.
         if (delegate !== null && answer.problem === NO_DELEGATED_CHANNEL) {
           return {
             ok: false,
             problem:
-              "Your organisation's record is older than this desktop and cannot keep who pressed for the person, so it was not asked and the message is still open. The person can answer it in EO's Inbox, or it can be answered here once the record is upgraded.",
+              "Your organisation's record is older than this desktop and cannot keep who pressed for the person, so it did not take this press and nothing was changed by it. The message may already have been handled from another desktop; EO's Inbox shows where it stands, and the person can answer it there, or it can be answered here once the record is upgraded.",
           };
         }
         // Anything else the record answered is a fault on its side, not a

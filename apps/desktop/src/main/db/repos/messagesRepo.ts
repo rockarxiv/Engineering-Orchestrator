@@ -360,6 +360,28 @@ export function forgetMessagesGoneFromTheRecord(db: Db, stillOpen: ReadonlySet<s
   return db.delete(messages).where(inArray(messages.id, gone)).run().changes;
 }
 
+/**
+ * Removes a replica's handled copies of messages about a project the
+ * organisation's record holds (EO-918), before a pull that reads the
+ * person's messages from the beginning writes back every one the record
+ * still keeps. One the record has swept never pages again, and a copy
+ * pulled by a build that dropped who handled it would otherwise go on
+ * reading as the person's press when the assistant or an outside MCP
+ * client made it. Open copies are left to `forgetMessagesGoneFromTheRecord`.
+ * Answers how many went.
+ */
+export function forgetHandledRecordMessages(db: Db, onTheRecord: (projectId: string) => boolean): number {
+  const handled = db
+    .select({ id: messages.id, projectId: messages.projectId })
+    .from(messages)
+    .where(isNotNull(messages.handledAt))
+    .all()
+    .filter((row) => row.projectId !== null && onTheRecord(row.projectId))
+    .map((row) => row.id);
+  if (handled.length === 0) return 0;
+  return db.delete(messages).where(inArray(messages.id, handled)).run().changes;
+}
+
 /** Deletes one message's row, where the record answered that it no longer has it (EO-726). */
 export function forgetMessage(db: Db, id: string): boolean {
   return db.delete(messages).where(eq(messages.id, id)).run().changes > 0;

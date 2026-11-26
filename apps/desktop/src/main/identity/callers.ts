@@ -25,7 +25,7 @@ export function createDeviceDirectory(db: Db): DeviceDirectory {
       // where a password is scrypt.
       const identity = deviceByTokenHash(db, hashSecret(token));
       if (identity === undefined) return null;
-      return { kind: "device", admin: identity.isAdmin, deviceId: identity.deviceId };
+      return { kind: "device", admin: identity.isAdmin, deviceId: identity.deviceId, runsWork: identity.runsWork };
     },
     opensSecrets(presented) {
       // The same hash-then-index lookup `identify` makes, against the

@@ -286,7 +286,7 @@ describe("a message about a project the organisation's record holds", () => {
     // Refused in words, and nothing closed — on the record or on the desktop.
     for (const refused of [byClient, byAssistant]) {
       expect(refused.isError).toBe(false);
-      expect(JSON.stringify(refused.content)).toContain("still open");
+      expect(JSON.stringify(refused.content)).toContain("did not take this press");
     }
     expect([getMessage(recordDb.db, first.id)?.handledAt, getMessage(recordDb.db, second.id)?.handledAt]).toEqual([null, null]);
     expect([getMessage(annaDesk.handle.db, first.id)?.handledAt, getMessage(annaDesk.handle.db, second.id)?.handledAt]).toEqual([null, null]);
@@ -295,6 +295,30 @@ describe("a message about a project the organisation's record holds", () => {
     const pressed = await annaDesk.record.handleMessage({ messageId: first.id, how: "answered", answer: "Take theirs", by: { kind: "person" } });
     expect(pressed.ok).toBe(true);
     expect(getMessage(recordDb.db, first.id)).toMatchObject({ handledHow: "answered", handledBy: { kind: "person" } });
+  });
+
+  it("says only that its press was not taken when an older record refuses it on a copy handled elsewhere since (EO-918)", async () => {
+    const projectId = await organisationProject();
+    await carl.record.sendMessage(question(projectId, "local"));
+    await syncAll();
+    const mine = onTheRecord().find((message) => message.recipientId === annaId) as Message;
+    // Answered from the laptop; the desk has not synced, so its copy is still open.
+    const fromLaptop = await annaLaptop.record.handleMessage({ messageId: mine.id, how: "answered", answer: "Keep mine", by: { kind: "person" } });
+    expect(fromLaptop.ok).toBe(true);
+    expect(getMessage(annaDesk.handle.db, mine.id)?.handledAt).toBeNull();
+    const { registerAllHandlers } = await import("../ipc/handlers.js");
+    registerAllHandlers(annaDesk.handle.db, undefined, { platform: fakePlatform(), record: annaDesk.record });
+    annaDesk.olderRecord = true;
+
+    const refused = await answerToolCall({ name: "message_answer", arguments: { messageId: mine.id, answer: "Take theirs" } }, "external", false);
+
+    expect(refused.isError).toBe(false);
+    const said = JSON.stringify(refused.content);
+    expect(said).toContain("did not take this press");
+    // Never a claim about where the message stands, which this desk does not know.
+    expect(said).not.toContain("still open");
+    expect(said).toContain("may already have been handled");
+    expect(getMessage(recordDb.db, mine.id)).toMatchObject({ handledHow: "answered", answer: "Keep mine", handledBy: { kind: "person" } });
   });
 
   it("is read again once by a desktop whose cursor went past a delegated press before it kept who handled it (EO-918)", async () => {
@@ -321,6 +345,39 @@ describe("a message about a project the organisation's record holds", () => {
     annaLaptop.handle.db.update(messages).set({ handledBy: null }).where(eq(messages.id, mine.id)).run();
     await annaLaptop.record.sync();
     expect(getMessage(annaLaptop.handle.db, mine.id)?.handledBy).toEqual({ kind: "person" });
+  });
+
+  it("is not left reading as the person's on an upgraded desktop when the record swept the delegated press while it was away (EO-918)", async () => {
+    const projectId = await organisationProject();
+    await carl.record.sendMessage(question(projectId, "local"));
+    await carl.record.sendMessage(question(projectId, "local"));
+    await syncAll();
+    const [delegatedPress, ownPress] = onTheRecord().filter((message) => message.recipientId === annaId) as [Message, Message];
+    const at = Date.now() + 1_000;
+    markMessageHandled(recordDb.db, delegatedPress.id, "answered", "Take theirs", at, { kind: "assistant", agentId: "the-assistant" });
+    await annaLaptop.record.sync();
+
+    // The laptop as it stood before 0183: the press pulled with who
+    // dropped, and its cursor past it in the shape it kept then.
+    const cursor = getSetting<Record<string, unknown>>(annaLaptop.handle.db, "record.messagesCursor", {});
+    setSetting(annaLaptop.handle.db, "record.messagesCursor", { ts: cursor.ts, id: cursor.id, deviceId: cursor.deviceId });
+    annaLaptop.handle.db.update(messages).set({ handledBy: null }).where(eq(messages.id, delegatedPress.id)).run();
+    expect(listInbox(annaLaptop.handle.db, projectId).handledMessages.map((message) => message.handledBy)).toEqual([{ kind: "person" }]);
+
+    // While it is away, a press from before who was kept (the person's,
+    // for nobody else could make one then), and the record's retention
+    // takes the delegated press and leaves that one.
+    markMessageHandled(recordDb.db, ownPress.id, "dismissed", null, at + HANDLED_MESSAGE_RETENTION_MS);
+    recordDb.db.update(messages).set({ handledBy: null }).where(eq(messages.id, ownPress.id)).run();
+    sweepHandledMessages(recordDb.db, at + HANDLED_MESSAGE_RETENTION_MS + 1);
+    expect(getMessage(recordDb.db, delegatedPress.id)).toBeUndefined();
+
+    await annaLaptop.record.sync();
+
+    // Gone, as the record has it, rather than shown as Anna's press.
+    expect(getMessage(annaLaptop.handle.db, delegatedPress.id)).toBeUndefined();
+    const shown = listInbox(annaLaptop.handle.db, projectId).handledMessages;
+    expect(shown.map((message) => [message.id, message.handledBy])).toEqual([[ownPress.id, { kind: "person" }]]);
   });
 
   it("is a fault, not a refusal, when the record fails the press on its side, and claims nothing when the record cannot be reached (EO-918)", async () => {
