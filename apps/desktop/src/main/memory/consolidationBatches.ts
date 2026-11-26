@@ -1,11 +1,11 @@
 import { z } from "zod";
 import { MemoryMergeCandidatesSchema, type MemoryMergeCandidates } from "@eo/core";
-import type { ConsolidationTargets } from "./consolidation.js";
 
 /**
  * Consolidating a scope in batches (EO-574), the pure half: how a scope
- * is cut into batches, what each batch is asked to shrink to, and the
- * cross-batch pass that finds duplicates which fell into different ones.
+ * is cut into batches, how a scheduled consolidation's new entries are
+ * (EO-913), and the cross-batch pass that finds duplicates which fell
+ * into different ones.
  * The calls and the order they run in are `consolidator.ts`.
  *
  * A scope's whole set, sent in one call, is an answer too large to
@@ -106,15 +106,75 @@ export function planBatches<T extends BatchableEntry>(
   return batches;
 }
 
+/** The most neighbours a scheduled consolidation gives each new entry with (EO-913). */
+export const NEW_ENTRY_NEIGHBOURS = 8;
+
 /**
- * What one batch is asked to shrink to: the scope's targets for its
- * agents' entries, in the batch's share — so batches that each reach
- * theirs bring the scope to its own. Never more than the batch holds.
+ * A scheduled consolidation's batches (EO-913): each of `fresh` — the
+ * entries written or changed since the scope's watermark — with up to
+ * `NEW_ENTRY_NEIGHBOURS` of its nearest neighbours among `entries`, best
+ * first, as `neighbours` ranks them (`similarMemoryNeighbours`). The rest
+ * of the scope is not sent, so what it costs follows the new notes, not
+ * the size of memory.
+ *
+ * Every entry is in at most one batch, since a batch that retires or
+ * rewrites an entry would leave a later batch holding a stale copy. New
+ * entries are taken oldest first. One not yet placed goes, with those of
+ * its neighbours not yet placed, into the first batch that has room for
+ * them all, trying first each batch that already holds one of its
+ * neighbours, in their rank order, and then the newest batch; failing
+ * those it starts a batch of its own, which a unit larger than `limits`
+ * fills alone. One already placed, as an earlier new entry's neighbour,
+ * is given its own neighbours not yet placed in the batch it is in, as
+ * far as that batch has room. A neighbour already in another batch stays
+ * there, so a new entry may sit with fewer than all its neighbours.
+ * Without neighbours — the index could not be asked — new entries go
+ * alone, by age.
  */
-export function batchTargets(batch: readonly { body: string }[], scope: { entries: number; chars: number }, targets: ConsolidationTargets): ConsolidationTargets {
-  const chars = batch.reduce((sum, entry) => sum + entry.body.length, 0);
-  const share = (part: number, whole: number, target: number) => (whole <= 0 ? part : Math.min(part, Math.ceil((part * target) / whole)));
-  return { entries: share(batch.length, scope.entries, targets.entries), chars: share(chars, scope.chars, targets.chars) };
+export function planNewEntryBatches<T extends BatchableEntry>(
+  fresh: readonly T[],
+  entries: readonly T[],
+  neighbours: EntryNeighbours | null,
+  limits: BatchLimits = CONSOLIDATION_BATCH_LIMITS,
+): T[][] {
+  const byId = new Map(entries.map((entry) => [entry.id, entry]));
+  for (const entry of fresh) byId.set(entry.id, entry);
+  const home = new Map<string, number>();
+  const batches: T[][] = [];
+  const chars: number[] = [];
+  const sizeOf = (members: readonly T[]) => members.reduce((sum, member) => sum + member.body.length, 0);
+  const fits = (at: number, members: readonly T[]) => batches[at]!.length + members.length <= limits.maxEntries && chars[at]! + sizeOf(members) <= limits.maxChars;
+  const put = (at: number, members: readonly T[]) => {
+    for (const member of members) {
+      batches[at]!.push(member);
+      home.set(member.id, at);
+    }
+    chars[at]! += sizeOf(members);
+  };
+  for (const entry of [...fresh].sort(byAge)) {
+    const ranked: T[] = [];
+    for (const id of neighbours?.get(entry.id) ?? []) {
+      const neighbour = byId.get(id);
+      if (neighbour !== undefined && id !== entry.id && !ranked.includes(neighbour)) ranked.push(neighbour);
+      if (ranked.length === NEW_ENTRY_NEIGHBOURS) break;
+    }
+    const unplaced = ranked.filter((neighbour) => !home.has(neighbour.id));
+    const placedAt = home.get(entry.id);
+    if (placedAt !== undefined) {
+      for (const neighbour of unplaced) if (fits(placedAt, [neighbour])) put(placedAt, [neighbour]);
+      continue;
+    }
+    const unit = [entry, ...unplaced];
+    const candidates = [...ranked.map((neighbour) => home.get(neighbour.id)).filter((at): at is number => at !== undefined), batches.length - 1].filter((at) => at >= 0);
+    const into = candidates.find((at) => fits(at, unit));
+    if (into !== undefined) put(into, unit);
+    else {
+      batches.push([]);
+      chars.push(0);
+      put(batches.length - 1, unit);
+    }
+  }
+  return batches.map((batch) => batch.sort(byAge));
 }
 
 /** An entry's first line, as the cross-batch pass is shown it. */

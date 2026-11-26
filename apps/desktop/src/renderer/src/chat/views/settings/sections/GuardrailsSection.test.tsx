@@ -23,8 +23,6 @@ const GUARDS = {
   agentMentionDepth: 3,
   watchRoundTripsPerItem: 5,
   memoryDeliveryChars: 4_000,
-  memoryScopeMaxEntries: 200,
-  memoryScopeMaxChars: 40_000,
   skillStaleAfterRuns: 20,
   skillArchiveAfterRuns: 50,
   skillMaxBodyChars: 8_000,
@@ -199,18 +197,12 @@ describe("the guardrails section", () => {
     await waitFor(() => expect(written(calls, "guards:set").at(-1)).toMatchObject({ memoryDeliveryChars: 6000 }));
   });
 
-  it("shows each memory scope's caps, and saves a change (EO-480)", async () => {
-    const { calls } = renderWith(<GuardrailsSection />);
+  it("offers no memory per scope caps: size never starts a consolidation (EO-913)", async () => {
+    renderWith(<GuardrailsSection />);
     const guardrails = await screen.findByRole("region", { name: "Guardrails" });
-
-    const entries = await within(guardrails).findByLabelText("Memory entries per scope");
-    const chars = within(guardrails).getByLabelText("Memory characters per scope");
-    expect(entries).toHaveValue(200);
-    expect(chars).toHaveValue(40000);
-    expect(within(guardrails).getByText(/Entries a person wrote are never rewritten/)).toBeInTheDocument();
-    fireEvent.change(entries, { target: { value: "150" } });
-    fireEvent.blur(entries);
-    await waitFor(() => expect(written(calls, "guards:set").at(-1)).toMatchObject({ memoryScopeMaxEntries: 150, memoryScopeMaxChars: 40_000 }));
+    await within(guardrails).findByLabelText("Memory given whole, in characters");
+    expect(within(guardrails).queryByLabelText("Memory entries per scope")).toBeNull();
+    expect(within(guardrails).queryByLabelText("Memory characters per scope")).toBeNull();
   });
 
   it("shows when an agent's unused skill goes stale and is archived, and saves a change (EO-720)", async () => {

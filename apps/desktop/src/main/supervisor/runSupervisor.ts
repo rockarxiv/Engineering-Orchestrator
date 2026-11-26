@@ -83,8 +83,6 @@ import {
   type SkillWriteTool,
   memoryNoteEnabled,
   DEFAULT_MEMORY_DELIVERY_CHARS,
-  DEFAULT_MEMORY_SCOPE_MAX_CHARS,
-  DEFAULT_MEMORY_SCOPE_MAX_ENTRIES,
   DEFAULT_SKILL_ARCHIVE_AFTER_RUNS,
   DEFAULT_SKILL_MAX_BODY_CHARS,
   DEFAULT_SKILL_STALE_AFTER_RUNS,
@@ -1010,12 +1008,6 @@ export interface GuardConfig {
    */
   memoryDeliveryChars: number;
   /**
-   * The most active memory entries, and characters of them, one scope
-   * holds (EO-480). Reaching either queues a consolidation of that scope.
-   */
-  memoryScopeMaxEntries: number;
-  memoryScopeMaxChars: number;
-  /**
    * How many runs in a row an agent's unlocked skill may be given without
    * a load before it is stale, and before EO archives it (EO-720).
    */
@@ -1063,8 +1055,6 @@ export const DEFAULT_GUARDS: GuardConfig = {
   agentMentionDepth: 3,
   watchRoundTripsPerItem: 5,
   memoryDeliveryChars: DEFAULT_MEMORY_DELIVERY_CHARS,
-  memoryScopeMaxEntries: DEFAULT_MEMORY_SCOPE_MAX_ENTRIES,
-  memoryScopeMaxChars: DEFAULT_MEMORY_SCOPE_MAX_CHARS,
   skillStaleAfterRuns: DEFAULT_SKILL_STALE_AFTER_RUNS,
   skillArchiveAfterRuns: DEFAULT_SKILL_ARCHIVE_AFTER_RUNS,
   skillMaxBodyChars: DEFAULT_SKILL_MAX_BODY_CHARS,
@@ -2216,7 +2206,7 @@ export function createRunSupervisor(
   });
 
   /**
-   * Keeps each memory scope under its caps (EO-480): looks at every scope
+   * Keeps each memory scope tidy (EO-480, EO-913): looks at every scope
    * on its own interval and after each delivery, and consolidates the due
    * ones one at a time through a side call that holds a global slot. Not
    * while the engine is paused or stopping; never on a dispatch's path.
@@ -2226,10 +2216,6 @@ export function createRunSupervisor(
   const memoryConsolidator = createMemoryConsolidator({
     db,
     sideCall: sideCaller.sideCall,
-    caps: () => {
-      const guards = readGuards();
-      return { maxEntries: guards.memoryScopeMaxEntries, maxChars: guards.memoryScopeMaxChars };
-    },
     skillMaxBodyChars: () => readGuards().skillMaxBodyChars,
     now,
     canStart: () => !paused && !stopped && !shuttingDown,

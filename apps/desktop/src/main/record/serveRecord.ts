@@ -1,8 +1,6 @@
 import {
   PERSON_SKILL_AUTHOR,
   SKILLS_SETTLED_EVENT,
-  DEFAULT_MEMORY_SCOPE_MAX_CHARS,
-  DEFAULT_MEMORY_SCOPE_MAX_ENTRIES,
   LOCAL_PERSON_ID,
   MAX_RECORD_CONSOLIDATIONS_PAGE,
   MEMORY_NOTE_PROJECT_SCOPE,
@@ -122,7 +120,7 @@ import {
 } from "../db/repos/messagesRepo.js";
 import { handleMessageHere, sendMessageToAdmins } from "../messages/messages.js";
 import { containerScopeOf } from "../memory/containerScope.js";
-import type { MemoryCaps, MemoryWriteRequest } from "./record.js";
+import type { MemoryWriteRequest } from "./record.js";
 
 /**
  * The record answering a device (EO-324,
@@ -190,12 +188,6 @@ export interface ServeRecordContext {
    * that must not be possible (invariant #8).
    */
   attachments?: RecordAttachmentStore;
-  /**
-   * The memory caps this record settles a scope under when a device asks
-   * it to undo a consolidation (EO-482). Read per request, so a settings
-   * change applies to the next one; the defaults where absent.
-   */
-  memoryCaps?: () => MemoryCaps;
   /**
    * The template history this build ships (EO-536), which a pipeline's
    * template status reads titles and release notes from. Absent where a
@@ -793,9 +785,8 @@ export async function serveMemoryConsolidations(
 }
 
 /**
- * A device undoing a consolidation this record made (EO-482), under this
- * record's caps — consolidation of its projects runs here, so the scope
- * is settled here.
+ * A device undoing a consolidation this record made (EO-482) —
+ * consolidation of its projects runs here, so the scope is settled here.
  */
 export async function serveRestoreMemoryConsolidation(
   context: ServeRecordContext,
@@ -808,8 +799,7 @@ export async function serveRestoreMemoryConsolidation(
   const touched = [...consolidation.retiredIds, ...consolidation.writtenIds];
   const projectId = touched.length === 0 ? null : (memoryEntryProjectId(db, touched[0]!) ?? null);
   if (projectId !== null && !heldHere(db, projectId)) return refuse("this record does not hold that consolidation's project, so nothing was restored.");
-  const caps = context.memoryCaps?.() ?? { maxEntries: DEFAULT_MEMORY_SCOPE_MAX_ENTRIES, maxChars: DEFAULT_MEMORY_SCOPE_MAX_CHARS };
-  const result = restoreConsolidation(db, payload.consolidationId, { caps });
+  const result = restoreConsolidation(db, payload.consolidationId);
   if (!result.ok) return { result, changed: [] };
   // The record changed, so every device and every open browser is told
   // to ask again — which is how the entry reaches the other desktops,

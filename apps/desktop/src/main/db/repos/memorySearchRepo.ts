@@ -254,11 +254,18 @@ const NEIGHBOUR_QUERY_CHARS = 600;
  * the entry's body as the query, its words' trigrams joined with OR and
  * ranked by bm25, so entries sharing its rarer pieces come first. Only
  * the given entries are candidates — never another scope's, never a
- * retired one. An entry with no word long enough to match on has none.
+ * retired one — or, given `among`, those: a scheduled consolidation looks
+ * up only its new entries' neighbours, among every entry of the scope
+ * (EO-913). An entry with no word long enough to match on has none.
  * Throws where the index cannot be asked; the caller then groups by age.
  */
-export function similarMemoryNeighbours(db: Db, entries: readonly { id: string; body: string }[], limit = 8): Map<string, string[]> {
-  const ids = JSON.stringify(entries.map((entry) => entry.id));
+export function similarMemoryNeighbours(
+  db: Db,
+  entries: readonly { id: string; body: string }[],
+  limit = 8,
+  among: readonly { id: string }[] = entries,
+): Map<string, string[]> {
+  const ids = JSON.stringify(among.map((entry) => entry.id));
   const neighbours = new Map<string, string[]>();
   for (const entry of entries) {
     const prepared = prepareQuery(entry.body.slice(0, NEIGHBOUR_QUERY_CHARS));

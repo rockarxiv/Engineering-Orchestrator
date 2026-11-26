@@ -49,7 +49,6 @@ type AnyRequest = SideCallRequest<unknown>;
 const isProposing = (request: AnyRequest) => request.system === MEMORY_PROPOSE_SKILLS_SYSTEM;
 
 const DAY = 24 * 60 * 60 * 1000;
-const CAPS = { maxEntries: 6, maxChars: 40_000 };
 
 const E2E_BODY = [
   "## Trigger",
@@ -139,8 +138,10 @@ describe("skills proposed by memory consolidation", () => {
   /** A consolidator whose consolidation answers `operations` and whose skill proposal call answers `skills`. */
   async function run(operations: (request: AnyRequest) => unknown, skills: (request: AnyRequest) => SkillProposal[]) {
     const sideCall = vi.fn(async (request: AnyRequest): Promise<Answer> => answering(request, isProposing(request) ? { skills: skills(request) } : operations(request)));
-    const consolidator = createMemoryConsolidator({ db: handle.db, sideCall: sideCall as never, caps: () => CAPS, ...(skillMaxBodyChars ? { skillMaxBodyChars } : {}) });
+    const consolidator = createMemoryConsolidator({ db: handle.db, sideCall: sideCall as never, ...(skillMaxBodyChars ? { skillMaxBodyChars } : {}) });
     consolidator.start();
+    // Asked for: size never starts one (EO-913), and a person's asking gives it the whole scope.
+    expect(consolidator.requestNow(workspace).outcome).toBe("started");
     await consolidator.idle();
     consolidator.stop();
     return sideCall.mock.calls.map((call) => call[0]);
@@ -232,7 +233,7 @@ describe("skills proposed by memory consolidation", () => {
         expect(all.find((candidate) => candidate.id === entry.id)).toMatchObject({ retiredReason: "moved_to_skill", consolidationId: consolidation!.id });
       }
 
-      const restored = restoreConsolidation(handle.db, consolidation!.id, { caps: CAPS });
+      const restored = restoreConsolidation(handle.db, consolidation!.id);
       expect(restored.ok).toBe(true);
       const active = listMemories(handle.db, workspace).map((entry) => entry.id).sort();
       expect(active).toEqual([...evidence, ...facts].map((entry) => entry.id).sort());
@@ -289,7 +290,7 @@ describe("skills proposed by memory consolidation", () => {
         () => ({ retire: [], merge: [{ body: "The ledger is in UTC.", from: given.facts.map((entry) => entry.id), contradictsRepositoryFile: false }], rewrite: [] }),
         () => {
           const [consolidation] = listConsolidations(handle.db, workspace);
-          expect(restoreConsolidation(handle.db, consolidation!.id, { caps: CAPS }).ok).toBe(true);
+          expect(restoreConsolidation(handle.db, consolidation!.id).ok).toBe(true);
           return [proposal(given.evidence)];
         },
       );
@@ -343,12 +344,13 @@ describe("skills proposed by memory consolidation", () => {
   describe("the evidence it moves", () => {
     it("moves an entry the consolidation rewrote, named as evidence by the proposal call after it, and the consolidation's restore puts back what it replaced", async () => {
       const given = memory();
-      const rewritten = "To run e2e here: start Xvfb on :99 (`Xvfb :99 &`, `export DISPLAY=:99`), then `pnpm e2e`.";
+      // Corrected by the newer entry it names, so its reason holds (EO-913).
+      const rewritten = `To run e2e here: start Xvfb on :99 (\`Xvfb :99 &\`, \`export DISPLAY=:99\`), then \`pnpm e2e\`, as ${given.evidence[1]!.id} found.`;
       await run(
         () => ({
           retire: [],
           merge: [{ body: "The ledger is in UTC.", from: given.facts.map((entry) => entry.id), contradictsRepositoryFile: false }],
-          rewrite: [{ id: given.evidence[0]!.id, body: rewritten, contradictsRepositoryFile: false }],
+          rewrite: [{ id: given.evidence[0]!.id, body: rewritten, contradictsRepositoryFile: false, reason: "newer_entry" }],
         }),
         // The proposal call is given the entries as the consolidation left them: the rewritten one, not the one it replaced.
         (request) => {
@@ -365,7 +367,7 @@ describe("skills proposed by memory consolidation", () => {
       // entries it replaced are back, the evidence it left as it was comes
       // back from the skill, and the one it wrote — moved since — stays retired.
       const [consolidation] = listConsolidations(handle.db, workspace);
-      expect(restoreConsolidation(handle.db, consolidation!.id, { caps: CAPS }).ok).toBe(true);
+      expect(restoreConsolidation(handle.db, consolidation!.id).ok).toBe(true);
       const active = listMemories(handle.db, workspace).map((entry) => entry.id).sort();
       expect(active).toEqual([...given.evidence, ...given.facts].map((entry) => entry.id).sort());
     });

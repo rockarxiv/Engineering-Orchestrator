@@ -1,6 +1,5 @@
 import { summariseConsolidation, type IpcPayload, type IpcResponse, type MemoryConsolidationSummary } from "@eo/core";
 import type { Db } from "../db/client.js";
-import { readGuards } from "./configCommands.js";
 import { editedPredecessors, getMemorySearchEntry, listMemories, memoryUsageByEntry, searchMemories, supersededEntries, usageOf } from "../db/repos/index.js";
 import type { ItemRecord } from "../record/record.js";
 import type { EngineHandle } from "./domainCommands.js";
@@ -119,6 +118,5 @@ export function restoreConsolidationCommand(
   record: MemoryRecord,
   payload: IpcPayload<"memory:restoreConsolidation">,
 ): Promise<IpcResponse<"memory:restoreConsolidation">> {
-  const guards = readGuards(db);
-  return record.restoreMemoryConsolidation(payload.consolidationId, { maxEntries: guards.memoryScopeMaxEntries, maxChars: guards.memoryScopeMaxChars });
+  return record.restoreMemoryConsolidation(payload.consolidationId);
 }

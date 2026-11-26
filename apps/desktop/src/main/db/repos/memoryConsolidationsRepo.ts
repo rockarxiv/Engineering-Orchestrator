@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, sql } from "drizzle-orm";
+import { and, desc, eq, gte, isNull, ne, sql } from "drizzle-orm";
 import {
   MEMORY_DELIVERED_EVENT,
   uuidv7,
@@ -92,6 +92,7 @@ export function startConsolidation(db: Db, input: { scope: MemoryScope; trigger:
     note: null,
     capsEntries: null,
     capsChars: null,
+    completesRun: null,
     // Counted from nothing: a consolidation that makes no side call held no slot (EO-577).
     slotHeldMs: 0,
     stuckNoticedAt: null,
@@ -145,17 +146,8 @@ export function appendConsolidationNote(db: Db, id: string, note: string): void 
     .run();
 }
 
-/** The caps a scope was settled under: a change to them is a reason to look at the scope again. */
-export interface SettledCaps {
-  maxEntries: number;
-  maxChars: number;
-}
-
-/** A scope over a cap with nothing a consolidation may rewrite — people's entries alone — said once, as its own row. */
-export function recordSkippedConsolidation(
-  db: Db,
-  input: { scope: MemoryScope; trigger: MemoryConsolidationTrigger; note: string; now: number; caps: SettledCaps },
-): MemoryConsolidationView {
+/** A consolidation that changed nothing on purpose, said once, as its own row: a `container_done` whose container's work was reopened before it started (EO-596). */
+export function recordSkippedConsolidation(db: Db, input: { scope: MemoryScope; trigger: MemoryConsolidationTrigger; note: string; now: number }): MemoryConsolidationView {
   const started = startConsolidation(db, input);
   skipConsolidation(db, started.id, input);
   return getConsolidation(db, started.id)!;
@@ -167,11 +159,8 @@ export function recordSkippedConsolidation(
  * was reopened before its answer could be applied (EO-596). Settles the
  * scope as it is, and backs nothing off.
  */
-export function skipConsolidation(db: Db, id: string, input: { note: string; now: number; caps: SettledCaps }): void {
-  db.update(memoryConsolidations)
-    .set({ status: "skipped", finishedAt: input.now, note: input.note, capsEntries: input.caps.maxEntries, capsChars: input.caps.maxChars })
-    .where(eq(memoryConsolidations.id, id))
-    .run();
+export function skipConsolidation(db: Db, id: string, input: { note: string; now: number }): void {
+  db.update(memoryConsolidations).set({ status: "skipped", finishedAt: input.now, note: input.note }).where(eq(memoryConsolidations.id, id)).run();
 }
 
 /**
@@ -192,38 +181,19 @@ export interface ScopeConsolidationState {
   /** The last time the scope was consolidated, or a person restored a consolidation; null if never. */
   lastConsolidatedAt: number | null;
   /**
-   * The last time the scope's size was settled — a consolidation (as of
-   * the moment it read the entries it was given), a skip, or a restore —
-   * with the caps in force then; null if never.
+   * The last time the scope was settled — a consolidation (as of the
+   * moment it read the entries it was given), a skip, or a restore; null
+   * if never.
    */
-  settled: { at: number; caps: SettledCaps | null } | null;
-  /**
-   * Whether anything in the scope was written since it was settled — an
-   * entry added, edited, retired or restored by anyone — other than what
-   * the settling consolidation or restore itself wrote, as it wrote it
-   * (the same rows written again later are a change). True when it was
-   * never settled. Unchanged and under the same caps, a scope left over a
-   * cap (by a restore, or by people's entries alone) is not taken up
-   * again.
-   */
-  changedSinceSettled: boolean;
+  settled: { at: number } | null;
   /**
    * Failures since the last row that was not one, newest first: each one's
-   * row, when it finished, its reason and note, and whether the note
-   * saying the scope is stuck was posted at it (EO-577).
+   * row, what it was queued for, when it finished, its reason and note,
+   * and whether the note saying the scope is stuck was posted at it
+   * (EO-577).
    */
-  failuresSince: { id: string; finishedAt: number; reason: string | null; note: string | null; stuckNoticed: boolean }[];
+  failuresSince: { id: string; trigger: MemoryConsolidationTrigger; finishedAt: number; reason: string | null; note: string | null; stuckNoticed: boolean }[];
   running: boolean;
-}
-
-/**
- * When a settling row wrote the entries it lists: a consolidation when it
- * finished, a restore when it was made. A skip writes none.
- */
-function writtenAt(row: Row): number | null {
-  if (row.status === "succeeded") return row.finishedAt;
-  if (row.status === "restored") return row.restoredAt;
-  return null;
 }
 
 /**
@@ -239,66 +209,107 @@ function settledAt(row: Row): number | null {
   return null;
 }
 
-export function consolidationState(db: Db, scope: MemoryScope): ScopeConsolidationState {
-  const rows = db
+/** A scope's newest consolidation rows, newest first: what its state is read from. */
+function recentRows(db: Db, scope: MemoryScope): Row[] {
+  return db
     .select()
     .from(memoryConsolidations)
     .where(inScope(scope))
     .orderBy(desc(memoryConsolidations.startedAt), desc(memoryConsolidations.id))
     .limit(200)
     .all();
+}
+
+export function consolidationState(db: Db, scope: MemoryScope): ScopeConsolidationState {
+  const rows = recentRows(db, scope);
   let lastConsolidatedAt: number | null = null;
-  let settling: Row | null = null;
+  let settled: number | null = null;
   for (const row of rows) {
     if (row.status === "succeeded" || row.status === "restored") {
       const at = Math.max(row.finishedAt ?? row.startedAt, row.restoredAt ?? 0);
       lastConsolidatedAt = lastConsolidatedAt === null ? at : Math.max(lastConsolidatedAt, at);
     }
     const at = settledAt(row);
-    if (at !== null && (settling === null || at > settledAt(settling)!)) settling = row;
-  }
-  let changedSinceSettled = true;
-  if (settling !== null) {
-    // What the settlement itself wrote is not a change since it: the rows
-    // it retired, wrote or put back, as it left them — stamped at the
-    // moment it wrote them. The same rows written again later (a person
-    // restoring one by hand, editing one, retiring one) are a change.
-    //
-    // A scope consolidated in batches (EO-574) is settled by every row of
-    // the run together: each starts at the moment the run read its
-    // entries, so what any of them wrote is the settlement's own, and
-    // what anybody else wrote while the run went on is a change.
-    const at = settledAt(settling)!;
-    const own = new Set(
-      rows
-        .filter((row) => settledAt(row) === at && writtenAt(row) !== null)
-        .flatMap((row) => [...row.retiredIds, ...row.writtenIds].map((id) => `${id}@${writtenAt(row)}`)),
-    );
-    changedSinceSettled = db
-      .select({ id: memories.id, updatedAt: memories.updatedAt })
-      .from(memories)
-      .where(and(eq(memories.scopeKind, scope.kind), eq(memories.scopeId, scope.id), gte(memories.updatedAt, at)))
-      .all()
-      .some((row) => !own.has(`${row.id}@${row.updatedAt}`));
+    if (at !== null && (settled === null || at > settled)) settled = at;
   }
   const failuresSince: ScopeConsolidationState["failuresSince"] = [];
   for (const row of rows.filter((candidate) => candidate.status !== "running")) {
     if (row.status !== "failed") break;
-    failuresSince.push({ id: row.id, finishedAt: row.finishedAt ?? row.startedAt, reason: row.failureReason, note: row.note, stuckNoticed: row.stuckNoticedAt !== null });
+    failuresSince.push({
+      id: row.id,
+      trigger: row.trigger as MemoryConsolidationTrigger,
+      finishedAt: row.finishedAt ?? row.startedAt,
+      reason: row.failureReason,
+      note: row.note,
+      stuckNoticed: row.stuckNoticedAt !== null,
+    });
   }
   return {
     lastConsolidatedAt,
-    settled:
-      settling === null
-        ? null
-        : {
-            at: settledAt(settling)!,
-            caps: settling.capsEntries === null || settling.capsChars === null ? null : { maxEntries: settling.capsEntries, maxChars: settling.capsChars },
-          },
-    changedSinceSettled,
+    settled: settled === null ? null : { at: settled },
     failuresSince,
     running: rows.some((row) => row.status === "running"),
   };
+}
+
+/**
+ * A scope's watermark (EO-913): when the last consolidation of it that
+ * completed its run began — the `started_at` of the newest row marked
+ * `completes_run`, whatever its trigger — or null where none has. Every
+ * row of a run starts at the moment the run read its entries (EO-574),
+ * so this is the moment the entries it was given were read.
+ *
+ * Only `markConsolidationRunComplete` moves it, which the consolidator
+ * calls once every batch a run planned has applied, in one attempt. A
+ * run that failed, stopped part-way, or was cut off by a restart between
+ * batches leaves it where it was. Read with its own query, never from a
+ * bounded window of recent rows, so no number of later failures hides it.
+ */
+export function consolidationWatermark(db: Db, scope: MemoryScope): number | null {
+  return (
+    db
+      .select({ at: sql<number | null>`max(${memoryConsolidations.startedAt})` })
+      .from(memoryConsolidations)
+      .where(and(inScope(scope), eq(memoryConsolidations.completesRun, true)))
+      .get()?.at ?? null
+  );
+}
+
+/** Marks a row as the one that completed its run, moving its scope's watermark to the run's start (`consolidationWatermark`). */
+export function markConsolidationRunComplete(db: Db, id: string): void {
+  db.update(memoryConsolidations).set({ completesRun: true }).where(eq(memoryConsolidations.id, id)).run();
+}
+
+/**
+ * The scope's active agent-written entries written or changed at or after
+ * its watermark (EO-913, `consolidationWatermark`): what a `schedule`
+ * consolidation is given, each with its nearest neighbours, so its cost
+ * follows new notes and not the size of memory. Ids, oldest first.
+ *
+ * Compared inclusively: an entry stamped in the very millisecond the
+ * last completed run read its entries may not have been among them, so
+ * it is new. An entry the last run wrote itself, or one sent before and
+ * changed by nobody since, may be new again; sending an entry twice is
+ * acceptable, and never sending one is not. A scope with no watermark is
+ * new through and through.
+ */
+export function entriesNewSinceConsolidated(db: Db, scope: MemoryScope): string[] {
+  const since = consolidationWatermark(db, scope);
+  return db
+    .select({ id: memories.id })
+    .from(memories)
+    .where(
+      and(
+        eq(memories.scopeKind, scope.kind),
+        eq(memories.scopeId, scope.id),
+        isNull(memories.retiredAt),
+        ne(memories.sourceKind, "person"),
+        ...(since === null ? [] : [gte(memories.updatedAt, since)]),
+      ),
+    )
+    .orderBy(memories.createdAt, memories.id)
+    .all()
+    .map((row) => row.id);
 }
 
 /**
@@ -402,10 +413,8 @@ export interface ApplyConsolidationInput {
   sent: readonly MemoryEntryView[];
   /** Its operations (EO-573): what to retire, merge and rewrite. An entry they do not name is left as it is. */
   answer: MemoryConsolidationOperations;
-  /** Said on the row, for a person — e.g. that people's entries alone exceed a cap. */
+  /** Said on the row, for a person — e.g. that word-for-word duplicates were folded without a model. */
   note: string | null;
-  /** The caps it was asked to bring the scope under. */
-  caps: SettledCaps;
   now: number;
   /**
    * Where what it writes goes, where that is not the scope of the entries
@@ -512,8 +521,6 @@ export function applyConsolidation(db: Db, input: ApplyConsolidationInput): Appl
         writtenIds,
         note: input.note,
         failureReason: null,
-        capsEntries: input.caps.maxEntries,
-        capsChars: input.caps.maxChars,
       })
       .where(eq(memoryConsolidations.id, input.id))
       .run();
@@ -538,7 +545,7 @@ export type RestoreConsolidationResult =
  * so the set from before it is the set before the skill took them. The
  * skill itself stays; it is a person's to archive.
  */
-export function restoreConsolidation(db: Db, id: string, input: { caps: SettledCaps; now?: number }): RestoreConsolidationResult {
+export function restoreConsolidation(db: Db, id: string, input: { now?: number } = {}): RestoreConsolidationResult {
   const now = input.now ?? Date.now();
   return db.transaction((tx) => {
     const consolidation = getConsolidation(tx as unknown as Db, id);
@@ -580,10 +587,10 @@ export function restoreConsolidation(db: Db, id: string, input: { caps: SettledC
         changedIds.push(entryId);
       }
     }
-    // Settles the scope as the person left it, under the caps in force
-    // now: unchanged, it is not folded straight back by the next look.
+    // Settles the scope as the person left it: what it put back is not new
+    // to the next scheduled consolidation, and is not folded straight back.
     tx.update(memoryConsolidations)
-      .set({ status: "restored", restoredAt: now, capsEntries: input.caps.maxEntries, capsChars: input.caps.maxChars })
+      .set({ status: "restored", restoredAt: now })
       .where(eq(memoryConsolidations.id, id))
       .run();
     return { ok: true as const, consolidation: getConsolidation(tx as unknown as Db, id)!, restored, retired, changedIds };

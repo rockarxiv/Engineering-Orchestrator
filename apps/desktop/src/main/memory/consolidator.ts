@@ -28,6 +28,8 @@ import {
   asGitWorkspace,
   closeAbandonedConsolidations,
   consolidationState,
+  entriesNewSinceConsolidated,
+  markConsolidationRunComplete,
   failConsolidation,
   getItem,
   getProject,
@@ -46,7 +48,7 @@ import {
   startConsolidation,
   workspaceLabel,
 } from "../db/repos/index.js";
-import type { ApplyConsolidationResult, ScopeTally } from "../db/repos/memoryConsolidationsRepo.js";
+import type { ApplyConsolidationResult } from "../db/repos/memoryConsolidationsRepo.js";
 import { resolveMessagesAbout, sendMessage as sendMessageHere, type MessageSendAnswer } from "../messages/messages.js";
 import { agentReasoningEffort } from "../providers/smallModels.js";
 import type { SideCaller, SideCallRequest } from "../sideCalls/sideCall.js";
@@ -59,9 +61,10 @@ import {
   containerDoneInput,
   containerDoneOperations,
   MEMORY_CONTAINER_DONE_SYSTEM,
+  checkRewriteReasons,
   consolidationInput,
+  droppedRewritesNote,
   consecutiveFailures,
-  consolidationTargets,
   CONSOLIDATION_DEFERRED_REASON,
   CONSOLIDATION_PAUSED_REASON,
   crossBatchMergeInput,
@@ -69,26 +72,23 @@ import {
   MEMORY_CROSS_BATCH_MERGE_SYSTEM,
   EXISTING_SKILLS_MAX,
   MEMORY_PROPOSE_SKILLS_SYSTEM,
-  peopleAloneOverCap,
-  peopleOverCapNote,
-  reachesCap,
   retryAt,
   skillProposalsAnswerSchema,
   skillProposalsInput,
   stuckNoticeBody,
   stuckNoticeOwed,
   type ExistingSkill,
-  type MemoryCaps,
   type RepositoryFile,
 } from "./consolidation.js";
 import {
-  batchTargets,
   CONSOLIDATION_BATCH_LIMITS,
   MEMORY_MERGE_CANDIDATES_SYSTEM,
   mergeCandidatesInput,
   mergeCandidatesSchema,
+  NEW_ENTRY_NEIGHBOURS,
   pickCandidateGroups,
   planBatches,
+  planNewEntryBatches,
   type EntryNeighbours,
 } from "./consolidationBatches.js";
 import { containerOfScope, containerWorkFinishedAt } from "./containerScope.js";
@@ -115,8 +115,6 @@ import { exactDuplicateOperations, exactDuplicates, likelyDuplicatesOf, nearDupl
 export interface MemoryConsolidatorOptions {
   db: Db;
   sideCall: SideCaller["sideCall"];
-  /** The caps, read on every look so a settings change applies to the next one. */
-  caps: () => MemoryCaps;
   /**
    * The longest body a skill proposal may write (EO-792), read when its
    * proposals are applied so a settings change applies to the next. Absent
@@ -171,11 +169,13 @@ export interface MemoryConsolidatorOptions {
    */
   workspacesElsewhere?: boolean;
   /**
-   * For each entry, the others most like it, best first — what batches
-   * are grouped by (EO-574). A seam for tests; absent is the full-text
-   * index (`similarMemoryNeighbours`). Null, or throwing, groups by age.
+   * For each of `entries`, the others among `among` most like it, best
+   * first, at most `limit` — what batches are grouped by (EO-574), and
+   * what a scheduled consolidation sends with each new entry (EO-913). A
+   * seam for tests; absent is the full-text index
+   * (`similarMemoryNeighbours`). Null, or throwing, groups by age.
    */
-  neighbours?: (scope: MemoryScope, entries: readonly MemoryEntryView[]) => EntryNeighbours | null;
+  neighbours?: (scope: MemoryScope, entries: readonly MemoryEntryView[], among: readonly MemoryEntryView[], limit: number) => EntryNeighbours | null;
   /**
    * A scope's consolidation was queued, started or finished (EO-589): what
    * `pending` answers for it changed, and so may its history. Never
@@ -262,6 +262,8 @@ type Applied = Extract<ApplyConsolidationResult, { ok: true }>;
  * starts again from its entries as they are.
  */
 interface Sequence {
+  /** What it was queued for: only a person's `manual` run is ever taken up where it stopped (EO-913). */
+  trigger: MemoryConsolidationTrigger;
   done: Set<string>;
   /**
    * The entries its consolidations wrote by folding two or more into one,
@@ -444,7 +446,6 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
   let stopped = true;
 
   function check(): { scope: MemoryScope; trigger: MemoryConsolidationTrigger }[] {
-    const caps = options.caps();
     const at = now();
     for (const tally of scopeTallies(db)) {
       const key = keyOf(tally.scope);
@@ -472,15 +473,14 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
       const decision = consolidationDue({
         tally,
         state,
-        caps,
         now: at,
         runsDeliveredSince: (since) => runsDeliveredFromScopeSince(db, tally.scope, since),
+        newEntries: () => entriesNewSinceConsolidated(db, tally.scope).length,
       });
       if (decision.kind === "consolidate") {
         queue.set(key, { scope: tally.scope, trigger: decision.trigger });
         pendingChanged(tally.scope);
       }
-      else if (decision.kind === "skip") recordSkippedConsolidation(db, { scope: tally.scope, trigger: "cap", note: decision.note, now: at, caps });
     }
     return [...queue.values()];
   }
@@ -496,14 +496,18 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
     return activeMemoriesIn(db, [scope]).filter((entry) => entry.source.type !== "person");
   }
 
-  function tallyOf(scope: MemoryScope): ScopeTally | undefined {
+  function tallyOf(scope: MemoryScope) {
     return scopeTallies(db).find((candidate) => keyOf(candidate.scope) === keyOf(scope));
   }
 
-  /** For each entry, the others most like it by the full-text index (EO-545), or null where it cannot be asked — then batches go by age. */
-  function neighboursOf(scope: MemoryScope, entries: readonly MemoryEntryView[]): EntryNeighbours | null {
+  /**
+   * For each of `entries`, the others among `among` most like it by the
+   * full-text index (EO-545), at most `limit`, or null where it cannot be
+   * asked — then batches go by age.
+   */
+  function neighboursOf(scope: MemoryScope, entries: readonly MemoryEntryView[], among: readonly MemoryEntryView[] = entries, limit: number = CONSOLIDATION_BATCH_LIMITS.maxEntries): EntryNeighbours | null {
     try {
-      return options.neighbours ? options.neighbours(scope, entries) : similarMemoryNeighbours(db, entries, CONSOLIDATION_BATCH_LIMITS.maxEntries);
+      return options.neighbours ? options.neighbours(scope, entries, among, limit) : similarMemoryNeighbours(db, entries, limit, among);
     } catch (error) {
       console.warn(`[eo] memory entries were batched by age, not likeness: ${messageOf(error)}`);
       return null;
@@ -511,51 +515,56 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
   }
 
   /**
-   * A scope consolidated, start to finish: in one call where its agents'
-   * entries fit one batch, and otherwise in batches, one call each, and
-   * then the cross-batch pass (EO-574). Never throws; whatever went wrong
-   * is on its row.
+   * A scope consolidated, start to finish. Never throws; whatever went
+   * wrong is on its row.
+   *
+   * What it is given depends on why it runs (EO-913):
+   *
+   * - **`schedule`** — only the agents' entries written or changed since
+   *   the scope's last consolidation (`entriesNewSinceConsolidated`), each
+   *   with up to `NEW_ENTRY_NEIGHBOURS` of its nearest neighbours in the
+   *   scope (`planNewEntryBatches`), in as many batches as those take and
+   *   with no cross-batch pass, so what it costs follows the new notes
+   *   rather than the size of memory.
+   * - **`manual`** — the whole of the agents' entries, in one call where
+   *   they fit one batch, and otherwise in batches, one call each, and
+   *   then the cross-batch pass (EO-574).
    *
    * Each batch is its own consolidation, applied on its own as soon as
    * its answer comes back, so a later one failing leaves it in place. A
    * failure ends the sequence there: its row backs the scope off, and the
    * retry takes up the entries no batch of this sequence has had yet
    * (`sequences`, for `SEQUENCE_KEPT_MS`), leaving those that had them to
-   * the cross-batch pass.
-   * A scope queued because it reached a cap stops as soon as it is under
-   * its caps again, with or without the pass.
+   * the cross-batch pass where there is one. A scheduled run that stopped
+   * part-way is not the scope's last consolidation either, so its new
+   * entries are still new to the retry, after a restart too.
    *
    * What a run is given is read when it starts, before its first side
    * call waits for its slot. Entries written after that — an agent's note
    * while a call waited or ran — are not in its batches and are left as
    * they are; every row of the run has `started_at` at that moment, so
-   * the next look counts them as a change and, if they took the scope
-   * back to a cap, queues the next one. The cross-batch pass reads the
-   * entries again, but stays on the run's moment for the same reason: it
-   * sees a newer entry's first line only.
+   * they are new to the next scheduled one. The cross-batch pass reads
+   * the entries again, but stays on the run's moment for the same reason:
+   * it sees a newer entry's first line only.
    *
    * Before any call, agents' entries that repeat another word for word are
    * folded with no model at all (EO-576, `foldExactDuplicates`): one
-   * consolidation of its own, which a restore undoes like any other. A
-   * scope queued for its cap that this alone brings under its caps asks
-   * nothing more. Of what is left, those likely to say the same thing
-   * (`nearDuplicateGroups`) share a batch and are marked as such in its
-   * input, so the model's call about them is cheap.
+   * consolidation of its own, which a restore undoes like any other. Of
+   * what is left, those likely to say the same thing
+   * (`nearDuplicateGroups`) share a batch where they can, and are marked
+   * as such in its input, so the model's call about them is cheap.
    *
    * Once the run has succeeded — every batch it made applied, and the
-   * cross-batch pass too where there was one, or the scope back under its
-   * caps before them — one more call asks for skill proposals over the
-   * scope as it now is (EO-575, `proposeSkills`). A run that failed or
-   * stopped part-way asks for none: its retry will.
+   * cross-batch pass too where there was one — one more call asks for
+   * skill proposals over the scope as it now is (EO-575, `proposeSkills`).
+   * A run that failed or stopped part-way asks for none: its retry will.
    */
   async function consolidate(scope: MemoryScope, trigger: MemoryConsolidationTrigger): Promise<void> {
     const key = keyOf(scope);
-    const caps = options.caps();
     // The moment this run reads what it is given: every row it writes,
     // each batch's and the cross-batch pass's, starts then, so a write by
-    // anyone else during any of them is a change since the scope was
-    // settled, and the next look takes the scope up again if it is still
-    // over a cap — though a later batch's row finished after it.
+    // anyone else during any of them is new to the next scheduled one —
+    // though a later batch's row finished after it.
     const readAt = now();
     const read = agentEntries(scope);
     const facts = scopeFacts(db, scope, options.workspacesElsewhere);
@@ -566,15 +575,38 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
     // Queued before its project was handed to a record (EO-482): the
     // record consolidates it now, and nothing here may touch the replica.
     if (heldElsewhereNow(scope)) return;
-    if (trigger === "container_done") return finishContainer(scope, facts, caps, readAt, read);
+    if (trigger === "container_done") return finishContainer(scope, facts, readAt, read);
+    // Only what is new since the last consolidation, on the schedule; a
+    // person asking, the whole scope (EO-913).
+    const onlyNew = trigger !== "manual";
+    const fresh = onlyNew ? new Set(entriesNewSinceConsolidated(db, scope)) : null;
+    // Nothing new since the watermark — the new entry this was queued for
+    // was retired while it waited, say: nothing is folded, asked or
+    // proposed, and the watermark stays where it is.
+    if (fresh !== null && !read.some((entry) => fresh.has(entry.id))) {
+      sequences.delete(key);
+      return;
+    }
+    // Only a person's run is taken up where it stopped; a scheduled one
+    // starts again from the watermark, which a run that stopped part-way
+    // never moved, so what it did not reach is still new (EO-913).
     const kept = sequences.get(key);
-    const resumes = kept !== undefined && now() - kept.at <= SEQUENCE_KEPT_MS && consolidationState(db, scope).failuresSince.length > 0;
-    const sequence = resumes ? kept : { done: new Set<string>(), folded: new Set<string>(), batches: 0, at: now() };
+    const resumes =
+      trigger === "manual" && kept !== undefined && kept.trigger === "manual" && now() - kept.at <= SEQUENCE_KEPT_MS && consolidationState(db, scope).failuresSince.length > 0;
+    const sequence: Sequence = resumes ? kept : { trigger, done: new Set<string>(), folded: new Set<string>(), batches: 0, at: now() };
     sequences.set(key, sequence);
     /** This run's last consolidation to succeed: what the skills proposed after it are posted under. */
     let last: Applied | null = null;
+    /** Whether this attempt was given every entry, none left out as one an earlier attempt's batches had handled. */
+    let wholeRun = true;
     const succeeded = async () => {
       sequences.delete(key);
+      // Every batch this attempt planned applied: the scope's watermark
+      // moves to the moment it read its entries (EO-913). Not for an
+      // attempt that took a person's run up where it stopped and left out
+      // what the earlier attempt had already handled, as it was then; one
+      // whose earlier attempt applied no batch left out nothing.
+      if (last !== null && wholeRun) markConsolidationRunComplete(db, last.consolidation.id);
       // A skill is the project's, a workspace's or everyone's; a
       // container's memory ends with its work (EO-596), so none is
       // proposed from it.
@@ -593,32 +625,39 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
     let entries = read;
     const duplicates = exactDuplicates(read);
     if (duplicates.length > 0) {
-      const folded = await foldExactDuplicates(scope, trigger, caps, readAt, duplicates);
+      const folded = await foldExactDuplicates(scope, trigger, readAt, duplicates);
       if (folded === null) return;
       record(folded);
       const gone = new Set(folded.consolidation.retiredIds);
       entries = read.filter((entry) => !gone.has(entry.id));
-      const next = mayContinue(scope, trigger, caps, readAt);
-      if (next === "done") return succeeded();
+      const next = mayContinue(scope, trigger, readAt);
       if (next !== "continue") return;
     }
 
     const pending = entries.filter((entry) => !sequence.done.has(entry.id));
-    const neighbours = pending.length > 1 ? neighboursOf(scope, pending) : null;
-    // Likely duplicates, by the full-text index: each set shares a batch, marked in its input.
-    const alike = nearDuplicateGroups(pending, neighbours);
-    const likelyDuplicates = likelyDuplicatesOf(alike);
-    const fitsOne = pending.length <= CONSOLIDATION_BATCH_LIMITS.maxEntries && pending.reduce((sum, entry) => sum + entry.body.length, 0) <= CONSOLIDATION_BATCH_LIMITS.maxChars;
-    const plan = fitsOne ? (pending.length === 0 ? [] : [pending]) : planBatches(pending, neighbours, CONSOLIDATION_BATCH_LIMITS, alike);
-    const batched = plan.length > 1 || sequence.batches > 0;
+    wholeRun = pending.length === entries.length;
+    let plan: MemoryEntryView[][];
+    let likelyDuplicates: ReadonlyMap<string, readonly string[]>;
+    if (fresh !== null) {
+      const newOnes = pending.filter((entry) => fresh.has(entry.id));
+      const neighbours = newOnes.length > 0 && pending.length > 1 ? neighboursOf(scope, newOnes, pending, NEW_ENTRY_NEIGHBOURS) : null;
+      plan = planNewEntryBatches(newOnes, pending, neighbours, CONSOLIDATION_BATCH_LIMITS);
+      likelyDuplicates = likelyDuplicatesOf(nearDuplicateGroups(plan.flat(), neighbours));
+    } else {
+      const neighbours = pending.length > 1 ? neighboursOf(scope, pending) : null;
+      // Likely duplicates, by the full-text index: each set shares a batch, marked in its input.
+      const alike = nearDuplicateGroups(pending, neighbours);
+      likelyDuplicates = likelyDuplicatesOf(alike);
+      const fitsOne = pending.length <= CONSOLIDATION_BATCH_LIMITS.maxEntries && pending.reduce((sum, entry) => sum + entry.body.length, 0) <= CONSOLIDATION_BATCH_LIMITS.maxChars;
+      plan = fitsOne ? (pending.length === 0 ? [] : [pending]) : planBatches(pending, neighbours, CONSOLIDATION_BATCH_LIMITS, alike);
+    }
+    // A scheduled run's batches are never the whole scope, and say so.
+    const batched = fresh !== null || plan.length > 1 || sequence.batches > 0;
 
     for (const [at, batch] of plan.entries()) {
-      if (at > 0) {
-        const next = mayContinue(scope, trigger, caps, readAt);
-        if (next === "done") return succeeded();
-        if (next !== "continue") return;
-      }
-      const applied = await consolidateBatch(scope, trigger, facts, caps, readAt, batch, batched ? { index: at + 1, count: plan.length } : undefined, likelyDuplicates);
+      if (at > 0 && mayContinue(scope, trigger, readAt) !== "continue") return;
+      const part = batched ? { index: at + 1, count: plan.length, ...(fresh !== null ? { fresh } : {}) } : undefined;
+      const applied = await consolidateBatch(scope, trigger, facts, readAt, batch, part, likelyDuplicates);
       if (applied === null) return;
       record(applied);
       sequence.batches += 1;
@@ -627,11 +666,11 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
       for (const written of applied.written) sequence.done.add(written.id);
     }
 
-    if (sequence.batches > 1) {
-      const next = mayContinue(scope, trigger, caps, readAt);
-      if (next === "done") return succeeded();
-      if (next !== "continue") return;
-      const passed = await crossBatchPass(scope, trigger, facts, caps, readAt);
+    // The cross-batch pass reads every entry's first line, so it is the
+    // whole scope's: a person's consolidation has one, the schedule none.
+    if (fresh === null && sequence.batches > 1) {
+      if (mayContinue(scope, trigger, readAt) !== "continue") return;
+      const passed = await crossBatchPass(scope, trigger, facts, readAt);
       if (passed === null) return;
       if (passed !== "nothing") record(passed);
     }
@@ -644,18 +683,15 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
    * the engine is paused — which is recorded as the next batch stopped by
    * pausing, so the scope is asked again once it is resumed — nor while
    * pipeline work is waiting or going (EO-577), recorded as the next
-   * batch deferred, so it is taken up again once the pipeline is idle. A
-   * scope queued for its cap that is under its caps again is done.
+   * batch deferred, so it is taken up again once the pipeline is idle.
    */
-  function mayContinue(scope: MemoryScope, trigger: MemoryConsolidationTrigger, caps: MemoryCaps, readAt: number): "continue" | "stop" | "done" {
+  function mayContinue(scope: MemoryScope, trigger: MemoryConsolidationTrigger, readAt: number): "continue" | "stop" {
     if (stopped || heldElsewhereNow(scope)) return "stop";
     if (!(options.canStart?.() ?? true)) {
       const row = startConsolidation(db, { scope, trigger, now: readAt });
       failConsolidation(db, row.id, { reason: CONSOLIDATION_PAUSED_REASON, note: PAUSED_BETWEEN_NOTE, now: now() });
       return "stop";
     }
-    const tally = tallyOf(scope);
-    if (trigger === "cap" && (tally === undefined || !reachesCap(tally, caps))) return "done";
     if (pipelineBusy()) {
       const row = startConsolidation(db, { scope, trigger, now: readAt });
       failConsolidation(db, row.id, { reason: CONSOLIDATION_DEFERRED_REASON, note: DEFERRED_NOTE, now: now() });
@@ -733,8 +769,6 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
   function apply(
     rowId: string,
     scope: MemoryScope,
-    tally: ScopeTally,
-    caps: MemoryCaps,
     sent: readonly MemoryEntryView[],
     answer: MemoryConsolidationOperations,
     said: string | null = null,
@@ -756,8 +790,7 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
       id: rowId,
       sent,
       answer: { retire: answer.retire, merge: answer.merge, rewrite: answer.rewrite },
-      note: [said, peopleAloneOverCap(tally, caps) ? peopleOverCapNote(tally, caps) : null].filter((part) => part !== null).join(" ") || null,
-      caps,
+      note: said,
       now: now(),
       ...(writeTo === undefined ? {} : { writeTo }),
     });
@@ -805,16 +838,13 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
   async function foldExactDuplicates(
     scope: MemoryScope,
     trigger: MemoryConsolidationTrigger,
-    caps: MemoryCaps,
     readAt: number,
     sets: readonly ExactDuplicates<MemoryEntryView>[],
   ): Promise<Applied | null> {
-    const tally = tallyOf(scope);
-    if (!tally) return null;
     const retired = sets.reduce((sum, set) => sum + set.retired.length, 0);
     const said = `${retired} ${retired === 1 ? "entry that repeated another" : "entries that repeated another"} word for word ${retired === 1 ? "was" : "were"} retired without asking a model, keeping the newest of each.`;
     return onRow(scope, trigger, readAt, async (rowId) =>
-      apply(rowId, scope, tally, caps, sets.flatMap((set) => [set.kept, ...set.retired]), exactDuplicateOperations(sets), said),
+      apply(rowId, scope, sets.flatMap((set) => [set.kept, ...set.retired]), exactDuplicateOperations(sets), said),
     );
   }
 
@@ -823,31 +853,33 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
     scope: MemoryScope,
     trigger: MemoryConsolidationTrigger,
     facts: { label: string; projectId: Uuid | null },
-    caps: MemoryCaps,
     readAt: number,
     sent: readonly MemoryEntryView[],
-    part: { index: number; count: number } | undefined,
+    part: { index: number; count: number; fresh?: ReadonlySet<string> } | undefined,
     likelyDuplicates: ReadonlyMap<string, readonly string[]>,
   ): Promise<Applied | null> {
     const tally = tallyOf(scope);
     if (!tally) return null;
     return onRow(scope, trigger, readAt, async (rowId, controller) => {
-      const scopeTargets = consolidationTargets(tally, caps);
+      const files = repositoryFiles(scope);
       const answer = await ask(rowId, controller, {
         schema: consolidationAnswerSchema(sent),
         system: MEMORY_CONSOLIDATE_SYSTEM,
         input: consolidationInput({
           scopeLabel: facts.label,
           entries: sent,
-          targets: part ? batchTargets(sent, { entries: tally.agentEntries, chars: tally.agentChars }, scopeTargets) : scopeTargets,
           ...(part ? { batch: { ...part, scopeEntries: tally.agentEntries, scopeChars: tally.agentChars } } : {}),
-          repositoryFiles: repositoryFiles(scope),
+          repositoryFiles: files,
           likelyDuplicates,
           now: now(),
         }),
         projectId: facts.projectId,
       });
-      return answer === null ? null : apply(rowId, scope, tally, caps, sent, answer);
+      if (answer === null) return null;
+      // Each rewrite's reason, tested against what this call was given
+      // (EO-913): one that fails is dropped, and its entry stays as it is.
+      const checked = checkRewriteReasons(answer, { given: sent, repositoryFiles: files });
+      return apply(rowId, scope, sent, checked.answer, droppedRewritesNote(checked.dropped));
     });
   }
 
@@ -876,7 +908,7 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
    * No skills are proposed from it. People's entries are never sent, so
    * they stay in the container's scope as written.
    */
-  async function finishContainer(scope: MemoryScope, facts: { label: string; projectId: Uuid | null }, caps: MemoryCaps, readAt: number, read: readonly MemoryEntryView[]): Promise<void> {
+  async function finishContainer(scope: MemoryScope, facts: { label: string; projectId: Uuid | null }, readAt: number, read: readonly MemoryEntryView[]): Promise<void> {
     if (facts.projectId === null) return;
     const project = getProject(db, facts.projectId);
     if (!project) return;
@@ -886,16 +918,14 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
     const fitsOne = read.length <= CONSOLIDATION_BATCH_LIMITS.maxEntries && read.reduce((sum, entry) => sum + entry.body.length, 0) <= CONSOLIDATION_BATCH_LIMITS.maxChars;
     const plan = fitsOne ? [read] : planBatches(read, neighbours, CONSOLIDATION_BATCH_LIMITS, alike);
     for (const [at, batch] of plan.entries()) {
-      if (at > 0 && mayContinue(scope, "container_done", caps, readAt) !== "continue") return;
+      if (at > 0 && mayContinue(scope, "container_done", readAt) !== "continue") return;
       // Before every batch, the first included: queued is not finished,
       // and an item reopened while this waited for the pipeline, or while
       // an earlier batch ran, means the container's memory is still in use.
       if (!containerStillFinished(scope)) {
-        recordSkippedConsolidation(db, { scope, trigger: "container_done", note: containerReopenedNote(facts.label, at > 0), now: now(), caps });
+        recordSkippedConsolidation(db, { scope, trigger: "container_done", note: containerReopenedNote(facts.label, at > 0), now: now() });
         return;
       }
-      const tally = tallyOf(scope);
-      if (!tally) return;
       const part = plan.length > 1 ? { index: at + 1, count: plan.length, scopeEntries: read.length } : undefined;
       const applied = await onRow(scope, "container_done", readAt, async (rowId, controller) => {
         const answer = await ask(rowId, controller, {
@@ -909,15 +939,17 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
         // stretch as the write: work reopened while the call ran makes the
         // answer stale, and it is dropped rather than applied.
         if (!containerStillFinished(scope)) {
-          skipConsolidation(db, rowId, { note: containerReopenedNote(facts.label, at > 0), now: now(), caps });
+          skipConsolidation(db, rowId, { note: containerReopenedNote(facts.label, at > 0), now: now() });
           return null;
         }
         const kept = answer.keep.length;
         const retired = batch.length - answer.keep.reduce((sum, keep) => sum + keep.from.length, 0);
         const said = `Every item filed under ${facts.label} is finished, so its memory ended: ${kept} ${kept === 1 ? "fact was" : "facts were"} kept as entries of the project "${project.name}", and ${retired} ${retired === 1 ? "entry that was" : "entries that were"} only true while the work was in progress ${retired === 1 ? "was" : "were"} retired.`;
-        return apply(rowId, scope, tally, caps, batch, containerDoneOperations(batch, answer), said, into);
+        return apply(rowId, scope, batch, containerDoneOperations(batch, answer), said, into);
       });
       if (applied === null) return;
+      // The last batch applied: the run is complete, and the container's watermark moves (EO-913).
+      if (at === plan.length - 1) markConsolidationRunComplete(db, applied.consolidation.id);
     }
   }
 
@@ -950,12 +982,10 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
     scope: MemoryScope,
     trigger: MemoryConsolidationTrigger,
     facts: { label: string; projectId: Uuid | null },
-    caps: MemoryCaps,
     readAt: number,
   ): Promise<Applied | "nothing" | null> {
-    const tally = tallyOf(scope);
     const entries = agentEntries(scope);
-    if (!tally || entries.length < 2) return "nothing";
+    if (entries.length < 2) return "nothing";
     return onRow(scope, trigger, readAt, async (rowId, controller) => {
       const candidates = await ask(rowId, controller, {
         schema: mergeCandidatesSchema(entries),
@@ -965,7 +995,7 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
       });
       if (candidates === null) return null;
       const groups = pickCandidateGroups(candidates.groups, entries);
-      if (groups.length === 0) return apply(rowId, scope, tally, caps, [], NO_OPERATIONS);
+      if (groups.length === 0) return apply(rowId, scope, [], NO_OPERATIONS);
       const sent = groups.flat();
       const answer = await ask(rowId, controller, {
         schema: consolidationAnswerSchema(sent),
@@ -973,7 +1003,10 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
         input: crossBatchMergeInput({ scopeLabel: facts.label, groups, now: now() }),
         projectId: facts.projectId,
       });
-      return answer === null ? null : apply(rowId, scope, tally, caps, sent, answer);
+      if (answer === null) return null;
+      // Given no repository file, so a `repository_file` rewrite here never holds (EO-913).
+      const checked = checkRewriteReasons(answer, { given: sent, repositoryFiles: [] });
+      return apply(rowId, scope, sent, checked.answer, droppedRewritesNote(checked.dropped));
     });
   }
 
@@ -1069,7 +1102,7 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
    * Says, once, that a scope's consolidation is stuck (EO-577, EO-727):
    * at its third failure in a row, a message to the project's person — on
    * the organisation's record, each admin — naming the scope, what it
-   * holds against its caps and why the last one failed. Nothing waits on
+   * holds and why the last one failed. Nothing waits on
    * it; the scope keeps working as it is. Marked on the failure it was
    * said at, so the same run of failures is not said again, and only once
    * the message is written: one that could not be sent is tried again at
@@ -1089,7 +1122,7 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
       const facts = scopeFacts(db, scope, options.workspacesElsewhere);
       const tally = tallyOf(scope);
       if (facts === null || tally === undefined || heldElsewhereNow(scope)) return;
-      const body = stuckNoticeBody({ scopeLabel: facts.label, tally, caps: options.caps(), failures: consecutiveFailures(state).length, last: owed, retryAt: retryAt(state) });
+      const body = stuckNoticeBody({ scopeLabel: facts.label, tally, failures: consecutiveFailures(state).length, last: owed, retryAt: retryAt(state) });
       const sent = await sendMessage({ recipientId: LOCAL_PERSON_ID, projectId: facts.projectId, source: CONSOLIDATION_STUCK_SOURCE, subject: keyOf(scope), body });
       if (!sent.ok) {
         // Not marked: the next failure tries again.
@@ -1130,9 +1163,9 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
             pendingChanged(next.scope);
           }
           await noticeIfStuck(next.scope);
-          // Looked at again at once: what was written while it ran may have
-          // taken the scope back to a cap, and that is due now, not at the
-          // next interval.
+          // Looked at again at once: a container's work may have finished
+          // while it ran, or a run that stopped part-way be due again, and
+          // that is due now, not at the next interval.
           if (!stopped) {
             try {
               check();

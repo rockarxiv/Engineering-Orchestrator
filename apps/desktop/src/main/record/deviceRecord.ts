@@ -590,13 +590,13 @@ export function createDeviceRecord(options: DeviceRecordOptions): DeviceRecord {
     // see — and every desktop is given.
     writeMemory: (request: MemoryWriteRequest) => recordHoldingMemoryOf(projectOfWrite(request)).writeMemory(request),
     memoryConsolidations: (scope) => recordHoldingMemoryOf(memoryScopeProjectId(db, scope)).memoryConsolidations(scope),
-    restoreMemoryConsolidation: (consolidationId, caps) => {
+    restoreMemoryConsolidation: (consolidationId) => {
       // A consolidation this replica holds is one it made itself, of a
       // scope it can place. Any other is the record's, if this desktop
       // has one: consolidation of a moved project runs there.
       const held = getConsolidation(db, consolidationId);
-      if (held !== undefined) return recordHoldingMemoryOf(memoryScopeProjectId(db, held.scope)).restoreMemoryConsolidation(consolidationId, caps);
-      return (options.isTheRecord !== true && remote.linked() ? remote : local).restoreMemoryConsolidation(consolidationId, caps);
+      if (held !== undefined) return recordHoldingMemoryOf(memoryScopeProjectId(db, held.scope)).restoreMemoryConsolidation(consolidationId);
+      return (options.isTheRecord !== true && remote.linked() ? remote : local).restoreMemoryConsolidation(consolidationId);
     },
 
     // The record that holds the skill (EO-728): one of a moved project's,

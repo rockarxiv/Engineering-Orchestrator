@@ -66,6 +66,7 @@ import {
   saveActionDefinition,
   saveJiraBinding,
   saveModule,
+  getSetting,
   setSetting,
   setStepAgent,
   deleteAgent,
@@ -264,14 +265,20 @@ describe("guardrails", () => {
     expect(GuardConfigSchema.safeParse({ ...DEFAULT_GUARD_CONFIG, agentMentionDepth: 21 }).success).toBe(false);
   });
 
-  /** Each memory scope's caps (EO-480): guardrails like the rest, and filled in for a config saved before they existed. */
-  it("caps each memory scope at 200 entries and 40,000 characters by default, and refuses a cap that is not a positive whole number", () => {
-    setSetting(handle.db, "engine.guards", { globalConcurrency: 2 });
-    expect(readGuards(handle.db)).toMatchObject({ memoryScopeMaxEntries: 200, memoryScopeMaxChars: 40_000 });
+  /** The memory per scope caps are gone (EO-913): a value saved before then is ignored, and does not make a write fail. */
+  it("has no memory per scope caps, ignores ones a configuration saved before, and writes over them", () => {
+    setSetting(handle.db, "engine.guards", { ...DEFAULT_GUARD_CONFIG, memoryScopeMaxEntries: 150, memoryScopeMaxChars: 30_000 });
+    const read = readGuards(handle.db);
+    expect(read).not.toHaveProperty("memoryScopeMaxEntries");
+    expect(read).not.toHaveProperty("memoryScopeMaxChars");
+    expect(read).toEqual(DEFAULT_GUARD_CONFIG);
 
-    expect(GuardConfigSchema.safeParse({ ...DEFAULT_GUARD_CONFIG, memoryScopeMaxEntries: 300, memoryScopeMaxChars: 60_000 }).success).toBe(true);
-    expect(GuardConfigSchema.safeParse({ ...DEFAULT_GUARD_CONFIG, memoryScopeMaxEntries: 0 }).success).toBe(false);
-    expect(GuardConfigSchema.safeParse({ ...DEFAULT_GUARD_CONFIG, memoryScopeMaxChars: 2.5 }).success).toBe(false);
+    // A whole saved configuration sent back, old keys and all, as an older screen would: stripped, and saved.
+    const sent = GuardConfigSchema.parse({ ...read, memoryScopeMaxEntries: 150, globalConcurrency: 2 });
+    expect(sent).not.toHaveProperty("memoryScopeMaxEntries");
+    expect(writeGuards(handle.db, sent)).toMatchObject({ saved: true, problems: [] });
+    expect(getSetting(handle.db, "engine.guards", {})).not.toHaveProperty("memoryScopeMaxEntries");
+    expect(readGuards(handle.db).globalConcurrency).toBe(2);
   });
 
   /** An agent's unused skill (EO-720): stale after 20 runs without a load and archived after 50, filled in for an older config, and never archived before it is stale. */
