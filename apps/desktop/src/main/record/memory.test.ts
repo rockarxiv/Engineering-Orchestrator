@@ -831,6 +831,53 @@ describe("a moved project's consolidated memory (EO-913)", () => {
     markConsolidationRunFinished(recordDb.db, own.id);
     expect(entriesNewSinceConsolidated(recordDb.db, scope)).toEqual([]);
   });
+
+  it("carries a settlement the desktop makes while the move goes on, though it changes no entry's stamp", async () => {
+    const project = createProject(anna.handle.db, { name: "Settling", keyPrefix: "STL" });
+    const item = createTestItem(anna.handle.db, { type: "story", title: "Learned something", stepId: "todo", projectId: project.id });
+    const run = createRun(anna.handle.db, { itemId: item.id, agentId: null, action: "implement" });
+    updateRun(anna.handle.db, run.id, { status: "succeeded", endedAt: Date.now() });
+    const scope = projectScope(project.id);
+    const at = Date.now() - 60_000;
+    const note = addMemory(anna.handle.db, { scope, body: "The tests need Postgres 16.", source: { type: "run", runId: run.id, itemId: item.id }, now: at });
+    if (!note.ok) throw new Error("the fixture's memory was not written");
+    expect(entriesNewSinceConsolidated(anna.handle.db, scope)).toEqual([note.entry.id]);
+
+    let settled = false;
+    const moved = await moveProjectToRecord({
+      db: anna.handle.db,
+      projectId: project.id,
+      personId: annaPersonId,
+      personName: "Anna",
+      send: async (request) => {
+        const served = (await serveAdopt(serving, {
+          deviceId: anna.deviceId,
+          project: request.project,
+          keyNextValue: request.keyNextValue,
+          final: request.final,
+          abandon: request.abandon,
+          page: request.page,
+        })) as { accepted: RecordAdoptCounts; problem: string | null };
+        // Once the entry has gone as new, a consolidation here finishes
+        // and changes nothing: the entry is settled, its stamp as it was.
+        if (!settled && request.page.memories.length > 0) {
+          settled = true;
+          const row = startConsolidation(anna.handle.db, { scope, trigger: "schedule", now: at + 1_000 });
+          const applied = applyConsolidation(anna.handle.db, { id: row.id, sent: [], answer: { retire: [], merge: [], rewrite: [] }, note: null, now: at + 2_000 });
+          if (!applied.ok) throw new Error(applied.problem);
+          markConsolidationRunFinished(anna.handle.db, row.id);
+        }
+        return served.problem !== null ? { ok: false, problem: served.problem } : { ok: true, accepted: served.accepted };
+      },
+    });
+    if (!moved.ok) throw new Error(moved.problem);
+
+    expect(settled).toBe(true);
+    expect(getMemory(anna.handle.db, note.entry.id)?.updatedAt).toBe(at);
+    expect(entriesNewSinceConsolidated(anna.handle.db, scope)).toEqual([]);
+    // Nothing was new here when it was handed over, so nothing is there.
+    expect(entriesNewSinceConsolidated(recordDb.db, scope)).toEqual([]);
+  });
 });
 
 describe("consolidating a project the organisation holds", () => {

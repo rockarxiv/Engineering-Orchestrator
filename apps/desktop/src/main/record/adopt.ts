@@ -430,6 +430,7 @@ export async function moveProjectToRecord(options: MoveProjectOptions): Promise<
     mentions: new Map(),
     files: new Set(),
     memories: new Map(),
+    memorySettled: new Map(),
     skills: new Map(),
   };
   /**
@@ -676,25 +677,32 @@ export async function moveProjectToRecord(options: MoveProjectOptions): Promise<
     // and items an entry names as its source. Every entry, retired ones
     // too — memory travels with its project, history and all — and again
     // when one has changed since, as the items are.
-    const newMemories = readProjectMemories(db, projectId).filter((entry) => stale(sent.memories, entry.id, entry.updatedAt));
+    //
     // With which of them this machine's last consolidation had settled
     // (EO-913): the project's consolidation history stays here, and a
     // record that took every entry it brought for new would send a
-    // settled scope whole to its next scheduled consolidation.
+    // settled scope whole to its next scheduled consolidation. That is a
+    // state of its own, as a pin is: a consolidation that changes nothing
+    // settles an entry without changing its stamp, so an entry whose
+    // settlement is not what was last sent goes again too.
+    const projectMemories = readProjectMemories(db, projectId);
     const newInScope = new Map<string, Set<string>>();
-    const isNew = (entry: (typeof newMemories)[number]) => {
+    const settledHere = (entry: (typeof projectMemories)[number]) => {
+      if (entry.retiredAt !== null || entry.source.type === "person") return false;
       const key = `${entry.scope.kind}:${entry.scope.id}`;
       let held = newInScope.get(key);
       if (held === undefined) newInScope.set(key, (held = new Set(entriesNewSinceConsolidated(db, entry.scope))));
-      return held.has(entry.id);
+      return !held.has(entry.id);
     };
+    const newMemories = projectMemories.filter((entry) => stale(sent.memories, entry.id, entry.updatedAt) || sent.memorySettled.get(entry.id) !== settledHere(entry));
     for (const page of chunk(newMemories, PAGE.memories)) {
-      const memorySettled = page
-        .filter((entry) => entry.retiredAt === null && entry.source.type !== "person" && !isNew(entry))
-        .map((entry) => ({ id: entry.id, version: entry.updatedAt }));
+      const memorySettled = page.filter(settledHere).map((entry) => ({ id: entry.id, version: entry.updatedAt }));
       const problem = await send({ memories: page, memorySettled });
       if (problem !== null) return problem;
-      for (const entry of page) sent.memories.set(entry.id, entry.updatedAt);
+      for (const entry of page) {
+        sent.memories.set(entry.id, entry.updatedAt);
+        sent.memorySettled.set(entry.id, settledHere(entry));
+      }
       carried += page.length;
     }
 
@@ -867,6 +875,13 @@ interface SentVersions {
    * entry retired or restored mid-move changes its stamp, and goes again.
    */
   memories: Map<string, number>;
+  /**
+   * Whether each memory entry went as settled by this machine's last
+   * consolidation (EO-913), compared for difference as a pin is: a
+   * consolidation that changes nothing settles an entry without moving
+   * its stamp, and the record has to hear of it all the same.
+   */
+  memorySettled: Map<string, boolean>;
   /** The project's own skills and its workspaces' (EO-513), at the `updated_at` they were sent at. */
   skills: Map<string, number>;
 }

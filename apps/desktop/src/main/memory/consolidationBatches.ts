@@ -140,6 +140,28 @@ export function planNewEntryBatches<T extends BatchableEntry>(
   neighbours: EntryNeighbours | null,
   limits: BatchLimits = CONSOLIDATION_BATCH_LIMITS,
 ): T[][] {
+  return planNewEntryBatchGroups(fresh, entries, neighbours, limits).map((planned) => planned.entries);
+}
+
+/** One batch `planNewEntryBatchGroups` plans: what it is given, and the new entries whose own list it holds. */
+export interface PlannedNewEntryBatch<T> {
+  entries: T[];
+  /**
+   * The new entries this batch is for (EO-913): each one whose own list —
+   * itself and its neighbours — was placed in it. A new entry another's
+   * list brings into a batch as a neighbour is context there, not done,
+   * and is given again with its own list in the batch that holds it.
+   */
+  owns: string[];
+}
+
+/** `planNewEntryBatches`, with each batch's `owns`: what a run counts as handled once that batch is applied. */
+export function planNewEntryBatchGroups<T extends BatchableEntry>(
+  fresh: readonly T[],
+  entries: readonly T[],
+  neighbours: EntryNeighbours | null,
+  limits: BatchLimits = CONSOLIDATION_BATCH_LIMITS,
+): PlannedNewEntryBatch<T>[] {
   const byId = new Map(entries.map((entry) => [entry.id, entry]));
   for (const entry of fresh) byId.set(entry.id, entry);
   // Each new entry's own list: itself and its nearest neighbours, best first.
@@ -170,12 +192,14 @@ export function planNewEntryBatches<T extends BatchableEntry>(
     groups.set(key, [...(groups.get(key) ?? []), unit]);
   }
 
-  const batches: T[][] = [];
+  const batches: PlannedNewEntryBatch<T>[] = [];
   let batch: T[] = [];
+  let owns: string[] = [];
   let chars = 0;
   const flush = () => {
-    if (batch.length > 0) batches.push(batch.sort(byAge));
+    if (batch.length > 0) batches.push({ entries: batch.sort(byAge), owns });
     batch = [];
+    owns = [];
     chars = 0;
   };
   const add = (member: T) => {
@@ -188,6 +212,7 @@ export function planNewEntryBatches<T extends BatchableEntry>(
     const missing = unit.filter((member) => !batch.includes(member));
     if (fits(missing.length, sizeOf(missing))) {
       missing.forEach(add);
+      owns.push(unit[0]!.id);
       continue;
     }
     flush();
@@ -195,6 +220,7 @@ export function planNewEntryBatches<T extends BatchableEntry>(
     // first while they fit.
     const [head, ...rest] = unit as [T, ...T[]];
     add(head);
+    owns.push(head.id);
     for (const member of rest) if (fits(1, member.body.length)) add(member);
   }
   flush();

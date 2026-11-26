@@ -1387,6 +1387,44 @@ describe("automatic memory consolidation", () => {
       runner.stop();
     });
 
+    it("gives a scheduled retry a new entry an applied batch had only as another's neighbour, with its own neighbours (EO-913)", async () => {
+      settledScope();
+      // Long old notes, so a new entry's own list cannot join the batch that already has it as a neighbour.
+      const at = Date.now() - 10 * DAY;
+      const [o1, o2, o3] = [1, 2, 3].map((index) => byAgent(project, `Long old fact ${index}: ${"w".repeat(6_000)}`, at + index));
+      const a = byAgent(project, "New fact A about the payments ledger.", Date.now() - 2);
+      const b = byAgent(project, "New fact B about the payments ledger.", Date.now() - 1);
+      givenToFiveRuns([a, b]);
+      vi.useFakeTimers({ toFake: ["Date"] });
+      const sent: string[][] = [];
+      // A ranks B and two long notes; B ranks a third long note, which does not fit A's batch beside them.
+      const ranked = new Map([
+        [a.id, [b.id, o1!.id, o2!.id]],
+        [b.id, [o3!.id]],
+      ]);
+      const runner = consolidatorWith((async (request: AnyRequest): Promise<AnyAnswer> => {
+        sent.push(idsIn(request.input));
+        return sent.length === 2 ? { ok: false, reason: "error", message: "The backend fell over." } : { ok: true, value: NOTHING };
+      }) as never, { neighbours: () => ranked });
+      runner.start();
+      await runner.idle();
+      // B was in the first batch, as A's neighbour; its own batch, with o3, failed.
+      expect(sent).toHaveLength(2);
+      expect(sent[0]).toEqual(expect.arrayContaining([a.id, b.id, o1!.id, o2!.id]));
+      expect(sent[0]).not.toContain(o3!.id);
+      expect(sent[1]).toEqual(expect.arrayContaining([b.id, o3!.id]));
+
+      vi.setSystemTime(Date.now() + CONSOLIDATION_BACKOFF_MS[0] + 1);
+      runner.poke();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await runner.idle();
+      // The retry gives B again with its own neighbour, not A, whose batch was applied.
+      expect(sent).toHaveLength(3);
+      expect(sent[2]).toEqual(expect.arrayContaining([b.id, o3!.id]));
+      expect(sent[2]).not.toContain(a.id);
+      expect(entriesNewSinceConsolidated(handle.db, project)).toEqual([]);
+    });
+
     it("goes on where a scheduled run that stopped part-way left off when that run is retried", async () => {
       settledScope();
       const fresh = newNotes(40);

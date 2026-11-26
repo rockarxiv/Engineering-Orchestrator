@@ -11,6 +11,7 @@ import {
   pickCandidateGroups,
   planBatches,
   planNewEntryBatches,
+  planNewEntryBatchGroups,
   refreshBatch,
   type BatchableEntry,
 } from "./consolidationBatches.js";
@@ -189,6 +190,28 @@ describe("a scheduled consolidation's batches (EO-913)", () => {
       expect(charsOf(batch)).toBeLessThanOrEqual(CONSOLIDATION_BATCH_MAX_CHARS);
       expect(new Set(ids(batch)).size).toBe(batch.length);
     }
+  });
+
+  it("says which new entries each batch is for: the one whose own list it holds, not one it has only as another's neighbour (EO-913)", () => {
+    const scope = entries(60, 1_000);
+    const [a, c, b, d] = [scope[40]!, scope[41]!, scope[42]!, scope[30]!];
+    const lists = new Map([
+      [a.id, [...scope.slice(0, 7).map((entry) => entry.id), b.id]],
+      [c.id, [scope[0]!.id, ...scope.slice(10, 17).map((entry) => entry.id)]],
+      [b.id, [d.id]],
+    ]);
+    const planned = planNewEntryBatchGroups([a, c, b], scope, lists);
+    expect(planned.map((one) => one.entries)).toEqual(planNewEntryBatches([a, c, b], scope, lists));
+    // Each new entry is owned by exactly one batch, and that batch holds its whole list.
+    for (const id of [a.id, c.id, b.id]) {
+      const owners = planned.filter((one) => one.owns.includes(id));
+      expect(owners, id).toHaveLength(1);
+      expect(ids(owners[0]!.entries), id).toEqual(expect.arrayContaining([id, ...lists.get(id)!]));
+    }
+    // b is in a's batch as its neighbour, but that batch is not for it: d is not there.
+    const first = planned.find((one) => one.owns.includes(a.id))!;
+    expect(ids(first.entries)).toContain(b.id);
+    if (!ids(first.entries).includes(d.id)) expect(first.owns).not.toContain(b.id);
   });
 
   it("gives a neighbour many new entries rank to every batch they fill, not only the first (EO-913)", () => {
