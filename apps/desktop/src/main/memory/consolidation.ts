@@ -306,10 +306,13 @@ export interface RepositoryFile {
 /**
  * The relative date phrases a `relative_date` rewrite may replace
  * (EO-913): a fixed list, matched as whole phrases and in any case. A
- * number is a run of digits not itself part of a longer number, so
- * "000 days ago" inside "1,000 days ago" is not one.
+ * word phrase is whole where no letter, digit or underscore touches it,
+ * so "...yesterday" is one. A number is a run of digits not itself part
+ * of a longer number either, so "000 days ago" inside "1,000 days ago",
+ * or "5 days ago" inside "1.5 days ago", is not one.
  */
-const RELATIVE_DATE_PHRASE = /(?<![\p{L}\p{N}_.,])(?:today|yesterday|tomorrow|(?:this|last|next)\s+(?:week|month)|\d+\s+(?:days?|weeks?)\s+ago|in\s+\d+\s+days?)(?![\p{L}\p{N}_])/giu;
+const RELATIVE_DATE_PHRASE =
+  /(?<![\p{L}\p{N}_])(?:today|yesterday|tomorrow|(?:this|last|next)\s+(?:week|month)|in\s+\d+\s+days?)(?![\p{L}\p{N}_])|(?<![\p{L}\p{N}_])(?<!\d[.,])\d+\s+(?:days?|weeks?)\s+ago(?![\p{L}\p{N}_])/giu;
 
 const RELATIVE_DATE_PHRASES_SAID = '"today", "yesterday", "tomorrow", "this week", "last week", "next week", "this month", "last month", "next month", "N days ago", "N weeks ago", "in N days"';
 
@@ -350,32 +353,32 @@ export function replacesRelativeDate(original: string, rewrite: string): boolean
   return dates.length > 0 && dates.every(isIsoDate);
 }
 
-/** The fewest words a line quoted from a repository file must hold, so a heading or a fence is no quote. */
-const QUOTED_LINE_MIN_WORDS = 3;
-
-/** A list or quote marker at the start of a line, which a quote of it may leave out. */
-const LINE_MARKER = /^(?:(?:[-*+>]|\d+[.)])\s+)+/;
-
 /**
- * (b) Whether `rewrite` names one of `files` and quotes, verbatim, a line
- * of that file as it was delivered — trimmed, and with or without a
- * leading list or quote marker — of at least `QUOTED_LINE_MIN_WORDS`
- * words. The file's structure is not read: a line is a line.
+ * (b) Whether `rewrite` names one of `files` and quotes, verbatim, a
+ * whole line of that file as it was delivered — any line that is not
+ * blank, with only the whitespace around it left out. The file's
+ * structure is not read: a line is a line, its list or quote marker
+ * included.
  */
 export function quotesRepositoryFile(rewrite: string, files: readonly { name: string; text: string }[]): boolean {
   return files.some(
     (file) =>
       rewrite.includes(file.name) &&
       file.text.split(/\r?\n/).some((line) => {
-        const trimmed = line.trim();
-        return [trimmed, trimmed.replace(LINE_MARKER, "")].some((quote) => quote.split(/\s+/).filter(Boolean).length >= QUOTED_LINE_MIN_WORDS && rewrite.includes(quote));
+        const quote = line.trim();
+        return quote.length > 0 && rewrite.includes(quote);
       }),
   );
 }
 
+/** Whether `text` holds `id` as a whole token: not run on into further letters, digits, hyphens or underscores. */
+function namesId(text: string, id: string): boolean {
+  return new RegExp(`(?<![\\p{L}\\p{N}_-])${escapeRegExp(id)}(?![\\p{L}\\p{N}_-])`, "u").test(text);
+}
+
 /** (c) Whether `rewrite` names the id of an entry in `given`, other than `original`, written after it. */
 export function namesNewerEntry(original: { id: string; createdAt: number }, rewrite: string, given: readonly { id: string; createdAt: number }[]): boolean {
-  return given.some((entry) => entry.id !== original.id && entry.createdAt > original.createdAt && rewrite.includes(entry.id));
+  return given.some((entry) => entry.id !== original.id && entry.createdAt > original.createdAt && namesId(rewrite, entry.id));
 }
 
 /** What one call was given, against which each rewrite's reason is tested (`checkRewriteReasons`). */
@@ -437,7 +440,7 @@ const OPERATION_RULES = [
   "- `merge`: `{ from, body, contradictsRepositoryFile }` — fold two or more entries (`from` holds at least two ids) into one new entry whose text is `body`.",
   `- \`rewrite\`: \`{ id, body, reason, contradictsRepositoryFile }\` — replace one entry's text with \`body\`. \`reason\` is one of ${MEMORY_CONSOLIDATION_REWRITE_REASONS.map((reason) => `\`${reason}\``).join(", ")}, and there is no other reason to rewrite an entry: never rewrite one only to shorten it, reword it or tidy its style. EO checks each rewrite against its reason and drops one that fails, leaving the entry as it was:`,
   `  - \`relative_date\`: \`body\` is the entry exactly as written, with each relative date phrase you replace (${RELATIVE_DATE_PHRASES_SAID}) replaced by the date it means as YYYY-MM-DD, counted from the day the entry was written, and nothing else changed — not a word around it, not the flag.`,
-  "  - `repository_file`: `body` names the file it agrees with (CLAUDE.md or AGENTS.md) and quotes, word for word, at least one whole line of that file as you were given it, a line of three words or more; a list or quote marker at the start of the line may be left out.",
+  "  - `repository_file`: `body` names the file it agrees with (CLAUDE.md or AGENTS.md) and quotes, word for word, at least one whole line of that file exactly as you were given it, from its first character to its last — a list or quote marker at its start included.",
   "  - `newer_entry`: `body` names the id of the entry you are given that corrects it, one written after it.",
   "Every id you name must be one of the entries you are given, and each id may appear only once in the whole answer — in one retire, one merge's `from`, or one rewrite. An answer with nothing to change has all three lists empty; that is a valid answer, and often the right one.",
   "What to change, and nothing else:",

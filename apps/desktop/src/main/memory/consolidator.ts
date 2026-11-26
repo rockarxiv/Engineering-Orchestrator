@@ -597,13 +597,16 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
     sequences.set(key, sequence);
     /** This run's last consolidation to succeed: what the skills proposed after it are posted under. */
     let last: Applied | null = null;
+    /** Whether this attempt was given every entry, none left out as one an earlier attempt's batches had handled. */
+    let wholeRun = true;
     const succeeded = async () => {
       sequences.delete(key);
       // Every batch this attempt planned applied: the scope's watermark
       // moves to the moment it read its entries (EO-913). Not for an
-      // attempt that took a person's run up where it stopped, which left
-      // out what the earlier attempt had already handled, as it was then.
-      if (last !== null && !resumes) markConsolidationRunComplete(db, last.consolidation.id);
+      // attempt that took a person's run up where it stopped and left out
+      // what the earlier attempt had already handled, as it was then; one
+      // whose earlier attempt applied no batch left out nothing.
+      if (last !== null && wholeRun) markConsolidationRunComplete(db, last.consolidation.id);
       // A skill is the project's, a workspace's or everyone's; a
       // container's memory ends with its work (EO-596), so none is
       // proposed from it.
@@ -632,6 +635,7 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
     }
 
     const pending = entries.filter((entry) => !sequence.done.has(entry.id));
+    wholeRun = pending.length === entries.length;
     let plan: MemoryEntryView[][];
     let likelyDuplicates: ReadonlyMap<string, readonly string[]>;
     if (fresh !== null) {

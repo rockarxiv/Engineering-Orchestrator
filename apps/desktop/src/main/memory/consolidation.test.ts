@@ -378,7 +378,7 @@ describe("how long a merged or rewritten entry may be (EO-591)", () => {
 describe("the mechanical test of each rewrite's reason (EO-913)", () => {
   const entry = (id: string, body: string, createdAt: number, contradictsRepositoryFile = false) => ({ id, body, createdAt, contradictsRepositoryFile });
   const rewrite = (id: string, body: string, reason: "relative_date" | "repository_file" | "newer_entry", contradictsRepositoryFile = false) => ({ id, body, reason, contradictsRepositoryFile });
-  const FILE = { name: "CLAUDE.md", text: "# api\r\n\r\n- Run the tests with `pnpm test:api`.\r\n## Commands\r\n" };
+  const FILE = { name: "CLAUDE.md", text: "# api\r\n\r\n- Run the tests with `pnpm test:api`.\r\nUse pnpm.\r\n## Commands\r\n" };
 
   describe("(a) a relative date made absolute", () => {
     it("passes: a whole phrase from the list replaced by a YYYY-MM-DD date, and nothing else changed", () => {
@@ -388,6 +388,9 @@ describe("the mechanical test of each rewrite's reason (EO-913)", () => {
       expect(replacesRelativeDate("Today the API moved; NEXT WEEK the web does.", "2026-11-26 the API moved; 2026-12-03 the web does.")).toBe(true);
       // One of two phrases is enough.
       expect(replacesRelativeDate("Today the API moved; next week the web does.", "2026-11-26 the API moved; next week the web does.")).toBe(true);
+      // A whole word after punctuation, an ellipsis included, is a whole phrase.
+      expect(replacesRelativeDate("The migration finally ran...yesterday.", "The migration finally ran...2026-11-25.")).toBe(true);
+      expect(replacesRelativeDate("Released (3 days ago).", "Released (2026-11-23).")).toBe(true);
       for (const phrase of ["today", "yesterday", "tomorrow", "this week", "last week", "next week", "this month", "last month", "next month", "4 days ago", "1 week ago", "2 weeks ago", "in 1 day"]) {
         expect(replacesRelativeDate(`Changed ${phrase}.`, "Changed 2026-11-01."), phrase).toBe(true);
       }
@@ -404,6 +407,7 @@ describe("the mechanical test of each rewrite's reason (EO-913)", () => {
       // Part of a word, or of a longer number, is not a whole phrase.
       expect(replacesRelativeDate("Use todays build.", "Use 2026-11-26s build.")).toBe(false);
       expect(replacesRelativeDate("This was added 1,000 days ago.", "This was added 1,2026-11-26.")).toBe(false);
+      expect(replacesRelativeDate("This took 1.5 days ago.", "This took 1.2026-11-24.")).toBe(false);
       // Not a YYYY-MM-DD date, or not a real one.
       expect(replacesRelativeDate("Changed yesterday.", "Changed 25 Nov 2026.")).toBe(false);
       expect(replacesRelativeDate("Changed yesterday.", "Changed 2026-02-30.")).toBe(false);
@@ -420,18 +424,22 @@ describe("the mechanical test of each rewrite's reason (EO-913)", () => {
   });
 
   describe("(b) a disagreement with the repository file", () => {
-    it("passes: the rewrite names the file and quotes a line of it as delivered, with or without its list marker, CRLF or not", () => {
+    it("passes: the rewrite names the file and quotes a whole line of it as delivered, its list marker included, however short, CRLF or not", () => {
       expect(quotesRepositoryFile("CLAUDE.md says to run the tests with `make test`, not \"- Run the tests with `pnpm test:api`.\"", [FILE])).toBe(true);
-      expect(quotesRepositoryFile("As CLAUDE.md says: Run the tests with `pnpm test:api`.", [FILE])).toBe(true);
+      expect(quotesRepositoryFile("CLAUDE.md says \"Use pnpm.\"", [FILE])).toBe(true);
+      expect(quotesRepositoryFile("CLAUDE.md, under \"## Commands\": use make.", [FILE])).toBe(true);
     });
 
-    it("fails: a file not named, a line not quoted word for word, a line too short to be a quote, or a file never delivered", () => {
+    it("fails: a file not named, a line not quoted whole as delivered, or a file never delivered", () => {
       // Quotes the line but names no file.
       expect(quotesRepositoryFile("Run the tests with `pnpm test:api`.", [FILE])).toBe(false);
       // Names the file, quotes nothing of it word for word.
       expect(quotesRepositoryFile("CLAUDE.md says to run the API tests with pnpm.", [FILE])).toBe(false);
-      // A heading of two words is no quote.
-      expect(quotesRepositoryFile("CLAUDE.md, ## Commands: use make.", [FILE])).toBe(false);
+      // The line without its list marker is not the line as delivered, nor is part of one.
+      expect(quotesRepositoryFile("As CLAUDE.md says: Run the tests with `pnpm test:api`.", [FILE])).toBe(false);
+      expect(quotesRepositoryFile("CLAUDE.md: Use pnpm", [FILE])).toBe(false);
+      // Blank lines quote nothing.
+      expect(quotesRepositoryFile("CLAUDE.md is right.", [{ name: "CLAUDE.md", text: "\r\n   \r\n" }])).toBe(false);
       // Names a file the call was not given: the cross-batch pass is given none.
       expect(quotesRepositoryFile("AGENTS.md says: Run the tests with `pnpm test:api`.", [FILE])).toBe(false);
       expect(quotesRepositoryFile("CLAUDE.md says: Run the tests with `pnpm test:api`.", [])).toBe(false);
@@ -440,8 +448,18 @@ describe("the mechanical test of each rewrite's reason (EO-913)", () => {
 
   describe("(c) a correction by a newer entry", () => {
     const given = [entry("old", "Tests need Postgres 15.", 1_000), entry("older", "Tests need Postgres 14.", 500), entry("new", "Tests need Postgres 16.", 2_000)];
-    it("passes: the rewrite names the id of an entry of the same call written after it", () => {
+    it("passes: the rewrite names the id of an entry of the same call written after it, punctuation around it or not", () => {
       expect(namesNewerEntry(given[0]!, "Tests need Postgres 16, as new says.", given)).toBe(true);
+      expect(namesNewerEntry(given[0]!, "Tests need Postgres 16 (new).", given)).toBe(true);
+    });
+
+    it("fails: the id inside a longer token, which is not an id it was given", () => {
+      const uuid = "01a2188d-0242-7078-bd78-b43affb6f2b9";
+      const ids = [entry("01a2188d-0242-7078-bd78-b43affb6f2b8", "Tests need Postgres 15.", 1_000), entry(uuid, "Tests need Postgres 16.", 2_000)];
+      expect(namesNewerEntry(ids[0]!, `Tests need Postgres 16, as ${uuid} says.`, ids)).toBe(true);
+      expect(namesNewerEntry(ids[0]!, `Tests need Postgres 16, as ${uuid}a says.`, ids)).toBe(false);
+      expect(namesNewerEntry(ids[0]!, `Tests need Postgres 16, as 0${uuid} says.`, ids)).toBe(false);
+      expect(namesNewerEntry(ids[0]!, `Tests need Postgres 16, as ${uuid}-1 says.`, ids)).toBe(false);
     });
 
     it("fails: an older entry, the entry itself, or one the call was not given", () => {

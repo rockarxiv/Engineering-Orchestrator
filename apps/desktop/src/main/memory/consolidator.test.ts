@@ -550,6 +550,46 @@ describe("automatic memory consolidation", () => {
       expect(listMemories(handle.db, workspace).map((entry) => entry.body)).not.toContain("Run `pnpm test` first.");
     });
 
+    /** Runs one answer rewriting `original` to `body` for `reason` through the real side caller, and says what became of it. */
+    async function rewriteThrough(original: MemoryEntryView, body: string, reason: "relative_date" | "repository_file", contradictsRepositoryFile = false) {
+      const notes = fill();
+      const caller = answeringWith({ ...NOTHING, retire: [{ id: notes[1]!.id, reason: "Stale." }], rewrite: [{ id: original.id, body, contradictsRepositoryFile, reason }] });
+      askNow(consolidatorWith(caller.sideCall));
+      await consolidator!.idle();
+      return { row: listConsolidations(handle.db, workspace)[0]!, retired: notes[1]! };
+    }
+
+    it("drops a changed rewrite labelled a relative date made absolute that changes more than the phrase, leaving the original row as it was (EO-913)", async () => {
+      const dated = byAgent(workspace, "The ledger moved to UTC yesterday.", Date.parse("2026-11-20T10:00:00Z"));
+      const { row, retired } = await rewriteThrough(dated, "The ledger has been in UTC since 2026-11-19.", "relative_date");
+
+      expect(row).toMatchObject({ status: "succeeded", retiredIds: [retired.id], writtenIds: [] });
+      expect(row.note).toContain("1 rewrite was dropped");
+      expect(row.note).toContain(`${dated.id} (\`relative_date\``);
+      expect(everything(workspace).find((entry) => entry.id === dated.id)).toEqual(dated);
+      expect(listMemories(handle.db, workspace).map((entry) => entry.body)).not.toContain("The ledger has been in UTC since 2026-11-19.");
+    });
+
+    it("applies a rewrite labelled a disagreement with the repository file that quotes a whole line of the CLAUDE.md delivered (EO-913)", async () => {
+      const passing = byAgent(workspace, "Run the API tests with `make test`.", Date.now() - DAY + 200);
+      const quoted = "Run the API tests with `pnpm test:api`, as CLAUDE.md says: \"Run the tests with `pnpm test:api`.\"";
+      const { row } = await rewriteThrough(passing, quoted, "repository_file");
+      expect(row).toMatchObject({ status: "succeeded", note: null });
+      expect(row.retiredIds).toContain(passing.id);
+      expect(listMemories(handle.db, workspace).map((entry) => entry.body)).toContain(quoted);
+    });
+
+    it("drops a changed rewrite labelled a disagreement with the repository file that quotes no line of it as delivered, leaving the original row as it was (EO-913)", async () => {
+      const failing = byAgent(workspace, "Run the web tests with `make web`.", Date.now() - DAY + 300);
+      // Names the file, but what it quotes is not a line of it as delivered.
+      const unquoted = "Run the web tests with `pnpm test:web`, as CLAUDE.md says: \"Run the tests with pnpm.\"";
+      const second = await rewriteThrough(failing, unquoted, "repository_file");
+      expect(second.row).toMatchObject({ status: "succeeded", writtenIds: [] });
+      expect(second.row.note).toContain(`${failing.id} (\`repository_file\``);
+      expect(everything(workspace).find((entry) => entry.id === failing.id)).toEqual(failing);
+      expect(listMemories(handle.db, workspace).map((entry) => entry.body)).not.toContain(unquoted);
+    });
+
     it("applies a rewrite that names the newer entry correcting it, given in the same call, and drops one naming an older one (EO-913)", async () => {
       const at = Date.now() - DAY;
       const older = byAgent(workspace, "Tests need Postgres 14.", at);
@@ -1218,6 +1258,39 @@ describe("automatic memory consolidation", () => {
       // Taken up where it stopped, the retry left out the batch already done as it was then: it completes no run, and the
       // watermark stays where it was (EO-913).
       expect(consolidationWatermark(handle.db, workspace)).toBeNull();
+    });
+
+    it("completes its run, moving the watermark, when a person's run whose first batch failed is taken up again and sends the whole scope (EO-913)", async () => {
+      const entries = notes(workspace, 70);
+      let clock = Date.now();
+      const requests: AnyRequest[] = [];
+      const answers: ((request: AnyRequest) => AnyAnswer)[] = [() => ({ ok: false, reason: "error", message: "The backend fell over." })];
+      const sideCall = vi.fn(async (request: AnyRequest): Promise<AnyAnswer> => {
+        requests.push(request);
+        const next = answers.shift();
+        return next ? next(request) : { ok: true, value: isBatch(request) ? NOTHING : { groups: [] } };
+      });
+      const runner = consolidatorWith(sideCall as never, { now: () => clock, neighbours: byAge });
+
+      askNow(runner);
+      await runner.idle();
+
+      // The first batch failed: nothing applied, and no run completed.
+      expect(requests).toHaveLength(1);
+      expect(listConsolidations(handle.db, workspace)).toMatchObject([{ status: "failed" }]);
+      expect(consolidationWatermark(handle.db, workspace)).toBeNull();
+
+      // Asked again by a person, within the time its progress is kept: it had none, so every entry is sent.
+      clock += 60_000;
+      const retriedAt = clock;
+      runner.requestNow(workspace);
+      await vi.waitFor(() => expect(requests.length).toBeGreaterThanOrEqual(2));
+      await runner.idle();
+
+      expect(requests.slice(1).filter(isBatch).flatMap((request) => idsIn(request.input)).sort()).toEqual(ids(entries).sort());
+      expect(listConsolidations(handle.db, workspace).filter((row) => row.status === "succeeded")).not.toHaveLength(0);
+      expect(consolidationWatermark(handle.db, workspace)).toBe(retriedAt);
+      expect(entriesNewSinceConsolidated(handle.db, workspace)).toEqual([]);
     });
 
     it("starts again from every entry when a run that stopped part-way is taken up long after", async () => {
