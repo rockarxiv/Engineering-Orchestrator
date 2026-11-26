@@ -286,7 +286,9 @@ describe("a dispatch's memory", () => {
         ordering: "recently_delivered",
       });
       expect(delivered.section).toContain("Selection did not run for this dispatch, so these are the entries most recently given to earlier runs, then the newest");
-      expect(delivered.section).toContain("Entry 2:");
+      // And the agent reads them in that order, not the candidates'.
+      const at = (index: number) => delivered.section!.indexOf(`Entry ${index}:`);
+      expect([1, 0, 2, 5].map(at).every((position, i, all) => position > -1 && (i === 0 || position > all[i - 1]!))).toBe(true);
       expect(delivered.section).not.toContain("Entry 4:");
     });
 

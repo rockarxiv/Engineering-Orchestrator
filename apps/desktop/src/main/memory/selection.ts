@@ -289,10 +289,12 @@ export function renderMemorySection(input: {
   }
   lines.push("", `List a scope's other entries, or read one in full, with \`${MEMORY_READ}\`.`);
 
-  const delivered = new Set(choice.delivered.map((entry) => entry.id));
+  // Shown in the order they were chosen, not the candidates': a fallback's
+  // order is the point of it (EO-914), and an agent reads the first first.
+  const candidateIds = new Set(candidates.map((entry) => entry.id));
   for (const info of scopes) {
     const inScope = candidates.filter((entry) => sameScope(entry.scope, info.scope));
-    const shown = inScope.filter((entry) => delivered.has(entry.id));
+    const shown = choice.delivered.filter((entry) => candidateIds.has(entry.id) && sameScope(entry.scope, info.scope));
     const others = inScope.length - shown.length;
     lines.push("", `### ${scopeKindTitle(info.scope.kind)}: ${info.name} (scope \`${info.scope.id}\`)`, "");
     for (const entry of shown) {

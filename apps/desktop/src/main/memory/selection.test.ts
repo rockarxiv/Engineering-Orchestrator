@@ -261,6 +261,22 @@ describe("the memory section", () => {
     expect(section).toMatchSnapshot();
   });
 
+  it("shows a fallback's entries in the order it chose them, not the candidates' order", () => {
+    // Newest first as candidates arrive; the fallback put the delivered-before `old` first.
+    const candidates = [entry("new", "the newest", 1), entry("mid", "the middle", 5), entry("old", "given before", 30)];
+    const section = renderMemorySection({
+      scopes: [PROJECT],
+      candidates,
+      choice: { delivered: [candidates[2]!, candidates[0]!], mode: "fallback", selectionRan: false, reason: "timeout: too slow", ordering: "recently_delivered" },
+      now: NOW,
+    })!;
+    const at = (id: string) => section.indexOf(`id \`${id}\``);
+    expect(at("old")).toBeGreaterThan(-1);
+    expect(at("new")).toBeGreaterThan(at("old"));
+    expect(at("mid")).toBe(-1);
+    expect(section).toContain("This scope holds 1 other entry.");
+  });
+
   it("lists a scope nothing was delivered from, and renders nothing at all when no scope holds anything", () => {
     const candidates = [entry("p1", "a", 1)];
     const section = renderMemorySection({ scopes: [PROJECT, WORKSPACE], candidates, choice: { delivered: candidates, mode: "all", selectionRan: false, reason: null }, now: NOW });
