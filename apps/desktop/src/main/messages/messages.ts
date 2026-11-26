@@ -113,7 +113,11 @@ export function handleMessageHere(db: Db, request: MessageHandling, now: number 
     if (message.handledHow === "answered") actOnAnswer(db, message);
     return { ok: true, message };
   } catch (error) {
-    return { ok: false, problem: error instanceof Error ? error.message : String(error) };
+    // Only a refusal is an answer (EO-918). Anything else — a write the
+    // database failed — is a fault, and stays on the error path that
+    // keeps its text from the caller in a packaged build.
+    if (error instanceof MessageRefusal) return { ok: false, problem: error.message };
+    throw error;
   }
 }
 
@@ -217,17 +221,25 @@ export function openMessagesFor(db: Db, actingDeviceId: string | null | undefine
   return listOpenMessages(db, messageRecipientsFor(db, actingDeviceId));
 }
 
-/** The message, if it is open and the caller's to handle. Throws the sentence the person is shown otherwise. */
+/**
+ * Why a press on a message was refused, in the sentence the person — or
+ * the client acting for them — is shown (EO-918): not theirs, no longer
+ * open, an answer it does not offer. The one error `handleMessageHere`
+ * turns into an answer; any other is a fault and is thrown on.
+ */
+export class MessageRefusal extends Error {}
+
+/** The message, if it is open and the caller's to handle. Throws a `MessageRefusal` in the sentence the person is shown otherwise. */
 export function openMessageOf(db: Db, messageId: string, actingDeviceId: string | null | undefined): Message {
   const message = getMessage(db, messageId);
   if (!message || !messageRecipientsFor(db, actingDeviceId).includes(message.recipientId)) {
-    throw new Error("That message is not one of yours, or it has been deleted.");
+    throw new MessageRefusal("That message is not one of yours, or it has been deleted.");
   }
   if (message.handledAt !== null) {
     // Said with who, where it was not the person (EO-918): an agent told
     // "already answered" by the assistant knows not to ask the person.
     const by = message.handledBy === null || message.handledBy.kind === "person" ? "" : ` by ${handledByWords(message.handledBy)}`;
-    throw new Error(`That message was already ${message.handledHow ?? "handled"}${by}.`);
+    throw new MessageRefusal(`That message was already ${message.handledHow ?? "handled"}${by}.`);
   }
   return message;
 }
@@ -245,7 +257,7 @@ export function answerMessageCommand(
 ): { message: Message } {
   const message = openMessageOf(db, payload.messageId, payload.actingDeviceId);
   if (!answerOptions(message.options).includes(payload.answer)) {
-    throw new Error(`"${payload.answer}" is not one of the answers this message offers.`);
+    throw new MessageRefusal(`"${payload.answer}" is not one of the answers this message offers.`);
   }
   return { message: handled(db, message.id, "answered", payload.answer, now, by) };
 }
@@ -265,7 +277,7 @@ function handled(db: Db, messageId: string, how: "answered" | "dismissed", answe
   const message = markMessageHandled(db, messageId, how, answer, now, by);
   // Handled between the read above and this write — by EO resolving it,
   // or a second window. Said, rather than claiming this press did it.
-  if (!message) throw new Error("That message was handled in the meantime.");
+  if (!message) throw new MessageRefusal("That message was handled in the meantime.");
   emitPush("messages:changed", {});
   return message;
 }

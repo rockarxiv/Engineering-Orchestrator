@@ -2016,6 +2016,7 @@ export function registerAllHandlers(db: Db, engine: EngineHandle | undefined, re
   // person's: messages about the record's projects live here (EO-726).
   registerHandler("record:sendMessage", (payload) => serveSendMessage(serving, payload), opts);
   registerHandler("record:handleMessage", (payload) => serveHandleMessage(serving, payload), opts);
+  registerHandler("record:handleMessageFor", (payload) => serveHandleMessage(serving, payload), opts);
   registerHandler("record:messages", (payload) => serveMessages(serving, payload), opts);
   // A device whose admin pressed Fix with assistant on a notice about a
   // conflict this record holds: the chat is the record's to make, once

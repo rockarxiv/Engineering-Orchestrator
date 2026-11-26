@@ -10,7 +10,7 @@ import { mirrorRecordComment } from "./drain.js";
 import { recordAssistBoard } from "../roles/assist.js";
 import { upsertReplicaItem } from "../db/repos/replicaRepo.js";
 import { forgetMessage, upsertReplicaMessage } from "../db/repos/messagesRepo.js";
-import { openMessageOf } from "../messages/messages.js";
+import { MessageRefusal, openMessageOf } from "../messages/messages.js";
 import { noticeOfferedAgentMissing } from "./stepAgentsHere.js";
 import { emitPush } from "../ipc/push.js";
 import { getRun, markRunSynced, runSyncBookmark } from "../db/repos/runsRepo.js";
@@ -463,22 +463,25 @@ export function createRemoteRecord(options: RemoteRecordOptions): RemoteRecord {
       try {
         openMessageOf(db, request.messageId, request.actingDeviceId);
       } catch (error) {
-        return { ok: false, problem: error instanceof Error ? error.message : String(error) };
+        if (error instanceof MessageRefusal) return { ok: false, problem: error.message };
+        throw error;
       }
-      const answer = await ask("record:handleMessage", {
-        deviceId: options.deviceId,
-        messageId: request.messageId,
-        how: request.how,
-        answer: request.answer,
-        // Who pressed for this desktop's person (EO-918), for the record's copy to say.
-        ...(request.by === undefined ? {} : { by: request.by }),
-      });
+      const press = { deviceId: options.deviceId, messageId: request.messageId, how: request.how, answer: request.answer };
+      // A press made for this desktop's person by its assistant or an
+      // outside MCP client goes on a channel of its own, carrying who
+      // (EO-918): a record older than it refuses it and leaves the message
+      // open, where one taking `by` on the person's channel would close it
+      // and every desktop would show the press as the person's for good.
+      const delegate = request.by !== undefined && request.by.kind !== "person" ? request.by : null;
+      const answer = delegate === null ? await ask("record:handleMessage", press) : await ask("record:handleMessageFor", { ...press, by: delegate });
       if (!answer.ok) {
         return {
           ok: false,
           problem: answer.unreachable
             ? `This message is on your organisation's record, which could not be reached, so it is still open: ${answer.problem}`
-            : `Your organisation's record did not take that: ${answer.problem}`,
+            : delegate !== null
+              ? `Your organisation's record did not take that, so the message is still open. A record older than this desktop cannot keep who pressed for you; the person can answer it in EO's Inbox. The record said: ${answer.problem}`
+              : `Your organisation's record did not take that: ${answer.problem}`,
         };
       }
       const { message, problem } = answer.data;

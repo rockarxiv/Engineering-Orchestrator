@@ -6645,13 +6645,28 @@ export const recordContract = {
       messageId: z.string().min(1),
       how: z.enum(["answered", "dismissed"]),
       answer: z.string().nullable().default(null),
-      /**
-       * Who pressed on the asking device (EO-918): the person, its
-       * assistant or an outside MCP client, all acting for the device's
-       * person. Absent from an older desktop, which only the person could
-       * press on.
-       */
-      by: MessageHandledBySchema.optional(),
+    }),
+    z.object({ message: MessageSchema.nullable(), problem: z.string().nullable() }),
+  ),
+  /**
+   * `record:handleMessage` pressed for the device's person rather than by
+   * them (EO-918): by EO's assistant or an outside MCP client on that
+   * device, which `by` names and the record's copy keeps.
+   *
+   * Its own channel, never a field on `record:handleMessage`, so a record
+   * older than it refuses the press and leaves the message open: one that
+   * took the field it did not know would strip it, close the message, and
+   * every desktop would show the press as the person's for good. The
+   * person's own press stays on `record:handleMessage`, which every record
+   * takes.
+   */
+  "record:handleMessageFor": channel(
+    z.object({
+      deviceId: z.string().min(1),
+      messageId: z.string().min(1),
+      how: z.enum(["answered", "dismissed"]),
+      answer: z.string().nullable().default(null),
+      by: MessageHandledBySchema,
     }),
     z.object({ message: MessageSchema.nullable(), problem: z.string().nullable() }),
   ),
@@ -8149,6 +8164,7 @@ export const DEVICE_SCOPED_CHANNELS = [
   // pull is only ever the asking device's person's (EO-726).
   "record:sendMessage",
   "record:handleMessage",
+  "record:handleMessageFor",
   "record:messages",
 ] as const satisfies readonly RecordChannel[];
 

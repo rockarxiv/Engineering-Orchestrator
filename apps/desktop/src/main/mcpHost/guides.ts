@@ -537,8 +537,9 @@ A usage-limit hold is one of these: when a backend's plan window is
 full, work on it waits, and where EO cannot tell when the window
 refreshes it waits until somebody says it is back. \`message_answer\`
 with Carry on now on that message lifts the hold on the next dispatch,
-exactly as the person's press in the Inbox does. Dismissing it leaves
-the work waiting until EO is next started.
+exactly as the person's press in the Inbox does. Dismissing it does not
+lift the hold: where EO knows when the window resets, the hold still
+lifts then; where it does not, the work waits until EO is next started.
 
 ## 5. If a specific ticket is stuck
 

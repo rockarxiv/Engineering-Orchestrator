@@ -1,6 +1,6 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { LOCAL_PERSON_ID, uuidv7, type IpcResponse, type Message, type MessageSend } from "@eo/core";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DbHandle } from "../db/client.js";
 import { getMessage, insertMessage } from "../db/repos/index.js";
@@ -150,6 +150,22 @@ describe("refusals", () => {
 
     expect(result.isError).toBe(false);
     expect(textOf(result)).toBe('"Run it now" is not one of the answers this message offers.');
+    expect(getMessage(handle.db, message.id)?.handledAt).toBeNull();
+  });
+});
+
+describe("faults", () => {
+  it("leaves a database fault on the error path, never answered as a refusal in its own words", async () => {
+    const message = send();
+    // A write the database refuses, as a full disk would.
+    handle.db.run(sql`CREATE TRIGGER full_disk BEFORE UPDATE ON messages BEGIN SELECT RAISE(ABORT, 'database or disk is full'); END`);
+
+    const pressed = await dispatchIpc("messages:answer", { messageId: message.id, answer: "Carry on now" });
+    const result = await fromTheAssistant("message_dismiss", { messageId: message.id });
+
+    expect(pressed.ok).toBe(false);
+    expect(result.isError).toBe(true);
+    handle.db.run(sql`DROP TRIGGER full_disk`);
     expect(getMessage(handle.db, message.id)?.handledAt).toBeNull();
   });
 });

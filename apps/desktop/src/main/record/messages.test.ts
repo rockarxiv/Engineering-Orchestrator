@@ -56,6 +56,8 @@ interface Desktop {
   handle: DbHandle;
   record: DeviceRecord;
   online: boolean;
+  /** Whether the record it talks to is older than `record:handleMessageFor` (EO-918). */
+  olderRecord: boolean;
 }
 
 let recordDb: DbHandle;
@@ -104,7 +106,7 @@ function desktop(personId: Uuid, name: string): Desktop {
   const deviceId = issueDevice(recordDb.db, { personId, name, tokenHash: `hash-${name}`, secretsKeyHash: null }).id;
   const handle = openMigratedTestDb();
   setSetting(handle.db, MANAGED_PERSON_ID_KEY, personId);
-  const machine: Desktop = { handle, online: true, record: undefined as unknown as DeviceRecord };
+  const machine: Desktop = { handle, online: true, olderRecord: false, record: undefined as unknown as DeviceRecord };
   const transport: RecordTransport = {
     async request(channel, payload) {
       if (!machine.online) return { ok: false, error: { message: "EO could not reach https://eo.example: fetch failed" } };
@@ -117,6 +119,10 @@ function desktop(personId: Uuid, name: string): Desktop {
           return { ok: true, data: serveSendMessage(serving, { ...(payload as IpcPayload<"record:sendMessage">), deviceId }) as never };
         case "record:handleMessage":
           return { ok: true, data: serveHandleMessage(serving, { ...(payload as IpcPayload<"record:handleMessage">), deviceId }) as never };
+        case "record:handleMessageFor":
+          // What a record from before EO-918 answers a channel it has no handler for.
+          if (machine.olderRecord) return { ok: false, error: { message: `EO has no handler registered for "${channel}".` } };
+          return { ok: true, data: serveHandleMessage(serving, { ...(payload as IpcPayload<"record:handleMessageFor">), deviceId }) as never };
         case "record:messages":
           return { ok: true, data: serveMessages(serving, { ...(payload as IpcPayload<"record:messages">), deviceId }) as never };
         default:
@@ -258,6 +264,33 @@ describe("a message about a project the organisation's record holds", () => {
     await annaLaptop.record.sync();
     expect(getMessage(annaLaptop.handle.db, first.id)?.handledBy).toEqual({ kind: "mcp_client" });
     expect(getMessage(annaLaptop.handle.db, second.id)?.handledBy).toEqual({ kind: "assistant", agentId: "the-assistant" });
+  });
+
+  it("is left open by a record older than who pressed, rather than closed as the person's press (EO-918)", async () => {
+    const projectId = await organisationProject();
+    await carl.record.sendMessage(question(projectId, "local"));
+    await carl.record.sendMessage(question(projectId, "local"));
+    await syncAll();
+    const [first, second] = onTheRecord().filter((message) => message.recipientId === annaId) as [Message, Message];
+    const { registerAllHandlers } = await import("../ipc/handlers.js");
+    registerAllHandlers(annaDesk.handle.db, undefined, { platform: fakePlatform(), record: annaDesk.record });
+    annaDesk.olderRecord = true;
+
+    const byClient = await answerToolCall({ name: "message_answer", arguments: { messageId: first.id, answer: "Take theirs" } }, "external", false);
+    const byAssistant = await answerToolCall({ name: "message_dismiss", arguments: { messageId: second.id } }, "admin", false, undefined, undefined, "the-assistant");
+
+    // Refused in words, and nothing closed — on the record or on the desktop.
+    for (const refused of [byClient, byAssistant]) {
+      expect(refused.isError).toBe(false);
+      expect(JSON.stringify(refused.content)).toContain("still open");
+    }
+    expect([getMessage(recordDb.db, first.id)?.handledAt, getMessage(recordDb.db, second.id)?.handledAt]).toEqual([null, null]);
+    expect([getMessage(annaDesk.handle.db, first.id)?.handledAt, getMessage(annaDesk.handle.db, second.id)?.handledAt]).toEqual([null, null]);
+
+    // The person's own press still goes on the channel every record takes.
+    const pressed = await annaDesk.record.handleMessage({ messageId: first.id, how: "answered", answer: "Take theirs", by: { kind: "person" } });
+    expect(pressed.ok).toBe(true);
+    expect(getMessage(recordDb.db, first.id)).toMatchObject({ handledHow: "answered", handledBy: { kind: "person" } });
   });
 
   it("is dismissed on the record from a desktop, through the record", async () => {

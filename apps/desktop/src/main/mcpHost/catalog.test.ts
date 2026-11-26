@@ -200,6 +200,7 @@ const NOT_CATALOGUED: Partial<Record<RecordChannel, string>> = {
   // EO-726: EO's messages to a person. A client reads and handles them through inbox_list and the message tools (EO-918); these are machines talking.
   "record:sendMessage": "EO's own message to the people who must act on a project, sent by a desktop's EO code; agents never send messages",
   "record:handleMessage": "a desktop carrying its person's answer or dismissal of a message to the record that holds it; a client answers one with message_answer, which goes through messages:answer",
+  "record:handleMessageFor": "a desktop carrying an answer or dismissal its assistant or an outside MCP client made for its person to the record that holds the message; a client presses with message_answer or message_dismiss, which go through messages:answer / messages:dismiss",
   "record:messages": "a replica pulling its person's messages from the record; a client reads them with inbox_list",
   "record:changeDependencies": "a replica's request for the record to make a change items:update was asked for; an agent changes what an item waits for with item_update",
   "record:updateItemType": "a replica's request for the record to make a change itemTypes:update was asked for; an item type is changed by a person, in settings or on the assistant's card, never by a tool (EO-735)",

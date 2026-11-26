@@ -2091,8 +2091,9 @@ const READ_TOOLS: readonly ToolSpec[] = [
     channel: "messages:dismiss",
     description:
       "Close one of EO's messages to the person (listed under messages by inbox_list) without answering it, as the " +
-      "person's Dismiss in EO's Inbox would. Takes messageId. What it offered is not done; a usage-limit message dismissed " +
-      "leaves its work waiting until EO is next started. The message must be open and addressed to the person; otherwise " +
+      "person's Dismiss in EO's Inbox would. Takes messageId. What it offered is not done: dismissing a usage-limit message " +
+      "does not lift its hold, which still lifts at the reset time where EO knows one and otherwise stays until EO is next " +
+      "started. The message must be open and addressed to the person; otherwise " +
       "nothing is dismissed and the answer says why. The message records that you dismissed it.",
     input: z.object({ messageId: z.string().min(1) }),
     kind: "write",
