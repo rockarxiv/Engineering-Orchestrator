@@ -1,8 +1,9 @@
+import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { canonicalPath, commitsAhead, composeGitArgs, currentBranch, fetchBranch, git, globalUserEmail, isAncestor, rebaseOntoBase, statusPorcelain } from "./git.js";
+import { canonicalPath, commitsAhead, composeGitArgs, currentBranch, fetchBranch, git, globalUserEmail, isAncestor, pushBranch, pushDestination, rebaseOntoBase, statusPorcelain } from "./git.js";
 import { run, initRepo } from "../../../testing/git.js";
 
 // Real repositories in a temp dir, same discipline as worktrees.test.ts:
@@ -201,6 +202,85 @@ describe("a git command that reaches the network", () => {
     // returning promptly can only have been killed.
     expect((await fetching).ok).toBe(false);
     expect(Date.now() - started).toBeLessThan(3_000);
+  });
+});
+
+/**
+ * One plain push of the branch, and what git said of it (EO-910): the
+ * commit it put there, or none, and whether git's own status for the ref
+ * says it was refused as diverged.
+ */
+describe("pushBranch", () => {
+  let barePath: string;
+
+  beforeEach(async () => {
+    barePath = join(scratch, "bare.git");
+    await run(["init", "--bare", barePath], scratch);
+    await run(["remote", "add", "bare", barePath], repoPath);
+    await run(["checkout", "-b", "eo/EO-1"], repoPath);
+    await commit(repoPath, "work.ts", "export const work = 1;\n");
+  });
+
+  const tip = (path: string, ref = "refs/heads/eo/EO-1") => run(["rev-parse", ref], path);
+
+  it("reports the commit a push put on the branch, and none where the branch was already there", async () => {
+    const first = await pushBranch(repoPath, "bare", "eo/EO-1");
+    expect(first).toEqual({ ok: true, updated: await tip(repoPath) });
+    expect(await tip(barePath)).toBe(await tip(repoPath));
+
+    expect(await pushBranch(repoPath, "bare", "eo/EO-1")).toEqual({ ok: true, updated: null });
+
+    await commit(repoPath, "more.ts", "export const more = 1;\n");
+    expect(await pushBranch(repoPath, "bare", "eo/EO-1")).toEqual({ ok: true, updated: await tip(repoPath) });
+  });
+
+  it("says a rewritten branch was refused as diverged, by git's status for the ref, and moves nothing", async () => {
+    await pushBranch(repoPath, "bare", "eo/EO-1");
+    const before = await tip(barePath);
+    await run(["commit", "--amend", "-m", "rebased"], repoPath);
+
+    const pushed = await pushBranch(repoPath, "bare", "eo/EO-1");
+
+    expect(pushed).toMatchObject({ ok: false, diverged: true });
+    expect(pushed.ok ? "" : pushed.error).toContain("non-fast-forward");
+    expect(await tip(barePath)).toBe(before);
+  });
+
+  it("pushes over the commit its lease names, and only that one", async () => {
+    await pushBranch(repoPath, "bare", "eo/EO-1");
+    const before = await tip(barePath);
+    await run(["commit", "--amend", "-m", "rebased"], repoPath);
+
+    const stale = await pushBranch(repoPath, "bare", "eo/EO-1", { lease: await tip(repoPath, "main") });
+    expect(stale).toMatchObject({ ok: false, diverged: false });
+    expect(await tip(barePath)).toBe(before);
+
+    const leased = await pushBranch(repoPath, "bare", "eo/EO-1", { lease: before });
+    expect(leased).toEqual({ ok: true, updated: await tip(repoPath) });
+    expect(await tip(barePath)).toBe(await tip(repoPath));
+  });
+
+  it("is refused, and reports no commit, where a pre-push hook refuses it", async () => {
+    const hook = join(repoPath, ".git", "hooks", "pre-push");
+    writeFileSync(hook, "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+
+    const pushed = await pushBranch(repoPath, "bare", "eo/EO-1");
+
+    expect(pushed).toMatchObject({ ok: false, diverged: false });
+    expect((await git(["rev-parse", "--verify", "--quiet", "refs/heads/eo/EO-1"], barePath)).ok).toBe(false);
+  });
+});
+
+describe("pushDestination", () => {
+  it("fingerprints a remote's one push URL, and gives none for several", async () => {
+    const url = (await run(["remote", "get-url", "--push", "origin"], repoPath));
+    expect(await pushDestination(repoPath, "origin")).toBe(`sha256:${createHash("sha256").update(url, "utf8").digest("hex")}`);
+
+    await run(["remote", "set-url", "--add", "--push", "origin", url], repoPath);
+    await run(["remote", "set-url", "--add", "--push", "origin", join(scratch, "elsewhere.git")], repoPath);
+    expect(await pushDestination(repoPath, "origin")).toBeNull();
+
+    expect(await pushDestination(repoPath, "no-such-remote")).toBeNull();
   });
 });
 
