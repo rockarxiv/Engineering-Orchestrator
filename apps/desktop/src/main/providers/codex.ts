@@ -57,7 +57,8 @@ import {
   SKILL_READ_TOOL_NAME,
 } from "@eo/core";
 import type { AdminMcpDispatch } from "../agentAttachments/adminDelivery.js";
-import { deliverableSkills, writeWorktreeSkills, worktreeSkillsPromptSection, type WorktreeSkillDelivery } from "../agentAttachments/worktreeSkills.js";
+import { deliverableSkills, deliveredSkillOf, writeWorktreeSkills, worktreeSkillsPromptSection, type WorktreeSkillDelivery } from "../agentAttachments/worktreeSkills.js";
+import { NO_SKILL_CHANGES, skillChangesBetween, skillChangesSection } from "../agentAttachments/skillChanges.js";
 import { codexSkillLoaded, skillsOffered, withoutEvents } from "./skillUsage.js";
 import { openedFork } from "./threadFork.js";
 import { isSuggestionAnswer, judgeSuggestionAnswer, lastRequestMostlyUncached, PROMPT_SUGGESTION_PROMPT, SUGGESTION_MIN_COMPLETED_TURNS, SUGGESTION_NEAR_LIMIT_PERCENT, SUGGESTION_TIMEOUT_MS } from "./promptSuggestion.js";
@@ -400,6 +401,15 @@ export type CodexSearchHookDelivery = Pick<CodexSearchHook, "command" | "env" | 
   /** What marks this one hook as reviewed, so the CLI runs it and no other it has not been told to. */
   trust: CodexHookTrust;
 };
+
+/** What a resumed turn is given of EO's skills (`resumedSkills`). */
+interface ResumedSkills {
+  slugs: string[];
+  /** Its `skills_delivered`, said first. */
+  offered: AgentEvent[];
+  /** What the message is followed by, or an empty string. */
+  section: string;
+}
 
 /**
  * Says so when an attached skill did not reach the worktree (EO-207).
@@ -2638,11 +2648,27 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
     return resumeOpts?.refuseCallsExcept ? withoutEvents(stream, REFUSED_CALL_EVENTS) : stream;
   }
 
-  function resumedSkills(resumeOpts: AgentProviderResumeOptions | undefined): { slugs: string[]; section: string } {
-    if (!resumeOpts?.cwd) return { slugs: [], section: "" };
-    const restored = writeWorktreeSkills(resumeOpts.cwd, skillsForRun(options.attachedSkills ?? [], resumeOpts.skillScope));
-    warnAboutUndeliveredSkills(restored, resumeOpts.cwd);
-    return { slugs: restored.delivered.map((skill) => skill.slug), section: worktreeSkillsPromptSection(restored.delivered) };
+  /**
+   * The skills a resumed turn is given, written before `resume` returns:
+   * their slugs, the `skills_delivered` that says them, and what the
+   * message is followed by — the Skills section, and after it what
+   * changed since the run before where the caller says what that was
+   * (EO-919). The change is worked out from what `writeWorktreeSkills`
+   * actually delivered, so a skill it refused is neither listed as added
+   * nor answered by `skill_read`.
+   */
+  function resumedSkills(resumeOpts: AgentProviderResumeOptions | undefined): ResumedSkills {
+    const restored = resumeOpts?.cwd ? writeWorktreeSkills(resumeOpts.cwd, skillsForRun(options.attachedSkills ?? [], resumeOpts.skillScope)) : null;
+    if (restored && resumeOpts?.cwd) warnAboutUndeliveredSkills(restored, resumeOpts.cwd);
+    const delivered = (restored?.delivered ?? []).map(deliveredSkillOf);
+    const changes = resumeOpts?.skillsBefore ? skillChangesBetween(resumeOpts.skillsBefore, delivered) : NO_SKILL_CHANGES;
+    const listing = restored ? worktreeSkillsPromptSection(restored.delivered) : "";
+    const told = skillChangesSection(changes);
+    return {
+      slugs: delivered.map((skill) => skill.slug),
+      offered: skillsOffered(delivered, changes),
+      section: [listing, told].filter((part) => part !== "").join("\n\n"),
+    };
   }
 
   /** What a thread is resumed with: the turn's options, as `threadOptionsFrom` reads them. */
@@ -2665,14 +2691,14 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
     resumeOpts: AgentProviderResumeOptions | undefined,
     reach: (turn: CodexTurn) => void,
     fork: boolean,
-    skills: { slugs: string[]; section: string },
+    skills: ResumedSkills,
     facts?: TurnFacts,
     /** A fork opened only on a thread holding at least this many completed turns (`CodexThreadOptions.forkAfterCompletedTurns`, EO-808). */
     forkAfterCompletedTurns?: number,
   ): AsyncIterable<AgentEvent> {
     const skillSlugs = skills.slugs;
     // Given them again, as a fresh turn is (EO-715).
-    yield* skillsOffered(skillSlugs);
+    yield* skills.offered;
 
     // Threads persist in ~/.codex/sessions, which is what makes resume
     // cheap after a crash (ARCHITECTURE.md, "Reconciling on launch", E-04) — and an agent's own
@@ -2791,7 +2817,7 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
       opts.onSkillsSection?.(skillsSection);
       // Which of them this turn is given (EO-715), said first: what was
       // written, not what was attached.
-      const offered = skillsOffered(skills.delivered.map((skill) => skill.slug));
+      const offered = skillsOffered(skills.delivered.map(deliveredSkillOf));
       const slugs = skills.delivered.map((skill) => skill.slug);
       // A new thread's first answer is its only one, so no suggestion
       // follows it; a turn that asked for one still says so (EO-810).
@@ -3313,7 +3339,7 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
     resumeOpts: AgentProviderResumeOptions | undefined,
     reach: (turn: CodexTurn) => void,
     fork: boolean,
-    skills: { slugs: string[]; section: string },
+    skills: ResumedSkills,
     facts?: TurnFacts,
     forkAfterCompletedTurns?: number,
   ): AsyncIterable<AgentEvent> {

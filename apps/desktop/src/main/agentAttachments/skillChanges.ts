@@ -1,6 +1,5 @@
-import type { Skill, SkillFile, SkillsDeliveredChanges } from "@eo/core";
-import type { Db } from "../db/client.js";
-import { getSkill, skillsDeliveredTo, skillVersionsAround } from "../db/repos/index.js";
+import { createHash } from "node:crypto";
+import type { SkillGivenBefore, SkillsDeliveredChanges } from "@eo/core";
 import { oneLine } from "./skillsPrompt.js";
 
 /**
@@ -11,13 +10,26 @@ import { oneLine } from "./skillsPrompt.js";
  * backends read a skill's body when the agent loads it, and EO writes the
  * current ones where each reads them before every resumed turn. What goes
  * stale is the list in the prompt that opened the thread, so the resumed
- * turn is told what is different, and this is how EO works that out.
+ * turn is told what is different, and this is how it is worked out.
  *
- * Derived every time, never stored (invariant 6): from the previous run's
- * `skills_delivered` event — which skills it was given, and when — the
- * skills' versions, which say what each said at that moment, and the
- * skills this turn is given.
+ * By the adapter, at the moment it delivers (invariant 12): each compares
+ * what the run before was given — the `skills_delivered` EO recorded for
+ * it, the hash of what each skill said then included — with the skills it
+ * is delivering to this turn, and the change is said in the message it
+ * sends and on the `skills_delivered` it reports. So the listing names
+ * exactly what the turn can load, on either backend: never a skill the
+ * delivery refused, never an edit that landed after the files were
+ * written. Derived each time, never stored apart (invariant 6).
  */
+
+/** One skill as a turn is given it: as the listing names it, and what it says. */
+export interface DeliveredSkill {
+  slug: string;
+  name: string;
+  description: string;
+  /** `skillContentHash` of the files delivered for it: `deliveredSkillOf` on Codex, `toolDirectorySkills` on Claude. */
+  contentHash: string;
+}
 
 /** One skill as the listing names it. */
 export interface ListedSkill {
@@ -29,9 +41,9 @@ export interface ListedSkill {
 export interface SkillChanges {
   /** Given now and not to the previous run. */
   added: ListedSkill[];
-  /** Given to both, and edited since the previous run was given it — its body, description or files. */
+  /** Given to both, and not the same — its body, description, name or files. */
   changed: ListedSkill[];
-  /** Given to the previous run and not now: archived, disabled, detached, scoped elsewhere, or deleted. */
+  /** Given to the previous run and not now: archived, disabled, detached, scoped elsewhere, refused, or deleted. */
   removed: ListedSkill[];
 }
 
@@ -47,58 +59,42 @@ export function skillChangeSlugs(changes: SkillChanges): SkillsDeliveredChanges 
   return { added: slugs(changes.added), changed: slugs(changes.changed), removed: slugs(changes.removed) };
 }
 
-const listed = (skill: Pick<Skill, "slug" | "name" | "description">): ListedSkill => ({ slug: skill.slug, name: skill.name, description: skill.description });
-
-/** Files by path, for the reason the fingerprint sorts them: the same directory in another order is the same directory. */
-const filesKey = (files: readonly SkillFile[]): string => JSON.stringify([...files].sort((a, b) => a.path.localeCompare(b.path)).map((file) => [file.path, file.content]));
-
 /**
- * Whether a skill now says something other than it did at `at`.
- *
- * Read off its versions, which every write files whole: the newest
- * written by `at` is what the previous run was given, and the skill as it
- * stands is compared with it, so a save that rewrote the same words is no
- * change. A skill with no version that old — one from before EO kept them
- * (EO-714) — has changed if anything was written since.
+ * What one skill's delivered files say, as one hash: each file's path
+ * within the skill's folder and its content, in path order — the same
+ * folder in another order is the same folder. `SKILL.md` is among them,
+ * so its description, display name and body are too.
  */
-function editedSince(db: Db, skill: Skill, at: number): boolean {
-  const { asOf, writtenSince } = skillVersionsAround(db, skill.id, at);
-  if (asOf === undefined) return writtenSince;
-  return asOf.body !== skill.body || asOf.description !== skill.description || filesKey(asOf.files) !== filesKey(skill.files);
+export function skillContentHash(files: readonly { path: string; content: string }[]): string {
+  const sorted = [...files].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0)).map((file) => [file.path, file.content]);
+  return createHash("sha256").update(JSON.stringify(sorted)).digest("hex");
 }
 
-/**
- * The change between what `previousRunId` was given and `given`, the
- * skills this turn is given — already narrowed to its scope and to the
- * ones a model may invoke (`deliverableSkills`).
- *
- * By slug, since that is what the agent knows a skill by: a slug that
- * now names another skill was removed and added in the same breath, and
- * is listed as changed. A previous run with no `skills_delivered` was
- * given nothing, so everything given now is added.
- */
-export function skillChangesSince(db: Db, previousRunId: string, given: readonly Skill[]): SkillChanges {
-  const delivered = skillsDeliveredTo(db, previousRunId);
-  const before = new Map<string, string>();
-  delivered?.slugs.forEach((slug, index) => {
-    const id = delivered.skillIds[index];
-    if (id !== undefined) before.set(slug, id);
-  });
-  const now = new Map(given.map((skill) => [skill.slug, skill]));
+const listed = (skill: ListedSkill): ListedSkill => ({ slug: skill.slug, name: skill.name, description: skill.description });
+const bySlug = (a: { slug: string }, b: { slug: string }) => a.slug.localeCompare(b.slug);
 
+/**
+ * The change from what the run before was given to what this turn is.
+ *
+ * By slug, since that is what the agent knows a skill by. A skill in both
+ * has changed when what it says now hashes otherwise than what it was
+ * delivered as — or when that delivery recorded no hash, as one from
+ * before EO-919 did not, since nothing then says it is the same.
+ */
+export function skillChangesBetween(before: readonly SkillGivenBefore[], delivered: readonly DeliveredSkill[]): SkillChanges {
+  const then = new Map(before.map((skill) => [skill.slug, skill]));
+  const now = new Set(delivered.map((skill) => skill.slug));
   const added: ListedSkill[] = [];
   const changed: ListedSkill[] = [];
-  for (const skill of [...now.values()].sort((a, b) => a.slug.localeCompare(b.slug))) {
-    const id = before.get(skill.slug);
-    if (id === undefined) added.push(listed(skill));
-    else if (id !== skill.id || editedSince(db, skill, delivered?.at ?? 0)) changed.push(listed(skill));
+  for (const skill of [...delivered].sort(bySlug)) {
+    const was = then.get(skill.slug);
+    if (was === undefined) added.push(listed(skill));
+    else if (was.contentHash !== skill.contentHash) changed.push(listed(skill));
   }
-  const removed: ListedSkill[] = [];
-  for (const [slug, id] of [...before].sort(([a], [b]) => a.localeCompare(b))) {
-    if (now.has(slug)) continue;
-    const row = getSkill(db, id);
-    removed.push(row === undefined ? { slug, name: slug, description: "" } : listed({ ...row, slug }));
-  }
+  const removed = [...before]
+    .filter((skill) => !now.has(skill.slug))
+    .sort(bySlug)
+    .map(listed);
   return { added, changed, removed };
 }
 
@@ -128,10 +124,4 @@ export function skillChangesSection(changes: SkillChanges): string {
   }
   if (changes.removed.length > 0) lines.push("", "Removed — these are no longer available, and loading one will not work:", ...changes.removed.map(bullet));
   return lines.join("\n");
-}
-
-/** A message with the section after it, when there is one. */
-export function withSkillChanges(message: string, changes: SkillChanges): string {
-  const section = skillChangesSection(changes);
-  return section === "" ? message : `${message}\n\n${section}`;
 }

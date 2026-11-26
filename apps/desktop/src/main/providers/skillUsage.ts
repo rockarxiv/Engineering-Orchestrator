@@ -1,5 +1,6 @@
 import { RESERVED_MCP_SERVER_NAME, SKILL_READ_TOOL_NAME, type AgentEvent, type InterruptibleStream } from "@eo/core";
 import { TOOL_PLUGIN_NAME } from "../agentAttachments/pluginDirectory.js";
+import { hasSkillChanges, NO_SKILL_CHANGES, skillChangeSlugs, type DeliveredSkill, type SkillChanges } from "../agentAttachments/skillChanges.js";
 
 /**
  * What each adapter reports about EO's skills on a turn (EO-715): which
@@ -13,9 +14,23 @@ import { TOOL_PLUGIN_NAME } from "../agentAttachments/pluginDirectory.js";
  * own; `providerParity.test.ts` holds both to one observation.
  */
 
-/** The turn's `skills_delivered` event, or nothing for a turn given no skill. */
-export function skillsOffered(slugs: readonly string[]): AgentEvent[] {
-  return slugs.length === 0 ? [] : [{ type: "skills_delivered", slugs: [...new Set(slugs)].sort() }];
+/**
+ * The turn's `skills_delivered` event: the slugs it delivered, what each
+ * said (EO-919), and — on a turn that carries a thread on — the change
+ * since the run before (`skillChangesBetween`). Nothing for a turn given
+ * no skill and told of no change.
+ */
+export function skillsOffered(delivered: readonly DeliveredSkill[], changes: SkillChanges = NO_SKILL_CHANGES): AgentEvent[] {
+  const unique = [...new Map(delivered.map((skill) => [skill.slug, skill])).values()].sort((a, b) => (a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0));
+  if (unique.length === 0 && !hasSkillChanges(changes)) return [];
+  return [
+    {
+      type: "skills_delivered",
+      slugs: unique.map((skill) => skill.slug),
+      contentHashes: unique.map((skill) => skill.contentHash),
+      ...(hasSkillChanges(changes) ? { changes: skillChangeSlugs(changes) } : {}),
+    },
+  ];
 }
 
 /**

@@ -7,7 +7,7 @@ import { z } from "zod";
 import type { AttachmentSource } from "./attachment-tool.js";
 import type { AgentWriteBridgeAddress } from "./agent-writes.js";
 import type { MemoryReadScope } from "./memory.js";
-import type { SkillRunScope } from "./schemas/skills.js";
+import type { SkillRunScope, SkillsDeliveredChanges } from "./schemas/skills.js";
 
 // Same rationale as uuid.ts's Crypto declaration: this package's tsconfig
 // has neither "dom" nor "node" in its lib, so AbortSignal isn't ambiently
@@ -770,6 +770,36 @@ export interface ToolCallEvent {
 export interface SkillsOfferedEvent {
   type: "skills_delivered";
   slugs: string[];
+  /**
+   * What each of those skills said as it was delivered, beside `slugs`
+   * (EO-919): `skillContentHash` of the files the adapter delivered for
+   * it. Recorded with the run's `skills_delivered`, so the next turn that
+   * carries the thread on can tell an edited skill from one that is the
+   * same, from what was delivered rather than from when.
+   */
+  contentHashes?: string[];
+  /**
+   * How these skills differ from what the run before this one on the
+   * thread was given (`AgentProviderResumeOptions.skillsBefore`), by slug
+   * — worked out by the adapter from what it delivered, and told to the
+   * turn. Absent where nothing changed and on a turn that opened its
+   * thread. Said even by a turn given no skill, when every one was
+   * removed.
+   */
+  changes?: SkillsDeliveredChanges;
+}
+
+/**
+ * One skill the run before a resumed turn was given, as EO recorded its
+ * delivery (EO-919) — the slug, the name and description to name it by,
+ * and the hash of what it said then, null where the delivery recorded
+ * none (a run from before EO-919).
+ */
+export interface SkillGivenBefore {
+  slug: string;
+  name: string;
+  description: string;
+  contentHash: string | null;
 }
 
 /**
@@ -1197,8 +1227,20 @@ export interface AgentProviderResumeOptions extends AgentTurnOverrides {
   /** The same worktree the run started in. Sessions are scoped to it. */
   cwd?: string;
   /**
-   * Told the Skills section the adapter adds after the message, or an
-   * empty string when it adds none — synchronously, before `resume`
+   * The skills the run before this turn on the thread was given (EO-919),
+   * on a turn that carries an item's conversation on. A change to skills
+   * alone does not end a thread, so the adapter compares these with the
+   * skills it delivers to this turn, ends the message with what was
+   * added, changed and removed (`skillChangesSection`) and reports the
+   * change on its `skills_delivered`. Absent on a fork and wherever the
+   * caller has nothing to compare with; an empty list means the run
+   * before was given none.
+   */
+  skillsBefore?: readonly SkillGivenBefore[];
+  /**
+   * Told the Skills section the adapter adds after the message — and the
+   * section saying what changed in the skills, where `skillsBefore` gives
+   * it one (EO-919) — or an empty string when it adds none — synchronously, before `resume`
    * returns, as `AgentProviderStartOptions.onSkillsSection` is on a start.
    * Codex adds it to every resumed turn it gives skills (EO-721): a
    * thread opened before EO served skills through `skill_read` was told

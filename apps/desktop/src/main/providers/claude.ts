@@ -36,12 +36,15 @@ import {
   MICROCENTS_PER_CENT,
   withoutReservedEnvironmentVariables,
   uuidv7,
+  type SkillGivenBefore,
 } from "@eo/core";
 import { agentMcpStdioConfig, eoMcpStdioConfig, type EoMcpServiceConfig } from "../mcp/serviceConfig.js";
 import { toolResultEvent, toolResultText } from "./toolResult.js";
 import { withAttachmentNote } from "./attachmentNote.js";
 import { openingPrompt } from "../agentAttachments/cliToolsPrompt.js";
-import { readToolDirectoryServers, TOOL_PLUGIN_NAME, toolDirectoryMcpConfigPath, toolDirectoryServerToolPrefixes, toolDirectorySkillNames, toolDirectorySkillsPromptSection } from "../agentAttachments/pluginDirectory.js";
+import { readToolDirectoryServers, toolDirectoryMcpConfigPath, toolDirectoryServerToolPrefixes, toolDirectorySkillNames, toolDirectorySkills, toolDirectorySkillsPromptSection } from "../agentAttachments/pluginDirectory.js";
+import { NO_SKILL_CHANGES, skillChangesBetween, skillChangesSection } from "../agentAttachments/skillChanges.js";
+import { withSkillsSection } from "../agentAttachments/skillsPrompt.js";
 import { claudeSkillLoaded, leadingWith, skillsOffered, withoutEvents } from "./skillUsage.js";
 import { REFUSED_CALL_EVENTS, refusalHookOutput, refusedCall, type CallRule } from "./callRefusal.js";
 import { openedFork } from "./threadFork.js";
@@ -321,9 +324,18 @@ export interface ClaudeProviderOptions {
 }
 
 /** `mcp__eo__comment` -> `comment`: EO's own tools are recorded under their bare names on both backends. What a write tool did reaches EO over the agent write bridge, never from this (EO-543). */
-/** The skills a turn pointed at this directory is given, as the `skills_delivered` event says them (EO-715). */
-function offeredSkills(toolDirectory: string | undefined): AgentEvent[] {
-  return skillsOffered(toolDirectory ? toolDirectorySkillNames(toolDirectory).map((name) => name.slice(TOOL_PLUGIN_NAME.length + 1)) : []);
+/**
+ * The skills a turn pointed at this directory is given, as the
+ * `skills_delivered` event says them (EO-715), read off the directory as
+ * the turn opens — and, on a turn carrying a thread on, what changed
+ * since the run before (EO-919): the section the message ends with, and
+ * the same change on the event. From what the directory holds, so the
+ * listing names exactly what this turn can load.
+ */
+function offeredSkills(toolDirectory: string | undefined, skillsBefore?: readonly SkillGivenBefore[]): { events: AgentEvent[]; section: string } {
+  const delivered = toolDirectory ? toolDirectorySkills(toolDirectory) : [];
+  const changes = skillsBefore ? skillChangesBetween(skillsBefore, delivered) : NO_SKILL_CHANGES;
+  return { events: skillsOffered(delivered, changes), section: skillChangesSection(changes) };
 }
 
 export function normaliseToolName(name: string): string {
@@ -2717,9 +2729,15 @@ export function createClaudeProvider(options: ClaudeProviderOptions = {}): Agent
   };
 
   /** A turn on a session already written: the session itself, or (`fork`) a copy of it the CLI makes for this turn. */
-  const resumed = (threadId: string, message: string, resumeOpts: AgentProviderResumeOptions | undefined, fork: boolean): InterruptibleStream<AgentEvent> =>
-    leadingWith(
-      offeredSkills(resumeOpts?.toolDirectory),
+  const resumed = (threadId: string, message: string, resumeOpts: AgentProviderResumeOptions | undefined, fork: boolean): InterruptibleStream<AgentEvent> => {
+    // What changed in the skills since the run before, where the caller
+    // says what that was (EO-919): said at the end of the message, and
+    // reported before `resume` returns, as Codex reports its section.
+    const offered = offeredSkills(resumeOpts?.toolDirectory, resumeOpts?.skillsBefore);
+    resumeOpts?.onSkillsSection?.(offered.section);
+    const said = withSkillsSection(message, offered.section);
+    return leadingWith(
+      offered.events,
       translatingLostSession(
         threadId,
         deferred(async () => {
@@ -2737,7 +2755,7 @@ export function createClaudeProvider(options: ClaudeProviderOptions = {}): Agent
           // Before `open`, which keys a warm query on these options: a
           // warm resume of this session is never adopted by a fork of it.
           if (fork) sdkOptions.forkSession = true;
-          const opened = open(sdk, withAttachmentNote(message, resumeOpts?.attachments), sdkOptions, interceptions, admin, resumeOpts?.warmKey, resumeOpts?.signal, resumeOpts?.streamDeltas === true, resumeOpts?.processScope);
+          const opened = open(sdk, withAttachmentNote(said, resumeOpts?.attachments), sdkOptions, interceptions, admin, resumeOpts?.warmKey, resumeOpts?.signal, resumeOpts?.streamDeltas === true, resumeOpts?.processScope);
           // On a turn whose calls are refused, a `Skill` call loaded
           // nothing and an `Edit` changed nothing: the hook refused them,
           // so the events the call alone would say are not said (EO-732).
@@ -2745,6 +2763,7 @@ export function createClaudeProvider(options: ClaudeProviderOptions = {}): Agent
         }),
       ),
     );
+  };
 
   return {
     start(opts: AgentProviderStartOptions): InterruptibleStream<AgentEvent> {
@@ -2760,7 +2779,7 @@ export function createClaudeProvider(options: ClaudeProviderOptions = {}): Agent
       // returned stream is what the caller drives.
       // Which of EO's skills this turn is given (EO-715), said first: the
       // allowlist read off the directory, the same list the SDK is handed.
-      return leadingWith(offeredSkills(opts.toolDirectory), deferred(async () => {
+      return leadingWith(offeredSkills(opts.toolDirectory).events, deferred(async () => {
         const sdk = await sdkFor();
         // One queue per turn, built before the options it is wired into
         // and handed to the stream that drains it (EO-168).

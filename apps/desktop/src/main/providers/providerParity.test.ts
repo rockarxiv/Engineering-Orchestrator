@@ -28,6 +28,7 @@ import {
   type RunProcessScope,
   type Registry,
   type Skill,
+  type SkillGivenBefore,
   type SkillScope,
   type ThreadNotFoundError,
   type Uuid,
@@ -39,7 +40,7 @@ import { assembleSeedContext, type ContextRepositoryInput } from "@eo/engine";
 import { agentSpawnEnvironment, resolveCliToolPath } from "../agentAttachments/cliTools.js";
 import { readToolDirectoryServers, TOOL_PLUGIN_NAME, writeToolDirectory } from "../agentAttachments/pluginDirectory.js";
 import { attachmentEnvironment } from "../agentAttachments/serverEnvironment.js";
-import { withSkillChanges } from "../agentAttachments/skillChanges.js";
+import { skillChangesSection } from "../agentAttachments/skillChanges.js";
 import { skillReadAnswer } from "../agentAttachments/worktreeSkills.js";
 import { attachmentsForRun } from "../db/repos/agentAttachmentsRepo.js";
 import { insertAttachments, listAgents, saveMcpServer, setAgentAttachment } from "../db/repos/index.js";
@@ -837,13 +838,15 @@ const CAPABILITIES = [
     what: "a turn given skills says which (EO-715) — the ones actually delivered, on a start and again on a resume — and says a skill was loaded when the backend did it, not when the agent says so: a Skill call naming eo-attachments:<slug> on Claude, a skill_read call to EO's eo server that EO answered on Codex (EO-721), each call once; a skill that is not EO's, a call EO refused, a call that reads anything else, or one that only mentions the name or the path — reading a SKILL.md with a shell command included — is no load",
     same: {
       started: [
-        { type: "skills_delivered", slugs: ["build-in-w", "e2e-for-p", "house-style"] },
+        // With what each said as it was delivered (EO-919), which
+        // `skillChanges.test.ts` holds alike on both backends.
+        { type: "skills_delivered", slugs: ["build-in-w", "e2e-for-p", "house-style"], contentHashes: [expect.any(String), expect.any(String), expect.any(String)] },
         { type: "skill_loaded", slug: "house-style" },
         { type: "skill_loaded", slug: "house-style" },
         { type: "skill_loaded", slug: "e2e-for-p" },
         { type: "skill_loaded", slug: "e2e-for-p" },
       ],
-      resumed: [{ type: "skills_delivered", slugs: ["build-in-w", "e2e-for-p", "house-style"] }],
+      resumed: [{ type: "skills_delivered", slugs: ["build-in-w", "e2e-for-p", "house-style"], contentHashes: [expect.any(String), expect.any(String), expect.any(String)] }],
       withoutSkills: [],
     },
   },
@@ -852,9 +855,10 @@ const CAPABILITIES = [
   // says what changed at the end of the resumed turn's first message.
   {
     name: "an edited, an added and a removed skill on a resumed thread",
-    what: "a thread opened with two skills, resumed after one was edited, one added and one removed (EO-919): the resumed turn's first message is EO's, listing the change, as the backend received it; the turn is given the added and the edited skill and not the removed one; loading the edited one returns its current body and its supporting file is the current one; and the removed one is neither offered nor on disk",
+    what: "a thread opened with two skills, resumed after one was edited, one added and one removed (EO-919), handed what the opening turn reported it delivered: the adapter compares that with what it delivers now, so the resumed turn's first message, as the backend received it, is the caller's followed by the one shared listing of the change, and the turn's skills_delivered records the same change by slug; the turn is given the added and the edited skill and not the removed one; loading the edited one returns its current body and its supporting file is the current one; and the removed one is neither offered nor on disk",
     same: {
       told: true,
+      recorded: { added: ["fresh-skill"], changed: ["house-style"], removed: ["e2e-for-p"] },
       offered: ["fresh-skill", "house-style"],
       edited: { body: true, notes: "Read it twice.\n" },
       removed: { offered: false, onDisk: false },
@@ -1152,12 +1156,27 @@ const SKILLS_AFTER: Skill[] = [
   { ...scopedSkill("house-style", { kind: "global" }), body: "# house-style\nRead the diff twice.\n", files: [{ path: "notes.md", content: "Read it twice.\n" }], updatedAt: 2 },
   scopedSkill("fresh-skill", { kind: "global" }),
 ];
-/** What the supervisor sends a resumed turn whose skills changed so (`withSkillChanges`). */
-const RESUMED_WITH_CHANGES = withSkillChanges("carry on", {
+/** What a resumed turn whose skills changed so is told at the end of its message (`skillChangesSection`). */
+const LISTED_CHANGES = skillChangesSection({
   added: [{ slug: "fresh-skill", name: "fresh-skill", description: "How to fresh-skill." }],
   changed: [{ slug: "house-style", name: "house-style", description: "How to house-style." }],
   removed: [{ slug: "e2e-for-p", name: "e2e-for-p", description: "How to e2e-for-p." }],
 });
+/**
+ * What the supervisor hands a resumed turn as the skills the run before
+ * was given (`skillsGivenBefore`): the `skills_delivered` the opening
+ * turn reported, its hashes included, named by the skills' rows.
+ */
+const skillsBeforeOf = (events: readonly AgentEvent[]): SkillGivenBefore[] =>
+  events.flatMap((event) =>
+    event.type === "skills_delivered"
+      ? event.slugs.map((slug, index) => {
+          const skill = SKILLS_BEFORE.find((candidate) => candidate.slug === slug);
+          return { slug, name: skill?.name ?? slug, description: skill?.description ?? "", contentHash: event.contentHashes?.[index] ?? null };
+        })
+      : [],
+  );
+const changesIn = (events: readonly AgentEvent[]) => events.flatMap((event) => (event.type === "skills_delivered" && event.changes ? [event.changes] : []))[0] ?? null;
 
 /** The events a turn says about EO's skills (EO-715): what it was given and what it loaded. */
 const skillUsageOf = (events: readonly AgentEvent[]): AgentEvent[] => events.filter((event) => event.type === "skills_delivered" || event.type === "skill_loaded");
@@ -3567,15 +3586,18 @@ const CLAUDE: Record<CapabilityName, Proof> = {
     const toolDirectory = join(scratchDirectory(), "plugin");
     writeToolDirectory(toolDirectory, attachmentsForRun({ servers: [], skills: SKILLS_BEFORE }, SCOPED_RUN));
     const started = scripted([sdk.init(), sdk.result()]);
-    await collect(createClaudeProvider({ runQuery: started.runQuery, enableCommentTool: false }).start({ ...startOpts, toolDirectory, skillScope: SCOPED_RUN }));
+    const opened = await collect(createClaudeProvider({ runQuery: started.runQuery, enableCommentTool: false }).start({ ...startOpts, toolDirectory, skillScope: SCOPED_RUN }));
     writeToolDirectory(toolDirectory, attachmentsForRun({ servers: [], skills: SKILLS_AFTER }, SCOPED_RUN));
     const resumed = scripted([sdk.says("continued"), sdk.result({ result: "continued" })]);
-    const events = await collect(createClaudeProvider({ runQuery: resumed.runQuery, enableCommentTool: false }).resume("sess-1", RESUMED_WITH_CHANGES, { cwd: "/tmp/wt", toolDirectory, skillScope: SCOPED_RUN }));
+    const events = await collect(
+      createClaudeProvider({ runQuery: resumed.runQuery, enableCommentTool: false }).resume("sess-1", "carry on", { cwd: "/tmp/wt", toolDirectory, skillScope: SCOPED_RUN, skillsBefore: skillsBeforeOf(opened) }),
+    );
     const said = (await firstSaid(resumed.calls[0])) ?? "";
     const allowlist = ((resumed.calls[0]?.options["skills"] as string[] | undefined) ?? []).map((name) => name.split(":").pop() ?? name);
     const skills = join(toolDirectory, "skills");
     return {
-      told: said.startsWith(RESUMED_WITH_CHANGES),
+      told: said === `carry on\n\n${LISTED_CHANGES}`,
+      recorded: changesIn(events),
       offered: offeredIn(events),
       edited: { body: readFileSync(join(skills, "house-style", "SKILL.md"), "utf8").includes("Read the diff twice."), notes: readFileSync(join(skills, "house-style", "notes.md"), "utf8") },
       removed: { offered: offeredIn(events).includes("e2e-for-p") || allowlist.includes("e2e-for-p"), onDisk: existsSync(join(skills, "e2e-for-p")) },
@@ -5110,15 +5132,18 @@ const CODEX: Record<CapabilityName, Proof> = {
     const cwd = scratchDirectory();
     const turn = [note.turnStarted(), note.agentMessage("ok"), note.turnCompleted()];
     const started = codexOver({ after: { "turn/start": turn } }, { attachedSkills: SKILLS_BEFORE });
-    await collect(started.provider.start({ ...startOpts, cwd, skillScope: SCOPED_RUN }));
+    const opened = await collect(started.provider.start({ ...startOpts, cwd, skillScope: SCOPED_RUN }));
     const resumed = codexOver({ after: { "turn/start": turn } }, { attachedSkills: SKILLS_AFTER });
-    const events = await collect(resumed.provider.resume("thr-persisted", RESUMED_WITH_CHANGES, { cwd, skillScope: SCOPED_RUN }));
+    const events = await collect(resumed.provider.resume("thr-persisted", "carry on", { cwd, skillScope: SCOPED_RUN, skillsBefore: skillsBeforeOf(opened) }));
     const said = (resumed.fake.paramsOf("turn/start")?.["input"] as { text: string }[] | undefined)?.map((part) => part.text).join("") ?? "";
     const skills = join(cwd, ".agent", "skills");
     const served = (slug: string) => (offeredIn(events).includes(slug) ? SKILLS_AFTER.find((skill) => skill.slug === slug) : undefined);
     const edited = served("house-style");
+    // Codex follows every resumed message with its Skills section
+    // (EO-721); the change is said after it, at the very end.
     return {
-      told: said.startsWith(RESUMED_WITH_CHANGES),
+      told: said.startsWith("carry on\n\n## Skills") && said.endsWith(`\n\n${LISTED_CHANGES}`),
+      recorded: changesIn(events),
       offered: offeredIn(events),
       edited: { body: edited !== undefined && skillReadAnswer(edited).text.includes("Read the diff twice."), notes: readFileSync(join(skills, "house-style", "notes.md"), "utf8") },
       removed: { offered: offeredIn(events).includes("e2e-for-p"), onDisk: existsSync(join(skills, "e2e-for-p")) },

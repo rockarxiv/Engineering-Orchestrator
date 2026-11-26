@@ -152,7 +152,6 @@ import {
   watchGiveUpWords,
 } from "@eo/core";
 import { agentAttachmentsHash, agentToolSurfaceHash, agentToolSurfaceVerdict, type ToolSurfaceVerdict } from "../agentAttachments/fingerprint.js";
-import { hasSkillChanges, NO_SKILL_CHANGES, skillChangeSlugs, skillChangesSince, withSkillChanges, type SkillChanges } from "../agentAttachments/skillChanges.js";
 import { qualifiedServerName } from "../agentAttachments/pluginDirectory.js";
 import { deliverableSkills, skillReadAnswer } from "../agentAttachments/worktreeSkills.js";
 import { resolveAgentAttachmentsForRun } from "../db/repos/agentAttachmentsRepo.js";
@@ -262,6 +261,7 @@ import {
   memoryDeliveredToRun,
   getSkill,
   skillsLoadedByRun,
+  skillsGivenBefore,
   ownRunsToSettle,
   supersedeProblem,
   getMessage,
@@ -4362,15 +4362,17 @@ export function createRunSupervisor(
     agentToolSurfaceVerdict(db, run.agentAttachmentsHash, agent.id, item ? skillRunScope(db, item) : UNSCOPED_RUN);
 
   /**
-   * What changed in the skills between `previousRun` — the run whose
-   * thread is being carried on — and the turn about to carry it (EO-919):
-   * worked out from what EO recorded as delivered to that run and what
-   * this one is given, the same narrowing `recordSkillUsage` holds a
-   * delivery to. Asked beside `prepareToolDirectory`, with no await
-   * between, so the listing names what the directory holds.
+   * The directory a resumed turn is pointed at, written again at its
+   * provider boundary (EO-919), after the last await before the backend
+   * is spoken to: a skill edited, created or archived while the turn was
+   * being prepared is what the turn loads, and the adapter reads what it
+   * tells the turn changed off this same directory. Kept as `prepared`
+   * when the servers or CLIs no longer match what `run` records — they
+   * moved during that await, and the directory must not hand the thread
+   * a server its row does not say it has; the next dispatch refuses it.
    */
-  const skillChangesFor = (previousRun: Run, agent: Agent, item: Item): SkillChanges =>
-    skillChangesSince(db, previousRun.id, deliverableSkills(resolveAgentAttachmentsForRun(db, agent.id, skillRunScope(db, item)).skills));
+  const toolDirectoryAtBoundary = (run: Run, agent: Agent, item: Item, prepared: PreparedToolDirectory | null): PreparedToolDirectory | null =>
+    toolSurfaceOf(run, agent, item) === "same" ? prepareToolDirectory(item, agent) : prepared;
 
   /**
    * What a turn on this item may spend (`budgetCents`), worked out when the
@@ -4508,13 +4510,6 @@ export function createRunSupervisor(
    * `skills_delivered`, dropped when the run is over.
    */
   const runSkills = new Map<string, { bySlug: Map<string, string>; loaded: Set<string> }>();
-  /**
-   * What changed in the skills of each run in flight that carried a thread
-   * on (EO-919), for its `skills_delivered` to record. Taken by the first
-   * one; a run given no skills at all records it when it ends
-   * (`recordUnreportedSkillChanges`).
-   */
-  const pendingSkillChanges = new Map<string, SkillChanges>();
   /** When the computer last woke, as `onWake` or a late watchdog pass said. Silence before it is not the run's. */
   let lastWakeAt: number | null = null;
   let lastWatchdogPassAt: number | null = null;
@@ -5166,19 +5161,27 @@ export function createRunSupervisor(
       if (runSkills.has(runId)) return;
       const scoped = deliverableSkills(resolveAgentAttachmentsForRun(db, agent.id, skillRunScope(db, item)).skills);
       const bySlug = new Map<string, string>();
-      for (const slug of event.slugs) {
+      // What each said as it was delivered (EO-919), kept beside its slug.
+      const hashes: string[] = [];
+      event.slugs.forEach((slug, index) => {
         const skill = scoped.find((candidate) => candidate.slug === slug);
-        if (skill !== undefined) bySlug.set(slug, skill.id);
-      }
+        if (skill === undefined || bySlug.has(slug)) return;
+        bySlug.set(slug, skill.id);
+        const hash = event.contentHashes?.[index];
+        if (hash !== undefined) hashes.push(hash);
+      });
       runSkills.set(runId, { bySlug, loaded: new Set() });
-      const changes = pendingSkillChanges.get(runId);
-      pendingSkillChanges.delete(runId);
+      // And, on a turn that carried a thread on, how they differ from the
+      // run before's, as the adapter told the turn (EO-919). Said even with
+      // no skill left, so a run that lost every one records it.
+      const changes = event.changes;
       if (bySlug.size === 0 && changes === undefined) return;
       const delivered: SkillsDeliveredEvent = {
         type: SKILLS_DELIVERED_EVENT,
         skillIds: [...bySlug.values()],
         slugs: [...bySlug.keys()],
-        ...(changes !== undefined ? { changes: skillChangeSlugs(changes) } : {}),
+        ...(hashes.length === bySlug.size && bySlug.size > 0 ? { contentHashes: hashes } : {}),
+        ...(changes !== undefined ? { changes } : {}),
       };
       buffer.append(runId, SKILLS_DELIVERED_EVENT, delivered);
       return;
@@ -5189,30 +5192,6 @@ export function createRunSupervisor(
     given.loaded.add(skillId);
     const loaded: SkillLoadedEvent = { type: SKILL_LOADED_EVENT, skillId, slug: event.slug };
     buffer.append(runId, SKILL_LOADED_EVENT, loaded);
-  }
-
-  /**
-   * The skills change of a run that carried a thread on and was given no
-   * skill at all (EO-919) — every one it had was removed — which no
-   * adapter reports a delivery for. Recorded as a `skills_delivered` with
-   * no skills, so the change is on the run as it is on every other.
-   */
-  function recordUnreportedSkillChanges(runId: Uuid): void {
-    const changes = pendingSkillChanges.get(runId);
-    pendingSkillChanges.delete(runId);
-    if (changes === undefined) return;
-    const delivered: SkillsDeliveredEvent = { type: SKILLS_DELIVERED_EVENT, skillIds: [], slugs: [], changes: skillChangeSlugs(changes) };
-    try {
-      const buffer = activeEventBuffers.get(runId);
-      if (buffer) {
-        buffer.append(runId, SKILLS_DELIVERED_EVENT, delivered);
-        buffer.flush();
-      } else {
-        record.appendRunEvent(runId, SKILLS_DELIVERED_EVENT, delivered);
-      }
-    } catch (error) {
-      console.warn(`[eo] the change to run ${runId}'s skills could not be recorded: ${error instanceof Error ? error.message : String(error)}`);
-    }
   }
 
   /**
@@ -6301,7 +6280,6 @@ export function createRunSupervisor(
         closeAbandonedRun(run.id, item.id);
         lastKnownThreadIds.delete(run.id);
         runActivity.delete(run.id);
-        recordUnreportedSkillChanges(run.id);
         settleSkillUsage(run.id);
         runSkills.delete(run.id);
         // Its staging areas; what it froze stays (EO-813).
@@ -7806,13 +7784,7 @@ export function createRunSupervisor(
     // where the backend can read it. Regenerated on every dispatch,
     // resumed threads included, because the CLI is spawned again each
     // turn and has to be pointed at the directory again.
-    const toolDirectory = prepareToolDirectory(item, agent);
-    // And what changed in the skills since the run whose thread this
-    // carries on (EO-919), read in the same synchronous block as the
-    // directory it describes. A change to skills alone carries the thread
-    // on: the directory above and the Codex turn hold the current ones,
-    // and the turn's first message says what is different.
-    const skillChanges = resuming ? skillChangesFor(resuming.run, agent, item) : NO_SKILL_CHANGES;
+    const preparedToolDirectory = prepareToolDirectory(item, agent);
 
     const run = createRun(db, {
       itemId: item.id,
@@ -7885,13 +7857,6 @@ export function createRunSupervisor(
       // was given — but is told how to write it all the same, since the
       // thread may predate the block (`memoryWritingFor`).
       turnContext = withMemoryWriting(context, agent, memoryScopes);
-    }
-    // A thread carried on is told what changed in its skills since the
-    // run before (EO-919), at the end of its first message; the run's
-    // `skills_delivered` records it, and nothing is posted.
-    if (resuming && hasSkillChanges(skillChanges)) {
-      turnContext = withSkillChanges(turnContext, skillChanges);
-      pendingSkillChanges.set(run.id, skillChanges);
     }
     // A thread existed and EO chose not to carry it over. The item has
     // just paid for a full context assembly it might have been spared,
@@ -7971,6 +7936,10 @@ export function createRunSupervisor(
     const initiatingAttachments = initiationId
       ? listCommentsForItem(db, item.id).find((comment) => comment.id === initiationId)?.attachments ?? []
       : [];
+    // A thread carried on is pointed at its directory written again here,
+    // after the memory was chosen (EO-919): what it loads of its skills,
+    // and what the adapter tells it changed, are the skills as they are.
+    const toolDirectory = resuming ? toolDirectoryAtBoundary(run, agent, item, preparedToolDirectory) : preparedToolDirectory;
     const turnOptions = {
       cwd: workspace.cwd,
       ...(outputSchema ? { outputSchema } : {}),
@@ -8000,7 +7969,13 @@ export function createRunSupervisor(
     // an edit to them refuses the reuse rather than being sent again.
     const stream = openTurn(item, workspace, () =>
       resuming
-        ? sendingProvider(run, agent, item, action, { purpose: "dispatch" }).resume(resuming.threadId, turnContext, turnOptions)
+        ? sendingProvider(run, agent, item, action, { purpose: "dispatch" }).resume(resuming.threadId, turnContext, {
+            ...turnOptions,
+            // What the run before was given, for the adapter to tell the
+            // turn what changed in its skills (EO-919). A change to skills
+            // alone carries the thread on, and posts nothing.
+            skillsBefore: skillsGivenBefore(db, resuming.run.id),
+          })
         : sendingProvider(run, agent, item, action, {
             purpose: "dispatch",
             // Why a thread that existed is not being carried on, which is
@@ -10178,10 +10153,7 @@ export function createRunSupervisor(
       // The recovered thread needs its directory as much as a fresh
       // dispatch does (EO-107): the app was killed, and whatever
       // process was holding those servers open died with it.
-      const recoveredToolDirectory = prepareToolDirectory(item, agent);
-      // And what changed in its skills while the app was closed (EO-919),
-      // beside the directory that holds them, as a reply's resume has it.
-      const recoveredSkillChanges = skillChangesFor(run, agent, item);
+      const preparedRecoveryDirectory = prepareToolDirectory(item, agent);
       // And the query server, for the same reason and on the same
       // terms (EO-151): the process that was holding it open died with
       // the app, and the CLI this resume spawns starts the servers it
@@ -10296,13 +10268,16 @@ export function createRunSupervisor(
           body: notice,
         });
       }
-      if (hasSkillChanges(recoveredSkillChanges)) pendingSkillChanges.set(newRun.id, recoveredSkillChanges);
+      // Written again past that await (EO-919), so the recovered thread
+      // loads its skills as they are now.
+      const recoveredToolDirectory = toolDirectoryAtBoundary(newRun, agent, item, preparedRecoveryDirectory);
       const stream = openTurn(item, workspaceOfRun(item, run), () =>
         // With the memory-writing block where the turn is served
         // `memory_note` (EO-593): the thread being recovered may predate it.
-        // And what changed in its skills (EO-919).
-        sendingProvider(newRun, agent, item, run.action, { purpose: "recovery" }).resume(resumableThreadId, withSkillChanges(withMemoryWriting(message, agent, turnMemoryScopes(item)), recoveredSkillChanges), {
+        sendingProvider(newRun, agent, item, run.action, { purpose: "recovery" }).resume(resumableThreadId, withMemoryWriting(message, agent, turnMemoryScopes(item)), {
           ...(run.cwd ? { cwd: run.cwd } : {}),
+          // What changed in its skills while the app was closed (EO-919).
+          skillsBefore: skillsGivenBefore(db, run.id),
           ...(resumeSchema ? { outputSchema: resumeSchema } : {}),
           ...discussionTurnOptions(item, agent),
           ...(recoveredToolDirectory ? { toolDirectory: recoveredToolDirectory.path } : {}),
@@ -12800,11 +12775,7 @@ export function createRunSupervisor(
     // carries on (EO-107). The directory is still there — nothing
     // removes one until the item settles — and this points the newly
     // spawned CLI back at it.
-    const replyToolDirectory = prepareToolDirectory(item, agent);
-    // And what changed in its skills while it was parked (EO-919), read
-    // beside the directory that now holds them. Skills alone do not end a
-    // conversation: the reply's turn is told, at the end of its message.
-    const replySkillChanges = skillChangesFor(priorRun, agent, item);
+    const preparedReplyDirectory = prepareToolDirectory(item, agent);
     // And the query server, resolved again rather than remembered
     // (EO-151). A parked run's conversation can wait days for a reply,
     // and the index behind it may have been rebuilt, resynced or lost in
@@ -12897,10 +12868,14 @@ export function createRunSupervisor(
         body: notice,
       });
     }
-    if (hasSkillChanges(replySkillChanges)) pendingSkillChanges.set(run.id, replySkillChanges);
+    // Written again past that await (EO-919): skills alone do not end a
+    // conversation, so the reply's turn loads them as they are now, and is
+    // told at the end of its message what changed while it was parked.
+    const replyToolDirectory = toolDirectoryAtBoundary(run, agent, item, preparedReplyDirectory);
     const stream = openTurn(item, workspaceOfRun(item, priorRun), () =>
-      sendingProvider(run, agent, item, priorRun.action, { purpose: "reply" }).resume(resumableThreadId, withSkillChanges(replyMessage, replySkillChanges), {
+      sendingProvider(run, agent, item, priorRun.action, { purpose: "reply" }).resume(resumableThreadId, replyMessage, {
         ...(priorRun.cwd ? { cwd: priorRun.cwd } : {}),
+        skillsBefore: skillsGivenBefore(db, priorRun.id),
         ...(replySchema ? { outputSchema: replySchema } : {}),
         ...discussionTurnOptions(item, agent),
         ...(replyToolDirectory ? { toolDirectory: replyToolDirectory.path } : {}),

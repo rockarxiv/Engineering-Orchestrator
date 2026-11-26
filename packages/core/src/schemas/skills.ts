@@ -376,6 +376,13 @@ export const SkillsDeliveredEventSchema = z.object({
   type: z.literal(SKILLS_DELIVERED_EVENT),
   skillIds: z.array(z.string()),
   slugs: z.array(z.string()),
+  /**
+   * What each skill said as it was delivered, beside `slugs` (EO-919): the
+   * hash of the files the adapter delivered for it. What the next turn on
+   * the thread compares with to tell an edited skill from the same one.
+   * Absent on a row from before then, whose every skill reads as changed.
+   */
+  contentHashes: z.array(z.string()).optional(),
   changes: SkillsDeliveredChangesSchema.optional(),
 });
 export type SkillsDeliveredEvent = z.infer<typeof SkillsDeliveredEventSchema>;
