@@ -34,6 +34,7 @@ import {
   listConsolidations,
   listMemories,
   listSideCalls,
+  markConsolidationRunComplete,
   recordSkillProposal,
   restoreConsolidation,
   restoreMemory,
@@ -45,7 +46,7 @@ import {
   updateAgent,
 } from "../db/repos/index.js";
 import { buildEligibilityInput } from "../supervisor/buildTickInput.js";
-import { applyConsolidation, entriesNewSinceConsolidated, runsDeliveredFromScopeQuery } from "../db/repos/memoryConsolidationsRepo.js";
+import { applyConsolidation, consolidationWatermark, entriesNewSinceConsolidated, runsDeliveredFromScopeQuery } from "../db/repos/memoryConsolidationsRepo.js";
 import { attachWorkspace, createTestItem, messagesFrom, openMigratedTestDb } from "../db/testHelpers.js";
 import { listConsolidationsCommand, restoreConsolidationCommand } from "../ipc/memoryCommands.js";
 import { recordFor } from "../record/localRecord.js";
@@ -200,6 +201,7 @@ describe("automatic memory consolidation", () => {
       for (let index = 0; index < 20; index += 1) byPerson(project, `Person ${index}`, at + index);
       const done = startConsolidation(handle.db, { scope: project, trigger: "schedule", now: Date.now() - 3 * DAY });
       applyConsolidation(handle.db, { id: done.id, sent: [], answer: NOTHING, note: null, now: Date.now() - 3 * DAY });
+      markConsolidationRunComplete(handle.db, done.id);
       // Many runs given it since, and days past: due on everything but something new.
       for (let index = 0; index < 8; index += 1) {
         const run = createRun(handle.db, { itemId, agentId: listAgents(handle.db)[0]!.id, action: "implement", status: "succeeded" });
@@ -266,6 +268,7 @@ describe("automatic memory consolidation", () => {
       vi.setSystemTime(start + HOUR);
       const done = startConsolidation(handle.db, { scope: workspace, trigger: "schedule", now: start + HOUR });
       applyConsolidation(handle.db, { id: done.id, sent: [], answer: NOTHING, note: null, now: start + HOUR });
+      markConsolidationRunComplete(handle.db, done.id);
       // Something new since it, which is what a scheduled one is given (EO-913).
       byAgent(workspace, "Payments settle at noon.", start + 2 * HOUR);
       // ...each given the scope's memory after it (a reply to a parked run, say).
@@ -292,6 +295,7 @@ describe("automatic memory consolidation", () => {
       const note = byAgent(workspace, "The ledger is in UTC.", start - 10 * DAY);
       const done = startConsolidation(handle.db, { scope: workspace, trigger: "schedule", now: start - 2 * HOUR });
       applyConsolidation(handle.db, { id: done.id, sent: [], answer: NOTHING, note: null, now: start - HOUR });
+      markConsolidationRunComplete(handle.db, done.id);
       for (let index = 0; index < 8; index += 1) {
         const run = createRun(handle.db, { itemId, agentId: listAgents(handle.db)[0]!.id, action: "implement", status: "succeeded" });
         appendRunEvent(handle.db, run.id, MEMORY_DELIVERED_EVENT, { type: MEMORY_DELIVERED_EVENT, entryIds: [note.id], candidateCount: 1, mode: "all", selectionRan: false, reason: null });
@@ -338,7 +342,7 @@ describe("automatic memory consolidation", () => {
             // agents[0] is in no operation: it stays as it was.
             retire: agents.slice(4).map((entry) => ({ id: entry.id, reason: "Stale: the flow it describes is gone." })),
             merge: [{ body: "Tests need Postgres 16 (since 2026-10-15).", from: [agents[2]!.id, agents[1]!.id], contradictsRepositoryFile: false }],
-            rewrite: [{ id: agents[3]!.id, body: "The API tests run with `make test` now; the CLAUDE.md is out of date.", contradictsRepositoryFile: true, reason: "repository_file" }],
+            rewrite: [{ id: agents[3]!.id, body: "The API tests run with `make test` now; the CLAUDE.md, which says \"Run the tests with `pnpm test:api`.\", is out of date.", contradictsRepositoryFile: true, reason: "repository_file" }],
           },
         }),
       );
@@ -357,7 +361,7 @@ describe("automatic memory consolidation", () => {
       expect(consolidation!.retiredIds.sort()).toEqual(retired.map((entry) => entry.id).sort());
 
       const written = active.filter((entry) => entry.consolidationId === consolidation!.id);
-      expect(written.map((entry) => entry.body).sort()).toEqual(["Tests need Postgres 16 (since 2026-10-15).", "The API tests run with `make test` now; the CLAUDE.md is out of date."]);
+      expect(written.map((entry) => entry.body).sort()).toEqual(["Tests need Postgres 16 (since 2026-10-15).", "The API tests run with `make test` now; the CLAUDE.md, which says \"Run the tests with `pnpm test:api`.\", is out of date."]);
       expect(consolidation!.writtenIds.sort()).toEqual(written.map((entry) => entry.id).sort());
       // A merged entry keeps the age and source of the newest it replaced, whatever order `from` names them in…
       expect(written.find((entry) => entry.body.startsWith("Tests need"))).toMatchObject({ createdAt: agents[2]!.createdAt, source: { type: "run", runId, itemId } });
@@ -398,7 +402,7 @@ describe("automatic memory consolidation", () => {
           value: {
             retire: [],
             merge: [{ body: "The ledger is in UTC.", from: agents.slice(0, 9).map((entry) => entry.id), contradictsRepositoryFile: false }],
-            rewrite: [{ id: agents[9]!.id, body: "Run the API tests with `make test`; `pnpm test:api` was removed on 2026-10-12.", contradictsRepositoryFile: true, reason: "repository_file" }],
+            rewrite: [{ id: agents[9]!.id, body: "Run the API tests with `make test`; `pnpm test:api` was removed on 2026-10-12, though CLAUDE.md still says \"Run the tests with `pnpm test:api`.\"", contradictsRepositoryFile: true, reason: "repository_file" }],
           },
         }),
       );
@@ -449,7 +453,7 @@ describe("automatic memory consolidation", () => {
           value: {
             retire: [],
             merge: [{ body: "The ledger is in UTC.", from: agents.slice(0, 9).map((entry) => entry.id), contradictsRepositoryFile: false }],
-            rewrite: [{ id: agents[9]!.id, body: "Run the API tests with `make test`; `pnpm test:api` was removed on 2026-10-12.", contradictsRepositoryFile: true, reason: "repository_file" }],
+            rewrite: [{ id: agents[9]!.id, body: "Run the API tests with `make test`; `pnpm test:api` was removed on 2026-10-12, though CLAUDE.md still says \"Run the tests with `pnpm test:api`.\"", contradictsRepositoryFile: true, reason: "repository_file" }],
           },
         }),
       );
@@ -512,16 +516,61 @@ describe("automatic memory consolidation", () => {
       expect(listSideCalls(handle.db)).toMatchObject([{ purpose: "memory_consolidate", outcome: "failed", reason: "schema" }]);
     });
 
-    it("applies a rewrite that gives its reason though it makes the entry longer, as an absolute date does (EO-913)", async () => {
+    it("applies a rewrite whose reason passes its test, however it changes the entry's length: a relative date made absolute (EO-913)", async () => {
       const notes = fill();
-      const longer = `${notes[0]!.body}, written on 2026-11-20 rather than "yesterday".`;
-      const caller = answeringWith({ ...NOTHING, rewrite: [{ id: notes[0]!.id, body: longer, contradictsRepositoryFile: false, reason: "relative_date" }] });
+      const dated = byAgent(workspace, "The ledger moved to UTC yesterday.", Date.parse("2026-11-20T10:00:00Z"));
+      const body = "The ledger moved to UTC 2026-11-19.";
+      const caller = answeringWith({ ...NOTHING, rewrite: [{ id: dated.id, body, contradictsRepositoryFile: false, reason: "relative_date" }] });
 
       askNow(consolidatorWith(caller.sideCall));
       await consolidator!.idle();
 
-      expect(listConsolidations(handle.db, workspace)[0]).toMatchObject({ status: "succeeded", retiredIds: [notes[0]!.id] });
-      expect(listMemories(handle.db, workspace).map((entry) => entry.body)).toContain(longer);
+      expect(listConsolidations(handle.db, workspace)[0]).toMatchObject({ status: "succeeded", retiredIds: [dated.id], note: null });
+      expect(listMemories(handle.db, workspace).map((entry) => entry.body)).toContain(body);
+      expect(listMemories(handle.db, workspace)).toHaveLength(notes.length + 1);
+    });
+
+    it("drops a rewrite whose reason fails its test — one that only shortens an entry, labelled a newer entry's correction — leaving the entry active and unchanged, and applies the rest (EO-913)", async () => {
+      const notes = fill();
+      const long = byAgent(workspace, "Run `pnpm test` before pushing, and wait for it to finish.", Date.now() - DAY + 100);
+      const caller = answeringWith({
+        ...NOTHING,
+        retire: [{ id: notes[1]!.id, reason: "Stale." }],
+        rewrite: [{ id: long.id, body: "Run `pnpm test` first.", contradictsRepositoryFile: false, reason: "newer_entry" }],
+      });
+
+      askNow(consolidatorWith(caller.sideCall));
+      await consolidator!.idle();
+
+      const [row] = listConsolidations(handle.db, workspace);
+      expect(row).toMatchObject({ status: "succeeded", retiredIds: [notes[1]!.id], writtenIds: [] });
+      expect(row!.note).toContain(`1 rewrite was dropped`);
+      expect(row!.note).toContain(long.id);
+      expect(everything(workspace).find((entry) => entry.id === long.id)).toEqual(long);
+      expect(listMemories(handle.db, workspace).map((entry) => entry.body)).not.toContain("Run `pnpm test` first.");
+    });
+
+    it("applies a rewrite that names the newer entry correcting it, given in the same call, and drops one naming an older one (EO-913)", async () => {
+      const at = Date.now() - DAY;
+      const older = byAgent(workspace, "Tests need Postgres 14.", at);
+      const stale = byAgent(workspace, "Tests need Postgres 15.", at + 1_000);
+      const newer = byAgent(workspace, "Tests need Postgres 16 now.", at + 2_000);
+      const caller = answeringWith({
+        ...NOTHING,
+        rewrite: [
+          { id: stale.id, body: `Tests need Postgres 16 (corrected by ${newer.id}).`, contradictsRepositoryFile: false, reason: "newer_entry" },
+          { id: newer.id, body: `Tests need Postgres 14 (as ${older.id} says).`, contradictsRepositoryFile: false, reason: "newer_entry" },
+        ],
+      });
+
+      askNow(consolidatorWith(caller.sideCall));
+      await consolidator!.idle();
+
+      expect(listConsolidations(handle.db, workspace)[0]).toMatchObject({ status: "succeeded", retiredIds: [stale.id] });
+      const bodies = listMemories(handle.db, workspace).map((entry) => entry.body);
+      expect(bodies).toContain(`Tests need Postgres 16 (corrected by ${newer.id}).`);
+      expect(bodies).toContain(newer.body);
+      expect(bodies).toContain(older.body);
     });
 
     for (const operation of ["merge", "rewrite"] as const) {
@@ -860,12 +909,14 @@ describe("automatic memory consolidation", () => {
       await consolidator!.idle();
 
       // It folded only what it was given; the additions were left as they
-      // are, and are what the next scheduled one is given — not what it folded.
+      // are, and are what the next scheduled one is given — with what it
+      // folded, written after the run's read, which is only sent twice.
       expect(sideCall).toHaveBeenCalledTimes(1);
       for (const entry of originals) expect(requests[0]!.input).toContain(entry.id);
       for (const entry of added) expect(requests[0]!.input).not.toContain(entry.id);
       expect(listMemories(handle.db, workspace).map((entry) => entry.body).sort()).toEqual(["Folded 10.", ...added.map((entry) => entry.body)].sort());
-      expect(entriesNewSinceConsolidated(handle.db, workspace).sort()).toEqual(added.map((entry) => entry.id).sort());
+      const folded = listMemories(handle.db, workspace).find((entry) => entry.body === "Folded 10.")!;
+      expect(entriesNewSinceConsolidated(handle.db, workspace).sort()).toEqual([...added.map((entry) => entry.id), folded.id].sort());
     });
 
     it("does the same for notes added while it waits for its slot", async () => {
@@ -897,7 +948,8 @@ describe("automatic memory consolidation", () => {
 
       expect(inputs).toHaveLength(1);
       for (const entry of added) expect(inputs[0]).not.toContain(entry.id);
-      expect(entriesNewSinceConsolidated(handle.db, workspace).sort()).toEqual(added.map((entry) => entry.id).sort());
+      const folded = listMemories(handle.db, workspace).find((entry) => entry.body === "Folded 10.")!;
+      expect(entriesNewSinceConsolidated(handle.db, workspace).sort()).toEqual([...added.map((entry) => entry.id), folded.id].sort());
     });
   });
 
@@ -921,6 +973,7 @@ describe("automatic memory consolidation", () => {
       const old = Array.from({ length: 60 }, (_, index) => byAgent(project, `${TOPICS[index % TOPICS.length]!} (old note ${index}, detail ${"abcdefghij"[index % 10]!.repeat(3)}).`, at + index * HOUR));
       const done = startConsolidation(handle.db, { scope: project, trigger: "schedule", now: Date.now() - 3 * DAY });
       applyConsolidation(handle.db, { id: done.id, sent: [], answer: NOTHING, note: null, now: Date.now() - 3 * DAY });
+      markConsolidationRunComplete(handle.db, done.id);
       return old;
     }
 
@@ -986,36 +1039,47 @@ describe("automatic memory consolidation", () => {
       expect(requests.at(-1)!.system).toBe(MEMORY_MERGE_CANDIDATES_SYSTEM);
     });
 
-    it("counts new entries from the last consolidation that finished, leaving out what consolidations and restores wrote themselves", () => {
+    it("counts new entries from the watermark: when the last run that completed began, compared inclusively, and moved by nothing else (EO-913)", () => {
       const at = Date.now() - 10 * DAY;
-      const [a, b, c] = ["One.", "Two.", "Three."].map((body, index) => byAgent(workspace, body, at + index));
+      const [a, b] = ["One.", "Two."].map((body, index) => byAgent(workspace, body, at + index));
       byPerson(workspace, "A person's.", at);
       // Never consolidated: every agent-written entry is new, and no person's.
-      expect(entriesNewSinceConsolidated(handle.db, workspace)).toEqual(ids([a!, b!, c!]));
+      expect(consolidationWatermark(handle.db, workspace)).toBeNull();
+      expect(entriesNewSinceConsolidated(handle.db, workspace)).toEqual(ids([a!, b!]));
 
-      // A run that merged a and b, and finished.
-      const first = startConsolidation(handle.db, { scope: workspace, trigger: "schedule", now: at + HOUR });
-      const merged = applyConsolidation(handle.db, { id: first.id, sent: [a!, b!], answer: { ...NOTHING, merge: [{ from: [a!.id, b!.id], body: "One and two.", contradictsRepositoryFile: false }] }, note: null, now: at + 2 * HOUR });
-      if (!merged.ok) throw new Error(merged.problem);
+      // A run that read at `read` and completed: the watermark is `read`.
+      const read = at + HOUR;
+      const first = startConsolidation(handle.db, { scope: workspace, trigger: "manual", now: read });
+      applyConsolidation(handle.db, { id: first.id, sent: [a!, b!], answer: NOTHING, note: null, now: read + 5 });
+      markConsolidationRunComplete(handle.db, first.id);
+      expect(consolidationWatermark(handle.db, workspace)).toBe(read);
       expect(entriesNewSinceConsolidated(handle.db, workspace)).toEqual([]);
 
-      // Written since: new.
-      const d = byAgent(workspace, "Four.", at + 3 * HOUR);
-      expect(entriesNewSinceConsolidated(handle.db, workspace)).toEqual([d.id]);
+      // Written in the watermark's own millisecond: it may not have been read, so it is new.
+      const tied = byAgent(workspace, "Three, at the very moment.", read);
+      // And one written after it.
+      const later = byAgent(workspace, "Four.", read + HOUR);
+      expect(entriesNewSinceConsolidated(handle.db, workspace)).toEqual(ids([tied, later]));
 
-      // A run that stopped part-way — one batch applied, the next failed — is not the point counted from.
-      const partway = at + 4 * HOUR;
+      // A run that failed does not move it.
+      const failed = startConsolidation(handle.db, { scope: workspace, trigger: "schedule", now: read + 2 * HOUR });
+      failConsolidation(handle.db, failed.id, { reason: "error", note: "The backend fell over.", now: read + 2 * HOUR + 1 });
+      // Nor one that applied a batch and then failed, or was cut off by a restart before its next batch.
+      const partway = read + 3 * HOUR;
       const batchOne = startConsolidation(handle.db, { scope: workspace, trigger: "schedule", now: partway });
-      applyConsolidation(handle.db, { id: batchOne.id, sent: [c!], answer: NOTHING, note: null, now: partway + 1 });
+      applyConsolidation(handle.db, { id: batchOne.id, sent: [tied], answer: NOTHING, note: null, now: partway + 1 });
       const batchTwo = startConsolidation(handle.db, { scope: workspace, trigger: "schedule", now: partway });
       failConsolidation(handle.db, batchTwo.id, { reason: "error", note: "The backend fell over.", now: partway + 2 });
-      expect(entriesNewSinceConsolidated(handle.db, workspace)).toEqual([d.id]);
+      const cutOff = startConsolidation(handle.db, { scope: workspace, trigger: "schedule", now: partway + HOUR });
+      applyConsolidation(handle.db, { id: cutOff.id, sent: [later], answer: NOTHING, note: null, now: partway + HOUR + 1 });
+      expect(consolidationWatermark(handle.db, workspace)).toBe(read);
+      expect(entriesNewSinceConsolidated(handle.db, workspace)).toEqual(ids([tied, later]));
 
-      // Restored: what it put back is the person keeping it, not new — and what was new before stays new.
-      expect(restoreConsolidation(handle.db, first.id, { now: at + 5 * HOUR }).ok).toBe(true);
-      expect(ids(listMemories(handle.db, workspace))).toEqual(expect.arrayContaining([a!.id, b!.id]));
-      expect(entriesNewSinceConsolidated(handle.db, workspace)).toEqual([d.id]);
+      // Nor a person's restore: what it puts back is new again, which is only sent twice.
+      expect(restoreConsolidation(handle.db, first.id, { now: partway + 2 * HOUR }).ok).toBe(true);
+      expect(consolidationWatermark(handle.db, workspace)).toBe(read);
     });
+
   });
 
   describe("in batches (EO-574)", () => {
@@ -1190,7 +1254,7 @@ describe("automatic memory consolidation", () => {
       expect(entriesNewSinceConsolidated(handle.db, workspace)).toEqual([id]);
     });
 
-    it("takes a run on the schedule that failed part-way up again after its backoff, with no new deliveries, keeping what its earlier batch did", async () => {
+    it("takes a run on the schedule that failed part-way up again after its backoff, with no new deliveries, keeping what its earlier batch did and sending every entry still new since the watermark it left (EO-913)", async () => {
       const entries = notes(workspace, 70);
       for (let index = 0; index < 5; index += 1) {
         const run = createRun(handle.db, { itemId, agentId: listAgents(handle.db)[0]!.id, action: "implement", status: "succeeded" });
@@ -1214,6 +1278,8 @@ describe("automatic memory consolidation", () => {
       expect(requests).toHaveLength(2);
       expect(listConsolidations(handle.db, workspace).map((row) => row.status)).toEqual(["failed", "succeeded"]);
       expect(listMemories(handle.db, workspace)).toHaveLength(68);
+      // A batch applied and the next failed: the run did not complete, so the watermark did not move.
+      expect(consolidationWatermark(handle.db, workspace)).toBeNull();
 
       // Within the day of its first batch, and not one delivery since: due once its backoff is over all the same.
       expect(runner.check()).toEqual([]);
@@ -1223,11 +1289,13 @@ describe("automatic memory consolidation", () => {
       await vi.waitFor(() => expect(requests.length).toBeGreaterThan(2));
       await runner.idle();
 
-      // The failed batch, then the one never reached, and no cross-batch pass on the schedule; the earlier batch's retirements stand.
-      expect(requests.slice(2).map((request) => (isBatch(request) ? idsIn(request.input) : request.system))).toEqual([ids(entries.slice(30, 60)), ids(entries.slice(60))]);
+      // The watermark never moved, so every entry still active is new again — those the applied batch had too, which are only sent
+      // twice — and no cross-batch pass on the schedule; the earlier batch's retirements stand.
+      expect(requests.slice(2).map((request) => (isBatch(request) ? idsIn(request.input) : request.system))).toEqual([ids(entries.slice(2, 32)), ids(entries.slice(32, 62)), ids(entries.slice(62))]);
       expect(listMemories(handle.db, workspace)).toHaveLength(68);
       for (const entry of entries.slice(0, 2)) expect(everything(workspace).find((row) => row.id === entry.id)).toMatchObject({ retiredReason: "consolidated" });
-      expect(listConsolidations(handle.db, workspace).map((row) => row.status)).toEqual(["succeeded", "succeeded", "failed", "succeeded"]);
+      expect(listConsolidations(handle.db, workspace).map((row) => row.status)).toEqual(["succeeded", "succeeded", "succeeded", "failed", "succeeded"]);
+      expect(entriesNewSinceConsolidated(handle.db, workspace)).toEqual([]);
       expect(runner.check()).toEqual([]);
     });
 
@@ -1755,7 +1823,7 @@ describe("automatic memory consolidation", () => {
   });
 
   describe("restoring", () => {
-    it("puts back what a consolidation retired and retires what it wrote, in one IPC command, and is not undone by the next look", async () => {
+    it("puts back what a consolidation retired and retires what it wrote, in one IPC command, and queues nothing at the next look", async () => {
       const notes = Array.from({ length: 10 }, (_, index) => byAgent(workspace, `Note ${index}`, Date.now() - DAY + index));
       const person = byPerson(workspace, "Mine.", Date.now() - DAY);
       const sideCall = vi.fn(async (): Promise<Answer> => ({ ok: true, value: mergeAll(notes, "All ten.") }));
@@ -1775,9 +1843,10 @@ describe("automatic memory consolidation", () => {
       expect(await restoreConsolidationCommand(handle.db, recordFor(handle.db), { consolidationId: consolidation!.id })).toMatchObject({ ok: false });
       expect(await restoreConsolidationCommand(handle.db, recordFor(handle.db), { consolidationId: "nope" })).toMatchObject({ ok: false });
 
-      // What the person put back is not new to the next scheduled one, so it is not folded straight back.
+      // Nothing is queued for it now. What the person put back was written after the watermark, so the next scheduled one
+      // sends it again, with its neighbours (EO-913): sent twice, never skipped. The person's entry is never sent.
       expect(runner.check()).toEqual([]);
-      expect(entriesNewSinceConsolidated(handle.db, workspace)).toEqual([]);
+      expect(entriesNewSinceConsolidated(handle.db, workspace).sort()).toEqual(notes.map((entry) => entry.id).sort());
     });
 
     it("leaves entries a person puts back one at a time new to the next scheduled one, and queues nothing for them now", async () => {
@@ -1793,8 +1862,10 @@ describe("automatic memory consolidation", () => {
       for (const entry of notes.slice(0, 9)) expect(restoreMemory(handle.db, entry.id, later).ok).toBe(true);
       expect(listMemories(handle.db, workspace)).toHaveLength(10);
 
+      // With what the run itself wrote, after the moment it read its entries: sent again, which is acceptable (EO-913).
+      const merged = listMemories(handle.db, workspace).find((entry) => entry.body === "All ten.")!;
       expect(runner.check()).toEqual([]);
-      expect(entriesNewSinceConsolidated(handle.db, workspace).sort()).toEqual(notes.slice(0, 9).map((entry) => entry.id).sort());
+      expect(entriesNewSinceConsolidated(handle.db, workspace).sort()).toEqual([...notes.slice(0, 9).map((entry) => entry.id), merged.id].sort());
     });
   });
 
@@ -2097,7 +2168,7 @@ describe("automatic memory consolidation", () => {
       const at = Date.now() - DAY;
       const entries = Array.from({ length: 40 }, (_, index) => byAgent(workspace, `Note ${index}: ${"y".repeat(80)}`, at + index * 1_000));
       const [a, b, untouched] = [entries[0]!, entries[1]!, entries[5]!];
-      const shorter = "Notes 0 and 1, merged and then reworded.";
+      const shorter = `Notes 0 and 1, merged and then corrected by ${entries[35]!.id}.`;
       const sideCall = vi.fn(async (request: AnyRequest): Promise<AnyAnswer> => {
         if (request.system === MEMORY_CONSOLIDATE_SYSTEM) {
           // The first batch folds two entries into one; the second changes nothing.
@@ -2105,8 +2176,8 @@ describe("automatic memory consolidation", () => {
         }
         const folded = listMemories(handle.db, workspace).find((entry) => entry.body === "Notes 0 and 1.")!;
         if (request.system === MEMORY_MERGE_CANDIDATES_SYSTEM) return { ok: true, value: { groups: [{ ids: [folded.id, entries[35]!.id] }] } };
-        // The pass's last call only rewords the folded one: a rewrite of an entry folded from several.
-        return { ok: true, value: { ...NOTHING, rewrite: [{ id: folded.id, body: shorter, contradictsRepositoryFile: false }] } };
+        // The pass's last call corrects the folded one by the newer entry it was grouped with: a rewrite of an entry folded from several.
+        return { ok: true, value: { ...NOTHING, rewrite: [{ id: folded.id, body: shorter, contradictsRepositoryFile: false, reason: "newer_entry" }] } };
       });
       const proposeSkills = vi.fn(async (request: AnyRequest): Promise<AnyAnswer> => {
         const reworded = listMemories(handle.db, workspace).find((entry) => entry.body === shorter)!;

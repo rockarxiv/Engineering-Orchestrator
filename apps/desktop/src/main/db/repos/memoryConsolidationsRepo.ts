@@ -92,6 +92,7 @@ export function startConsolidation(db: Db, input: { scope: MemoryScope; trigger:
     note: null,
     capsEntries: null,
     capsChars: null,
+    completesRun: null,
     // Counted from nothing: a consolidation that makes no side call held no slot (EO-577).
     slotHeldMs: 0,
     stuckNoticedAt: null,

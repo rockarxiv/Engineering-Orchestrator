@@ -173,11 +173,12 @@ export function failedSinceSettled(state: ScopeConsolidationState): boolean {
  *   (`newEntries`) — what a scheduled consolidation is given. A scope
  *   with none has nothing new to tidy, and is left.
  * - **A failure since the scope was last settled** (`failedSinceSettled`)
- *   is taken up again on the schedule once its backoff is over, without
- *   waiting for another day and five runs, as before EO-913 — but only
- *   where there is a new entry to give it, and never for a failure of a
- *   `cap` consolidation from before EO-913, which size no longer starts:
- *   the scope waits for its day and five runs like any other.
+ *   is taken up again once its backoff is over, without waiting for
+ *   another day and five runs: a person's `manual` one as `manual`, over
+ *   the whole scope, anything else on the schedule — which needs a new
+ *   entry to give it. Never a failure of a `cap` consolidation from
+ *   before EO-913, which size no longer starts: that scope waits for its
+ *   day and five runs like any other.
  *
  * Every one needs an agent-written entry: a person's are never sent, so a
  * scope of only those has nothing to consolidate. `runsDeliveredSince` is
@@ -201,6 +202,7 @@ export function consolidationDue(input: {
   // scope's last consolidation, so the day and the five runs would be
   // counted from them, and its failed batch never retried.
   if (failedSinceSettled(state) && state.failuresSince[0]!.trigger !== "cap") {
+    if (state.failuresSince[0]!.trigger === "manual") return { kind: "consolidate", trigger: "manual" };
     return input.newEntries() > 0 ? { kind: "consolidate", trigger: "schedule" } : { kind: "none" };
   }
   const since = state.lastConsolidatedAt ?? tally.oldestAgentAt;
