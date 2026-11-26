@@ -1039,7 +1039,6 @@ describe("automatic memory consolidation", () => {
       const fresh = newNotes(31);
       givenToFiveRuns(fresh);
       const inputs: string[] = [];
-      let merged: string | null = null;
       const sideCall = vi.fn(async (request: AnyRequest): Promise<AnyAnswer> => {
         inputs.push(request.input);
         // The first batch folds the shared neighbour into its first new entry; the second changes nothing.
@@ -1053,11 +1052,11 @@ describe("automatic memory consolidation", () => {
 
       expect(inputs).toHaveLength(2);
       expect(idsIn(inputs[0]!)).toContain(shared.id);
-      merged = listMemories(handle.db, project).find((entry) => entry.body === "The shared fact, and the first new one.")?.id ?? null;
-      expect(merged).not.toBeNull();
+      const merged = listMemories(handle.db, project).find((entry) => entry.body === "The shared fact, and the first new one.");
+      expect(merged).toBeDefined();
       // The second batch has the room, so it is given the neighbour too — as the first batch left it.
       expect(idsIn(inputs[1]!)).not.toContain(shared.id);
-      expect(idsIn(inputs[1]!)).toContain(merged);
+      expect(idsIn(inputs[1]!)).toContain(merged!.id);
       expect(listConsolidations(handle.db, project).filter((row) => row.trigger === "schedule" && row.status !== "succeeded")).toEqual([]);
       expect(entriesNewSinceConsolidated(handle.db, project)).toEqual([]);
     });
