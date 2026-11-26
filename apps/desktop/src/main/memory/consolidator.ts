@@ -232,7 +232,7 @@ const PAUSED_NOTE = "EO was paused while this consolidation ran, so it was stopp
  * rather than taken up again.
  */
 const NOTHING_LEFT_NOTE =
-  "This went on with a consolidation that stopped part-way, and found nothing left to give it: the earlier batches had the rest, and what the stopped batch was to be given has since been retired. The consolidation is finished as it is.";
+  "This went on with a consolidation that stopped part-way, and found nothing left to give it: what that consolidation was to be given was had by its earlier batches or has since been retired. The consolidation is finished as it is; anything written after it started is left to the next scheduled one.";
 const PAUSED_BETWEEN_NOTE = "EO was paused before this batch of the consolidation started, so it changed nothing; the batches before it stay applied. It is asked again once EO is resumed.";
 /**
  * What a `container_done` whose container's work resumed says (EO-596):
@@ -289,6 +289,13 @@ interface Sequence {
   batches: number;
   /** When a batch of it last succeeded. */
   at: number;
+  /**
+   * On a scheduled run, the new entries its first attempt was to give, by
+   * id (EO-913): with those new by then (`entriesNewSinceConsolidated`'s
+   * `until`), what its retry goes on with — one restored since included —
+   * and nothing written after it, which is the schedule's.
+   */
+  planned: Set<string>;
 }
 
 /**
@@ -578,12 +585,16 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
    *
    * A scheduled run with no new entry left to give — the one it was queued
    * for retired or edited back while it waited — changes nothing and asks
-   * nothing, not even to fold duplicates or propose skills. A retry left
-   * with none — what its run's earlier batches had is done, and the rest
-   * was retired since — is that run finished: one row that
-   * changed nothing ends it (`NOTHING_LEFT_NOTE`), so it is not queued
-   * again and its earlier batches are not resent, and skills are proposed
-   * as after any run that finished.
+   * nothing, not even to fold duplicates or propose skills. A scheduled
+   * retry is given only what its run was to give (`planned`, and the
+   * entries new when its first attempt read them): an entry written since
+   * is the schedule's, and waits for its day and five runs. A retry left
+   * with nothing — what its run's earlier batches had is done, and the
+   * rest was retired since, before it was queued or after, and after a
+   * restart too — is that run finished, with no consolidation call: one
+   * row that changed nothing ends it (`NOTHING_LEFT_NOTE`), so it is not
+   * queued again and its earlier batches are not resent, and skills are
+   * proposed as after any run that finished.
    *
    * What a run is given is read when it starts, before its first side
    * call waits for its slot. Entries written after that — an agent's note
@@ -630,11 +641,21 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
     // Only what is new since the last consolidation, on the schedule; a
     // person asking, the whole scope (EO-913).
     const onlyNew = trigger !== "manual";
-    const fresh = onlyNew ? new Set(entriesNewSinceConsolidated(db, scope)) : null;
     const kept = sequences.get(key);
     const resumes = continuing !== undefined && kept !== undefined && kept.run === continuing && kept.trigger === trigger && now() - kept.at <= SEQUENCE_KEPT_MS;
-    const sequence: Sequence = resumes ? kept : { trigger, run: continuing ?? readAt, done: new Set<string>(), folded: new Set<string>(), batches: 0, at: now() };
+    const sequence: Sequence = resumes ? kept : { trigger, run: continuing ?? readAt, done: new Set<string>(), folded: new Set<string>(), batches: 0, at: now(), planned: new Set<string>() };
     sequences.set(key, sequence);
+    // A scheduled retry gives what its run had to give and nothing more:
+    // the entries new when its first attempt read them, and those of them
+    // restored since. One written after that is left to the schedule, so
+    // a note nobody's retry was for waits its day and five runs as any does.
+    let fresh: Set<string> | null = null;
+    if (onlyNew) {
+      const newNow = entriesNewSinceConsolidated(db, scope);
+      const newThen = continuing === undefined ? null : new Set(entriesNewSinceConsolidated(db, scope, { until: continuing }));
+      fresh = new Set(newThen === null ? newNow : newNow.filter((id) => newThen.has(id) || sequence.planned.has(id)));
+      if (!resumes) sequence.planned = new Set(fresh);
+    }
     /** This run's last consolidation to succeed: what the skills proposed after it are posted under. */
     let last: Applied | null = null;
     const succeeded = async () => {
@@ -657,7 +678,7 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
     // unless this goes on with a run whose earlier batches had the rest,
     // which is then finished as it is.
     if (fresh !== null && !read.some((entry) => fresh.has(entry.id) && !sequence.done.has(versionOf(entry)))) {
-      if (sequence.batches > 0) return succeeded();
+      if (continuing !== undefined) return succeeded();
       sequences.delete(key);
       return;
     }

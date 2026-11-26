@@ -344,8 +344,8 @@ describe("skills proposed by memory consolidation", () => {
   describe("the evidence it moves", () => {
     it("moves an entry the consolidation rewrote, named as evidence by the proposal call after it, and the consolidation's restore puts back what it replaced", async () => {
       const given = memory();
-      // Taking from the newer entry what it adds, as a newer_entry rewrite must (EO-913).
-      const rewritten = "To run e2e here: start Xvfb on :99 (`Xvfb :99 &`, `export DISPLAY=:99`), then `pnpm e2e`; rerun one spec with `pnpm e2e --debug`.";
+      // Carrying over a whole sentence of the newer entry, as a newer_entry rewrite must (EO-913).
+      const rewritten = "To run e2e here: `Xvfb :99 &`, `export DISPLAY=:99`, then `pnpm e2e`; started Xvfb and reran one spec with `pnpm e2e --debug`.";
       await run(
         () => ({
           retire: [],

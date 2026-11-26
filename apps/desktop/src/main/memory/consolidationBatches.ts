@@ -125,7 +125,8 @@ export const NEW_ENTRY_NEIGHBOURS = 8;
  * Groups are packed into batches oldest new entry first, a group that
  * would take a batch over `limits` starting the next. Only a group too
  * large for any batch is cut, new entry by new entry: each with its
- * neighbours not yet placed, and, before the batch is closed, every new
+ * neighbours not yet placed, best first, as far as they fit — never past
+ * `limits`, however long they are — and, before the batch is closed, every new
  * entry that brings with its own neighbours as far as they fit there —
  * so a new entry goes without part of its list only where the batch it
  * is in could hold no more. Without neighbours — the index
@@ -223,7 +224,12 @@ export function planNewEntryBatches<T extends BatchableEntry>(
       if (placed.has(head.id)) continue;
       const members = [head, ...rest.filter((member) => !placed.has(member.id))];
       if (batch.length > 0 && !fits(members.length, sizeOf(members))) flush();
-      members.forEach(add);
+      // The new entry first, then its neighbours best first while they
+      // fit: a list of long entries is cut rather than taken past the
+      // batch's limits.
+      if (batch.length > 0 && !fits(1, head.body.length)) flush();
+      add(head);
+      for (const member of members.slice(1)) if (fits(1, member.body.length)) add(member);
       widen(unit);
     }
     flush();

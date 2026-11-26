@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, isNull, ne, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, isNull, lte, ne, or, sql } from "drizzle-orm";
 import {
   MEMORY_DELIVERED_EVENT,
   uuidv7,
@@ -261,7 +261,14 @@ function settledAt(row: Row): number | null {
   return null;
 }
 
-/** A scope's newest consolidation rows, newest first: what its state is read from. */
+/**
+ * A scope's newest consolidation rows, newest first: what its failures
+ * in a row and whether one is running are read from — enough for the
+ * backoff, and for nothing that looks further back. When the scope was
+ * last consolidated or settled, and whether a run applied anything, are
+ * looked up over every row (`consolidationState`), so however many
+ * failed, paused or deferred rows came since, they are found.
+ */
 function recentRows(db: Db, scope: MemoryScope): Row[] {
   return db
     .select()
@@ -274,40 +281,62 @@ function recentRows(db: Db, scope: MemoryScope): Row[] {
 
 export function consolidationState(db: Db, scope: MemoryScope): ScopeConsolidationState {
   const rows = recentRows(db, scope);
-  let lastConsolidatedAt: number | null = null;
-  let settled: number | null = null;
-  for (const row of rows) {
-    if (row.status === "succeeded" || row.status === "restored") {
-      const at = Math.max(row.finishedAt ?? row.startedAt, row.restoredAt ?? 0);
-      lastConsolidatedAt = lastConsolidatedAt === null ? at : Math.max(lastConsolidatedAt, at);
-    }
-    const at = settledAt(row);
-    if (at !== null && (settled === null || at > settled)) settled = at;
-  }
-  // A run is the rows started at one moment under one trigger, with the
-  // rows of the retries that went on with it (`continues_run`).
-  const runOf = (row: Row) => `${row.continuesRun ?? row.startedAt}:${row.trigger}`;
-  const appliedRuns = new Set(rows.filter((row) => row.status === "succeeded").map(runOf));
-  const failuresSince: ScopeConsolidationState["failuresSince"] = [];
+  // Over every row of the scope, not only the newest: a run that applied
+  // a batch and then stopped, deferred or paused hundreds of times since,
+  // still settled the scope then.
+  const times = db.get<{ consolidated: number | null; settled: number | null }>(sql`
+    select
+      max(case when status in ('succeeded', 'restored') then max(coalesce(finished_at, started_at), coalesce(restored_at, 0)) end) as "consolidated",
+      max(case status when 'succeeded' then started_at when 'restored' then restored_at when 'skipped' then finished_at end) as "settled"
+    from ${memoryConsolidations}
+    where scope_kind = ${scope.kind} and scope_id = ${scope.id}
+  `);
+  const failed: Row[] = [];
   for (const row of rows.filter((candidate) => candidate.status !== "running")) {
     if (row.status !== "failed") break;
-    failuresSince.push({
+    failed.push(row);
+  }
+  // A run is the rows started at one moment under one trigger, with the
+  // rows of the retries that went on with it (`continues_run`). Whether
+  // one of them applied is asked of every row, however old.
+  const runOf = (row: Row) => row.continuesRun ?? row.startedAt;
+  const applied = new Map<string, boolean>();
+  const appliedRun = (row: Row) => {
+    const key = `${runOf(row)}:${row.trigger}`;
+    if (!applied.has(key)) applied.set(key, runApplied(db, scope, runOf(row), row.trigger as MemoryConsolidationTrigger));
+    return applied.get(key)!;
+  };
+  return {
+    lastConsolidatedAt: times?.consolidated ?? null,
+    settled: times?.settled === null || times?.settled === undefined ? null : { at: times.settled },
+    failuresSince: failed.map((row) => ({
       id: row.id,
       trigger: row.trigger as MemoryConsolidationTrigger,
       finishedAt: row.finishedAt ?? row.startedAt,
       reason: row.failureReason,
       note: row.note,
       stuckNoticed: row.stuckNoticedAt !== null,
-      afterApplied: appliedRuns.has(runOf(row)),
-      run: row.continuesRun ?? row.startedAt,
-    });
-  }
-  return {
-    lastConsolidatedAt,
-    settled: settled === null ? null : { at: settled },
-    failuresSince,
+      afterApplied: appliedRun(row),
+      run: runOf(row),
+    })),
     running: rows.some((row) => row.status === "running"),
   };
+}
+
+/**
+ * Whether a row of a run — the rows started at `run` under `trigger`, and
+ * those of the retries that went on with it (`continues_run`) — applied
+ * (EO-913), over every row of the scope.
+ */
+function runApplied(db: Db, scope: MemoryScope, run: number, trigger: MemoryConsolidationTrigger): boolean {
+  return (
+    db.get<{ found: number }>(sql`
+      select 1 as "found" from ${memoryConsolidations}
+      where scope_kind = ${scope.kind} and scope_id = ${scope.id} and "trigger" = ${trigger}
+        and status = 'succeeded' and coalesce(continues_run, started_at) = ${run}
+      limit 1
+    `) !== undefined
+  );
 }
 
 /**
@@ -336,11 +365,13 @@ export function consolidationState(db: Db, scope: MemoryScope): ScopeConsolidati
  * new: what a run merged or rewrote, and what a restore put back — the
  * entries it lists, and those a skill had taken (`moved_to_skill`), which
  * keep its id — which a person keeping is not a reason to fold again. A
- * later edit or restore of one by hand is new. Anything else is, whoever
+ * later edit or restore of one by hand is new. With `until`, only what
+ * was last written by then: what a run that read its entries then had
+ * to give, which is what its retry goes on with. Anything else is, whoever
  * wrote it — an agent's note, an edit — including what was written while
  * a run was going. A scope never consolidated is new through and through.
  */
-export function entriesNewSinceConsolidated(db: Db, scope: MemoryScope): string[] {
+export function entriesNewSinceConsolidated(db: Db, scope: MemoryScope, options: { until?: number } = {}): string[] {
   const since = lastFinishedRunAt(db, scope);
   // Every row that settled the scope since, however many there are: what
   // they wrote is theirs, not new.
@@ -367,6 +398,7 @@ export function entriesNewSinceConsolidated(db: Db, scope: MemoryScope): string[
         isNull(memories.retiredAt),
         ne(memories.sourceKind, "person"),
         ...(since === null ? [] : [gte(memories.updatedAt, since)]),
+        ...(options.until === undefined ? [] : [lte(memories.updatedAt, options.until)]),
       ),
     )
     .orderBy(memories.createdAt, memories.id)
@@ -379,7 +411,11 @@ export function entriesNewSinceConsolidated(db: Db, scope: MemoryScope): string[
  * When the scope's newest finished run read its entries, or null where
  * none has finished (EO-913) — looked up on its own, so however many
  * failed or unfinished rows came after it, the run that finished is
- * found. A run is the rows started at one moment under one trigger. It
+ * found. A run is the rows started at one moment under one trigger, with
+ * those of the retries that went on with it, and it read its entries when
+ * its first attempt did (`continues_run`): what a retry was not given —
+ * an entry written after that, which a scheduled retry leaves to the
+ * schedule — is still new once it finishes. It
  * finished where one of its rows says so (`ends_run`); a run from before
  * that was recorded (every row null) where it applied something and none
  * of its rows failed, was still running or was skipped. A skip alone
@@ -388,7 +424,7 @@ export function entriesNewSinceConsolidated(db: Db, scope: MemoryScope): string[
 export function lastFinishedRunAt(db: Db, scope: MemoryScope): number | null {
   const recorded =
     db
-      .select({ at: sql<number | null>`max(${memoryConsolidations.startedAt})` })
+      .select({ at: sql<number | null>`max(coalesce(${memoryConsolidations.continuesRun}, ${memoryConsolidations.startedAt}))` })
       .from(memoryConsolidations)
       .where(and(inScope(scope), eq(memoryConsolidations.endsRun, true)))
       .get()?.at ?? null;

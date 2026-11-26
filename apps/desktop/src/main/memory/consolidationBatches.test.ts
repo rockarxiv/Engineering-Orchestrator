@@ -207,6 +207,19 @@ describe("a scheduled consolidation's batches (EO-913)", () => {
     for (const batch of batches) expect(charsOf(batch)).toBeLessThanOrEqual(CONSOLIDATION_BATCH_MAX_CHARS);
   });
 
+  it("cuts a new entry's list of long legacy neighbours at the batch's limits, keeping the new entry and its best-ranked ones", () => {
+    // Eight legacy topic digests of 2,000 characters, from before EO-591 held a note to 1,000.
+    const legacy = entries(8, 2_000);
+    const fresh = { id: "fresh", body: "N".repeat(1_000), createdAt: NOW };
+    const scope = [...legacy, fresh];
+    const ranked = [...legacy].reverse().map((entry) => entry.id);
+    const batches = planNewEntryBatches([fresh], scope, new Map([[fresh.id, ranked]]));
+    for (const batch of batches) expect(charsOf(batch)).toBeLessThanOrEqual(CONSOLIDATION_BATCH_MAX_CHARS);
+    expect(batches).toHaveLength(1);
+    // 1,000 + 7 × 2,000 = 15,000: the worst-ranked neighbour is the one left out.
+    expect(new Set(ids(batches[0]!))).toEqual(new Set([fresh.id, ...ranked.slice(0, 7)]));
+  });
+
   it("sends the new entries alone, by age, where the index could not be asked", () => {
     const scope = entries(50, 200);
     const fresh = [scope[30]!, scope[20]!];

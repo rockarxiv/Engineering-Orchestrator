@@ -25,6 +25,7 @@ import {
   addMemory,
   appendRunEvent,
   consolidationSlotTime,
+  consolidationState,
   createRun,
   decideSkillProposal,
   failConsolidation,
@@ -1027,7 +1028,8 @@ describe("automatic memory consolidation", () => {
     });
 
     /** `count` new notes, each on its own, so a schedule run without neighbours batches them 30 at a time. */
-    const newNotes = (count: number) => Array.from({ length: count }, (_, index) => byAgent(project, `New fact ${index}: ${"n".repeat(60)}`, Date.now() + index));
+    // Written before the run that reads them, oldest first: a run reads what was written by the moment it starts.
+    const newNotes = (count: number) => Array.from({ length: count }, (_, index) => byAgent(project, `New fact ${index}: ${"n".repeat(60)}`, Date.now() - count + index));
 
     it("keeps the entries a run never reached new when EO quits between two of its batches, so they are given after the restart", async () => {
       settledScope();
@@ -1121,6 +1123,32 @@ describe("automatic memory consolidation", () => {
       expect(listConsolidations(handle.db, project)[0]).toMatchObject({ trigger: "manual", status: "succeeded" });
     });
 
+    it("still retries a person's run that applied a batch, however many of its rows came after it (EO-913)", async () => {
+      settledScope();
+      newNotes(40);
+      vi.useFakeTimers({ toFake: ["Date"] });
+      let calls = 0;
+      const runner = consolidatorWith((async (request: AnyRequest): Promise<AnyAnswer> => {
+        calls += 1;
+        if (calls === 2) return { ok: false, reason: "error", message: "The backend fell over." };
+        return { ok: true, value: request.system === MEMORY_CONSOLIDATE_SYSTEM ? NOTHING : { groups: [] } };
+      }) as never, { neighbours: () => null });
+      runner.start();
+      expect(runner.requestNow(project).outcome).toBe("started");
+      await runner.idle();
+      const firstRun = listConsolidations(handle.db, project)[0]!.startedAt;
+      // The run gave way to pipeline work 200 times since: its applied batch is older than the newest 200 rows.
+      for (let index = 1; index <= 200; index += 1) {
+        const row = startConsolidation(handle.db, { scope: project, trigger: "manual", now: Date.now() + index, continuesRun: firstRun });
+        failConsolidation(handle.db, row.id, { reason: CONSOLIDATION_DEFERRED_REASON, note: "Gave way.", now: Date.now() + index });
+      }
+      const state = consolidationState(handle.db, project);
+      expect(state.failuresSince[0]).toMatchObject({ afterApplied: true, run: firstRun });
+      expect(state.settled).not.toBeNull();
+      vi.setSystemTime(Date.now() + DAY);
+      expect(runner.check()).toEqual([{ scope: project, trigger: "manual" }]);
+    });
+
     it("keeps retrying a person's run that stopped part-way when the retry's own first batch fails too (EO-913)", async () => {
       settledScope();
       newNotes(40);
@@ -1202,6 +1230,88 @@ describe("automatic memory consolidation", () => {
       expect(runner.check()).toEqual([]);
     });
 
+    it("finishes a scheduled run whose failed batch's entries are gone without a consolidation call, and leaves a note written since to the schedule (EO-913)", async () => {
+      settledScope();
+      const fresh = newNotes(40);
+      givenToFiveRuns(fresh);
+      vi.useFakeTimers({ toFake: ["Date"] });
+      const sent: string[][] = [];
+      let calls = 0;
+      const runner = consolidatorWith((async (request: AnyRequest): Promise<AnyAnswer> => {
+        calls += 1;
+        sent.push(idsIn(request.input));
+        return calls === 2 ? { ok: false, reason: "error", message: "The backend fell over." } : { ok: true, value: NOTHING };
+      }) as never, { neighbours: () => null });
+      runner.start();
+      await runner.idle();
+      expect(sent).toHaveLength(2);
+      const firstRun = listConsolidations(handle.db, project)[0]!.startedAt;
+
+      // Everything the failed batch was to have is retired while it backs off, and two hours later an agent writes
+      // something new, which no run has been given to since.
+      for (const id of sent[1]!) expect(retireMemory(handle.db, id, { now: Date.now() + 1 }).ok).toBe(true);
+      vi.setSystemTime(Date.now() + 2 * HOUR);
+      const unrelated = byAgent(project, "Release notes are drafted in docs/releases, one file per version.", Date.now());
+
+      // Its backoff long over: taken up, and finished with no call; the new note is not given to it.
+      vi.setSystemTime(Date.now() + CONSOLIDATION_BACKOFF_MS[0] + 1);
+      expect(runner.check()).toEqual([{ scope: project, trigger: "schedule" }]);
+      runner.poke();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await runner.idle();
+      expect(sent).toHaveLength(2);
+      const closed = listConsolidations(handle.db, project)[0]!;
+      expect(closed).toMatchObject({ trigger: "schedule", status: "succeeded", retiredIds: [], writtenIds: [] });
+      expect(closed.note).toMatch(/found nothing left to give it/);
+      const [row] = handle.db.all<{ continues_run: number | null; ends_run: number | null }>(sql`select continues_run, ends_run from memory_consolidations where id = ${closed.id}`);
+      expect(row).toEqual({ continues_run: firstRun, ends_run: 1 });
+
+      // The new note is new, and waits for the schedule: its day and five runs.
+      expect(entriesNewSinceConsolidated(handle.db, project)).toEqual([unrelated.id]);
+      expect(runner.check()).toEqual([]);
+      vi.setSystemTime(Date.now() + 2 * DAY);
+      expect(runner.check()).toEqual([]);
+      givenToFiveRuns([unrelated]);
+      expect(runner.check()).toEqual([{ scope: project, trigger: "schedule" }]);
+    });
+
+    it("gives a scheduled retry only what its run was to give, after a restart too, and leaves a note written since new (EO-913)", async () => {
+      settledScope();
+      const fresh = newNotes(40);
+      givenToFiveRuns(fresh);
+      vi.useFakeTimers({ toFake: ["Date"] });
+      const sent: string[][] = [];
+      let calls = 0;
+      const sideCall = (async (request: AnyRequest): Promise<AnyAnswer> => {
+        calls += 1;
+        sent.push(idsIn(request.input));
+        return calls === 2 ? { ok: false, reason: "error", message: "The backend fell over." } : { ok: true, value: NOTHING };
+      }) as never;
+      const first = consolidatorWith(sideCall, { neighbours: () => null });
+      first.start();
+      await first.idle();
+      first.stop();
+      expect(sent).toHaveLength(2);
+
+      vi.setSystemTime(Date.now() + HOUR);
+      const unrelated = byAgent(project, "Release notes are drafted in docs/releases, one file per version.", Date.now());
+      vi.setSystemTime(Date.now() + CONSOLIDATION_BACKOFF_MS[0] + 1);
+
+      // A restart: the progress the first consolidator held is gone, so the retry gives what was new when the run
+      // started — the first batch's entries again among them — and not the note written since.
+      const second = consolidatorWith(sideCall, { neighbours: () => null });
+      expect(second.check()).toEqual([{ scope: project, trigger: "schedule" }]);
+      second.start();
+      await second.idle();
+      const retried = sent.slice(2).flat();
+      expect(retried).not.toContain(unrelated.id);
+      expect([...new Set(retried)].sort()).toEqual(ids(fresh).sort());
+      expect(listConsolidations(handle.db, project)[0]).toMatchObject({ trigger: "schedule", status: "succeeded" });
+      expect(entriesNewSinceConsolidated(handle.db, project)).toEqual([unrelated.id]);
+      expect(second.check()).toEqual([]);
+      second.stop();
+    });
+
     it("goes on where a scheduled run that stopped part-way left off when that run is retried", async () => {
       settledScope();
       const fresh = newNotes(40);
@@ -1262,8 +1372,9 @@ describe("automatic memory consolidation", () => {
       expect(sent).toHaveLength(3);
       expect(sent[2]).toEqual(expect.arrayContaining([...sent[1]!, touched]));
       for (const id of sent[0]!.slice(1)) expect(sent[2]).not.toContain(id);
-      // Had as it is now, it is not hidden behind the retry's finish: nothing is left new, and nothing was skipped.
-      expect(entriesNewSinceConsolidated(handle.db, project)).toEqual([]);
+      // Changed after the run started, it is never hidden behind the retry's finish: the run is counted from when it
+      // started, so the restored entry stays new to the next scheduled one, and nothing else is.
+      expect(entriesNewSinceConsolidated(handle.db, project)).toEqual([touched]);
     });
 
     it("never counts from a skip: what it left, or the batches it stopped, stays new (EO-913)", () => {
