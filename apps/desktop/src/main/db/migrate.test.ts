@@ -4090,3 +4090,38 @@ describe("0174: a side call's cache figures and fork (EO-811)", () => {
     }
   });
 });
+
+describe("0184: whether a message is a replica's copy of the record's (EO-918)", () => {
+  it("marks a message about a moved project written after the move, and leaves one written before it and one about no project as this desktop's own", () => {
+    const handle = openDb(":memory:");
+    const tempDir = mkdtempSync(join(tmpdir(), "eo-message-from-record-"));
+    try {
+      writeMigrationSetBefore(tempDir, "0184_message_from_record");
+      runMigrations(handle.db, tempDir);
+      handle.db.run(sql`INSERT INTO projects (id, name, key_prefix, created_at, updated_at, managed_at) VALUES ('moved', 'Moved', 'MOV', 1, 1, 100)`);
+      handle.db.run(sql`INSERT INTO projects (id, name, key_prefix, created_at, updated_at) VALUES ('kept', 'Kept', 'KEP', 1, 1)`);
+      for (const [id, projectId, createdAt] of [
+        ["before-the-move", "moved", 50],
+        ["after-the-move", "moved", 150],
+        ["kept-project", "kept", 150],
+        ["no-project", null, 150],
+      ] as const) {
+        handle.db.run(
+          sql`INSERT INTO messages (id, recipient_id, project_id, source, body, created_at, handled_at, handled_how) VALUES (${id}, 'anna', ${projectId}, 'template_conflict', 'Body', ${createdAt}, 200, 'answered')`,
+        );
+      }
+
+      runMigrations(handle.db, join(dirname(fileURLToPath(import.meta.url)), "migrations"));
+
+      expect(handle.db.all(sql`SELECT id, from_record FROM messages ORDER BY id`)).toEqual([
+        { id: "after-the-move", from_record: 1 },
+        { id: "before-the-move", from_record: 0 },
+        { id: "kept-project", from_record: 0 },
+        { id: "no-project", from_record: 0 },
+      ]);
+    } finally {
+      handle.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+});

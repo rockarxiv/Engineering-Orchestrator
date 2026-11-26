@@ -35,7 +35,7 @@ import { emitPush } from "../ipc/push.js";
 import { z } from "zod";
 import { hasTransition } from "../db/repos/transitionsRepo.js";
 import { setReplicaAssignee, upsertReplicaItem } from "../db/repos/replicaRepo.js";
-import { getProject, projectMovedToTheRecord, upsertReplicaProject } from "../db/repos/projectsRepo.js";
+import { getProject, upsertReplicaProject } from "../db/repos/projectsRepo.js";
 import { getItemType, upsertReplicaItemType } from "../db/repos/itemTypesRepo.js";
 import { upsertReplicaPipeline, upsertReplicaProjectAgent } from "../db/repos/projectMoveRepo.js";
 import { heldByTheRecord, retireObsoleteHold } from "../gallery/templateUpdates.js";
@@ -1365,7 +1365,7 @@ async function pullMessages(options: DrainOptions, pullPageSize: number, result:
     // which this pass writes back with who handled it. A copy the record
     // has swept is not left reading as the person's press.
     if (cursor.ts === EMPTY_CURSOR.ts && cursor.id === EMPTY_CURSOR.id) {
-      pulled += forgetHandledRecordMessages(db, (projectId) => projectMovedToTheRecord(db, projectId as Uuid));
+      pulled += forgetHandledRecordMessages(db);
     }
     for (const message of pull.data.messages) pulled += place(options, "message", message.id, message, now) ? 1 : 0;
     setSetting(db, MESSAGES_CURSOR_KEY, { ...pull.data.cursor, deviceId, handledBy: MESSAGES_CURSOR_KEEPS_HANDLER });
@@ -1379,7 +1379,7 @@ async function pullMessages(options: DrainOptions, pullPageSize: number, result:
   // page writes it back as such.
   if (stillOpen !== null) {
     const open = new Set(stillOpen);
-    pulled += forgetMessagesGoneFromTheRecord(db, open, (projectId) => projectMovedToTheRecord(db, projectId as Uuid));
+    pulled += forgetMessagesGoneFromTheRecord(db, open);
   }
   result.pulled += pulled;
   // The inbox, the badge and the OS notification listen for this, not

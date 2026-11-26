@@ -76,6 +76,7 @@ export function insertMessage(db: Db, input: MessageSend, now: number = Date.now
     answer: null,
     handledBy: null,
     subject: parsed.subject ?? null,
+    fromRecord: false,
   };
   db.insert(messages).values(row).run();
   return toDomain(row);
@@ -308,6 +309,8 @@ export function upsertReplicaMessage(db: Db, message: Message): "written" | "wai
     handledBy: message.handledBy,
     // The record's to resolve, never a replica's.
     subject: null,
+    // And the record's to answer: a press on it goes there (EO-918).
+    fromRecord: true,
   };
   db.insert(messages)
     .values(row)
@@ -325,6 +328,7 @@ export function upsertReplicaMessage(db: Db, message: Message): "written" | "wai
         handledHow: row.handledHow,
         answer: row.answer,
         handledBy: row.handledBy,
+        fromRecord: true,
       },
     })
     .run();
@@ -342,44 +346,50 @@ export function listOpenMessageIds(db: Db, recipientId: string): string[] {
 }
 
 /**
- * Removes the open copies on a replica of messages the organisation's
- * record no longer holds open (EO-726): those about a project it holds
- * (`onTheRecord`) and not among `stillOpen`. A message handled elsewhere
- * and then swept by the record's retention never pages again, so this is
- * the only way such a copy stops being open here. Answers how many went.
+ * Whether this row is a replica's copy of a message the organisation's
+ * record holds (EO-918): one a press goes to the record for. Asked of
+ * the row, not its project — a message about a record-held job has none.
  */
-export function forgetMessagesGoneFromTheRecord(db: Db, stillOpen: ReadonlySet<string>, onTheRecord: (projectId: string) => boolean): number {
+export function isRecordCopy(db: Db, id: string): boolean {
+  return db.select({ fromRecord: messages.fromRecord }).from(messages).where(eq(messages.id, id)).get()?.fromRecord === true;
+}
+
+/**
+ * Removes a replica's open copies of messages the organisation's record
+ * no longer holds open (EO-726): those copied from it and not among
+ * `stillOpen`. A message handled elsewhere and then swept by the record's
+ * retention never pages again, so this is the only way such a copy stops
+ * being open here. Answers how many went.
+ */
+export function forgetMessagesGoneFromTheRecord(db: Db, stillOpen: ReadonlySet<string>): number {
   const gone = db
-    .select({ id: messages.id, projectId: messages.projectId })
+    .select({ id: messages.id })
     .from(messages)
-    .where(isNull(messages.handledAt))
+    .where(and(isNull(messages.handledAt), eq(messages.fromRecord, true)))
     .all()
-    .filter((row) => row.projectId !== null && onTheRecord(row.projectId) && !stillOpen.has(row.id))
+    .filter((row) => !stillOpen.has(row.id))
     .map((row) => row.id);
   if (gone.length === 0) return 0;
   return db.delete(messages).where(inArray(messages.id, gone)).run().changes;
 }
 
 /**
- * Removes a replica's handled copies of messages about a project the
- * organisation's record holds (EO-918), before a pull that reads the
- * person's messages from the beginning writes back every one the record
- * still keeps. One the record has swept never pages again, and a copy
- * pulled by a build that dropped who handled it would otherwise go on
- * reading as the person's press when the assistant or an outside MCP
- * client made it. Open copies are left to `forgetMessagesGoneFromTheRecord`.
+ * Removes a replica's handled copies of messages the organisation's
+ * record holds (EO-918), before a pull that reads the person's messages
+ * from the beginning writes back every one the record still keeps. One
+ * the record has swept never pages again, and a copy pulled by a build
+ * that dropped who handled it would otherwise go on reading as the
+ * person's press when the assistant or an outside MCP client made it.
+ * Only copies: a message this desktop sent and handled itself — about a
+ * project since moved, say — is its own history, which no pull brings
+ * back. Open copies are left to `forgetMessagesGoneFromTheRecord`.
  * Answers how many went.
  */
-export function forgetHandledRecordMessages(db: Db, onTheRecord: (projectId: string) => boolean): number {
-  const handled = db
-    .select({ id: messages.id, projectId: messages.projectId })
-    .from(messages)
-    .where(isNotNull(messages.handledAt))
-    .all()
-    .filter((row) => row.projectId !== null && onTheRecord(row.projectId))
-    .map((row) => row.id);
-  if (handled.length === 0) return 0;
-  return db.delete(messages).where(inArray(messages.id, handled)).run().changes;
+export function forgetHandledRecordMessages(db: Db): number {
+  return db
+    .delete(messages)
+    .where(and(isNotNull(messages.handledAt), eq(messages.fromRecord, true)))
+    .run().changes;
 }
 
 /** Deletes one message's row, where the record answered that it no longer has it (EO-726). */

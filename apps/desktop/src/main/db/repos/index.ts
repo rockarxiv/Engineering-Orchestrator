@@ -29,6 +29,7 @@ export {
   forgetMessagesGoneFromTheRecord,
   getMessage,
   insertMessage,
+  isRecordCopy,
   listMessagesChangedSince,
   listOpenMessageIds,
   listOpenMessages,

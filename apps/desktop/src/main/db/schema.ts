@@ -3575,6 +3575,16 @@ export const messages = sqliteTable(
      * where it was written; a replica's copy has none.
      */
     subject: text("subject"),
+    /**
+     * Whether this row is a replica's copy of a message the organisation's
+     * record holds (EO-918, migration 0184), written by the pull or by a
+     * send or press the record answered. A press on one goes to the record,
+     * and the pull clears the copies the record no longer keeps. Asked of
+     * the row, never inferred from its project: a message about a
+     * record-held job has none, and one sent here before its project moved
+     * is this desktop's own. Never set on the record itself.
+     */
+    fromRecord: integer("from_record", { mode: "boolean" }).notNull().default(false),
   },
   (table) => [index("idx_messages_recipient_open").on(table.recipientId, table.handledAt), index("idx_messages_source_subject").on(table.source, table.subject)],
 );

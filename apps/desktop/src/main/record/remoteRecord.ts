@@ -1,4 +1,4 @@
-import { NO_TEMPLATE_STATUS, type Comment, type IpcChannel, type IpcPayload, type IpcResponse, type Item, type Uuid } from "@eo/core";
+import { NO_TEMPLATE_STATUS, notADesktopRefusal, type Comment, type IpcChannel, type IpcPayload, type IpcResponse, type Item, type Uuid } from "@eo/core";
 import type { Dispatch, DispatchRefusal } from "@eo/engine";
 import type { Db } from "../db/client.js";
 import { getAgent } from "../db/repos/agentsRepo.js";
@@ -118,6 +118,9 @@ export interface RemoteRecord extends ItemRecord {
 
 /** What the record's door answers for a channel it does not serve (server/http.ts): a record older than `record:handleMessageFor`. */
 const NO_DELEGATED_CHANNEL = 'EO has no channel called "record:handleMessageFor".';
+
+/** What the record's door answers a delegated press from a sign-in it does not know runs work (server/http.ts, EO-918). */
+const NOT_A_DESKTOP = notADesktopRefusal("record:handleMessageFor").error.message;
 
 /** How many transcript lines one request carries when a run is sent ahead of its note. */
 const RUN_PAGE = 500;
@@ -495,6 +498,17 @@ export function createRemoteRecord(options: RemoteRecordOptions): RemoteRecord {
             ok: false,
             problem:
               "Your organisation's record is older than this desktop and cannot keep who pressed for the person, so it did not take this press and nothing was changed by it. The message may already have been handled from another desktop; EO's Inbox shows where it stands, and the person can answer it there, or it can be answered here once the record is upgraded.",
+          };
+        }
+        // A record that will not take who pressed from this desktop's
+        // sign-in — one made before the record kept which devices run work
+        // (server/http.ts): a refusal with a way out, not a fault. It ran
+        // nothing, so again nothing is claimed about the message.
+        if (delegate !== null && answer.problem === NOT_A_DESKTOP) {
+          return {
+            ok: false,
+            problem:
+              "Your organisation's record does not take a press made for the person from this desktop's sign-in, which is older than that, so it did not take this press and nothing was changed by it. Sign this desktop in to the organisation again, then answer it here; or the person can answer it in EO's Inbox.",
           };
         }
         // Anything else the record answered is a fault on its side, not a

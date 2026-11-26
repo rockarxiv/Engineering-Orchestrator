@@ -6,7 +6,7 @@ import type { PostCommentInput } from "../db/repos/commentsRepo.js";
 import { drainToRecord, type DrainResult } from "./drain.js";
 import { recordFor, type LocalItemRecord } from "./localRecord.js";
 import type { ItemRecord, MemoryWriteRequest, OfferWorkInput, TransitionCommand, WorkOffer } from "./record.js";
-import { getConsolidation, getItemType, getMessage, getUpdateConflict, memoryEntryProjectId, memoryScopeProjectId } from "../db/repos/index.js";
+import { getConsolidation, getItemType, getUpdateConflict, isRecordCopy, memoryEntryProjectId, memoryScopeProjectId } from "../db/repos/index.js";
 import { sendMessageToAdmins } from "../messages/messages.js";
 import { heldByTheRecord } from "../gallery/templateUpdates.js";
 import { createRemoteRecord, type RemoteRecord } from "./remoteRecord.js";
@@ -558,11 +558,11 @@ export function createDeviceRecord(options: DeviceRecordOptions): DeviceRecord {
       return (projectMovedToTheRecord(db, projectId as Uuid) ? remote : local).sendMessage(input);
     },
     // …and answered or dismissed where it lives: a message this replica
-    // copied from the record, about a project the record holds, on the
-    // record; any other here.
+    // copied from the record, on the record — whatever it is about, a
+    // record-held job's with no project included (EO-918); any other here,
+    // one sent here before its project moved included.
     handleMessage: (request) => {
-      const projectId = getMessage(db, request.messageId)?.projectId ?? null;
-      const onTheRecord = options.isTheRecord !== true && projectId !== null && projectMovedToTheRecord(db, projectId as Uuid);
+      const onTheRecord = options.isTheRecord !== true && isRecordCopy(db, request.messageId);
       return (onTheRecord ? remote : local).handleMessage(request);
     },
 

@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { HANDLED_MESSAGE_RETENTION_MS, type IpcPayload, type Job, type Message, type MessageSend, type Uuid } from "@eo/core";
+import { HANDLED_MESSAGE_RETENTION_MS, notADesktopRefusal, type IpcPayload, type Job, type Message, type MessageSend, type Uuid } from "@eo/core";
 import { eq } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AttachmentStorage } from "../attachments/storage.js";
@@ -23,7 +23,7 @@ import {
   sweepHandledMessages,
 } from "../db/repos/index.js";
 import { getSetting, setSetting } from "../db/repos/settingsRepo.js";
-import { jobs, messages } from "../db/schema.js";
+import { jobs, messages, projects } from "../db/schema.js";
 import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import { MANAGED_PERSON_ID_KEY } from "../identity/viewer.js";
 import { clearPublishedView } from "../ipc/currentView.js";
@@ -60,6 +60,8 @@ interface Desktop {
   olderRecord: boolean;
   /** Whether the record fails a press on its side, as a failed write answers (EO-918). */
   faultyRecord: boolean;
+  /** Whether the record's door refuses this desktop's sign-in a delegated press, as one without a secrets key is (EO-918). */
+  legacySignIn: boolean;
 }
 
 let recordDb: DbHandle;
@@ -108,7 +110,7 @@ function desktop(personId: Uuid, name: string): Desktop {
   const deviceId = issueDevice(recordDb.db, { personId, name, tokenHash: `hash-${name}`, secretsKeyHash: null }).id;
   const handle = openMigratedTestDb();
   setSetting(handle.db, MANAGED_PERSON_ID_KEY, personId);
-  const machine: Desktop = { handle, online: true, olderRecord: false, faultyRecord: false, record: undefined as unknown as DeviceRecord };
+  const machine: Desktop = { handle, online: true, olderRecord: false, faultyRecord: false, legacySignIn: false, record: undefined as unknown as DeviceRecord };
   const transport: RecordTransport = {
     async request(channel, payload) {
       if (!machine.online) return { ok: false, error: { message: "EO could not reach https://eo.example: fetch failed" } };
@@ -125,6 +127,8 @@ function desktop(personId: Uuid, name: string): Desktop {
         case "record:handleMessageFor":
           // What a record from before EO-918 answers a channel its contract has no entry for (server/http.ts, a 404).
           if (machine.olderRecord) return { ok: false, error: { message: `EO has no channel called "${channel}".` } };
+          // What server/http.ts answers a sign-in it does not know runs work.
+          if (machine.legacySignIn) return notADesktopRefusal(channel);
           if (machine.faultyRecord) return { ok: false, error: { message: "Internal error" } };
           return { ok: true, data: serveHandleMessage(serving, { ...(payload as IpcPayload<"record:handleMessageFor">), deviceId }) as never };
         case "record:messages":
@@ -411,6 +415,109 @@ describe("a message about a project the organisation's record holds", () => {
     expect(said).toContain("cannot say whether that was taken");
     expect(said).not.toContain("still open");
     expect(getMessage(recordDb.db, mine.id)?.handledAt).toBeNull();
+  });
+
+  it("tells the caller to sign the desktop in again when the record will not take who pressed from its sign-in, in a packaged build (EO-918)", async () => {
+    const projectId = await organisationProject();
+    await carl.record.sendMessage(question(projectId, "local"));
+    await syncAll();
+    const mine = onTheRecord().find((message) => message.recipientId === annaId) as Message;
+    const { registerAllHandlers } = await import("../ipc/handlers.js");
+    // A packaged build, where a fault reaches the caller only as "Internal error".
+    registerAllHandlers(annaDesk.handle.db, undefined, { platform: fakePlatform({ isPackaged: true }), record: annaDesk.record });
+    annaDesk.legacySignIn = true;
+
+    const byClient = await answerToolCall({ name: "message_answer", arguments: { messageId: mine.id, answer: "Take theirs" } }, "external", false);
+    const byAssistant = await answerToolCall({ name: "message_dismiss", arguments: { messageId: mine.id } }, "admin", false, undefined, undefined, "the-assistant");
+
+    for (const refused of [byClient, byAssistant]) {
+      expect(refused.isError).toBe(false);
+      const said = JSON.stringify(refused.content);
+      expect(said).not.toContain("Internal error");
+      expect(said).toContain("Sign this desktop in to the organisation again");
+      expect(said).not.toContain("still open");
+    }
+    expect(getMessage(recordDb.db, mine.id)?.handledAt).toBeNull();
+    expect(getMessage(annaDesk.handle.db, mine.id)?.handledAt).toBeNull();
+  });
+
+  it("is answered on the record through EO's MCP tools when it is about a record-held job and so has no project (EO-918)", async () => {
+    const aboutAJob = insertMessage(recordDb.db, { recipientId: annaId, source: JOB_MESSAGE_SOURCE.skipped, body: "Monday report skipped a Monday.", options: ["Run now", "Leave it"] });
+    await annaDesk.record.sync();
+    expect(getMessage(annaDesk.handle.db, aboutAJob.id)).toMatchObject({ projectId: null, handledAt: null });
+    const { registerAllHandlers } = await import("../ipc/handlers.js");
+    registerAllHandlers(annaDesk.handle.db, undefined, { platform: fakePlatform(), record: annaDesk.record });
+
+    const answered = await answerToolCall({ name: "message_answer", arguments: { messageId: aboutAJob.id, answer: "Leave it" } }, "admin", false, undefined, undefined, "the-assistant");
+
+    expect(answered.isError).toBe(false);
+    // On the record, where it lives — not only on this desktop's copy.
+    expect(getMessage(recordDb.db, aboutAJob.id)).toMatchObject({ handledHow: "answered", answer: "Leave it", handledBy: { kind: "assistant", agentId: "the-assistant" } });
+    expect(getMessage(annaDesk.handle.db, aboutAJob.id)).toMatchObject({ handledHow: "answered", handledBy: { kind: "assistant", agentId: "the-assistant" } });
+  });
+
+  it("is cleared from an upgraded desktop when the record swept a delegated press on one about a record-held job, and read again with who when it kept it (EO-918)", async () => {
+    const swept = insertMessage(recordDb.db, { recipientId: annaId, source: JOB_MESSAGE_SOURCE.skipped, body: "Skipped one Monday.", options: ["Leave it"] });
+    const kept = insertMessage(recordDb.db, { recipientId: annaId, source: JOB_MESSAGE_SOURCE.skipped, body: "Skipped another.", options: ["Leave it"] });
+    const at = Date.now() + 1_000;
+    markMessageHandled(recordDb.db, swept.id, "answered", "Leave it", at, { kind: "mcp_client" });
+    markMessageHandled(recordDb.db, kept.id, "dismissed", null, at + HANDLED_MESSAGE_RETENTION_MS, { kind: "assistant", agentId: "the-assistant" });
+    await annaLaptop.record.sync();
+
+    // The laptop as it stood before 0183: both pulled with who dropped,
+    // its cursor past them in the shape it kept then.
+    const cursor = getSetting<Record<string, unknown>>(annaLaptop.handle.db, "record.messagesCursor", {});
+    setSetting(annaLaptop.handle.db, "record.messagesCursor", { ts: cursor.ts, id: cursor.id, deviceId: cursor.deviceId });
+    annaLaptop.handle.db.update(messages).set({ handledBy: null }).run();
+    sweepHandledMessages(recordDb.db, at + HANDLED_MESSAGE_RETENTION_MS + 1);
+    expect(getMessage(recordDb.db, swept.id)).toBeUndefined();
+
+    await annaLaptop.record.sync();
+
+    expect(getMessage(annaLaptop.handle.db, swept.id)).toBeUndefined();
+    expect(getMessage(annaLaptop.handle.db, kept.id)?.handledBy).toEqual({ kind: "assistant", agentId: "the-assistant" });
+  });
+
+  it("keeps a desktop's own handled message about a project it later moved across the re-read, and answers an open one there (EO-918)", async () => {
+    // Anna's own project on her desk, with two messages EO sent there
+    // before it moved: one she answered, one still open.
+    const own = createProject(annaDesk.handle.db, { name: "Mine", keyPrefix: "MIN" });
+    const answeredHere = await annaDesk.record.sendMessage(question(own.id, annaId));
+    const openHere = await annaDesk.record.sendMessage(question(own.id, annaId));
+    if (!answeredHere.ok || !openHere.ok) throw new Error("the desk did not send its own messages");
+    const [answered] = answeredHere.messages as [Message];
+    const [stillOpen] = openHere.messages as [Message];
+    expect((await annaDesk.record.handleMessage({ messageId: answered.id, how: "answered", answer: "Keep mine" })).ok).toBe(true);
+    // The project moves to the record — which copies no messages.
+    annaDesk.handle.db
+      .update(projects)
+      .set({ managedAt: Date.now() + 1_000 })
+      .where(eq(projects.id, own.id))
+      .run();
+    // And a message the record sent about the project, handled by the
+    // assistant there and swept while the desk ran a build before 0183.
+    const fromTheRecord = await organisationProject();
+    await carl.record.sendMessage(question(fromTheRecord, "local"));
+    await annaDesk.record.sync();
+    const copy = onTheRecord().find((message) => message.recipientId === annaId) as Message;
+    const at = Date.now() + 2_000;
+    markMessageHandled(recordDb.db, copy.id, "answered", "Take theirs", at, { kind: "assistant", agentId: "the-assistant" });
+    await annaDesk.record.sync();
+    const cursor = getSetting<Record<string, unknown>>(annaDesk.handle.db, "record.messagesCursor", {});
+    setSetting(annaDesk.handle.db, "record.messagesCursor", { ts: cursor.ts, id: cursor.id, deviceId: cursor.deviceId });
+    annaDesk.handle.db.update(messages).set({ handledBy: null }).where(eq(messages.id, copy.id)).run();
+    sweepHandledMessages(recordDb.db, at + HANDLED_MESSAGE_RETENTION_MS + 1);
+
+    await annaDesk.record.sync();
+
+    // Her own answer is her history, which no pull brings back: kept.
+    expect(getMessage(annaDesk.handle.db, answered.id)).toMatchObject({ handledHow: "answered", answer: "Keep mine", handledBy: { kind: "person" } });
+    // The record's copy it swept is gone, as on the record.
+    expect(getMessage(annaDesk.handle.db, copy.id)).toBeUndefined();
+    // And the open one is answered here, where it lives, not refused by a record that never had it.
+    const pressed = await annaDesk.record.handleMessage({ messageId: stillOpen.id, how: "dismissed", answer: null, by: { kind: "mcp_client" } });
+    expect(pressed.ok).toBe(true);
+    expect(getMessage(annaDesk.handle.db, stillOpen.id)).toMatchObject({ handledHow: "dismissed", handledBy: { kind: "mcp_client" } });
   });
 
   it("is dismissed on the record from a desktop, through the record", async () => {
