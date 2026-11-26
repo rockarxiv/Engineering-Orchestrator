@@ -31,6 +31,7 @@ import {
   entriesNewSinceConsolidated,
   failConsolidation,
   getItem,
+  getMemory,
   getProject,
   getWorkspace,
   lastRestoredAt,
@@ -262,6 +263,11 @@ type Applied = Extract<ApplyConsolidationResult, { ok: true }>;
 interface Sequence {
   /** What it ran under: only a retry of the same run goes on with it (EO-913). */
   trigger: MemoryConsolidationTrigger;
+  /**
+   * Each entry its batches were given or wrote, as the version they had
+   * it (`versionOf`): an entry edited or restored since — which keeps its
+   * id — is not done, and is given again (EO-913).
+   */
   done: Set<string>;
   /**
    * The entries its consolidations wrote by folding two or more into one,
@@ -283,6 +289,11 @@ interface Sequence {
  * good because a sequence nobody finished once had it.
  */
 const SEQUENCE_KEPT_MS = 2 * MEMORY_CONSOLIDATION_INTERVAL_MS;
+
+/** An entry as it was at one moment: its id and when it was last changed. */
+function versionOf(entry: { id: string; updatedAt: number }): string {
+  return `${entry.id}@${entry.updatedAt}`;
+}
 
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -533,6 +544,7 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
    * failure ends the sequence there: its row backs the scope off, and the
    * retry (`resumes`, queued for the run that stopped under the trigger it
    * ran under) takes up the entries no batch of this sequence has had yet
+   * as they are now — one edited or restored since is had again
    * (`sequences`, for `SEQUENCE_KEPT_MS`), leaving those that had them to
    * the cross-batch pass where there is one. Any other run — a person
    * asking now, a later day's schedule — starts from the scope as it is.
@@ -593,7 +605,7 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
       resumesRun && kept !== undefined && kept.trigger === trigger && now() - kept.at <= SEQUENCE_KEPT_MS && consolidationState(db, scope).failuresSince.length > 0;
     const sequence: Sequence = resumes ? kept : { trigger, done: new Set<string>(), folded: new Set<string>(), batches: 0, at: now() };
     // Nothing new left to give: nothing is asked, and nothing written.
-    if (fresh !== null && !read.some((entry) => fresh.has(entry.id) && !sequence.done.has(entry.id))) {
+    if (fresh !== null && !read.some((entry) => fresh.has(entry.id) && !sequence.done.has(versionOf(entry)))) {
       sequences.delete(key);
       return;
     }
@@ -630,7 +642,7 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
       if (next !== "continue") return;
     }
 
-    const pending = entries.filter((entry) => !sequence.done.has(entry.id));
+    const pending = entries.filter((entry) => !sequence.done.has(versionOf(entry)));
     let plan: MemoryEntryView[][];
     let likelyDuplicates: ReadonlyMap<string, readonly string[]>;
     if (fresh !== null) {
@@ -657,8 +669,11 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
       record(applied);
       sequence.batches += 1;
       sequence.at = now();
-      for (const entry of batch) sequence.done.add(entry.id);
-      for (const written of applied.written) sequence.done.add(written.id);
+      for (const entry of batch) sequence.done.add(versionOf(entry));
+      for (const written of applied.written) {
+        const entry = getMemory(db, written.id);
+        if (entry) sequence.done.add(versionOf(entry));
+      }
     }
 
     // The cross-batch pass reads every entry's first line, so it is the
@@ -858,7 +873,7 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
     return onRow(scope, trigger, readAt, async (rowId, controller) => {
       const files = repositoryFiles(scope);
       const answer = await ask(rowId, controller, {
-        schema: consolidationAnswerSchema(sent, { repositoryFiles: files.length > 0 }),
+        schema: consolidationAnswerSchema(sent, { repositoryFiles: files.map((file) => file.text) }),
         system: MEMORY_CONSOLIDATE_SYSTEM,
         input: consolidationInput({
           scopeLabel: facts.label,
@@ -989,7 +1004,7 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
       const sent = groups.flat();
       const answer = await ask(rowId, controller, {
         // Given no repository file: a `repository_file` rewrite is the batches'.
-        schema: consolidationAnswerSchema(sent, { repositoryFiles: false }),
+        schema: consolidationAnswerSchema(sent, { repositoryFiles: [] }),
         system: MEMORY_CROSS_BATCH_MERGE_SYSTEM,
         input: crossBatchMergeInput({ scopeLabel: facts.label, groups, now: now() }),
         projectId: facts.projectId,

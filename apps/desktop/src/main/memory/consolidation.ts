@@ -151,18 +151,21 @@ export function stuckNoticeBody(input: {
 export type ConsolidationDecision = { kind: "consolidate"; trigger: MemoryConsolidationTrigger; resumes?: true } | { kind: "none" };
 
 /**
- * Whether the scope's last consolidation failed after the scope was last
- * settled: a run that stopped part-way, a batch failing after the batches
- * before it succeeded (EO-574), each of which settled the scope as it
- * left it and counted as its last consolidation. Such a run is asked
- * again once its backoff is over, as any failure is — not left waiting
- * for somebody to write to the scope, nor for another day and five runs.
- * A failure from before the scope was settled (a restore since, say) is
- * not one.
+ * Whether the scope's last consolidation is a run that stopped part-way:
+ * a batch failing after an earlier consolidation of the same run — a
+ * batch, or the fold of exact duplicates — was applied (EO-574), which
+ * settled the scope as it left it and counted as its last consolidation.
+ * Such a run is asked again once its backoff is over, as any failure is
+ * — not left waiting for somebody to write to the scope, nor for another
+ * day and five runs. A run that failed before it applied anything is not
+ * one (EO-913): nothing it did moved the day and the five runs, so it is
+ * due again as the schedule says, and a person's request that failed so
+ * is not repeated unasked. Nor is a failure from before the scope was
+ * last settled (a restore since, say).
  */
 export function failedSinceSettled(state: ScopeConsolidationState): boolean {
   const failed = state.failuresSince[0];
-  return failed !== undefined && state.settled !== null && failed.finishedAt >= state.settled.at;
+  return failed !== undefined && failed.afterApplied && state.settled !== null && failed.finishedAt >= state.settled.at;
 }
 
 /**
@@ -228,43 +231,102 @@ export interface SentEntry {
 
 /** What else a consolidation's call was given, which a rewrite's reason is checked against (EO-913). */
 export interface ConsolidationGiven {
-  /** Whether it was given a workspace's CLAUDE.md or AGENTS.md: a `repository_file` rewrite needs one. */
-  repositoryFiles: boolean;
+  /** The text of each workspace CLAUDE.md or AGENTS.md it was given: what a `repository_file` rewrite takes its words from. */
+  repositoryFiles: readonly string[];
 }
 
+const RELATIVE_TIME_SOURCE =
+  "\\b(?:yesterday|today|tonight|tomorrow|recently|lately|the other day|(?:last|next|this|coming|past|previous)\\s+(?:night|morning|evening|week(?:end)?|month|year|quarter|sprint|release|(?:mon|tues|wednes|thurs|fri|satur|sun)day)|(?:\\d+|an?|one|two|three|four|five|six|seven|eight|nine|ten|a few|few|several|couple of)\\s+(?:minutes?|hours?|days?|weeks?|months?|years?)\\s+(?:ago|back|from now)|in\\s+(?:\\d+|an?|one|two|three|four|five|six|seven|eight|nine|ten|a few|a couple of)\\s+(?:minutes?|hours?|days?|weeks?|months?|years?)|(?:on\\s+)?(?:mon|tues|wednes|thurs|fri|satur|sun)day)\\b";
 /**
  * A relative date or time an entry may say — "yesterday", "last week",
  * "three days ago", "in two weeks", "on Monday" — which a `relative_date`
  * rewrite makes absolute (EO-913). Matched case-insensitively.
  */
-const RELATIVE_TIME =
-  /\b(?:yesterday|today|tonight|tomorrow|recently|lately|the other day|(?:last|next|this|coming|past|previous)\s+(?:night|morning|evening|week(?:end)?|month|year|quarter|sprint|release|(?:mon|tues|wednes|thurs|fri|satur|sun)day)|(?:\d+|an?|one|two|three|four|five|six|seven|eight|nine|ten|a few|few|several|couple of)\s+(?:minutes?|hours?|days?|weeks?|months?|years?)\s+(?:ago|back|from now)|in\s+(?:\d+|an?|one|two|three|four|five|six|seven|eight|nine|ten|a few|a couple of)\s+(?:minutes?|hours?|days?|weeks?|months?|years?)|(?:on\s+)?(?:mon|tues|wednes|thurs|fri|satur|sun)day)\b/i;
+const RELATIVE_TIME = new RegExp(RELATIVE_TIME_SOURCE, "i");
+const RELATIVE_TIMES = new RegExp(RELATIVE_TIME_SOURCE, "gi");
 
-const MONTH = "(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)";
+const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+const MONTH = "(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)";
 /** An absolute date: `2026-11-26`, `November 26, 2026`, `26 November 2026`, `November 2026`. Every match, case-insensitively. */
-const ABSOLUTE_DATE = new RegExp(`\\b(?:\\d{4}-\\d{2}-\\d{2}|${MONTH}\\.?\\s+(?:\\d{1,2}(?:st|nd|rd|th)?,?\\s+)?\\d{4}|\\d{1,2}(?:st|nd|rd|th)?\\s+${MONTH}\\.?,?\\s+\\d{4})\\b`, "gi");
+const ABSOLUTE_DATE = new RegExp(
+  `\\b(?:(\\d{4})-(\\d{2})-(\\d{2})|${MONTH}\\.?\\s+(?:(\\d{1,2})(?:st|nd|rd|th)?,?\\s+)?(\\d{4})|(\\d{1,2})(?:st|nd|rd|th)?\\s+${MONTH}\\.?,?\\s+(\\d{4}))\\b`,
+  "gi",
+);
 
 /** Whether a body says a relative date or time (`RELATIVE_TIME`). */
 export function saysRelativeTime(body: string): boolean {
   return RELATIVE_TIME.test(body);
 }
 
-/** The absolute dates a body says, normalised for comparison. */
-function absoluteDates(body: string): Set<string> {
-  return new Set([...body.matchAll(ABSOLUTE_DATE)].map((match) => match[0].toLowerCase().replace(/[\s.,]+/g, " ")));
+function pad(value: string | number): string {
+  return String(value).padStart(2, "0");
+}
+
+/**
+ * The absolute dates a body says, each as the day or month it names
+ * (`2026-10-24`, `2026-10`), so one date written two ways is one date:
+ * "October 24, 2026" made "2026-10-24" says no date it did not.
+ */
+export function absoluteDates(body: string): Set<string> {
+  const dates = new Set<string>();
+  for (const match of body.matchAll(ABSOLUTE_DATE)) {
+    const [, isoYear, isoMonth, isoDay, nameFirst, dayAfterName, yearAfterName, dayFirst, nameAfterDay, yearAfterDay] = match;
+    if (isoYear !== undefined) dates.add(`${isoYear}-${isoMonth}-${isoDay}`);
+    else if (nameFirst !== undefined) {
+      const month = pad(MONTHS.indexOf(nameFirst.slice(0, 3).toLowerCase()) + 1);
+      dates.add(dayAfterName === undefined ? `${yearAfterName}-${month}` : `${yearAfterName}-${month}-${pad(dayAfterName)}`);
+    } else if (nameAfterDay !== undefined) dates.add(`${yearAfterDay}-${pad(MONTHS.indexOf(nameAfterDay.slice(0, 3).toLowerCase()) + 1)}-${pad(dayFirst!)}`);
+  }
+  return dates;
+}
+
+/** A body's words, lowercased, without the punctuation around them: `test:api`, `2026-10-24` and `v1.2` stay one word each. */
+function words(body: string): string[] {
+  return body.toLowerCase().match(/[\p{L}\p{N}_]+(?:[.'’:/-][\p{L}\p{N}_]+)*/gu) ?? [];
+}
+
+/** How many words in a row a rewrite must take from what it says corrects its entry: a span of this many is a phrase, not a word every text has. */
+const BORROWED_RUN = 3;
+
+function runsOf(tokens: readonly string[]): Set<string> {
+  const runs = new Set<string>();
+  for (let at = 0; at + BORROWED_RUN <= tokens.length; at += 1) runs.add(tokens.slice(at, at + BORROWED_RUN).join(" "));
+  return runs;
+}
+
+/**
+ * Whether a rewrite takes a phrase from one of `sources` that its entry
+ * did not say: `BORROWED_RUN` words in a row, in the rewrite and the
+ * source and not in the entry — what a correction by that source puts
+ * into it, and what a rewrite that only shortens or rewords never has.
+ */
+function borrowsFrom(rewrite: string, entry: string, sources: readonly string[]): boolean {
+  const had = runsOf(words(entry));
+  const added = [...runsOf(words(rewrite))].filter((run) => !had.has(run));
+  if (added.length === 0) return false;
+  return sources.some((source) => {
+    const there = runsOf(words(source));
+    return added.some((run) => there.has(run));
+  });
 }
 
 /**
  * Why a rewrite's reason does not hold, or null where it does (EO-913):
- * what EO can check of the claim without a model (invariant 5), so a
- * rewrite that only shortens or rewords an entry is refused under any
- * reason it gives.
+ * what EO can check of the claim without a model (invariant 5), tied to
+ * the change the rewrite makes rather than to what the call happened to
+ * be given — so a rewrite that only shortens or rewords an entry is
+ * refused under any reason it gives.
  *
- * - `relative_date` — the entry says a relative date or time, and the
- *   rewrite says an absolute date the entry did not.
- * - `repository_file` — the call was given a repository file to agree
- *   with.
- * - `newer_entry` — the call was given an entry written after this one.
+ * - `relative_date` — the entry says a relative date or time, the rewrite
+ *   no longer says one of them, it says an absolute date the entry did
+ *   not (a date the entry said, written another way, is not one), and it
+ *   keeps every other word the entry said.
+ * - `repository_file` — the rewrite takes a phrase from a repository file
+ *   the call was given that the entry did not say (`borrowsFrom`), or it
+ *   keeps the entry's words exactly, which is only setting or clearing
+ *   `contradictsRepositoryFile`.
+ * - `newer_entry` — the rewrite takes a phrase from an entry the call was
+ *   given that was written after this one, and the entry did not say.
  */
 export function rewriteReasonProblem(
   rewrite: { reason: MemoryConsolidationRewriteReason; body: string },
@@ -275,14 +337,26 @@ export function rewriteReasonProblem(
   switch (rewrite.reason) {
     case "relative_date": {
       if (!saysRelativeTime(entry.body)) return "gives relative_date, but the entry says no relative date or time";
+      const phrases = [...entry.body.matchAll(RELATIVE_TIMES)].map((match) => match[0].toLowerCase());
+      const left = new Set([...rewrite.body.matchAll(RELATIVE_TIMES)].map((match) => match[0].toLowerCase()));
+      if (phrases.every((phrase) => left.has(phrase))) return "gives relative_date, but the rewrite still says every relative date or time the entry did";
       const before = absoluteDates(entry.body);
       if (![...absoluteDates(rewrite.body)].some((date) => !before.has(date))) return "gives relative_date, but the rewrite says no absolute date the entry did not";
+      const kept = new Set(words(rewrite.body));
+      const dropped = words(entry.body.replace(RELATIVE_TIMES, " ")).filter((word) => !kept.has(word));
+      if (dropped.length > 0) return `gives relative_date, but the rewrite also drops words the entry said: ${[...new Set(dropped)].join(", ")}`;
       return null;
     }
-    case "repository_file":
-      return given.repositoryFiles ? null : "gives repository_file, but no repository file was given";
-    case "newer_entry":
-      return sent.some((other) => other.id !== entry.id && other.createdAt > entry.createdAt) ? null : "gives newer_entry, but no entry given is newer than this one";
+    case "repository_file": {
+      if (given.repositoryFiles.length === 0) return "gives repository_file, but no repository file was given";
+      if (words(rewrite.body).join(" ") === words(entry.body).join(" ")) return null;
+      return borrowsFrom(rewrite.body, entry.body, given.repositoryFiles) ? null : "gives repository_file, but the rewrite takes nothing from a repository file it was given that the entry did not say";
+    }
+    case "newer_entry": {
+      const newer = sent.filter((other) => other.id !== entry.id && other.createdAt > entry.createdAt);
+      if (newer.length === 0) return "gives newer_entry, but no entry given is newer than this one";
+      return borrowsFrom(rewrite.body, entry.body, newer.map((other) => other.body)) ? null : "gives newer_entry, but the rewrite takes nothing from a newer entry it was given that the entry did not say";
+    }
   }
 }
 
@@ -384,7 +458,7 @@ const OPERATION_RULES = [
   "Answer with the changes to make, not with the entries to keep. Name only what changes: an entry you do not mention stays exactly as it is, so never list an entry just to keep it. There are three operations:",
   "- `retire`: `{ id, reason }` — retire one entry, saying in a few words why.",
   "- `merge`: `{ from, body, contradictsRepositoryFile }` — fold two or more entries (`from` holds at least two ids) into one new entry whose text is `body`.",
-  `- \`rewrite\`: \`{ id, body, reason, contradictsRepositoryFile }\` — replace one entry's text with \`body\`. \`reason\` is one of ${MEMORY_CONSOLIDATION_REWRITE_REASONS.map((reason) => `\`${reason}\``).join(", ")}: a relative date or time the entry says made absolute (the rewrite must then say the date, as YYYY-MM-DD), a disagreement with a repository file you are given put right, or a correction by an entry you are given that was written after it. EO checks each reason against what you were given and refuses the whole answer where one does not hold. There is no other reason to rewrite an entry: never rewrite one only to shorten it, reword it or tidy its style.`,
+  `- \`rewrite\`: \`{ id, body, reason, contradictsRepositoryFile }\` — replace one entry's text with \`body\`. \`reason\` is one of ${MEMORY_CONSOLIDATION_REWRITE_REASONS.map((reason) => `\`${reason}\``).join(", ")}: a relative date or time the entry says made absolute, a disagreement with a repository file you are given put right, or a correction by an entry you are given that was written after it. EO checks each reason against the change itself and refuses the whole answer where one does not hold: a \`relative_date\` rewrite replaces the relative date or time with the date it meant, as YYYY-MM-DD, and keeps every other word of the entry; a \`repository_file\` rewrite uses the file's own words for what it puts right, or keeps the entry's text exactly to change only contradictsRepositoryFile; a \`newer_entry\` rewrite uses the newer entry's own words for what it corrects. There is no other reason to rewrite an entry: never rewrite one only to shorten it, reword it or tidy its style.`,
   "Every id you name must be one of the entries you are given, and each id may appear only once in the whole answer — in one retire, one merge's `from`, or one rewrite. An answer with nothing to change has all three lists empty; that is a valid answer, and often the right one.",
   "What to change, and nothing else:",
   `- Merge entries that state the same fact into one, keeping every detail any of them adds. Keep each entry you merge or rewrite to one fact, at most ${MAX_MEMORY_NOTE_CHARS} characters: an answer with a longer one is refused whole. Entries about one topic that state different facts are not duplicates; leave them as they are.`,

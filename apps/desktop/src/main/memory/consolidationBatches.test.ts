@@ -301,7 +301,7 @@ describe("the cross-batch pass", () => {
         { id: "a", body: "The ledger is in UTC.\nAlways.", createdAt: NOW },
         { id: "b", body: "The ledger is in UTC.", createdAt: NOW },
       ],
-      { repositoryFiles: false },
+      { repositoryFiles: [] },
     );
     expect(schema.safeParse({ retire: [], merge: [{ from: ["a", "b"], body: "The ledger is in UTC.", contradictsRepositoryFile: false }], rewrite: [] }).success).toBe(true);
     expect(schema.safeParse({ retire: [{ id: "c", reason: "Stale." }], merge: [], rewrite: [] }).success).toBe(false);

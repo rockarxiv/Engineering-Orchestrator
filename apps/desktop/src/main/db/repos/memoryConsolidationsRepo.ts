@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, isNull, ne, sql } from "drizzle-orm";
+import { and, desc, eq, gte, isNull, ne, or, sql } from "drizzle-orm";
 import {
   MEMORY_DELIVERED_EVENT,
   uuidv7,
@@ -171,8 +171,10 @@ export function recordSkippedConsolidation(db: Db, input: { scope: MemoryScope; 
  * scope as it is, and backs nothing off.
  */
 export function skipConsolidation(db: Db, id: string, input: { note: string; now: number }): void {
-  // A skip settles the scope and ends its run, as a finished run does.
-  db.update(memoryConsolidations).set({ status: "skipped", finishedAt: input.now, note: input.note, endsRun: true }).where(eq(memoryConsolidations.id, id)).run();
+  // A skip settles the scope, but never finishes a run (EO-913): it
+  // changed nothing, so the entries it, or the batches it stopped, would
+  // have been given were never looked at.
+  db.update(memoryConsolidations).set({ status: "skipped", finishedAt: input.now, note: input.note }).where(eq(memoryConsolidations.id, id)).run();
 }
 
 /**
@@ -204,7 +206,22 @@ export interface ScopeConsolidationState {
    * and whether the note saying the scope is stuck was posted at it
    * (EO-577).
    */
-  failuresSince: { id: string; trigger: MemoryConsolidationTrigger; finishedAt: number; reason: string | null; note: string | null; stuckNoticed: boolean }[];
+  failuresSince: {
+    id: string;
+    trigger: MemoryConsolidationTrigger;
+    finishedAt: number;
+    reason: string | null;
+    note: string | null;
+    stuckNoticed: boolean;
+    /**
+     * Whether an earlier consolidation of the same run — a batch, or the
+     * fold of exact duplicates, started at the same moment — was applied
+     * under the same trigger — was applied before it failed (EO-913): a
+     * run that stopped part-way, rather than
+     * one that failed before it changed anything.
+     */
+    afterApplied: boolean;
+  }[];
   running: boolean;
 }
 
@@ -254,6 +271,9 @@ export function consolidationState(db: Db, scope: MemoryScope): ScopeConsolidati
     const at = settledAt(row);
     if (at !== null && (settled === null || at > settled)) settled = at;
   }
+  // A run is the rows started at one moment under one trigger.
+  const runOf = (row: Row) => `${row.startedAt}:${row.trigger}`;
+  const appliedRuns = new Set(rows.filter((row) => row.status === "succeeded").map(runOf));
   const failuresSince: ScopeConsolidationState["failuresSince"] = [];
   for (const row of rows.filter((candidate) => candidate.status !== "running")) {
     if (row.status !== "failed") break;
@@ -264,6 +284,7 @@ export function consolidationState(db: Db, scope: MemoryScope): ScopeConsolidati
       reason: row.failureReason,
       note: row.note,
       stuckNoticed: row.stuckNoticedAt !== null,
+      afterApplied: appliedRuns.has(runOf(row)),
     });
   }
   return {
@@ -289,8 +310,12 @@ export function consolidationState(db: Db, scope: MemoryScope): ScopeConsolidati
  * rest — so the entries its unfinished batches were to be given are
  * still new when it is taken up again, after a restart as well. Rows from
  * before that was recorded say nothing, and their run counts as finished
- * where none of them failed. Nor is a person's restore a point: it says
- * what it put back is to stay, not that everything else was tidied.
+ * where it applied something and none of them failed or was skipped
+ * (`lastFinishedRunAt`). A skip is never a point — a `container_done`
+ * whose work reopened, or one of the old cap trigger's that left agents'
+ * entries as they were because people's alone were over it, changed
+ * nothing — and nor is a person's restore: it says what it put back is
+ * to stay, not that everything else was tidied.
  *
  * What a consolidation or a restore itself wrote, as it wrote it, is not
  * new: what a run merged or rewrote, and what a restore put back — the
@@ -301,24 +326,18 @@ export function consolidationState(db: Db, scope: MemoryScope): ScopeConsolidati
  * a run was going. A scope never consolidated is new through and through.
  */
 export function entriesNewSinceConsolidated(db: Db, scope: MemoryScope): string[] {
-  const rows = recentRows(db, scope);
-  // Each run's rows share the moment it read its entries. One finished if
-  // a row of it says so; one from before that was recorded, if none of
-  // its rows failed.
-  const runs = new Map<number, { ends: boolean; recorded: boolean; failed: boolean }>();
-  for (const row of rows) {
-    const run = runs.get(row.startedAt) ?? { ends: false, recorded: false, failed: false };
-    if (row.endsRun !== null) run.recorded = true;
-    if (row.endsRun === true) run.ends = true;
-    if (row.status === "failed" || row.status === "running") run.failed = true;
-    runs.set(row.startedAt, run);
-  }
-  let since: number | null = null;
-  for (const [at, run] of runs) {
-    const finished = run.recorded ? run.ends : !run.failed;
-    if (finished && (since === null || at > since)) since = at;
-  }
-  const later = rows.filter((row) => since !== null && (settledAt(row) ?? row.startedAt) >= since && writtenAt(row) !== null);
+  const since = lastFinishedRunAt(db, scope);
+  // Every row that settled the scope since, however many there are: what
+  // they wrote is theirs, not new.
+  const later =
+    since === null
+      ? []
+      : db
+          .select()
+          .from(memoryConsolidations)
+          .where(and(inScope(scope), or(gte(memoryConsolidations.startedAt, since), gte(memoryConsolidations.restoredAt, since))))
+          .all()
+          .filter((row) => (settledAt(row) ?? row.startedAt) >= since && writtenAt(row) !== null);
   const own = new Set(later.flatMap((row) => [...row.retiredIds, ...row.writtenIds].map((id) => `${id}@${writtenAt(row)}`)));
   // A restore puts back, at its moment, what a skill took from it too:
   // those keep its id, and are named on no list of it.
@@ -339,6 +358,40 @@ export function entriesNewSinceConsolidated(db: Db, scope: MemoryScope): string[
     .all()
     .filter((row) => !own.has(`${row.id}@${row.updatedAt}`) && !(row.consolidationId !== null && restoredBy.get(row.consolidationId) === row.updatedAt))
     .map((row) => row.id);
+}
+
+/**
+ * When the scope's newest finished run read its entries, or null where
+ * none has finished (EO-913) — looked up on its own, so however many
+ * failed or unfinished rows came after it, the run that finished is
+ * found. A run is the rows started at one moment under one trigger. It
+ * finished where one of its rows says so (`ends_run`); a run from before
+ * that was recorded (every row null) where it applied something and none
+ * of its rows failed, was still running or was skipped. A skip alone
+ * never finishes one: it changed nothing, so nothing was looked at.
+ */
+export function lastFinishedRunAt(db: Db, scope: MemoryScope): number | null {
+  const recorded =
+    db
+      .select({ at: sql<number | null>`max(${memoryConsolidations.startedAt})` })
+      .from(memoryConsolidations)
+      .where(and(inScope(scope), eq(memoryConsolidations.endsRun, true)))
+      .get()?.at ?? null;
+  const legacy =
+    db.get<{ at: number | null }>(sql`
+      select max(run.started_at) as "at"
+      from ${memoryConsolidations} run
+      where run.scope_kind = ${scope.kind} and run.scope_id = ${scope.id}
+        and run.ends_run is null and run.status in ('succeeded', 'restored')
+        and not exists (
+          select 1 from ${memoryConsolidations} other
+          where other.scope_kind = run.scope_kind and other.scope_id = run.scope_id
+            and other.started_at = run.started_at and other."trigger" = run."trigger"
+            and (other.ends_run is not null or other.status not in ('succeeded', 'restored'))
+        )
+    `)?.at ?? null;
+  if (recorded === null) return legacy;
+  return legacy === null ? recorded : Math.max(recorded, legacy);
 }
 
 /**

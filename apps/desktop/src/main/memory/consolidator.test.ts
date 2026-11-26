@@ -40,13 +40,15 @@ import {
   restoreMemory,
   retireMemory,
   saveSkill,
+  recordSkippedConsolidation,
   setItemHeld,
   similarMemoryNeighbours,
+  skipConsolidation,
   startConsolidation,
   updateAgent,
 } from "../db/repos/index.js";
 import { buildEligibilityInput } from "../supervisor/buildTickInput.js";
-import { applyConsolidation, entriesNewSinceConsolidated, runsDeliveredFromScopeQuery } from "../db/repos/memoryConsolidationsRepo.js";
+import { applyConsolidation, entriesNewSinceConsolidated, lastFinishedRunAt, runsDeliveredFromScopeQuery } from "../db/repos/memoryConsolidationsRepo.js";
 import { attachWorkspace, createTestItem, messagesFrom, openMigratedTestDb } from "../db/testHelpers.js";
 import { listConsolidationsCommand, restoreConsolidationCommand } from "../ipc/memoryCommands.js";
 import { recordFor } from "../record/localRecord.js";
@@ -1147,6 +1149,108 @@ describe("automatic memory consolidation", () => {
       expect(entriesNewSinceConsolidated(handle.db, project)).toEqual([]);
     });
 
+    it("goes on where a run that stopped part-way left off, but gives again an entry its earlier batch had that was retired and restored since", async () => {
+      settledScope();
+      const fresh = newNotes(40);
+      givenToFiveRuns(fresh);
+      vi.useFakeTimers({ toFake: ["Date"] });
+      const sent: string[][] = [];
+      let calls = 0;
+      const runner = consolidatorWith((async (request: AnyRequest): Promise<AnyAnswer> => {
+        calls += 1;
+        sent.push(idsIn(request.input));
+        return calls === 2 ? { ok: false, reason: "error", message: "The backend fell over." } : { ok: true, value: NOTHING };
+      }) as never, { neighbours: () => null });
+      runner.start();
+      await runner.idle();
+      expect(sent).toHaveLength(2);
+
+      // An entry the first batch had, and left active, is retired and restored by hand: the same id, changed.
+      const touched = sent[0]![0]!;
+      expect(retireMemory(handle.db, touched, { now: Date.now() + 1 }).ok).toBe(true);
+      expect(restoreMemory(handle.db, touched, Date.now() + 2).ok).toBe(true);
+
+      vi.setSystemTime(Date.now() + CONSOLIDATION_BACKOFF_MS[0] + 1);
+      expect(runner.check()).toEqual([{ scope: project, trigger: "schedule" }]);
+      runner.poke();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await runner.idle();
+
+      // The retry has the failed batch's entries and the restored one, and not the rest of the first batch.
+      expect(sent).toHaveLength(3);
+      expect(sent[2]).toEqual(expect.arrayContaining([...sent[1]!, touched]));
+      for (const id of sent[0]!.slice(1)) expect(sent[2]).not.toContain(id);
+      // Had as it is now, it is not hidden behind the retry's finish: nothing is left new, and nothing was skipped.
+      expect(entriesNewSinceConsolidated(handle.db, project)).toEqual([]);
+    });
+
+    it("never counts from a skip: what it left, or the batches it stopped, stays new (EO-913)", () => {
+      const at = Date.now() - 10 * DAY;
+      const [a] = ["One."].map((body) => byAgent(workspace, body, at));
+      const finished = startConsolidation(handle.db, { scope: workspace, trigger: "schedule", now: at + HOUR });
+      applyConsolidation(handle.db, { id: finished.id, sent: [], answer: NOTHING, note: null, now: at + HOUR });
+      markConsolidationRunFinished(handle.db, finished.id);
+      const b = byAgent(workspace, "Two.", at + 2 * HOUR);
+      expect(entriesNewSinceConsolidated(handle.db, workspace)).toEqual([b.id]);
+
+      // A skip of today's code, recorded on its own.
+      recordSkippedConsolidation(handle.db, { scope: workspace, trigger: "container_done", note: "Reopened.", now: at + 3 * HOUR });
+      expect(entriesNewSinceConsolidated(handle.db, workspace)).toEqual([b.id]);
+
+      // A container_done whose first batch applied and whose second was skipped as the work reopened.
+      const ran = at + 4 * HOUR;
+      const batchOne = startConsolidation(handle.db, { scope: workspace, trigger: "container_done", now: ran });
+      applyConsolidation(handle.db, { id: batchOne.id, sent: [], answer: NOTHING, note: null, now: ran + 1 });
+      const batchTwo = startConsolidation(handle.db, { scope: workspace, trigger: "container_done", now: ran });
+      skipConsolidation(handle.db, batchTwo.id, { note: "Reopened.", now: ran + 2 });
+      expect(entriesNewSinceConsolidated(handle.db, workspace)).toEqual([b.id]);
+
+      // From before EO-913: a cap consolidation skipped because people's entries alone were over the cap, leaving agents' as they were.
+      const legacy = startConsolidation(handle.db, { scope: workspace, trigger: "cap", now: at + 5 * HOUR });
+      skipConsolidation(handle.db, legacy.id, { note: "People's entries alone exceed the cap.", now: at + 5 * HOUR });
+      handle.db.run(sql`update memory_consolidations set ends_run = null where id = ${legacy.id}`);
+      expect(entriesNewSinceConsolidated(handle.db, workspace)).toEqual([b.id]);
+      expect(lastFinishedRunAt(handle.db, workspace)).toBe(at + HOUR);
+
+      // A legacy run that applied and had no failure or skip still counts.
+      const old = startConsolidation(handle.db, { scope: workspace, trigger: "cap", now: at + 6 * HOUR });
+      applyConsolidation(handle.db, { id: old.id, sent: [], answer: NOTHING, note: null, now: at + 6 * HOUR });
+      handle.db.run(sql`update memory_consolidations set ends_run = null where id = ${old.id}`);
+      expect(lastFinishedRunAt(handle.db, workspace)).toBe(at + 6 * HOUR);
+      expect(entriesNewSinceConsolidated(handle.db, workspace)).toEqual([]);
+      void a;
+    });
+
+    it("finds the last finished run behind any number of newer failed rows, so a scheduled run is never made a full-scope pass (EO-913)", async () => {
+      const old = settledScope();
+      const finishedAt = lastFinishedRunAt(handle.db, project);
+      expect(finishedAt).not.toBeNull();
+      // 210 failed rows since, more than the history the backoff reads, the newest two days ago.
+      for (let index = 0; index < 210; index += 1) {
+        const at = Date.now() - 3 * DAY + HOUR + index * 60_000;
+        const row = startConsolidation(handle.db, { scope: project, trigger: "schedule", now: at });
+        failConsolidation(handle.db, row.id, { reason: "error", note: "The backend fell over.", now: at + 1 });
+      }
+      const fresh = byAgent(project, "The payments ledger settles invoices in UTC at noon, and refunds at midnight.", Date.now());
+      expect(lastFinishedRunAt(handle.db, project)).toBe(finishedAt);
+      expect(entriesNewSinceConsolidated(handle.db, project)).toEqual([fresh.id]);
+
+      givenToFiveRuns([fresh]);
+      const requests: AnyRequest[] = [];
+      const runner = consolidatorWith((async (request: AnyRequest): Promise<AnyAnswer> => {
+        requests.push(request);
+        return { ok: true, value: NOTHING };
+      }) as never, { proposeSkills: async () => ({ ok: true, value: { skills: [] } }) });
+      expect(runner.check()).toEqual([{ scope: project, trigger: "schedule" }]);
+      runner.start();
+      await runner.idle();
+      expect(requests).toHaveLength(1);
+      const given = idsIn(requests[0]!.input);
+      expect(given).toContain(fresh.id);
+      expect(given.length).toBeLessThanOrEqual(9);
+      expect(given.length).toBeLessThan(old.length);
+    });
+
     it("is not queued for an old cap run that stopped part-way, until its day and five runs come", () => {
       const at = Date.now() - 2 * HOUR;
       settledScope();
@@ -1788,16 +1892,24 @@ describe("automatic memory consolidation", () => {
       expect(listMemories(handle.db, workspace)).toHaveLength(1);
       expect(notices()).toEqual([expect.objectContaining({ id: notice!.id, handledHow: "resolved", handledAt: clock })]);
 
-      // …so three more in a row, from an hour again, are said again: a person's this time, which goes on as theirs.
+      // …so three more in a row are said again: a person's this time, each asked for — a request that
+      // fails before it applied anything is not repeated unasked (EO-913).
       answer = { ok: false, reason: "timeout", message: "The call took longer than its 90000 ms and was stopped." };
       for (let index = 0; index < 9; index += 1) byAgent(workspace, `Later note ${index}`, clock + index);
       expect(runner.check()).toEqual([]);
-      runner.requestNow(workspace);
-      await vi.waitFor(() => expect(failureReasons(workspace)[0]).toBe("timeout"));
-      await runner.idle();
-      await failAgainAfter(60 * 60 * 1000, "manual");
+      const askAgain = async () => {
+        const calls = sideCall.mock.calls.length;
+        runner.requestNow(workspace);
+        await vi.waitFor(() => expect(sideCall.mock.calls.length).toBe(calls + 1));
+        await runner.idle();
+        expect(failureReasons(workspace)[0]).toBe("timeout");
+        clock += 60 * 60 * 1000;
+        expect(runner.check()).toEqual([]);
+      };
+      await askAgain();
+      await askAgain();
       expect(notices()).toHaveLength(1);
-      await failAgainAfter(4 * 60 * 60 * 1000, "manual");
+      await askAgain();
       expect(notices()).toHaveLength(2);
       expect(notices()[1]!.body).toContain("`timeout` — The call took longer than its 90000 ms and was stopped.");
       expect(notices()[1]!.handledAt).toBeNull();
