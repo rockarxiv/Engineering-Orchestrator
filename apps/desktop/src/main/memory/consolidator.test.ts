@@ -1088,7 +1088,10 @@ describe("automatic memory consolidation", () => {
       expect(retireMemory(handle.db, fresh.id).ok).toBe(true);
       busy = false;
       runner.poke();
+      // The look a poke asks for is on a timer of its own: wait for it, then for what it drains.
+      await new Promise((resolve) => setTimeout(resolve, 0));
       await runner.idle();
+      expect(runner.pending(project)).toBeNull();
 
       expect(sideCall).not.toHaveBeenCalled();
       expect(proposeSkills).not.toHaveBeenCalled();
@@ -1310,6 +1313,48 @@ describe("automatic memory consolidation", () => {
       expect(entriesNewSinceConsolidated(handle.db, project)).toEqual([unrelated.id]);
       expect(second.check()).toEqual([]);
       second.stop();
+    });
+
+    it("never gives a scheduled retry a note written since its run started, as a neighbour by the full-text index or as a duplicate to fold (EO-913)", async () => {
+      const old = settledScope();
+      const fresh = newNotes(40);
+      givenToFiveRuns(fresh);
+      vi.useFakeTimers({ toFake: ["Date"] });
+      const sent: string[][] = [];
+      let calls = 0;
+      // The real full-text index: no neighbours option.
+      const runner = consolidatorWith((async (request: AnyRequest): Promise<AnyAnswer> => {
+        calls += 1;
+        sent.push(idsIn(request.input));
+        return calls === 2 ? { ok: false, reason: "error", message: "The backend fell over." } : { ok: true, value: NOTHING };
+      }) as never);
+      runner.start();
+      await runner.idle();
+      expect(sent).toHaveLength(2);
+
+      // Written during the backoff: one like a pending note, which the index ranks first among its
+      // neighbours, and one that repeats an old note word for word.
+      vi.setSystemTime(Date.now() + HOUR);
+      const pending = fresh.findIndex((entry) => sent[1]!.includes(entry.id) && !sent[0]!.includes(entry.id));
+      expect(pending).toBeGreaterThanOrEqual(0);
+      const alike = byAgent(project, `${fresh[pending]!.body} Fact ${pending}, again: ${pending}.`, Date.now());
+      const repeat = byAgent(project, old[0]!.body, Date.now());
+      vi.setSystemTime(Date.now() + CONSOLIDATION_BACKOFF_MS[0] + 1);
+      expect(runner.check()).toEqual([{ scope: project, trigger: "schedule" }]);
+      runner.poke();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await runner.idle();
+
+      expect(sent.length).toBeGreaterThan(2);
+      const retried = sent.slice(2).flat();
+      expect(retried).not.toContain(alike.id);
+      expect(retried).not.toContain(repeat.id);
+      // Neither was changed: the repeat is not folded into the note it repeats.
+      expect(listMemories(handle.db, project).filter((entry) => entry.body === old[0]!.body)).toHaveLength(2);
+      expect(listMemories(handle.db, project).map((entry) => entry.id)).toContain(alike.id);
+      // Both are still new, for the schedule.
+      expect(entriesNewSinceConsolidated(handle.db, project)).toEqual(expect.arrayContaining([alike.id, repeat.id]));
+      runner.stop();
     });
 
     it("goes on where a scheduled run that stopped part-way left off when that run is retried", async () => {

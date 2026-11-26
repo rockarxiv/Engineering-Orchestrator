@@ -588,7 +588,9 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
    * nothing, not even to fold duplicates or propose skills. A scheduled
    * retry is given only what its run was to give (`planned`, and the
    * entries new when its first attempt read them): an entry written since
-   * is the schedule's, and waits for its day and five runs. A retry left
+   * is the schedule's, and waits for its day and five runs — it is no
+   * batch's neighbour and no word-for-word duplicate folded either, so the
+   * retry can change nothing of it. A retry left
    * with nothing — what its run's earlier batches had is done, and the
    * rest was retired since, before it was queued or after, and after a
    * restart too — is that run finished, with no consolidation call: one
@@ -628,16 +630,16 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
     // a person asking now, a later day's schedule — is a run of its own.
     const interrupted = resumesRun && trigger !== "container_done" ? consolidationState(db, scope).failuresSince[0] : undefined;
     continuing = interrupted !== undefined && interrupted.trigger === trigger && interrupted.afterApplied ? interrupted.run : undefined;
-    const read = agentEntries(scope);
+    const readNow = agentEntries(scope);
     const facts = scopeFacts(db, scope, options.workspacesElsewhere);
-    if (!facts || read.length === 0) {
+    if (!facts || readNow.length === 0) {
       sequences.delete(key);
       return;
     }
     // Queued before its project was handed to a record (EO-482): the
     // record consolidates it now, and nothing here may touch the replica.
     if (heldElsewhereNow(scope)) return;
-    if (trigger === "container_done") return finishContainer(scope, facts, readAt, read);
+    if (trigger === "container_done") return finishContainer(scope, facts, readAt, readNow);
     // Only what is new since the last consolidation, on the schedule; a
     // person asking, the whole scope (EO-913).
     const onlyNew = trigger !== "manual";
@@ -649,12 +651,17 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
     // the entries new when its first attempt read them, and those of them
     // restored since. One written after that is left to the schedule, so
     // a note nobody's retry was for waits its day and five runs as any does.
+    // Nor is such a note among the neighbours a batch is given, nor folded
+    // as a duplicate: what the retry may change is what its run read.
     let fresh: Set<string> | null = null;
+    let read = readNow;
     if (onlyNew) {
       const newNow = entriesNewSinceConsolidated(db, scope);
       const newThen = continuing === undefined ? null : new Set(entriesNewSinceConsolidated(db, scope, { until: continuing }));
       fresh = new Set(newThen === null ? newNow : newNow.filter((id) => newThen.has(id) || sequence.planned.has(id)));
       if (!resumes) sequence.planned = new Set(fresh);
+      const later = new Set(newNow.filter((id) => !fresh!.has(id)));
+      if (later.size > 0) read = readNow.filter((entry) => !later.has(entry.id));
     }
     /** This run's last consolidation to succeed: what the skills proposed after it are posted under. */
     let last: Applied | null = null;

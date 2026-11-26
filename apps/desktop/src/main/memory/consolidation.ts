@@ -287,116 +287,163 @@ export function absoluteDates(body: string): Set<string> {
   return dates;
 }
 
-/** A body's words, lowercased, without the punctuation around them: `test:api`, `2026-10-24` and `v1.2` stay one word each. */
-function words(body: string): string[] {
-  return body.toLowerCase().match(/[\p{L}\p{N}_]+(?:[.'’:/-][\p{L}\p{N}_]+)*/gu) ?? [];
+/**
+ * A text's terms: its words, lowercased, without the punctuation around
+ * them — `test:api`, `2026-10-24` and `v1.2` stay one word each, and a
+ * sign before a number is kept, so `-1` is not `1` — less the common words
+ * (`COMMON_WORDS`), each brought to one spelling: `re-run` is `rerun`,
+ * and `tests`, `pushing` and `pushed` are `test` and `push`. What a
+ * correction's quoted sentence is compared with the part of the entry it
+ * replaces by.
+ */
+function terms(text: string): Set<string> {
+  const found = new Set<string>();
+  for (const [raw] of text.toLowerCase().matchAll(/(?<![\p{L}\p{N}_])[-+]?[\p{L}\p{N}_]+(?:[.'’:/-][\p{L}\p{N}_]+)*/gu)) {
+    if (COMMON_WORDS.has(raw)) continue;
+    const sign = raw[0] === "-" || raw[0] === "+" ? raw[0] : "";
+    let term = sign + raw.slice(sign.length).replace(/[-'’]/g, "");
+    if (/^[a-z]+$/.test(term)) {
+      if (term.endsWith("ies") && term.length > 4) term = `${term.slice(0, -3)}y`;
+      else if (term.endsWith("ing") && term.length > 5) term = term.slice(0, -3);
+      else if (term.endsWith("ed") && term.length > 4) term = term.slice(0, -2);
+      else if (/(?:s|x|z|ch|sh)es$/.test(term) && term.length > 4) term = term.slice(0, -2);
+      else if (term.endsWith("s") && !term.endsWith("ss") && term.length > 3) term = term.slice(0, -1);
+    }
+    found.add(term);
+  }
+  return found;
 }
 
 /** The fewest words a sentence a correction quotes may have: fewer is a phrase every text has, not a statement. */
 const MIN_QUOTED_WORDS = 3;
 
 /**
- * Words too common to show where a sentence came from: a sentence a
- * correction quotes must bring a word its entry did not say that is not
- * one of these.
+ * Words too common to say what a sentence is about: left out of the
+ * terms a correction is compared by. "no", "not" and "never" are not
+ * among them — a correction may be one.
  */
 const COMMON_WORDS = new Set(
-  "a an the and or but nor so of to in on at for by with from into onto as than then is are was were be been being it its this that these those there here any all some each every no not do does did has have had will would can could should may might must".split(" "),
+  "a an the and or but so of to in on at for by with from into onto as than then is are was were be been being it its this that these those there here any all some each every do does did has have had will would can could should may might must".split(" "),
 );
 
 /**
- * The sentences a source says, each as its words: what lies between one
- * full stop, question or exclamation mark, semicolon or colon (followed
- * by a space or the end), line break or spaced dash and the next — a
- * bullet of a CLAUDE.md, a clause of a note. Those of fewer than
- * `MIN_QUOTED_WORDS` words are left out.
+ * What ends one sentence of a note or a repository file and starts the
+ * next: a full stop, question or exclamation mark, semicolon or colon
+ * followed by a space, a line break, or a spaced dash. A sentence ends
+ * where the match starts, its mark included, and the next starts where
+ * the match ends.
  */
-function sentencesOf(source: string): string[][] {
-  return source
-    .split(/(?<=[.!?;:])\s+|\r?\n+|\s[—–-]\s/)
-    .map(words)
-    .filter((sentence) => sentence.length >= MIN_QUOTED_WORDS);
+const SENTENCE_BREAK = /(?<=[.!?;:])\s+|\r?\n+|\s[—–-]\s/g;
+
+/** Each sentence of a text as where it starts and ends, whitespace around it left out. */
+function sentenceSpans(text: string): [number, number][] {
+  const spans: [number, number][] = [];
+  const push = (start: number, end: number) => {
+    while (start < end && /\s/.test(text[start]!)) start += 1;
+    while (end > start && /\s/.test(text[end - 1]!)) end -= 1;
+    if (end > start) spans.push([start, end]);
+  };
+  let at = 0;
+  for (const found of text.matchAll(SENTENCE_BREAK)) {
+    push(at, found.index);
+    at = found.index + found[0].length;
+  }
+  push(at, text.length);
+  return spans;
 }
 
-/** Where `needle` stands, word for word, in `haystack`: each start. */
-function occurrences(haystack: readonly string[], needle: readonly string[]): number[] {
-  const found: number[] = [];
-  for (let at = 0; at + needle.length <= haystack.length; at += 1) {
-    if (needle.every((word, index) => haystack[at + index] === word)) found.push(at);
+/** A text with its whitespace collapsed and one sentence mark at its end left out: what two sentences are compared as. */
+function squashed(text: string): string {
+  return text.replace(/\s+/g, " ").trim().replace(/[.!?;:]$/, "").trim();
+}
+
+/** Whether `quote` is, word for word and mark for mark, one or more whole sentences in a row of `source` (`sentenceSpans`). */
+function isWholeSentencesOf(quote: string, source: string): boolean {
+  const wanted = squashed(quote);
+  const spans = sentenceSpans(source);
+  for (let first = 0; first < spans.length; first += 1) {
+    for (let last = first; last < spans.length; last += 1) {
+      const candidate = squashed(source.slice(spans[first]![0], spans[last]![1]));
+      if (candidate === wanted) return true;
+      if (candidate.length > wanted.length) break;
+    }
   }
-  return found;
+  return false;
 }
 
 /**
- * Where a rewrite's words differ from its entry's, by their longest
- * common sequence: each changed stretch as the span of the rewrite's
- * words it holds, `[start, end)` — an empty one, `start === end`, where
- * words were only taken out there.
+ * Where a rewrite differs from its entry, widened to whole sentences: the
+ * text before `start` and the `tail` characters after the changed
+ * sentences are the entry's own, character for character, in both, and
+ * `replaced` is what the rewrite put `put` in place of. Null where the two
+ * are the same text.
  */
-function changedSpans(entry: readonly string[], rewrite: readonly string[]): [number, number][] {
-  const n = entry.length;
-  const m = rewrite.length;
-  // common[i][j]: the longest common sequence of entry[i..] and rewrite[j..].
-  const common = Array.from({ length: n + 1 }, () => new Array<number>(m + 1).fill(0));
-  for (let i = n - 1; i >= 0; i -= 1) {
-    for (let j = m - 1; j >= 0; j -= 1) {
-      common[i]![j] = entry[i] === rewrite[j] ? common[i + 1]![j + 1]! + 1 : Math.max(common[i + 1]![j]!, common[i]![j + 1]!);
-    }
-  }
-  const spans: [number, number][] = [];
-  let open: number | null = null;
-  let i = 0;
-  let j = 0;
-  while (i < n || j < m) {
-    if (i < n && j < m && entry[i] === rewrite[j]) {
-      if (open !== null) spans.push([open, j]);
-      open = null;
-      i += 1;
-      j += 1;
-      continue;
-    }
-    open ??= j;
-    if (j >= m || (i < n && common[i + 1]![j]! >= common[i]![j + 1]!)) i += 1;
-    else j += 1;
-  }
-  if (open !== null) spans.push([open, j]);
-  return spans;
+function changedSentences(entry: string, rewrite: string): { start: number; tail: number; replaced: string; put: string } | null {
+  let head = 0;
+  while (head < entry.length && head < rewrite.length && entry[head] === rewrite[head]) head += 1;
+  if (head === entry.length && head === rewrite.length) return null;
+  let tail = 0;
+  while (tail < entry.length - head && tail < rewrite.length - head && entry[entry.length - 1 - tail] === rewrite[rewrite.length - 1 - tail]) tail += 1;
+  // Back to the start of the sentence the change begins in, and on to the
+  // end of the one it ends in, by breaks wholly within the text both share.
+  let start = 0;
+  for (const found of entry.slice(0, head).matchAll(SENTENCE_BREAK)) start = found.index + found[0].length;
+  const after = entry.slice(entry.length - tail);
+  const next = new RegExp(SENTENCE_BREAK.source).exec(after);
+  const kept = next === null ? 0 : tail - next.index;
+  return { start, tail: kept, replaced: entry.slice(start, entry.length - kept), put: rewrite.slice(start, rewrite.length - kept) };
 }
 
 /**
  * Why a rewrite does not put right what `sources` say, or null where it
  * does (EO-913) — the evidence a `repository_file` or `newer_entry`
- * rewrite is held to. The rewrite must carry over, word for word, a
- * whole sentence of a source (`sentencesOf`) that its entry did not say
- * and that brings a word the entry did not have and that is not a common
- * one; every word it changes — added, replaced or taken out — must lie
- * within such a sentence where it stands in the rewrite, so a change
- * anywhere else, a shortening beside the quote included, is refused; and
- * something of the entry's own must be left outside every quoted
- * sentence, since a rewrite that says only what the source says is the
- * source again, and its entry is to be retired instead. Phrases a source
- * merely shares with a reworded or shortened entry are no evidence: they
- * are not a whole sentence of it, or they leave the changes outside.
+ * rewrite is held to, by the text itself (invariant 5):
+ *
+ * - **One correction, the source's own words.** The rewrite is its entry
+ *   with one run of whole sentences replaced (`changedSentences`), and
+ *   every other character exactly as it was — a sign, an operator, a
+ *   word dropped elsewhere is a change outside the correction. What it
+ *   puts there is, mark for mark, one or more whole sentences in a row of
+ *   a source, of `MIN_QUOTED_WORDS` words or more, that the entry did not
+ *   already say.
+ * - **About the same fact, and saying something else of it.** Compared
+ *   term by term (`terms`), the source's sentence brings at least one the
+ *   replaced sentence did not have — one that only repeats it, in fewer
+ *   words or the same ones respelled, corrects nothing — and keeps at
+ *   least as many of the replaced sentence's terms as it adds, and as it
+ *   drops: a sentence on another subject that happens to share a word or
+ *   two is not a correction of this one.
+ * - **The entry's own beside it.** Something of the entry not common to
+ *   every text is left outside the replaced sentences: an entry that would
+ *   say only what the source says is the source again, and is retired
+ *   rather than rewritten.
+ *
+ * A lexical check cannot tell a correction from a paraphrase that
+ * happens to bring a new word; these are what it can tell.
  */
 function correctionProblem(rewrite: string, entry: string, sources: readonly string[], what: string): string | null {
-  const had = words(entry);
-  const said = words(rewrite);
-  const changed = changedSpans(had, said);
-  if (changed.length === 0) return "changes no word of the entry";
-  const known = new Set(had);
-  const quoted: [number, number][] = [];
-  for (const source of sources) {
-    for (const sentence of sentencesOf(source)) {
-      if (occurrences(had, sentence).length > 0) continue;
-      if (!sentence.some((word) => !known.has(word) && !COMMON_WORDS.has(word))) continue;
-      for (const at of occurrences(said, sentence)) quoted.push([at, at + sentence.length]);
-    }
+  const had = entry.trim();
+  const said = rewrite.trim();
+  const changed = changedSentences(had, said);
+  if (changed === null) return "changes nothing of the entry's text";
+  const put = changed.put.trim();
+  const replaced = changed.replaced.trim();
+  if (put === "") return `takes sentences out of the entry, which no ${what} puts right`;
+  if (replaced === "") return `adds a sentence to the entry rather than correcting one of it`;
+  if (!sources.some((source) => isWholeSentencesOf(put, source))) {
+    return `changes "${replaced}" to "${put}", which is not one or more whole sentences of ${what}, word for word; a correction puts the source's sentence in place of the entry's and changes nothing else`;
   }
-  if (quoted.length === 0) return `carries over no whole sentence of ${what} that the entry did not say`;
-  const inQuote = (at: number) => quoted.some(([start, end]) => start <= at && at < end);
-  const outside = changed.filter(([start, end]) => (start === end ? !quoted.some(([from, to]) => from <= start && start <= to) : !Array.from({ length: end - start }, (_, k) => start + k).every(inQuote)));
-  if (outside.length > 0) return `changes words outside the sentence of ${what} it carries over`;
-  if (!said.some((word, at) => !inQuote(at) && !COMMON_WORDS.has(word))) return `says nothing but what ${what} says, so the entry is retired rather than rewritten`;
+  if ((put.match(/[\p{L}\p{N}_]+/gu) ?? []).length < MIN_QUOTED_WORDS) return `quotes "${put}", too short a sentence of ${what} to be a correction`;
+  if (squashed(had).includes(squashed(put))) return `quotes "${put}", which the entry already says`;
+  const was = terms(replaced);
+  const now = terms(put);
+  const shared = [...now].filter((term) => was.has(term)).length;
+  const added = now.size - shared;
+  const dropped = was.size - shared;
+  if (added === 0) return `puts "${put}" for "${replaced}", which says nothing it did not, so it corrects nothing`;
+  if (shared < added || shared < dropped) return `puts "${put}" for "${replaced}", which is about something else: a correction keeps at least as many of the words of the sentence it replaces as it adds or drops`;
+  const own = had.slice(0, changed.start) + had.slice(had.length - changed.tail);
+  if (terms(own).size === 0) return `says nothing but what ${what} says, so the entry is retired rather than rewritten`;
   return null;
 }
 
@@ -407,16 +454,17 @@ const COUNT = "(\\d+|an?|one|two|three|four|five|six|seven|eight|nine|ten)";
 /**
  * The date a relative date means, counted from the day its entry was
  * written as the model is shown it (UTC, `isoDay`), where EO can tell:
- * as a day (`YYYY-MM-DD`) for "today", "tonight", "yesterday",
- * "tomorrow", "N days ago" and "in N days"; as a month (`YYYY-MM`) for
- * "this month", "last month" and "next month". Null for one it cannot —
- * "last week", "on Monday", "recently", "three months ago" — which a
- * `relative_date` rewrite leaves as it is.
+ * as a day (`YYYY-MM-DD`) for "today", "yesterday", "tomorrow", "N days
+ * ago" and "in N days"; as a month (`YYYY-MM`) for "this month", "last
+ * month" and "next month". Null for one it cannot — "last week", "on
+ * Monday", "recently", "three months ago" — and for one a date cannot
+ * stand for without losing what it says of the time of day, "tonight" or
+ * "this morning": a `relative_date` rewrite leaves those as they are.
  */
 export function resolvedDate(phrase: string, writtenAt: number): string | null {
   const said = phrase.toLowerCase().trim().replace(/\s+/g, " ");
   const day = (offset: number) => isoDay(Date.parse(isoDay(writtenAt)) + offset * DAY_MS);
-  if (said === "today" || said === "tonight") return day(0);
+  if (said === "today") return day(0);
   if (said === "yesterday") return day(-1);
   if (said === "tomorrow") return day(1);
   const count = (word: string) => (/^\d+$/.test(word) ? Number(word) : NUMBER_WORDS[word]!);
@@ -443,6 +491,20 @@ function escapeRegExp(text: string): string {
 }
 
 /**
+ * Whether the phrase at `index` is code rather than prose: within
+ * backticks, or joined to a name or a path — `today_count`,
+ * `config.today`, `today.json`, `--yesterday` — which is a literal a date
+ * never stands for, and stays exactly as it is.
+ */
+function inCode(body: string, index: number, length: number): boolean {
+  const ticks = (body.slice(0, index).match(/`/g) ?? []).length;
+  if (ticks % 2 === 1) return true;
+  const before = body[index - 1] ?? "";
+  const after = body.slice(index + length, index + length + 2);
+  return /[-_./\\@$#=]/.test(before) || /^(?:[-_/\\@=(]|\.\w)/.test(after);
+}
+
+/**
  * Why a `relative_date` rewrite does not hold, or null where it does:
  * the rewrite must be its entry with one or more of the relative dates or
  * times it says each replaced by the date EO reckons it meant
@@ -450,12 +512,13 @@ function escapeRegExp(text: string): string {
  * nor the flag. A replacement is that date alone, or with "on" before a
  * day and "in" or "during" before a month, so it keeps the time relation
  * the phrase had: "before 2026-11-25" for "yesterday" says something
- * else. A phrase EO cannot date stays exactly as it is.
+ * else. A phrase EO cannot date stays exactly as it is, and so does one
+ * in code (`inCode`), which is a name rather than a date.
  */
 function relativeDateProblem(rewrite: { body: string; contradictsRepositoryFile: boolean }, entry: SentEntry): string | null {
   const body = entry.body.trim();
-  const phrases = [...body.matchAll(RELATIVE_TIMES)];
-  if (phrases.length === 0) return "gives relative_date, but the entry says no relative date or time";
+  const phrases = [...body.matchAll(RELATIVE_TIMES)].filter((phrase) => !inCode(body, phrase.index, phrase[0].length));
+  if (phrases.length === 0) return "gives relative_date, but the entry says no relative date or time outside code";
   if (rewrite.contradictsRepositoryFile !== entry.contradictsRepositoryFile) return "gives relative_date, but the rewrite also changes contradictsRepositoryFile";
   const pieces: string[] = [];
   let at = 0;
@@ -634,7 +697,7 @@ const OPERATION_RULES = [
   "Answer with the changes to make, not with the entries to keep. Name only what changes: an entry you do not mention stays exactly as it is, so never list an entry just to keep it. There are three operations:",
   "- `retire`: `{ id, reason }` — retire one entry, saying in a few words why.",
   "- `merge`: `{ from, body, contradictsRepositoryFile }` — fold two or more entries (`from` holds at least two ids) into one new entry whose text is `body`.",
-  `- \`rewrite\`: \`{ id, body, reason, contradictsRepositoryFile }\` — replace one entry's text with \`body\`. \`reason\` is one of ${MEMORY_CONSOLIDATION_REWRITE_REASONS.map((reason) => `\`${reason}\``).join(", ")}: a relative date or time the entry says made absolute, a disagreement with a repository file you are given put right, or a correction by an entry you are given that was written after it. EO checks each reason against the change itself and refuses the whole answer where one does not hold. A \`relative_date\` rewrite replaces only the relative date or time with the date it meant, counted from the date the entry was written, and changes not one other character of the entry, nor contradictsRepositoryFile: a day as YYYY-MM-DD, alone or after "on", for "today", "tonight", "yesterday", "tomorrow", "N days ago" or "in N days" — "yesterday" in an entry written 2026-11-26 is 2026-11-25, so "Released yesterday." becomes "Released 2026-11-25." or "Released on 2026-11-25.", never "Released before 2026-11-25." — and a month as YYYY-MM, alone or after "in" or "during", for "this month", "last month" or "next month". Any other relative phrase — "last week", "on Monday", "recently", "three months ago" — stays exactly as it is, since its date cannot be known. A \`repository_file\` rewrite carries over, word for word, a whole sentence of the file — from one full stop, semicolon, colon or line break to the next — that puts the entry right, and changes nothing in the entry outside where that sentence now stands; it must keep something of the entry's own beside it, since an entry that would say only what the file says is retired instead. A \`newer_entry\` rewrite does the same with a whole sentence of the newer entry. A few words the source happens to share are not evidence, and nor is deleting words. A rewrite keeps the entry's contradictsRepositoryFile as it is, except that a \`repository_file\` rewrite may clear it; it never sets it, and an entry is never rewritten only to change it. There is no other reason to rewrite an entry: never rewrite one only to shorten it, reword it or tidy its style.`,
+  `- \`rewrite\`: \`{ id, body, reason, contradictsRepositoryFile }\` — replace one entry's text with \`body\`. \`reason\` is one of ${MEMORY_CONSOLIDATION_REWRITE_REASONS.map((reason) => `\`${reason}\``).join(", ")}: a relative date or time the entry says made absolute, a disagreement with a repository file you are given put right, or a correction by an entry you are given that was written after it. EO checks each reason against the change itself and refuses the whole answer where one does not hold. A \`relative_date\` rewrite replaces only the relative date or time with the date it meant, counted from the date the entry was written, and changes not one other character of the entry, nor contradictsRepositoryFile: a day as YYYY-MM-DD, alone or after "on", for "today", "yesterday", "tomorrow", "N days ago" or "in N days" — "yesterday" in an entry written 2026-11-26 is 2026-11-25, so "Released yesterday." becomes "Released 2026-11-25." or "Released on 2026-11-25.", never "Released before 2026-11-25." — and a month as YYYY-MM, alone or after "in" or "during", for "this month", "last month" or "next month". Any other relative phrase — "last week", "on Monday", "recently", "three months ago", and "tonight" or "this morning", whose time of day a date would lose — stays exactly as it is, and so does a word in code (inside backticks, or part of a name or path such as \`today_count\` or \`today.json\`). A \`repository_file\` rewrite replaces one or more whole sentences of the entry — from one full stop, semicolon, colon or line break to the next — with one or more whole sentences of the file, copied exactly, mark for mark, and leaves every other character of the entry exactly as it was: one correction per rewrite, and nothing else touched, not a sign, an operator or a word. The file's sentence must be about the same thing as the sentence it replaces and say something different of it: it keeps at least as many of that sentence's words as it adds, and as it drops. A sentence that only repeats the entry's in other or fewer words corrects nothing, and one about something else is no correction of it: leave the entry as it is. It must keep a sentence of the entry's own beside it, since an entry that would say only what the file says is retired instead. A \`newer_entry\` rewrite does the same with a whole sentence of the newer entry. A rewrite keeps the entry's contradictsRepositoryFile as it is, except that a \`repository_file\` rewrite may clear it; it never sets it, and an entry is never rewritten only to change it. There is no other reason to rewrite an entry: never rewrite one only to shorten it, reword it or tidy its style.`,
   "Every id you name must be one of the entries you are given, and each id may appear only once in the whole answer — in one retire, one merge's `from`, or one rewrite. An answer with nothing to change has all three lists empty; that is a valid answer, and often the right one.",
   "What to change, and nothing else:",
   `- Merge entries that state the same fact into one, keeping every detail any of them adds. Keep each entry you merge or rewrite to one fact, at most ${MAX_MEMORY_NOTE_CHARS} characters: an answer with a longer one is refused whole. Entries about one topic that state different facts are not duplicates; leave them as they are.`,
