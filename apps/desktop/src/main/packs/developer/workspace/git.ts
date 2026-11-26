@@ -212,30 +212,32 @@ export async function pushBranch(
       timeout: options.timeoutMs ?? NETWORK_TIMEOUT_MS,
       ...(options.signal ? { signal: options.signal } : {}),
     });
-    const flag = pushedRefFlag(stdout, branch);
-    return { ok: true, updated: head.ok && head.stdout !== "" && flag !== null && " +*".includes(flag.flag) ? head.stdout : null };
+    const refs = pushedRefLines(stdout, branch);
+    return { ok: true, updated: head.ok && head.stdout !== "" && refs.length === 1 && " +*".includes(refs[0]!.flag) ? head.stdout : null };
   } catch (error) {
     const stdout = typeof error === "object" && error !== null && typeof (error as { stdout?: unknown }).stdout === "string" ? (error as { stdout: string }).stdout : "";
-    const ref = pushedRefFlag(stdout, branch);
-    const diverged = ref !== null && ref.flag === "!" && /^\[rejected\] \((non-fast-forward|fetch first)\)$/.test(ref.summary);
-    // Porcelain puts the ref's status on stdout, where today's stderr had
-    // it, so what is classified still names how the branch was refused.
-    const said = [extractGitError(error), ref ? `${ref.flag} ${ref.summary}` : ""].filter((part) => part !== "").join("\n");
+    const refs = pushedRefLines(stdout, branch);
+    const diverged = refs.length === 1 && refs[0]!.flag === "!" && /^\[rejected\] \((non-fast-forward|fetch first)\)$/.test(refs[0]!.summary);
+    // Porcelain puts the ref's status on stdout, where git's plain output
+    // put it on stderr, so what is classified still says how the branch
+    // was refused — at every push URL, as before.
+    const said = [extractGitError(error), ...refs.map((ref) => `${ref.flag} ${ref.summary}`)].join("\n");
     return { ok: false, error: said, diverged };
   }
 }
 
 /**
- * The branch's line in `git push --porcelain` output: its flag and
- * summary. Null where there is none, or more than one (a remote with
- * several push URLs), since then no one status speaks for the push.
+ * The branch's lines in `git push --porcelain` output, one per push URL:
+ * each one's flag and summary. Only exactly one speaks for the push; a
+ * remote with several push URLs is never taken as EO's one push.
  */
-function pushedRefFlag(stdout: string, branch: string): { flag: string; summary: string } | null {
+function pushedRefLines(stdout: string, branch: string): { flag: string; summary: string }[] {
   const refspec = `refs/heads/${branch}:refs/heads/${branch}`;
-  const lines = stdout.split("\n").filter((line) => line.length > 2 && line[1] === "\t" && line.slice(2).split("\t")[0] === refspec);
-  if (lines.length !== 1) return null;
-  const line = lines[0]!.replace(/\r$/, "");
-  return { flag: line[0]!, summary: line.slice(2 + refspec.length + 1) };
+  return stdout
+    .split("\n")
+    .map((line) => line.replace(/\r$/, ""))
+    .filter((line) => line.length > 2 && line[1] === "\t" && line.slice(2).split("\t")[0] === refspec)
+    .map((line) => ({ flag: line[0]!, summary: line.slice(2 + refspec.length + 1) }));
 }
 
 /**

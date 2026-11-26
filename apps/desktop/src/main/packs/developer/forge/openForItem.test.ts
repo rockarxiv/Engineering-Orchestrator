@@ -715,7 +715,20 @@ describe("when it cannot", () => {
     // sends it is the pipeline's business, not this function's.
     const saved = getItem(handle.db, item.id)!;
     expect(saved.stepId).toBe("review");
-    expect(gitStateOf(saved)).toEqual({ branch: "eo/API-4", pullRequest: null, baseBranch: null, namedBranch: false, attachedAt: null, reference: null, reviewers: null, stackedOn: null, restacked: false });
+    // What the push put there is recorded all the same (EO-910): the
+    // forge failing afterwards does not unpush it.
+    expect(gitStateOf(saved)).toEqual({
+      branch: "eo/API-4",
+      pullRequest: null,
+      baseBranch: null,
+      namedBranch: false,
+      attachedAt: null,
+      reference: null,
+      reviewers: null,
+      stackedOn: null,
+      restacked: false,
+      pushedHead: { commit: git(["rev-parse", "eo/API-4"], repoPath).trim(), pushUrl: expect.stringMatching(/^sha256:[0-9a-f]{64}$/) },
+    });
   });
 });
 
