@@ -196,16 +196,6 @@ export interface ScopeConsolidationState {
 }
 
 /**
- * When a settling row wrote the entries it lists: a consolidation when it
- * finished, a restore when it was made. A skip writes none.
- */
-function writtenAt(row: Row): number | null {
-  if (row.status === "succeeded") return row.finishedAt;
-  if (row.status === "restored") return row.restoredAt;
-  return null;
-}
-
-/**
  * When a row settled its scope, or null for one that did not: a
  * consolidation as of when it read its entries — anything written after
  * that, even while it ran, is a change it did not see — a restore when it
@@ -262,43 +252,50 @@ export function consolidationState(db: Db, scope: MemoryScope): ScopeConsolidati
 }
 
 /**
- * The scope's active agent-written entries written or changed since its
- * last consolidation (EO-913): what a `schedule` consolidation is given,
- * each with its nearest neighbours, so its cost follows new notes and
- * not the size of memory. Ids, oldest first.
+ * A scope's watermark (EO-913): when the last consolidation of it that
+ * completed its run began — the `started_at` of the newest row marked
+ * `completes_run`, whatever its trigger — or null where none has. Every
+ * row of a run starts at the moment the run read its entries (EO-574),
+ * so this is the moment the entries it was given were read.
  *
- * "Since its last consolidation" is since the last one that finished:
- * every row of one run starts at the moment it read its entries
- * (EO-574), and the newest run none of whose rows failed is the point
- * counted from. A run that stopped part-way is not, so the entries its
- * unfinished batches were to be given are still new when it is taken up
- * again, after a restart as well. Nor is a person's restore: it says
- * what it put back is to stay, not that everything else was tidied.
+ * Only `markConsolidationRunComplete` moves it, which the consolidator
+ * calls once every batch a run planned has applied, in one attempt. A
+ * run that failed, stopped part-way, or was cut off by a restart between
+ * batches leaves it where it was. Read with its own query, never from a
+ * bounded window of recent rows, so no number of later failures hides it.
+ */
+export function consolidationWatermark(db: Db, scope: MemoryScope): number | null {
+  return (
+    db
+      .select({ at: sql<number | null>`max(${memoryConsolidations.startedAt})` })
+      .from(memoryConsolidations)
+      .where(and(inScope(scope), eq(memoryConsolidations.completesRun, true)))
+      .get()?.at ?? null
+  );
+}
+
+/** Marks a row as the one that completed its run, moving its scope's watermark to the run's start (`consolidationWatermark`). */
+export function markConsolidationRunComplete(db: Db, id: string): void {
+  db.update(memoryConsolidations).set({ completesRun: true }).where(eq(memoryConsolidations.id, id)).run();
+}
+
+/**
+ * The scope's active agent-written entries written or changed at or after
+ * its watermark (EO-913, `consolidationWatermark`): what a `schedule`
+ * consolidation is given, each with its nearest neighbours, so its cost
+ * follows new notes and not the size of memory. Ids, oldest first.
  *
- * What a consolidation or a restore itself wrote, as it wrote it, is not
- * new: what a run merged or rewrote, and what a restore put back, which a
- * person keeping is not a reason to fold it again. Anything else is,
- * whoever wrote it — an agent's note, an edit — including what was
- * written while a run was going. A scope never consolidated is new
- * through and through.
+ * Compared inclusively: an entry stamped in the very millisecond the
+ * last completed run read its entries may not have been among them, so
+ * it is new. An entry the last run wrote itself, or one sent before and
+ * changed by nobody since, may be new again; sending an entry twice is
+ * acceptable, and never sending one is not. A scope with no watermark is
+ * new through and through.
  */
 export function entriesNewSinceConsolidated(db: Db, scope: MemoryScope): string[] {
-  const rows = recentRows(db, scope);
-  // Each run's rows share the moment it read its entries; it finished if none of them failed.
-  const runs = new Map<number, boolean>();
-  for (const row of rows) {
-    if (row.status === "running") continue;
-    runs.set(row.startedAt, (runs.get(row.startedAt) ?? true) && row.status !== "failed");
-  }
-  let since: number | null = null;
-  for (const [at, finished] of runs) if (finished && (since === null || at > since)) since = at;
-  const own = new Set(
-    rows
-      .filter((row) => since !== null && (settledAt(row) ?? row.startedAt) >= since && writtenAt(row) !== null)
-      .flatMap((row) => [...row.retiredIds, ...row.writtenIds].map((id) => `${id}@${writtenAt(row)}`)),
-  );
+  const since = consolidationWatermark(db, scope);
   return db
-    .select({ id: memories.id, updatedAt: memories.updatedAt })
+    .select({ id: memories.id })
     .from(memories)
     .where(
       and(
@@ -311,7 +308,6 @@ export function entriesNewSinceConsolidated(db: Db, scope: MemoryScope): string[
     )
     .orderBy(memories.createdAt, memories.id)
     .all()
-    .filter((row) => !own.has(`${row.id}@${row.updatedAt}`))
     .map((row) => row.id);
 }
 

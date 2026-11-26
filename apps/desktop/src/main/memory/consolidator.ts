@@ -29,6 +29,7 @@ import {
   closeAbandonedConsolidations,
   consolidationState,
   entriesNewSinceConsolidated,
+  markConsolidationRunComplete,
   failConsolidation,
   getItem,
   getProject,
@@ -60,7 +61,9 @@ import {
   containerDoneInput,
   containerDoneOperations,
   MEMORY_CONTAINER_DONE_SYSTEM,
+  checkRewriteReasons,
   consolidationInput,
+  droppedRewritesNote,
   consecutiveFailures,
   CONSOLIDATION_DEFERRED_REASON,
   CONSOLIDATION_PAUSED_REASON,
@@ -259,6 +262,8 @@ type Applied = Extract<ApplyConsolidationResult, { ok: true }>;
  * starts again from its entries as they are.
  */
 interface Sequence {
+  /** What it was queued for: only a person's `manual` run is ever taken up where it stopped (EO-913). */
+  trigger: MemoryConsolidationTrigger;
   done: Set<string>;
   /**
    * The entries its consolidations wrote by folding two or more into one,
@@ -575,14 +580,30 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
     // person asking, the whole scope (EO-913).
     const onlyNew = trigger !== "manual";
     const fresh = onlyNew ? new Set(entriesNewSinceConsolidated(db, scope)) : null;
+    // Nothing new since the watermark — the new entry this was queued for
+    // was retired while it waited, say: nothing is folded, asked or
+    // proposed, and the watermark stays where it is.
+    if (fresh !== null && !read.some((entry) => fresh.has(entry.id))) {
+      sequences.delete(key);
+      return;
+    }
+    // Only a person's run is taken up where it stopped; a scheduled one
+    // starts again from the watermark, which a run that stopped part-way
+    // never moved, so what it did not reach is still new (EO-913).
     const kept = sequences.get(key);
-    const resumes = kept !== undefined && now() - kept.at <= SEQUENCE_KEPT_MS && consolidationState(db, scope).failuresSince.length > 0;
-    const sequence = resumes ? kept : { done: new Set<string>(), folded: new Set<string>(), batches: 0, at: now() };
+    const resumes =
+      trigger === "manual" && kept !== undefined && kept.trigger === "manual" && now() - kept.at <= SEQUENCE_KEPT_MS && consolidationState(db, scope).failuresSince.length > 0;
+    const sequence: Sequence = resumes ? kept : { trigger, done: new Set<string>(), folded: new Set<string>(), batches: 0, at: now() };
     sequences.set(key, sequence);
     /** This run's last consolidation to succeed: what the skills proposed after it are posted under. */
     let last: Applied | null = null;
     const succeeded = async () => {
       sequences.delete(key);
+      // Every batch this attempt planned applied: the scope's watermark
+      // moves to the moment it read its entries (EO-913). Not for an
+      // attempt that took a person's run up where it stopped, which left
+      // out what the earlier attempt had already handled, as it was then.
+      if (last !== null && !resumes) markConsolidationRunComplete(db, last.consolidation.id);
       // A skill is the project's, a workspace's or everyone's; a
       // container's memory ends with its work (EO-596), so none is
       // proposed from it.
@@ -836,6 +857,7 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
     const tally = tallyOf(scope);
     if (!tally) return null;
     return onRow(scope, trigger, readAt, async (rowId, controller) => {
+      const files = repositoryFiles(scope);
       const answer = await ask(rowId, controller, {
         schema: consolidationAnswerSchema(sent),
         system: MEMORY_CONSOLIDATE_SYSTEM,
@@ -843,13 +865,17 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
           scopeLabel: facts.label,
           entries: sent,
           ...(part ? { batch: { ...part, scopeEntries: tally.agentEntries, scopeChars: tally.agentChars } } : {}),
-          repositoryFiles: repositoryFiles(scope),
+          repositoryFiles: files,
           likelyDuplicates,
           now: now(),
         }),
         projectId: facts.projectId,
       });
-      return answer === null ? null : apply(rowId, scope, sent, answer);
+      if (answer === null) return null;
+      // Each rewrite's reason, tested against what this call was given
+      // (EO-913): one that fails is dropped, and its entry stays as it is.
+      const checked = checkRewriteReasons(answer, { given: sent, repositoryFiles: files });
+      return apply(rowId, scope, sent, checked.answer, droppedRewritesNote(checked.dropped));
     });
   }
 
@@ -918,6 +944,8 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
         return apply(rowId, scope, batch, containerDoneOperations(batch, answer), said, into);
       });
       if (applied === null) return;
+      // The last batch applied: the run is complete, and the container's watermark moves (EO-913).
+      if (at === plan.length - 1) markConsolidationRunComplete(db, applied.consolidation.id);
     }
   }
 
@@ -971,7 +999,10 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
         input: crossBatchMergeInput({ scopeLabel: facts.label, groups, now: now() }),
         projectId: facts.projectId,
       });
-      return answer === null ? null : apply(rowId, scope, sent, answer);
+      if (answer === null) return null;
+      // Given no repository file, so a `repository_file` rewrite here never holds (EO-913).
+      const checked = checkRewriteReasons(answer, { given: sent, repositoryFiles: [] });
+      return apply(rowId, scope, sent, checked.answer, droppedRewritesNote(checked.dropped));
     });
   }
 

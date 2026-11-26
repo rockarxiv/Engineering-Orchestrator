@@ -172,10 +172,12 @@ export function failedSinceSettled(state: ScopeConsolidationState): boolean {
  *   entry written or changed since its last consolidation
  *   (`newEntries`) — what a scheduled consolidation is given. A scope
  *   with none has nothing new to tidy, and is left.
- * - **A run that stopped part-way** (`failedSinceSettled`) is taken up
- *   again once its backoff is over, with the trigger it ran under: a
- *   person's `manual` one goes on over the whole scope, anything else on
- *   the schedule — which needs a new entry still to give it.
+ * - **A failure since the scope was last settled** (`failedSinceSettled`)
+ *   is taken up again on the schedule once its backoff is over, without
+ *   waiting for another day and five runs, as before EO-913 — but only
+ *   where there is a new entry to give it, and never for a failure of a
+ *   `cap` consolidation from before EO-913, which size no longer starts:
+ *   the scope waits for its day and five runs like any other.
  *
  * Every one needs an agent-written entry: a person's are never sent, so a
  * scope of only those has nothing to consolidate. `runsDeliveredSince` is
@@ -198,8 +200,7 @@ export function consolidationDue(input: {
   // A run that stopped part-way: its successful batches made it the
   // scope's last consolidation, so the day and the five runs would be
   // counted from them, and its failed batch never retried.
-  if (failedSinceSettled(state)) {
-    if (state.failuresSince[0]!.trigger === "manual") return { kind: "consolidate", trigger: "manual" };
+  if (failedSinceSettled(state) && state.failuresSince[0]!.trigger !== "cap") {
     return input.newEntries() > 0 ? { kind: "consolidate", trigger: "schedule" } : { kind: "none" };
   }
   const since = state.lastConsolidatedAt ?? tally.oldestAgentAt;
@@ -218,10 +219,11 @@ export interface SentEntry {
  * The shape one consolidation's answer is held to (EO-573): retire, merge
  * and rewrite operations, each naming only entries it was given — never a
  * person's, which are never sent — and none of them twice, across all
- * three lists, and every rewrite with the reason it is made (EO-913), so
- * one that only shortens or rewords an entry is refused with the whole
- * answer. One that changes nothing is a valid no-op, and its size is no
- * test of it either way. Checked again when the answer comes back
+ * three lists, and every rewrite with the reason it is made (EO-913): one
+ * without a reason is refused with the whole answer. Whether a rewrite's
+ * reason holds is tested once the answer is in (`checkRewriteReasons`),
+ * which drops the rewrite rather than the answer. One that changes
+ * nothing is a valid no-op, and its size is no test of it either way. Checked again when the answer comes back
  * (invariant 5); the lists and the reasons reach the backend as JSON
  * Schema, the rest is checked here.
  *
@@ -299,18 +301,148 @@ export interface RepositoryFile {
   truncated: boolean;
 }
 
+/**
+ * The relative date phrases a `relative_date` rewrite may replace
+ * (EO-913): a fixed list, matched as whole phrases and in any case. A
+ * number is a run of digits not itself part of a longer number, so
+ * "000 days ago" inside "1,000 days ago" is not one.
+ */
+const RELATIVE_DATE_PHRASE = /(?<![\p{L}\p{N}_.,])(?:today|yesterday|tomorrow|(?:this|last|next)\s+(?:week|month)|\d+\s+(?:days?|weeks?)\s+ago|in\s+\d+\s+days?)(?![\p{L}\p{N}_])/giu;
+
+const RELATIVE_DATE_PHRASES_SAID = '"today", "yesterday", "tomorrow", "this week", "last week", "next week", "this month", "last month", "next month", "N days ago", "N weeks ago", "in N days"';
+
+const ISO_DATE = /^(\d{4})-(\d{2})-(\d{2})$/;
+
+/** Whether `text` is a real calendar date written YYYY-MM-DD. */
+function isIsoDate(text: string): boolean {
+  const match = ISO_DATE.exec(text);
+  if (!match) return false;
+  const [year, month, day] = [Number(match[1]), Number(match[2]), Number(match[3])];
+  const date = new Date(0);
+  date.setUTCFullYear(year, month - 1, day);
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
+}
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * (a) Whether `rewrite` is `original` with one or more of its relative
+ * date phrases replaced by a YYYY-MM-DD date and nothing else changed.
+ * Which date it is, is not checked: that is the prompt's job.
+ */
+export function replacesRelativeDate(original: string, rewrite: string): boolean {
+  const phrases = [...original.matchAll(RELATIVE_DATE_PHRASE)];
+  if (phrases.length === 0) return false;
+  let pattern = "";
+  let at = 0;
+  for (const phrase of phrases) {
+    pattern += `${escapeRegExp(original.slice(at, phrase.index))}(?:${escapeRegExp(phrase[0])}|(\\d{4}-\\d{2}-\\d{2}))`;
+    at = phrase.index + phrase[0].length;
+  }
+  pattern += escapeRegExp(original.slice(at));
+  const match = new RegExp(`^${pattern}$`, "su").exec(rewrite);
+  if (!match) return false;
+  const dates = match.slice(1).filter((date): date is string => date !== undefined);
+  return dates.length > 0 && dates.every(isIsoDate);
+}
+
+/** The fewest words a line quoted from a repository file must hold, so a heading or a fence is no quote. */
+const QUOTED_LINE_MIN_WORDS = 3;
+
+/** A list or quote marker at the start of a line, which a quote of it may leave out. */
+const LINE_MARKER = /^(?:(?:[-*+>]|\d+[.)])\s+)+/;
+
+/**
+ * (b) Whether `rewrite` names one of `files` and quotes, verbatim, a line
+ * of that file as it was delivered — trimmed, and with or without a
+ * leading list or quote marker — of at least `QUOTED_LINE_MIN_WORDS`
+ * words. The file's structure is not read: a line is a line.
+ */
+export function quotesRepositoryFile(rewrite: string, files: readonly { name: string; text: string }[]): boolean {
+  return files.some(
+    (file) =>
+      rewrite.includes(file.name) &&
+      file.text.split(/\r?\n/).some((line) => {
+        const trimmed = line.trim();
+        return [trimmed, trimmed.replace(LINE_MARKER, "")].some((quote) => quote.split(/\s+/).filter(Boolean).length >= QUOTED_LINE_MIN_WORDS && rewrite.includes(quote));
+      }),
+  );
+}
+
+/** (c) Whether `rewrite` names the id of an entry in `given`, other than `original`, written after it. */
+export function namesNewerEntry(original: { id: string; createdAt: number }, rewrite: string, given: readonly { id: string; createdAt: number }[]): boolean {
+  return given.some((entry) => entry.id !== original.id && entry.createdAt > original.createdAt && rewrite.includes(entry.id));
+}
+
+/** What one call was given, against which each rewrite's reason is tested (`checkRewriteReasons`). */
+export interface RewriteEvidence {
+  /** Every entry the call was given, with when it was written and its flag. */
+  given: readonly { id: string; body: string; createdAt: number; contradictsRepositoryFile: boolean }[];
+  /** The repository files delivered with the call, as delivered; none for the cross-batch pass. */
+  repositoryFiles: readonly { name: string; text: string }[];
+}
+
+/**
+ * Why a rewrite's reason does not hold, or null where it does (EO-913):
+ * one mechanical test per reason, and nothing more. Whether the rewrite
+ * was a good one, once it passes, is not judged here.
+ */
+export function rewriteReasonProblem(rewrite: MemoryConsolidationAnswer["rewrite"][number], evidence: RewriteEvidence): string | null {
+  const original = evidence.given.find((entry) => entry.id === rewrite.id);
+  if (!original) return "names an entry it was not given";
+  switch (rewrite.reason) {
+    case "relative_date":
+      if (rewrite.contradictsRepositoryFile !== original.contradictsRepositoryFile) return "a relative date made absolute changes nothing else, the flag included";
+      return replacesRelativeDate(original.body, rewrite.body) ? null : "is not the entry with a relative date phrase replaced by a YYYY-MM-DD date";
+    case "repository_file":
+      return quotesRepositoryFile(rewrite.body, evidence.repositoryFiles) ? null : "does not name a repository file it was given and quote a line of it";
+    case "newer_entry":
+      return namesNewerEntry(original, rewrite.body, evidence.given) ? null : "does not name a newer entry it was given";
+  }
+}
+
+/**
+ * An answer with every rewrite whose reason does not hold taken out
+ * (EO-913), and those dropped with why: the entry a dropped rewrite named
+ * stays active and as it was, and the rest of the answer is applied.
+ */
+export function checkRewriteReasons(
+  answer: MemoryConsolidationAnswer,
+  evidence: RewriteEvidence,
+): { answer: MemoryConsolidationAnswer; dropped: { id: string; reason: string; problem: string }[] } {
+  const dropped: { id: string; reason: string; problem: string }[] = [];
+  const rewrite = answer.rewrite.filter((candidate) => {
+    const problem = rewriteReasonProblem(candidate, evidence);
+    if (problem !== null) dropped.push({ id: candidate.id, reason: candidate.reason, problem });
+    return problem === null;
+  });
+  return { answer: { ...answer, rewrite }, dropped };
+}
+
+/** Said on a consolidation's row about the rewrites `checkRewriteReasons` dropped, or null for none. */
+export function droppedRewritesNote(dropped: readonly { id: string; reason: string; problem: string }[]): string | null {
+  if (dropped.length === 0) return null;
+  const each = dropped.map((drop) => `${drop.id} (\`${drop.reason}\`: ${drop.problem})`).join("; ");
+  return `${dropped.length} ${dropped.length === 1 ? "rewrite was" : "rewrites were"} dropped because ${dropped.length === 1 ? "its reason did" : "their reasons did"} not hold, and ${dropped.length === 1 ? "its entry stays" : "their entries stay"} as written: ${each}.`;
+}
+
 /** What a consolidation may answer and how it should choose — the rules every call that answers with operations is told. */
 const OPERATION_RULES = [
   "Answer with the changes to make, not with the entries to keep. Name only what changes: an entry you do not mention stays exactly as it is, so never list an entry just to keep it. There are three operations:",
   "- `retire`: `{ id, reason }` — retire one entry, saying in a few words why.",
   "- `merge`: `{ from, body, contradictsRepositoryFile }` — fold two or more entries (`from` holds at least two ids) into one new entry whose text is `body`.",
-  `- \`rewrite\`: \`{ id, body, reason, contradictsRepositoryFile }\` — replace one entry's text with \`body\`. \`reason\` is one of ${MEMORY_CONSOLIDATION_REWRITE_REASONS.map((reason) => `\`${reason}\``).join(", ")}: a relative date or time made absolute, a disagreement with the repository file put right, or a correction by a newer entry you are given. There is no other reason to rewrite an entry: never rewrite one only to shorten it, reword it or tidy its style.`,
+  `- \`rewrite\`: \`{ id, body, reason, contradictsRepositoryFile }\` — replace one entry's text with \`body\`. \`reason\` is one of ${MEMORY_CONSOLIDATION_REWRITE_REASONS.map((reason) => `\`${reason}\``).join(", ")}, and there is no other reason to rewrite an entry: never rewrite one only to shorten it, reword it or tidy its style. EO checks each rewrite against its reason and drops one that fails, leaving the entry as it was:`,
+  `  - \`relative_date\`: \`body\` is the entry exactly as written, with each relative date phrase you replace (${RELATIVE_DATE_PHRASES_SAID}) replaced by the date it means as YYYY-MM-DD, counted from the day the entry was written, and nothing else changed — not a word around it, not the flag.`,
+  "  - `repository_file`: `body` names the file it agrees with (CLAUDE.md or AGENTS.md) and quotes, word for word, at least one whole line of that file as you were given it — at least three words of it; a list or quote marker at the start of the line may be left out.",
+  "  - `newer_entry`: `body` names the id of the entry you are given that corrects it, one written after it.",
   "Every id you name must be one of the entries you are given, and each id may appear only once in the whole answer — in one retire, one merge's `from`, or one rewrite. An answer with nothing to change has all three lists empty; that is a valid answer, and often the right one.",
   "What to change, and nothing else:",
   `- Merge entries that state the same fact into one, keeping every detail any of them adds. Keep each entry you merge or rewrite to one fact, at most ${MAX_MEMORY_NOTE_CHARS} characters: an answer with a longer one is refused whole. Entries about one topic that state different facts are not duplicates; leave them as they are.`,
   "- Retire what is stale, contradicted by a newer entry, or derivable from the code itself — what an agent would see by reading the repository. Between two entries that disagree, the newer one is current.",
-  "- Write relative dates and times (\"yesterday\", \"last week\", \"in two days\") as absolute dates, using the date each entry was written.",
-  "- When the workspace's CLAUDE.md or AGENTS.md is given — for a project, those of each of its workspaces — treat it as current: an entry that disagrees with it is rewritten to agree, or retired. The one exception is an entry that is plainly newer than the file and says it corrects it; keep it, and flag it by setting contradictsRepositoryFile to true on the merge or rewrite that carries it — a rewrite may keep its text as it is to do only that. An entry already flagged stays flagged unless you change it. Never suggest editing the file.",
+  "- Write relative dates (\"yesterday\", \"last week\", \"3 days ago\") as absolute dates, using the date each entry was written.",
+  "- When the workspace's CLAUDE.md or AGENTS.md is given — for a project, those of each of its workspaces — treat it as current: an entry that disagrees with it is rewritten to agree, or retired. The one exception is an entry that is plainly newer than the file and says it corrects it; keep it, and flag it by setting contradictsRepositoryFile to true on the merge or rewrite that carries it — such a rewrite, too, names the file and quotes the line it corrects. An entry already flagged stays flagged unless you change it. Never suggest editing the file.",
   "- Do not invent anything an entry does not say.",
   "- How many entries there are, and how long they are, is no reason to change any of them. A distinct, current, useful entry stays exactly as it is, and a change you are unsure of is better left out.",
 ];

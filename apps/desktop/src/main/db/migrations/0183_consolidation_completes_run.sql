@@ -1,0 +1,11 @@
+-- Marks the row that completed a consolidation run (EO-913): every batch
+-- the run planned applied, in one attempt. A scope's watermark is the
+-- started_at of its newest such row, and a scheduled consolidation sends
+-- only the entries written or changed at or after it. A run that failed,
+-- stopped part-way or was cut off by a restart never gets one, so its
+-- watermark stays where it was.
+--
+-- Rows from before it are left null: no earlier run is known to have
+-- completed, so each scope's first scheduled consolidation after the
+-- upgrade takes every agent entry as new, once.
+ALTER TABLE `memory_consolidations` ADD `completes_run` integer;
