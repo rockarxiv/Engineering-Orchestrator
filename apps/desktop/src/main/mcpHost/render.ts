@@ -1741,7 +1741,6 @@ export function renderGuards(data: IpcResponse<"guards:get">): string {
     `- agent-to-agent mentions on one ticket: ${data.agentMentionDepth} before a person has to comment`,
     `- watch round trips per ticket: ${data.watchRoundTripsPerItem} sends by steps that keep checking before a person has to comment`,
     `- memory given whole: up to ${data.memoryDeliveryChars} characters, past which a small model picks what bears on the task`,
-    `- memory per scope: ${data.memoryScopeMaxEntries} entries or ${data.memoryScopeMaxChars} characters, whichever is reached first, before it is consolidated to about half`,
     `- an agent-written, unlocked skill nobody loads: stale after ${data.skillStaleAfterRuns} runs given it in a row without a load, archived by EO after ${data.skillArchiveAfterRuns}; a person's skill and a locked one are never archived automatically`,
     `- a skill's body as an agent writes it: at most ${data.skillMaxBodyChars} characters, past which detail goes in a file under references/; a write that shortens a longer body is taken, and a person's write is never held to it`,
     `- trial items while their draft's conversation is open: ${data.trialsFirst ? "dispatched ahead of live work (the order only; concurrency is unchanged)" : "dispatched by priority and age like everything else"}`,

@@ -330,12 +330,8 @@ export interface ItemRecord {
    * holds.
    */
   memoryConsolidations: (scope: MemoryScope) => Promise<MemoryConsolidationView[]>;
-  /**
-   * Undo one consolidation, on the record that made it (EO-482). `caps`
-   * are the ones this installation has, used where this database is that
-   * record; a record elsewhere settles the scope under its own.
-   */
-  restoreMemoryConsolidation: (consolidationId: string, caps: MemoryCaps) => Promise<MemoryRestoreConsolidationResult>;
+  /** Undo one consolidation, on the record that made it (EO-482). */
+  restoreMemoryConsolidation: (consolidationId: string) => Promise<MemoryRestoreConsolidationResult>;
   /**
    * Restore an earlier version of a skill (EO-714) — on whichever
    * installation holds the skill (EO-728).
@@ -498,12 +494,6 @@ export interface ModuleCreationRequest {
   atCap: boolean;
   /** Told the new item's id, where it was created in this database. */
   onCreated?: (itemId: Uuid) => void;
-}
-
-/** A scope's caps, as the settings that hold them say (EO-480). */
-export interface MemoryCaps {
-  maxEntries: number;
-  maxChars: number;
 }
 
 /**

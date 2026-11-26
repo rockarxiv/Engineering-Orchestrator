@@ -1985,12 +1985,6 @@ export function registerAllHandlers(db: Db, engine: EngineHandle | undefined, re
     // one that arrived from somebody's laptop is a file on the record
     // like any other rather than a second kind of thing.
     attachments: attachmentStorage,
-    // The caps a scope is settled under when a device undoes one of this
-    // record's consolidations (EO-482).
-    memoryCaps: () => {
-      const guards = readGuards(db);
-      return { maxEntries: guards.memoryScopeMaxEntries, maxChars: guards.memoryScopeMaxChars };
-    },
     templateHistory,
     // How an agent's unused skill of a project held here is aged (EO-720).
     skillAgeing: () => {

@@ -39,7 +39,6 @@ import type { RecordTransport } from "./syncStatus.js";
 type Answer = SideCallResult<unknown>;
 type AnyRequest = SideCallRequest<unknown>;
 
-const CAPS = { maxEntries: 6, maxChars: 40_000 };
 const BODY = "## Trigger\nWhen the e2e suite runs.\n\n## Steps\n1. `Xvfb :99 &`, then `pnpm e2e`.\n\n## Verification\nEvery spec passes.";
 
 interface Desktop {
@@ -128,7 +127,6 @@ async function proposed(): Promise<{ projectId: Uuid; evidence: MemoryEntryView[
 
   const consolidator = createMemoryConsolidator({
     db: desk.handle.db,
-    caps: () => CAPS,
     // The consolidation folds the facts; the skill proposal call after it (EO-575) proposes `run-e2e`.
     sideCall: (async (request: AnyRequest): Promise<Answer> => ({
       ok: true,
@@ -151,6 +149,8 @@ async function proposed(): Promise<{ projectId: Uuid; evidence: MemoryEntryView[
     })) as never,
   });
   consolidator.start();
+  // Asked for, since size never starts one (EO-913).
+  consolidator.requestNow(scope);
   await consolidator.idle();
   consolidator.stop();
   await syncAll();

@@ -23,7 +23,6 @@ import { answerToolCall } from "./server.js";
  */
 
 const PERSON: MemorySource = { type: "person", personId: null };
-const CAPS = { maxEntries: 200, maxChars: 40_000 };
 
 let handle: DbHandle;
 let project: MemoryScope;
@@ -215,7 +214,6 @@ describe("memory_get", () => {
       sent: [a, b],
       answer: { retire: [], merge: [{ body: "Windows CI is flaky; rerun its shards once.", from: [a.id, b.id], contradictsRepositoryFile: false }], rewrite: [] },
       note: null,
-      caps: CAPS,
       now: 2000,
     });
     if (!applied.ok) throw new Error(applied.problem);
@@ -233,7 +231,7 @@ describe("memory_get", () => {
     expect(produced).toMatchObject({ ok: true, replaced: [], producedBy: { id: started.id }, retiredBy: null });
 
     // Restored: the entry is back, and the consolidation that retired it says it was undone.
-    expect(restoreConsolidation(handle.db, started.id, { caps: CAPS, now: 3000 }).ok).toBe(true);
+    expect(restoreConsolidation(handle.db, started.id, { now: 3000 }).ok).toBe(true);
     const back = (await call("memory_get", { id: a.id })).structuredContent as Record<string, unknown>;
     expect(back).toMatchObject({ entry: { state: "active" }, retiredBy: { id: started.id, restored: true, restoredAt: 3000 } });
   });
@@ -282,9 +280,9 @@ describe("memory_consolidations_list", () => {
     const a = add(project, "One.", 1000, { type: "run", runId, itemId });
     const b = add(project, "Two.", 1100, { type: "run", runId, itemId });
     const first = startConsolidation(handle.db, { scope: project, trigger: "cap", now: 2000 });
-    const applied = applyConsolidation(handle.db, { id: first.id, sent: [a, b], answer: { retire: [], merge: [{ body: "One and two.", from: [a.id, b.id], contradictsRepositoryFile: false }], rewrite: [] }, note: null, caps: CAPS, now: 2000 });
+    const applied = applyConsolidation(handle.db, { id: first.id, sent: [a, b], answer: { retire: [], merge: [{ body: "One and two.", from: [a.id, b.id], contradictsRepositoryFile: false }], rewrite: [] }, note: null, now: 2000 });
     if (!applied.ok) throw new Error(applied.problem);
-    expect(restoreConsolidation(handle.db, first.id, { caps: CAPS, now: 2500 }).ok).toBe(true);
+    expect(restoreConsolidation(handle.db, first.id, { now: 2500 }).ok).toBe(true);
     const second = startConsolidation(handle.db, { scope: project, trigger: "schedule", now: 3000 });
 
     const result = await call("memory_consolidations_list", { scope: project });
@@ -304,7 +302,7 @@ describe("memory_consolidations_list", () => {
   it("answers every one of a scope's consolidations, not the newest 200 — paged, filtered, and an old entry's links found", async () => {
     const old = add(project, "Old.", 1, { type: "run", runId, itemId });
     const oldest = startConsolidation(handle.db, { scope: project, trigger: "cap", now: 10 });
-    const applied = applyConsolidation(handle.db, { id: oldest.id, sent: [old], answer: { retire: [], merge: [], rewrite: [{ id: old.id, body: "Old, merged.", contradictsRepositoryFile: false }] }, note: null, caps: CAPS, now: 10 });
+    const applied = applyConsolidation(handle.db, { id: oldest.id, sent: [old], answer: { retire: [], merge: [], rewrite: [{ id: old.id, body: "Old, merged.", contradictsRepositoryFile: false }] }, note: null, now: 10 });
     if (!applied.ok) throw new Error(applied.problem);
     for (let at = 1; at <= 250; at += 1) startConsolidation(handle.db, { scope: project, trigger: "schedule", now: 100 + at });
 

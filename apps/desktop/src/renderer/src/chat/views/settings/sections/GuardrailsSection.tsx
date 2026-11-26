@@ -205,18 +205,6 @@ export function GuardrailsSection() {
             </NotedField>
           </div>
 
-          {/* EO-480: each scope's caps, past which EO consolidates it to about half on its own. */}
-          <NotedField note="The most memory the project, and each workspace, holds. Whichever is reached first, EO folds that scope's agent-written entries into about half as many, without asking. Entries a person wrote are never rewritten, and a consolidation can be undone.">
-            <div className="grid max-w-[28rem] grid-cols-2 gap-3">
-              <Field label="Memory entries per scope">
-                <DraftInput type="number" min={1} {...field(value.memoryScopeMaxEntries, (raw) => ({ memoryScopeMaxEntries: atLeastOne(raw) }))} />
-              </Field>
-              <Field label="Memory characters per scope">
-                <DraftInput type="number" min={1} {...field(value.memoryScopeMaxChars, (raw) => ({ memoryScopeMaxChars: atLeastOne(raw) }))} />
-              </Field>
-            </div>
-          </NotedField>
-
           {/* EO-720: counted in runs, not days, so an idle project ages nothing. */}
           <NotedField note="An agent-written skill that is given to this many runs in a row without one of them loading it is marked stale, and then archived — delivered to nobody, and its version history says why. A load starts the count again. Skills a person wrote, and locked skills, are never archived by EO.">
             <div className="grid max-w-[28rem] grid-cols-2 gap-3">

@@ -571,7 +571,7 @@ export function AgentEditor({
         <ReadOnlyFence readOnly={locked}>
           <CardSection
             title="Memory consolidation"
-            description="Consolidation keeps each memory scope under its caps, about once a day, on this agent's model and reasoning effort. Set either here to run it on something else; a field left empty follows the agent."
+            description="Consolidation keeps each memory scope tidy, about once a day, on this agent's model and reasoning effort. Set either here to run it on something else; a field left empty follows the agent."
           >
             <ConsolidationOverride
               provider={draft.provider}

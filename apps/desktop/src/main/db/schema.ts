@@ -3416,7 +3416,10 @@ export const memoryConsolidations = sqliteTable(
     /** The side call's `SideCallFailureReason` on a failure: `budget` is waited out, the rest back off. */
     failureReason: text("failure_reason"),
     note: text("note"),
-    /** The caps in force when it settled the scope (a success, a skip or a restore); a change to them is a reason to look again. */
+    /**
+     * The caps in force when it settled the scope, on rows from before
+     * EO-913, which removed the caps: no longer written or read.
+     */
     capsEntries: integer("caps_entries"),
     capsChars: integer("caps_chars"),
     /**

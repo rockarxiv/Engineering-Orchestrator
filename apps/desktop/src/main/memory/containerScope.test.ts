@@ -110,7 +110,6 @@ describe("a container's memory", () => {
         calls.push(request);
         return answer(request);
       }) as never,
-      caps: () => ({ maxEntries: 200, maxChars: 40_000 }),
       repositoryFiles: () => [],
     });
     return { runner: consolidator, calls };
@@ -314,7 +313,7 @@ describe("a container's memory", () => {
       expect(runner.check()).toEqual([]);
 
       // Restore: the container's entries are back, what it wrote in the project is retired.
-      const restored = restoreConsolidation(handle.db, row!.id, { caps: { maxEntries: 200, maxChars: 40_000 } });
+      const restored = restoreConsolidation(handle.db, row!.id);
       expect(restored).toEqual(expect.objectContaining({ ok: true, restored: 4, retired: 2 }));
       expect(listMemories(handle.db, scope).map((entry) => entry.id).sort()).toEqual([a.id, b.id, c.id, d.id, person.id].sort());
       expect(listMemories(handle.db, project).map((entry) => entry.id)).toEqual([before.id]);
@@ -332,7 +331,7 @@ describe("a container's memory", () => {
       await vi.waitFor(() => expect(calls).toHaveLength(1));
       await runner.idle();
       const [row] = listConsolidations(handle.db, scope);
-      expect(restoreConsolidation(handle.db, row!.id, { caps: { maxEntries: 200, maxChars: 40_000 } })).toEqual(expect.objectContaining({ ok: true, restored: 1 }));
+      expect(restoreConsolidation(handle.db, row!.id)).toEqual(expect.objectContaining({ ok: true, restored: 1 }));
       expect(runner.check()).toEqual([]);
 
       // More work filed under it: not finished while it runs, and a new end when it does.
@@ -402,7 +401,6 @@ describe("a container's memory", () => {
           calls.push(request);
           return keeping(() => [])(request);
         }) as never,
-        caps: () => ({ maxEntries: 200, maxChars: 40_000 }),
         repositoryFiles: () => [],
         // Asked between two batches (and before the first): once the first
         // batch is applied, an item under the container is reopened.

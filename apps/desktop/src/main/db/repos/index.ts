@@ -214,6 +214,7 @@ export {
   closeAbandonedConsolidations,
   consolidationSlotTime,
   consolidationState,
+  entriesNewSinceConsolidated,
   failConsolidation,
   getConsolidation,
   listConsolidations,

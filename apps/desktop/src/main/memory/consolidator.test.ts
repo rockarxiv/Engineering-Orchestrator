@@ -11,7 +11,6 @@ import {
   type AgentProvider,
   type AgentSideCallOptions,
   type MemoryConsolidationAnswer,
-  type MemoryConsolidationOperations,
   type MemoryEntryView,
   type MemoryScope,
   type MessageSend,
@@ -41,12 +40,12 @@ import {
   retireMemory,
   saveSkill,
   setItemHeld,
+  similarMemoryNeighbours,
   startConsolidation,
   updateAgent,
 } from "../db/repos/index.js";
 import { buildEligibilityInput } from "../supervisor/buildTickInput.js";
-import { applyConsolidation, runsDeliveredFromScopeQuery } from "../db/repos/memoryConsolidationsRepo.js";
-import { DEFAULT_GUARD_CONFIG, writeGuards } from "../ipc/configCommands.js";
+import { applyConsolidation, entriesNewSinceConsolidated, runsDeliveredFromScopeQuery } from "../db/repos/memoryConsolidationsRepo.js";
 import { attachWorkspace, createTestItem, messagesFrom, openMigratedTestDb } from "../db/testHelpers.js";
 import { listConsolidationsCommand, restoreConsolidationCommand } from "../ipc/memoryCommands.js";
 import { recordFor } from "../record/localRecord.js";
@@ -60,7 +59,6 @@ import {
   MEMORY_CONSOLIDATE_SYSTEM,
   MEMORY_CROSS_BATCH_MERGE_SYSTEM,
   MEMORY_PROPOSE_SKILLS_SYSTEM,
-  type MemoryCaps,
 } from "./consolidation.js";
 import { CONSOLIDATION_BATCH_MAX_CHARS, CONSOLIDATION_BATCH_MAX_ENTRIES, firstLine, MEMORY_MERGE_CANDIDATES_SYSTEM } from "./consolidationBatches.js";
 import { createMemoryConsolidator, readRepositoryFiles, systemAgentSetup, type MemoryConsolidator, type MemoryConsolidatorOptions } from "./consolidator.js";
@@ -77,7 +75,7 @@ type Answer = SideCallResult<MemoryConsolidationAnswer>;
 type ConsolidateRequest = SideCallRequest<MemoryConsolidationAnswer>;
 
 /** An answer that changes nothing (EO-573). */
-const NOTHING: MemoryConsolidationOperations = { retire: [], merge: [], rewrite: [] };
+const NOTHING: MemoryConsolidationAnswer = { retire: [], merge: [], rewrite: [] };
 /** An answer that folds every one of `entries` into one entry saying `body`. */
 const mergeAll = (entries: readonly MemoryEntryView[], body: string): MemoryConsolidationAnswer => ({
   ...NOTHING,
@@ -139,7 +137,6 @@ describe("automatic memory consolidation", () => {
   function consolidatorWith(
     sideCall: (request: ConsolidateRequest) => Promise<Answer>,
     options: {
-      caps?: MemoryCaps;
       now?: () => number;
       canStart?: () => boolean;
       pipelineBusy?: () => boolean;
@@ -155,7 +152,6 @@ describe("automatic memory consolidation", () => {
       db: handle.db,
       sideCall: ((request: SideCallRequest<unknown>) =>
         request.system === MEMORY_PROPOSE_SKILLS_SYSTEM ? proposeSkills(request) : sideCall(request as ConsolidateRequest)) as never,
-      caps: () => options.caps ?? { maxEntries: 10, maxChars: 40_000 },
       ...(options.now ? { now: options.now } : {}),
       ...(options.canStart ? { canStart: options.canStart } : {}),
       ...(options.pipelineBusy ? { pipelineBusy: options.pipelineBusy } : {}),
@@ -167,22 +163,61 @@ describe("automatic memory consolidation", () => {
     return consolidator;
   }
 
+  /**
+   * Starts a consolidator and asks for every scope holding an agent's
+   * entry to be consolidated now (`manual`, EO-589): size never starts
+   * one (EO-913), and a person's asking gives it the whole scope, as the
+   * cap once did. A scope with nothing an agent wrote is refused, and
+   * nothing more.
+   */
+  function askNow(runner: MemoryConsolidator): MemoryConsolidator {
+    runner.start();
+    for (const scope of [workspace, project]) runner.requestNow(scope);
+    return runner;
+  }
+
+  /**
+   * Makes `entries`' scope due on the schedule (EO-480): five runs given
+   * them, the entries already more than a day old.
+   */
+  function givenToFiveRuns(entries: readonly MemoryEntryView[]): void {
+    for (let index = 0; index < 5; index += 1) {
+      const run = createRun(handle.db, { itemId, agentId: listAgents(handle.db)[0]!.id, action: "implement", status: "succeeded" });
+      appendRunEvent(handle.db, run.id, MEMORY_DELIVERED_EVENT, { type: MEMORY_DELIVERED_EVENT, entryIds: entries.map((entry) => entry.id), candidateCount: entries.length, mode: "all", selectionRan: false, reason: null });
+    }
+  }
+
   /** Every row of a scope, active and retired, as a comparable snapshot. */
   function everything(scope: MemoryScope) {
     return listMemories(handle.db, scope, { includeRetired: true });
   }
 
   describe("what queues one", () => {
-    it("is a scope reaching either cap, and it queues exactly one for that scope", () => {
-      const at = Date.now() - HOUR;
-      for (let index = 0; index < 9; index += 1) byAgent(workspace, `Note ${index}`, at + index);
-      byAgent(project, "A project note", at);
-      const runner = consolidatorWith(vi.fn());
+    it("is never a scope reaching the old caps of 200 entries or 40,000 characters, with no entry new since its last consolidation (EO-913)", () => {
+      const at = Date.now() - 10 * DAY;
+      // 250 entries of 300 characters: over both of the caps that once queued one.
+      const notes = Array.from({ length: 250 }, (_, index) => byAgent(project, `Distinct fact ${index}: ${"q".repeat(280)}`, at + index));
+      for (let index = 0; index < 20; index += 1) byPerson(project, `Person ${index}`, at + index);
+      const done = startConsolidation(handle.db, { scope: project, trigger: "schedule", now: Date.now() - 3 * DAY });
+      applyConsolidation(handle.db, { id: done.id, sent: [], answer: NOTHING, note: null, now: Date.now() - 3 * DAY });
+      // Many runs given it since, and days past: due on everything but something new.
+      for (let index = 0; index < 8; index += 1) {
+        const run = createRun(handle.db, { itemId, agentId: listAgents(handle.db)[0]!.id, action: "implement", status: "succeeded" });
+        appendRunEvent(handle.db, run.id, MEMORY_DELIVERED_EVENT, { type: MEMORY_DELIVERED_EVENT, entryIds: [notes[0]!.id], candidateCount: 1, mode: "all", selectionRan: false, reason: null });
+      }
+      const sideCall = vi.fn();
+      const runner = consolidatorWith(sideCall);
 
       expect(runner.check()).toEqual([]);
-      byAgent(workspace, "Note 9", at + 10);
-      expect(runner.check()).toEqual([{ scope: workspace, trigger: "cap" }]);
-      expect(runner.check()).toEqual([{ scope: workspace, trigger: "cap" }]);
+      runner.start();
+      expect(runner.pending(project)).toBeNull();
+      expect(sideCall).not.toHaveBeenCalled();
+      expect(listConsolidations(handle.db, project)).toHaveLength(1);
+      runner.stop();
+
+      // One new note is all it lacked: then it is due on the schedule, and on nothing else.
+      byAgent(project, "One more fact.", Date.now());
+      expect(consolidatorWith(sideCall).check()).toEqual([{ scope: project, trigger: "schedule" }]);
     });
 
     it("is never a scope whose project or workspace is gone", () => {
@@ -190,12 +225,6 @@ describe("automatic memory consolidation", () => {
       handle.db.run(sql`update memories set scope_id = 'gone' where scope_kind = 'workspace'`);
       const runner = consolidatorWith(vi.fn());
       expect(runner.check()).toEqual([]);
-    });
-
-    it("is the character cap as well as the entry cap", () => {
-      byAgent(project, "x".repeat(3_000), Date.now() - HOUR);
-      const runner = consolidatorWith(vi.fn(), { caps: { maxEntries: 200, maxChars: 3_000 } });
-      expect(runner.check()).toEqual([{ scope: project, trigger: "cap" }]);
     });
 
     it("is a day and five runs given the scope's memory since it was last consolidated — not four, and not within the day (fake clock)", () => {
@@ -235,8 +264,10 @@ describe("automatic memory consolidation", () => {
       // Five runs made before the last consolidation...
       const early = Array.from({ length: 5 }, () => createRun(handle.db, { itemId, agentId: listAgents(handle.db)[0]!.id, action: "implement", status: "awaiting_input" }));
       vi.setSystemTime(start + HOUR);
-      const done = startConsolidation(handle.db, { scope: workspace, trigger: "cap", now: start + HOUR });
-      applyConsolidation(handle.db, { id: done.id, sent: [], answer: NOTHING, note: null, caps: { maxEntries: 10, maxChars: 40_000 }, now: start + HOUR });
+      const done = startConsolidation(handle.db, { scope: workspace, trigger: "schedule", now: start + HOUR });
+      applyConsolidation(handle.db, { id: done.id, sent: [], answer: NOTHING, note: null, now: start + HOUR });
+      // Something new since it, which is what a scheduled one is given (EO-913).
+      byAgent(workspace, "Payments settle at noon.", start + 2 * HOUR);
       // ...each given the scope's memory after it (a reply to a parked run, say).
       for (const run of early) {
         vi.setSystemTime(Date.now() + HOUR);
@@ -254,48 +285,13 @@ describe("automatic memory consolidation", () => {
       expect(plan).toContain("idx_run_events_memory_delivered");
     });
 
-    it("is people's entries taking a consolidated scope back to the cap, with nothing an agent wrote since", async () => {
-      const agents = Array.from({ length: 10 }, (_, index) => byAgent(workspace, `Note ${index}`, Date.now() - DAY + index));
-      const sideCall = vi.fn(
-        async (): Promise<Answer> => ({ ok: true, value: { ...NOTHING, retire: agents.slice(5).map((entry) => ({ id: entry.id, reason: "Stale." })) } }),
-      );
-      const runner = consolidatorWith(sideCall);
-      runner.start();
-      await runner.idle();
-      expect(listMemories(handle.db, workspace)).toHaveLength(5);
-      expect(runner.check()).toEqual([]);
-
-      for (let index = 0; index < 5; index += 1) byPerson(workspace, `Person ${index}`, Date.now() + 1_000);
-      expect(runner.check()).toEqual([{ scope: workspace, trigger: "cap" }]);
-    });
-
-    it("is a guardrail lowered under a scope nobody has written to since it was settled", async () => {
-      const agents = Array.from({ length: 10 }, (_, index) => byAgent(workspace, `Note ${index}`, Date.now() - DAY + index));
-      let caps = { maxEntries: 10, maxChars: 40_000 };
-      const sideCall = vi.fn(
-        async (): Promise<Answer> => ({ ok: true, value: { ...NOTHING, retire: agents.slice(5).map((entry) => ({ id: entry.id, reason: "Stale." })) } }),
-      );
-      consolidator = createMemoryConsolidator({
-        db: handle.db,
-        sideCall: ((request: SideCallRequest<unknown>) =>
-          request.system === MEMORY_PROPOSE_SKILLS_SYSTEM ? Promise.resolve({ ok: true, value: { skills: [] } }) : sideCall()) as never,
-        caps: () => caps,
-      });
-      consolidator.start();
-      await consolidator.idle();
-      expect(consolidator.check()).toEqual([]);
-
-      caps = { maxEntries: 5, maxChars: 40_000 };
-      expect(consolidator.check()).toEqual([{ scope: workspace, trigger: "cap" }]);
-    });
-
     it("is not the schedule for a scope consolidated within the day, however many runs it was given since", () => {
       vi.useFakeTimers({ toFake: ["Date"] });
       const start = Date.parse("2026-10-01T09:00:00Z");
       vi.setSystemTime(start);
       const note = byAgent(workspace, "The ledger is in UTC.", start - 10 * DAY);
       const done = startConsolidation(handle.db, { scope: workspace, trigger: "schedule", now: start - 2 * HOUR });
-      applyConsolidation(handle.db, { id: done.id, sent: [], answer: NOTHING, note: null, caps: { maxEntries: 10, maxChars: 40_000 }, now: start - HOUR });
+      applyConsolidation(handle.db, { id: done.id, sent: [], answer: NOTHING, note: null, now: start - HOUR });
       for (let index = 0; index < 8; index += 1) {
         const run = createRun(handle.db, { itemId, agentId: listAgents(handle.db)[0]!.id, action: "implement", status: "succeeded" });
         appendRunEvent(handle.db, run.id, MEMORY_DELIVERED_EVENT, { type: MEMORY_DELIVERED_EVENT, entryIds: [note.id], candidateCount: 1, mode: "all", selectionRan: false, reason: null });
@@ -313,7 +309,7 @@ describe("automatic memory consolidation", () => {
       byPerson(workspace, "And this.", at);
       const sideCall = vi.fn(async (_request: ConsolidateRequest): Promise<Answer> => ({ ok: true, value: mergeAll(agents, "Merged.") }));
 
-      consolidatorWith(sideCall).start();
+      askNow(consolidatorWith(sideCall));
       await consolidator!.idle();
 
       expect(sideCall).toHaveBeenCalledTimes(1);
@@ -326,15 +322,14 @@ describe("automatic memory consolidation", () => {
       expect(request.input).not.toContain("And this.");
       expect(request.input).toContain("## The workspace's CLAUDE.md");
       expect(request.input).toContain("Run the tests with `pnpm test:api`.");
-      // The target is about half the cap, less the two entries people wrote.
-      expect(request.input).toContain("Target: about 3 entries");
+      // No size to reach (EO-913).
+      expect(request.input).not.toMatch(/target/i);
     });
 
     it("retires, merges and rewrites under one consolidation id, leaves what it does not name, keeps the newest replaced entry's age, and restore puts the earlier set back", async () => {
       const at = Date.now() - 3 * DAY;
       const agents = Array.from({ length: 18 }, (_, index) => byAgent(workspace, `Agent note ${index}: ${"z".repeat(600)}`, at + index * HOUR));
       const people = [byPerson(workspace, "A person wrote this.", at), byPerson(workspace, "And this.", at)];
-      const caps = { maxEntries: 20, maxChars: 40_000 };
       const before = listMemories(handle.db, workspace).map((entry) => [entry.id, entry.body, entry.createdAt]);
       const sideCall = vi.fn(
         async (): Promise<Answer> => ({
@@ -343,16 +338,16 @@ describe("automatic memory consolidation", () => {
             // agents[0] is in no operation: it stays as it was.
             retire: agents.slice(4).map((entry) => ({ id: entry.id, reason: "Stale: the flow it describes is gone." })),
             merge: [{ body: "Tests need Postgres 16 (since 2026-10-15).", from: [agents[2]!.id, agents[1]!.id], contradictsRepositoryFile: false }],
-            rewrite: [{ id: agents[3]!.id, body: "The API tests run with `make test` now; the CLAUDE.md is out of date.", contradictsRepositoryFile: true }],
+            rewrite: [{ id: agents[3]!.id, body: "The API tests run with `make test` now; the CLAUDE.md is out of date.", contradictsRepositoryFile: true, reason: "repository_file" }],
           },
         }),
       );
 
-      consolidatorWith(sideCall, { caps }).start();
+      askNow(consolidatorWith(sideCall));
       await consolidator!.idle();
 
       const [consolidation] = listConsolidations(handle.db, workspace);
-      expect(consolidation).toMatchObject({ status: "succeeded", trigger: "cap" });
+      expect(consolidation).toMatchObject({ status: "succeeded", trigger: "manual" });
       const all = everything(workspace);
       const active = all.filter((entry) => entry.retiredAt === null);
       const retired = all.filter((entry) => entry.retiredAt !== null);
@@ -371,10 +366,9 @@ describe("automatic memory consolidation", () => {
 
       expect(active.find((entry) => entry.id === agents[0]!.id)).toMatchObject({ consolidationId: null, retiredAt: null, body: agents[0]!.body });
       for (const person of people) expect(active.find((entry) => entry.id === person.id)).toMatchObject({ retiredAt: null, body: person.body });
-      expect(active.length).toBeLessThanOrEqual(caps.maxEntries / 2);
 
       // Restore puts back the set from before it, and retires what it wrote.
-      const restored = restoreConsolidation(handle.db, consolidation!.id, { caps });
+      const restored = restoreConsolidation(handle.db, consolidation!.id);
       expect(restored).toMatchObject({ ok: true, restored: 17, retired: 2 });
       expect(listMemories(handle.db, workspace).map((entry) => [entry.id, entry.body, entry.createdAt])).toEqual(before);
     });
@@ -384,10 +378,10 @@ describe("automatic memory consolidation", () => {
       const sideCall = vi.fn(
         async (): Promise<Answer> => ({
           ok: true,
-          value: { ...NOTHING, retire: [{ id: agents[1]!.id, reason: "Stale." }], rewrite: [{ id: agents[0]!.id, body: agents[0]!.body, contradictsRepositoryFile: false }] },
+          value: { ...NOTHING, retire: [{ id: agents[1]!.id, reason: "Stale." }], rewrite: [{ id: agents[0]!.id, body: agents[0]!.body, contradictsRepositoryFile: false, reason: "relative_date" }] },
         }),
       );
-      consolidatorWith(sideCall).start();
+      askNow(consolidatorWith(sideCall));
       await consolidator!.idle();
 
       const [consolidation] = listConsolidations(handle.db, workspace);
@@ -404,12 +398,12 @@ describe("automatic memory consolidation", () => {
           value: {
             retire: [],
             merge: [{ body: "The ledger is in UTC.", from: agents.slice(0, 9).map((entry) => entry.id), contradictsRepositoryFile: false }],
-            rewrite: [{ id: agents[9]!.id, body: "Run the API tests with `make test`; `pnpm test:api` was removed on 2026-10-12.", contradictsRepositoryFile: true }],
+            rewrite: [{ id: agents[9]!.id, body: "Run the API tests with `make test`; `pnpm test:api` was removed on 2026-10-12.", contradictsRepositoryFile: true, reason: "repository_file" }],
           },
         }),
       );
 
-      consolidatorWith(sideCall).start();
+      askNow(consolidatorWith(sideCall));
       await consolidator!.idle();
 
       const active = listMemories(handle.db, workspace);
@@ -455,44 +449,18 @@ describe("automatic memory consolidation", () => {
           value: {
             retire: [],
             merge: [{ body: "The ledger is in UTC.", from: agents.slice(0, 9).map((entry) => entry.id), contradictsRepositoryFile: false }],
-            rewrite: [{ id: agents[9]!.id, body: "Run the API tests with `make test`; `pnpm test:api` was removed on 2026-10-12.", contradictsRepositoryFile: true }],
+            rewrite: [{ id: agents[9]!.id, body: "Run the API tests with `make test`; `pnpm test:api` was removed on 2026-10-12.", contradictsRepositoryFile: true, reason: "repository_file" }],
           },
         }),
       );
 
-      consolidatorWith(sideCall).start();
+      askNow(consolidatorWith(sideCall));
       await consolidator!.idle();
 
       expect(sideCall).toHaveBeenCalledTimes(1);
       expect(sideCall.mock.calls[0]![0].input).toContain(`## The workspace "api"'s CLAUDE.md`);
       expect(sideCall.mock.calls[0]![0].input).toContain("Run the tests with `pnpm test:api`.");
       expect(listMemories(handle.db, project).find((entry) => entry.body.startsWith("Run the API tests"))).toMatchObject({ contradictsRepositoryFile: true });
-    });
-
-    it("records, and leaves alone, people's entries that exceed a cap on their own", async () => {
-      const at = Date.now() - DAY;
-      for (let index = 0; index < 12; index += 1) byPerson(workspace, `Person ${index}`, at + index);
-      const runner = consolidatorWith(vi.fn());
-
-      expect(runner.check()).toEqual([]);
-      const [skipped] = listConsolidations(handle.db, workspace);
-      expect(skipped).toMatchObject({ status: "skipped", retiredIds: [], writtenIds: [] });
-      expect(skipped!.note).toMatch(/People's entries alone come to 12 entries.*left as written/);
-      // Once.
-      runner.check();
-      expect(listConsolidations(handle.db, workspace)).toHaveLength(1);
-      expect(listMemories(handle.db, workspace)).toHaveLength(12);
-
-      // Agents' notes past their share (a tenth of the cap, here one) are
-      // consolidated — the agents' entries only — saying so again.
-      const notes = [byAgent(workspace, "An agent's note.", Date.now() + 1_000), byAgent(workspace, "Another.", Date.now() + 1_000)];
-      const sideCall = vi.fn(async (): Promise<Answer> => ({ ok: true, value: mergeAll(notes, "An agent's note, tidied.") }));
-      consolidatorWith(sideCall).start();
-      await consolidator!.idle();
-      expect(sideCall.mock.calls).toHaveLength(1);
-      expect(listConsolidations(handle.db, workspace)[0]).toMatchObject({ status: "succeeded" });
-      expect(listConsolidations(handle.db, workspace)[0]!.note).toMatch(/left as written/);
-      expect(listMemories(handle.db, workspace).filter((entry) => entry.source.type === "person")).toHaveLength(12);
     });
   });
 
@@ -518,12 +486,11 @@ describe("automatic memory consolidation", () => {
       });
     }
 
-    it("applies an answer that makes the scope smaller although it stays above half the cap", async () => {
+    it("applies an answer however little it changes: one retirement of ten", async () => {
       const notes = fill();
-      // Ten entries under a cap of ten: half is five, and this leaves nine.
       const caller = answeringWith({ ...NOTHING, retire: [{ id: notes[0]!.id, reason: "Stale." }] });
 
-      consolidatorWith(caller.sideCall).start();
+      askNow(consolidatorWith(caller.sideCall));
       await consolidator!.idle();
 
       expect(listConsolidations(handle.db, workspace)[0]).toMatchObject({ status: "succeeded", retiredIds: [notes[0]!.id], writtenIds: [] });
@@ -531,18 +498,30 @@ describe("automatic memory consolidation", () => {
       expect(listSideCalls(handle.db)).toMatchObject([{ purpose: "memory_consolidate", outcome: "succeeded" }]);
     });
 
-    it("refuses, with reason schema, an answer that would grow the scope, and changes nothing", async () => {
+    it("refuses, with reason schema, a rewrite that gives no reason — one that only shortens an entry — and changes nothing (EO-913)", async () => {
       const notes = fill();
       const before = everything(workspace);
-      const caller = answeringWith({ ...NOTHING, rewrite: [{ id: notes[0]!.id, body: `${notes[0]!.body} And a great deal more besides.`, contradictsRepositoryFile: false }] });
+      const caller = answeringWith({ ...NOTHING, retire: [{ id: notes[1]!.id, reason: "Stale." }], rewrite: [{ id: notes[0]!.id, body: "Note.", contradictsRepositoryFile: false }] });
 
-      consolidatorWith(caller.sideCall).start();
+      askNow(consolidatorWith(caller.sideCall));
       await consolidator!.idle();
 
       expect(everything(workspace)).toEqual(before);
       expect(listConsolidations(handle.db, workspace)[0]).toMatchObject({ status: "failed", retiredIds: [], writtenIds: [] });
-      expect(listConsolidations(handle.db, workspace)[0]!.note).toMatch(/would grow the scope/);
+      expect(listConsolidations(handle.db, workspace)[0]!.note).toContain("rewrite.0.reason");
       expect(listSideCalls(handle.db)).toMatchObject([{ purpose: "memory_consolidate", outcome: "failed", reason: "schema" }]);
+    });
+
+    it("applies a rewrite that gives its reason though it makes the entry longer, as an absolute date does (EO-913)", async () => {
+      const notes = fill();
+      const longer = `${notes[0]!.body}, written on 2026-11-20 rather than "yesterday".`;
+      const caller = answeringWith({ ...NOTHING, rewrite: [{ id: notes[0]!.id, body: longer, contradictsRepositoryFile: false, reason: "relative_date" }] });
+
+      askNow(consolidatorWith(caller.sideCall));
+      await consolidator!.idle();
+
+      expect(listConsolidations(handle.db, workspace)[0]).toMatchObject({ status: "succeeded", retiredIds: [notes[0]!.id] });
+      expect(listMemories(handle.db, workspace).map((entry) => entry.body)).toContain(longer);
     });
 
     for (const operation of ["merge", "rewrite"] as const) {
@@ -554,10 +533,10 @@ describe("automatic memory consolidation", () => {
         const caller = answeringWith(
           operation === "merge"
             ? { ...NOTHING, retire, merge: [{ from: [notes[0]!.id, notes[1]!.id], body, contradictsRepositoryFile: false }] }
-            : { ...NOTHING, retire, rewrite: [{ id: notes[0]!.id, body, contradictsRepositoryFile: false }] },
+            : { ...NOTHING, retire, rewrite: [{ id: notes[0]!.id, body, contradictsRepositoryFile: false, reason: "newer_entry" }] },
         );
 
-        consolidatorWith(caller.sideCall).start();
+        askNow(consolidatorWith(caller.sideCall));
         await consolidator!.idle();
 
         expect(everything(workspace)).toEqual(before);
@@ -573,12 +552,12 @@ describe("automatic memory consolidation", () => {
       const caller = answeringWith(NOTHING);
       const runner = consolidatorWith(caller.sideCall);
 
-      runner.start();
+      askNow(runner);
       await runner.idle();
 
       expect(everything(workspace)).toEqual(before);
       expect(listConsolidations(handle.db, workspace)).toMatchObject([{ status: "succeeded", retiredIds: [], writtenIds: [] }]);
-      // Settled as it is: not asked again until the scope changes.
+      // Not asked again: nothing is new since it, and the day has not passed.
       expect(runner.check()).toEqual([]);
     });
   });
@@ -611,7 +590,7 @@ describe("automatic memory consolidation", () => {
       setSystemAgent({ provider: "claude", model: "claude-opus-5-5", config: { effort: "high" } });
       fill(workspace);
       const first = asked();
-      consolidatorWith(first.sideCall).start();
+      askNow(consolidatorWith(first.sideCall));
       await consolidator!.idle();
       consolidator!.stop();
 
@@ -622,7 +601,7 @@ describe("automatic memory consolidation", () => {
       setSystemAgent({ provider: "codex", model: "gpt-6-sol", config: { effort: undefined, reasoningEffort: "xhigh" } });
       fill(project);
       const second = asked();
-      consolidatorWith(second.sideCall).start();
+      askNow(consolidatorWith(second.sideCall));
       await consolidator!.idle();
 
       expect(second.requests.map((request) => [request.backend, request.model])).toContainEqual(["codex", { model: "gpt-6-sol", reasoningEffort: "xhigh" }]);
@@ -652,7 +631,7 @@ describe("automatic memory consolidation", () => {
       setSystemAgent({ provider: "claude", model: "claude-opus-5-5", config: { effort: "high" } });
       fill(workspace);
       const first = answering();
-      consolidatorWith(first.sideCall, { proposeSkills: first.proposeSkills }).start();
+      askNow(consolidatorWith(first.sideCall, { proposeSkills: first.proposeSkills }));
       await consolidator!.idle();
       consolidator!.stop();
 
@@ -664,7 +643,7 @@ describe("automatic memory consolidation", () => {
       setSystemAgent({ provider: "codex", model: "gpt-6-sol", config: { effort: undefined, reasoningEffort: "xhigh", consolidationModel: "gpt-6.1-sol" } });
       fill(project);
       const second = answering();
-      consolidatorWith(second.sideCall, { proposeSkills: second.proposeSkills }).start();
+      askNow(consolidatorWith(second.sideCall, { proposeSkills: second.proposeSkills }));
       await consolidator!.idle();
 
       const secondProposal = second.requests.filter(proposing);
@@ -683,7 +662,7 @@ describe("automatic memory consolidation", () => {
           : [{ type: "result", data: { ...NOTHING, retire: [{ id: notes[0]!.id, reason: "Stale." }] } }],
       );
 
-      consolidatorWith(caller.sideCall, { proposeSkills: (request) => caller.sideCall(request) }).start();
+      askNow(consolidatorWith(caller.sideCall, { proposeSkills: (request) => caller.sideCall(request) }));
       await consolidator!.idle();
 
       const proposal = seen.find((options) => options.system === MEMORY_PROPOSE_SKILLS_SYSTEM);
@@ -716,7 +695,7 @@ describe("automatic memory consolidation", () => {
       expect(systemAgentSetup(handle.db)).toBeNull();
       fill(workspace);
       const { sideCall } = asked();
-      consolidatorWith(sideCall).start();
+      askNow(consolidatorWith(sideCall));
       await consolidator!.idle();
 
       expect(sideCall).not.toHaveBeenCalled();
@@ -752,7 +731,7 @@ describe("automatic memory consolidation", () => {
         { type: "result", data: NOTHING },
       ]);
 
-      consolidatorWith(caller.sideCall).start();
+      askNow(consolidatorWith(caller.sideCall));
       await consolidator!.idle();
 
       expect(seen[0]).toMatchObject({ model: "claude-sonnet-5-5", reasoningEffort: "high" });
@@ -762,9 +741,9 @@ describe("automatic memory consolidation", () => {
 
     it("fails on a model the backend cannot run with a sentence naming it, and backs off as any failure does", async () => {
       setSystemAgent({ provider: "claude", model: "claude-opus-5-5", config: { consolidationModel: "claude-opus-9" } });
-      fill(workspace);
+      givenToFiveRuns(fill(workspace));
       const before = everything(workspace);
-      let clock = Date.now();
+      let clock = Date.now() + DAY;
       const { caller } = realCaller(() => [
         { type: "error", message: "There's an issue with the selected model (claude-opus-9). It may not exist or you may not have access to it.", retryable: false },
       ]);
@@ -778,7 +757,7 @@ describe("automatic memory consolidation", () => {
       expect(listSideCalls(handle.db)).toMatchObject([{ purpose: "memory_consolidate", model: "claude-opus-9", outcome: "failed", reason: "error" }]);
       expect(runner.check()).toEqual([]);
       clock += CONSOLIDATION_BACKOFF_MS[0];
-      expect(runner.check()).toEqual([{ scope: workspace, trigger: "cap" }]);
+      expect(runner.check()).toEqual([{ scope: workspace, trigger: "schedule" }]);
     });
   });
 
@@ -788,9 +767,9 @@ describe("automatic memory consolidation", () => {
     }
 
     it("changes no entry when the side call fails, and is asked again only after its backoff (scripted side call)", async () => {
-      fill();
+      givenToFiveRuns(fill());
       const before = everything(workspace);
-      let clock = Date.now();
+      let clock = Date.now() + DAY;
       const sideCall = vi.fn(async (): Promise<Answer> => ({ ok: false, reason: "error", message: "The backend fell over." }));
       const runner = consolidatorWith(sideCall, { now: () => clock });
 
@@ -803,7 +782,7 @@ describe("automatic memory consolidation", () => {
 
       expect(runner.check()).toEqual([]);
       clock += CONSOLIDATION_BACKOFF_MS[0];
-      expect(runner.check()).toEqual([{ scope: workspace, trigger: "cap" }]);
+      expect(runner.check()).toEqual([{ scope: workspace, trigger: "schedule" }]);
     });
 
     it("changes no entry when the answer fails its schema, through the real side caller", async () => {
@@ -816,7 +795,7 @@ describe("automatic memory consolidation", () => {
           },
         }) as unknown as AgentProvider;
       // A retirement of an entry it was given, and a rewrite of one it was never given: neither is applied.
-      const tooMany = { ...NOTHING, retire: [{ id: notes[0]!.id, reason: "Stale." }], rewrite: [{ id: "not-an-entry", body: "Invented.", contradictsRepositoryFile: false }] };
+      const tooMany = { ...NOTHING, retire: [{ id: notes[0]!.id, reason: "Stale." }], rewrite: [{ id: "not-an-entry", body: "Invented.", contradictsRepositoryFile: false, reason: "newer_entry" }] };
       const caller = createSideCaller({
         db: handle.db,
         provider: () => answering(tooMany),
@@ -826,7 +805,7 @@ describe("automatic memory consolidation", () => {
         workDirectory: () => ({ path: "/tmp", remove: () => {} }),
       });
 
-      consolidatorWith(caller.sideCall).start();
+      askNow(consolidatorWith(caller.sideCall));
       await consolidator!.idle();
 
       expect(everything(workspace)).toEqual(before);
@@ -838,7 +817,7 @@ describe("automatic memory consolidation", () => {
       const notes = fill();
       let release: (answer: Answer) => void = () => {};
       const sideCall = vi.fn(() => new Promise<Answer>((resolve) => (release = resolve)));
-      consolidatorWith(sideCall).start();
+      askNow(consolidatorWith(sideCall));
       await vi.waitFor(() => expect(sideCall).toHaveBeenCalledTimes(1));
 
       retireMemory(handle.db, notes[0]!.id);
@@ -852,8 +831,8 @@ describe("automatic memory consolidation", () => {
 
     it("closes a consolidation a stopped process left running, so the scope is not stuck behind it", () => {
       fill();
-      const left = startConsolidation(handle.db, { scope: workspace, trigger: "cap", now: Date.now() - HOUR });
-      consolidatorWith(vi.fn(async (): Promise<Answer> => ({ ok: false, reason: "timeout", message: "slow" }))).start();
+      const left = startConsolidation(handle.db, { scope: workspace, trigger: "schedule", now: Date.now() - HOUR });
+      askNow(consolidatorWith(vi.fn(async (): Promise<Answer> => ({ ok: false, reason: "timeout", message: "slow" }))));
       expect(getConsolidation(handle.db, left.id)).toMatchObject({ status: "failed" });
     });
   });
@@ -864,7 +843,7 @@ describe("automatic memory consolidation", () => {
       return { ok: true, value: { ...NOTHING, merge: [{ body: `Folded ${ids.length}.`, from: ids, contradictsRepositoryFile: false }] } };
     };
 
-    it("leaves notes added while the model answers as they are, and takes the scope back to a cap up again at once", async () => {
+    it("leaves notes added while the model answers as they are, and new to the next scheduled one (EO-913)", async () => {
       const originals = Array.from({ length: 10 }, (_, index) => byAgent(workspace, `Original ${index}`, Date.now() - DAY + index));
       const requests: ConsolidateRequest[] = [];
       let release: () => void = () => {};
@@ -873,21 +852,20 @@ describe("automatic memory consolidation", () => {
         if (requests.length === 1) await new Promise<void>((resolve) => (release = resolve));
         return keepFive(request);
       });
-      consolidatorWith(sideCall).start();
+      askNow(consolidatorWith(sideCall));
       await vi.waitFor(() => expect(requests).toHaveLength(1));
 
       const added = Array.from({ length: 10 }, (_, index) => byAgent(workspace, `Added ${index}`, Date.now()));
       release();
       await consolidator!.idle();
 
-      // The first folded only what it was given; the additions were left,
-      // counted as a change, and folded by a second straight after.
-      expect(sideCall).toHaveBeenCalledTimes(2);
+      // It folded only what it was given; the additions were left as they
+      // are, and are what the next scheduled one is given — not what it folded.
+      expect(sideCall).toHaveBeenCalledTimes(1);
       for (const entry of originals) expect(requests[0]!.input).toContain(entry.id);
       for (const entry of added) expect(requests[0]!.input).not.toContain(entry.id);
-      for (const entry of added) expect(requests[1]!.input).toContain(entry.id);
-      expect(listMemories(handle.db, workspace).map((entry) => entry.body)).toEqual(["Folded 11."]);
-      expect(listConsolidations(handle.db, workspace).map((row) => row.status)).toEqual(["succeeded", "succeeded"]);
+      expect(listMemories(handle.db, workspace).map((entry) => entry.body).sort()).toEqual(["Folded 10.", ...added.map((entry) => entry.body)].sort());
+      expect(entriesNewSinceConsolidated(handle.db, workspace).sort()).toEqual(added.map((entry) => entry.id).sort());
     });
 
     it("does the same for notes added while it waits for its slot", async () => {
@@ -910,18 +888,133 @@ describe("automatic memory consolidation", () => {
         slots,
         workDirectory: () => ({ path: "/tmp", remove: () => {} }),
       });
-      consolidatorWith(caller.sideCall).start();
+      askNow(consolidatorWith(caller.sideCall));
       await vi.waitFor(() => expect(slots.waiting()).toBe(1));
 
       const added = Array.from({ length: 10 }, (_, index) => byAgent(workspace, `Added ${index}`, Date.now()));
       busy = 0;
       await consolidator!.idle();
 
-      expect(inputs).toHaveLength(2);
+      expect(inputs).toHaveLength(1);
       for (const entry of added) expect(inputs[0]).not.toContain(entry.id);
-      for (const entry of added) expect(inputs[1]).toContain(entry.id);
-      const active = listMemories(handle.db, workspace);
-      expect(active.length).toBeLessThanOrEqual(5);
+      expect(entriesNewSinceConsolidated(handle.db, workspace).sort()).toEqual(added.map((entry) => entry.id).sort());
+    });
+  });
+
+  describe("what a scheduled one is given (EO-913)", () => {
+    type AnyRequest = SideCallRequest<unknown>;
+    type AnyAnswer = SideCallResult<unknown>;
+    const idsIn = (input: string) => [...input.matchAll(/^### (\S+) /gm)].map((match) => match[1]!);
+    const ids = (entries: readonly MemoryEntryView[]) => entries.map((entry) => entry.id);
+    const TOPICS = [
+      "The payments ledger settles invoices in UTC at noon",
+      "Playwright suites need a display server under xvfb",
+      "Drizzle migrations are numbered and never edited after release",
+      "Codex sessions keep their sign-in inside the keyring",
+      "Renderer timestamps cross the IPC contract as epoch milliseconds",
+      "The Windows runner is a virtual machine on a Linux host",
+    ];
+
+    /** 60 old entries, ten on each topic, settled by a consolidation three days ago. */
+    function settledScope(): MemoryEntryView[] {
+      const at = Date.now() - 10 * DAY;
+      const old = Array.from({ length: 60 }, (_, index) => byAgent(project, `${TOPICS[index % TOPICS.length]!} (old note ${index}, detail ${"abcdefghij"[index % 10]!.repeat(3)}).`, at + index * HOUR));
+      const done = startConsolidation(handle.db, { scope: project, trigger: "schedule", now: Date.now() - 3 * DAY });
+      applyConsolidation(handle.db, { id: done.id, sent: [], answer: NOTHING, note: null, now: Date.now() - 3 * DAY });
+      return old;
+    }
+
+    it("is only the entries new since the last consolidation, each with up to 8 of its nearest neighbours by the full-text index, then skill proposals as ever", async () => {
+      const old = settledScope();
+      const fresh = [
+        byAgent(project, "The payments ledger settles invoices in UTC at noon, and refunds at midnight.", Date.now()),
+        byAgent(project, "Codex sessions keep their sign-in inside the keyring, unlocked at login.", Date.now() + 1),
+      ];
+      byPerson(project, "The payments ledger is a person's concern too.", Date.now());
+      givenToFiveRuns(fresh);
+      const requests: AnyRequest[] = [];
+      const sideCall = vi.fn(async (request: AnyRequest): Promise<AnyAnswer> => {
+        requests.push(request);
+        return { ok: true, value: NOTHING };
+      });
+      const proposeSkills = vi.fn(async (): Promise<SideCallResult<unknown>> => ({ ok: true, value: { skills: [] } }));
+      const runner = consolidatorWith(sideCall as never, { proposeSkills });
+      expect(runner.check()).toEqual([{ scope: project, trigger: "schedule" }]);
+
+      runner.start();
+      await runner.idle();
+
+      // One batch, of the two new entries and their neighbours: no cross-batch pass, and nothing else of the scope.
+      expect(requests.map((request) => request.system)).toEqual([MEMORY_CONSOLIDATE_SYSTEM]);
+      const given = idsIn(requests[0]!.input);
+      const expected = new Set(ids(fresh));
+      const all = listMemories(handle.db, project).filter((entry) => entry.source.type !== "person");
+      for (const entry of fresh) {
+        const nearest = similarMemoryNeighbours(handle.db, [entry], 8, all).get(entry.id) ?? [];
+        expect(nearest.length).toBeGreaterThan(0);
+        expect(nearest.length).toBeLessThanOrEqual(8);
+        for (const id of nearest) expected.add(id);
+      }
+      expect([...given].sort()).toEqual([...expected].sort());
+      expect(given.length).toBeLessThan(old.length);
+      expect(given.length).toBeLessThanOrEqual(fresh.length * 9);
+      // The new ones are marked; the person's entry is never sent.
+      for (const entry of fresh) expect(requests[0]!.input).toMatch(new RegExp(`^### ${entry.id} \\(written [^)]*; new since the last consolidation`, "m"));
+      expect(requests[0]!.input).not.toContain("a person's concern");
+      expect(requests[0]!.input).toContain("The scope's agents hold 62 entries");
+      expect(listConsolidations(handle.db, project)[0]).toMatchObject({ trigger: "schedule", status: "succeeded" });
+      expect(proposeSkills).toHaveBeenCalledTimes(1);
+
+      // Settled: nothing is new now, so it is not given again.
+      expect(entriesNewSinceConsolidated(handle.db, project)).toEqual([]);
+    });
+
+    it("is the whole scope, and the cross-batch pass, when a person asks", async () => {
+      const old = settledScope();
+      const requests: AnyRequest[] = [];
+      const sideCall = vi.fn(async (request: AnyRequest): Promise<AnyAnswer> => {
+        requests.push(request);
+        return { ok: true, value: request.system === MEMORY_CONSOLIDATE_SYSTEM ? NOTHING : { groups: [] } };
+      });
+      const runner = consolidatorWith(sideCall as never, { neighbours: () => null });
+      runner.start();
+      expect(runner.requestNow(project).outcome).toBe("started");
+      await runner.idle();
+
+      const batches = requests.filter((request) => request.system === MEMORY_CONSOLIDATE_SYSTEM);
+      expect(batches.flatMap((request) => idsIn(request.input)).sort()).toEqual(ids(old).sort());
+      expect(requests.at(-1)!.system).toBe(MEMORY_MERGE_CANDIDATES_SYSTEM);
+    });
+
+    it("counts new entries from the last consolidation that finished, leaving out what consolidations and restores wrote themselves", () => {
+      const at = Date.now() - 10 * DAY;
+      const [a, b, c] = ["One.", "Two.", "Three."].map((body, index) => byAgent(workspace, body, at + index));
+      byPerson(workspace, "A person's.", at);
+      // Never consolidated: every agent-written entry is new, and no person's.
+      expect(entriesNewSinceConsolidated(handle.db, workspace)).toEqual(ids([a!, b!, c!]));
+
+      // A run that merged a and b, and finished.
+      const first = startConsolidation(handle.db, { scope: workspace, trigger: "schedule", now: at + HOUR });
+      const merged = applyConsolidation(handle.db, { id: first.id, sent: [a!, b!], answer: { ...NOTHING, merge: [{ from: [a!.id, b!.id], body: "One and two.", contradictsRepositoryFile: false }] }, note: null, now: at + 2 * HOUR });
+      if (!merged.ok) throw new Error(merged.problem);
+      expect(entriesNewSinceConsolidated(handle.db, workspace)).toEqual([]);
+
+      // Written since: new.
+      const d = byAgent(workspace, "Four.", at + 3 * HOUR);
+      expect(entriesNewSinceConsolidated(handle.db, workspace)).toEqual([d.id]);
+
+      // A run that stopped part-way — one batch applied, the next failed — is not the point counted from.
+      const partway = at + 4 * HOUR;
+      const batchOne = startConsolidation(handle.db, { scope: workspace, trigger: "schedule", now: partway });
+      applyConsolidation(handle.db, { id: batchOne.id, sent: [c!], answer: NOTHING, note: null, now: partway + 1 });
+      const batchTwo = startConsolidation(handle.db, { scope: workspace, trigger: "schedule", now: partway });
+      failConsolidation(handle.db, batchTwo.id, { reason: "error", note: "The backend fell over.", now: partway + 2 });
+      expect(entriesNewSinceConsolidated(handle.db, workspace)).toEqual([d.id]);
+
+      // Restored: what it put back is the person keeping it, not new — and what was new before stays new.
+      expect(restoreConsolidation(handle.db, first.id, { now: at + 5 * HOUR }).ok).toBe(true);
+      expect(ids(listMemories(handle.db, workspace))).toEqual(expect.arrayContaining([a!.id, b!.id]));
+      expect(entriesNewSinceConsolidated(handle.db, workspace)).toEqual([d.id]);
     });
   });
 
@@ -963,7 +1056,7 @@ describe("automatic memory consolidation", () => {
         return { ok: true, value: isBatch(request) ? NOTHING : { groups: [] } };
       });
 
-      consolidatorWith(sideCall as never, { caps: { maxEntries: 200, maxChars: 40_000 } }).start();
+      askNow(consolidatorWith(sideCall as never));
       await consolidator!.idle();
 
       const batches = requests.filter(isBatch).map((request) => idsIn(request.input));
@@ -995,11 +1088,12 @@ describe("automatic memory consolidation", () => {
       ];
       const sideCall = vi.fn(async (request: AnyRequest): Promise<AnyAnswer> => {
         requests.push(request);
-        return answers.shift()!(request);
+        const next = answers.shift();
+        return next ? next(request) : { ok: true, value: isBatch(request) ? NOTHING : { groups: [] } };
       });
-      const runner = consolidatorWith(sideCall as never, { caps: { maxEntries: 60, maxChars: 40_000 }, now: () => clock, neighbours: byAge });
+      const runner = consolidatorWith(sideCall as never, { now: () => clock, neighbours: byAge });
 
-      runner.start();
+      askNow(runner);
       await runner.idle();
 
       // The first batch was applied; the second failed and the third was never asked.
@@ -1009,20 +1103,22 @@ describe("automatic memory consolidation", () => {
       expect(succeeded).toMatchObject({ status: "succeeded", retiredIds: ids(entries.slice(0, 2)) });
       expect(listMemories(handle.db, workspace)).toHaveLength(68);
 
-      // Retried once its backoff is over, though nobody has written to the scope since…
+      // Retried once its backoff is over, though nobody has written to the scope since — as the person's consolidation it was…
       expect(runner.check()).toEqual([]);
       clock += CONSOLIDATION_BACKOFF_MS[0];
-      expect(runner.check()).toEqual([{ scope: workspace, trigger: "cap" }]);
+      expect(runner.check()).toEqual([{ scope: workspace, trigger: "manual" }]);
       answers.push((request) => retireSome(request, 10));
       runner.poke();
-      await vi.waitFor(() => expect(requests).toHaveLength(3));
+      await vi.waitFor(() => expect(requests.length).toBeGreaterThanOrEqual(3));
       await runner.idle();
 
-      // …with the batch that failed, not the one already done. Ten retired leave 58, under the cap of 60: it stops there.
+      // …with the batch that failed, not the one already done, then the one never reached and the cross-batch pass.
       expect(idsIn(requests[2]!.input)).toEqual(ids(entries.slice(30, 60)));
-      expect(requests).toHaveLength(3);
+      expect(idsIn(requests[3]!.input)).toEqual(ids(entries.slice(60)));
+      expect(requests[4]!.system).toBe(MEMORY_MERGE_CANDIDATES_SYSTEM);
+      expect(requests).toHaveLength(5);
       expect(listMemories(handle.db, workspace)).toHaveLength(58);
-      expect(listConsolidations(handle.db, workspace).map((row) => row.status)).toEqual(["succeeded", "failed", "succeeded"]);
+      expect(listConsolidations(handle.db, workspace).map((row) => row.status)).toEqual(["succeeded", "succeeded", "succeeded", "failed", "succeeded"]);
       expect(succeeded!.retiredIds.every((id) => everything(workspace).find((entry) => entry.id === id)!.retiredAt !== null)).toBe(true);
     });
 
@@ -1035,14 +1131,14 @@ describe("automatic memory consolidation", () => {
         requests.push(request);
         return (answers.shift() ?? ((next: AnyRequest) => retireSome(next, 15)))(request);
       });
-      const runner = consolidatorWith(sideCall as never, { caps: { maxEntries: 60, maxChars: 40_000 }, now: () => clock, neighbours: byAge });
-      runner.start();
+      const runner = consolidatorWith(sideCall as never, { now: () => clock, neighbours: byAge });
+      askNow(runner);
       await runner.idle();
       expect(requests).toHaveLength(2);
 
       clock += 3 * DAY;
       runner.poke();
-      await vi.waitFor(() => expect(requests).toHaveLength(3));
+      await vi.waitFor(() => expect(requests.length).toBeGreaterThanOrEqual(3));
       await runner.idle();
       expect(idsIn(requests[2]!.input)).toEqual(ids(entries.slice(0, 30)));
     });
@@ -1054,20 +1150,21 @@ describe("automatic memory consolidation", () => {
         requests.push(request);
         return isBatch(request) ? retireSome(request, 1) : { ok: true, value: { groups: [] } };
       });
-      const runner = consolidatorWith(sideCall as never, { caps: { maxEntries: 60, maxChars: 40_000 }, neighbours: byAge });
+      const runner = consolidatorWith(sideCall as never, { neighbours: byAge });
 
-      runner.start();
+      askNow(runner);
       await runner.idle();
 
-      // Three batches and the pass; 67 left, still over the cap of 60, and nobody else wrote anything.
+      // Three batches and the pass; nobody else wrote anything, so nothing is new to the schedule.
       expect(requests).toHaveLength(4);
       expect(listMemories(handle.db, workspace)).toHaveLength(67);
       expect(runner.check()).toEqual([]);
+      expect(entriesNewSinceConsolidated(handle.db, workspace)).toEqual([]);
       // Every row of the run starts when it read its entries.
       expect(new Set(listConsolidations(handle.db, workspace).map((row) => row.startedAt)).size).toBe(1);
     });
 
-    it("takes a scope still over its cap up again at once when somebody wrote to it during one batch and the later batches and the pass succeeded", async () => {
+    it("leaves a note written during one batch new to the next scheduled one, though the later batches and the pass succeeded (EO-913)", async () => {
       notes(workspace, 70);
       const requests: AnyRequest[] = [];
       let added: MemoryEntryView | null = null;
@@ -1077,21 +1174,20 @@ describe("automatic memory consolidation", () => {
         if (requests.length === 1) added = byAgent(workspace, "Added while batch one ran.", Date.now());
         return isBatch(request) ? retireSome(request, 1) : { ok: true, value: { groups: [] } };
       });
-      const runner = consolidatorWith(sideCall as never, { caps: { maxEntries: 60, maxChars: 40_000 }, neighbours: byAge });
+      const runner = consolidatorWith(sideCall as never, { neighbours: byAge });
 
-      runner.start();
+      askNow(runner);
       await runner.idle();
 
       const id = added!.id;
       const [, , , pass, ...followUp] = requests;
       for (const request of requests.slice(0, 3)) expect(idsIn(request.input)).not.toContain(id);
-      // The pass read the entries again and saw its first line — and the scope still counted it as a change.
+      // The pass read the entries again and saw its first line…
       expect(pass!.system).toBe(MEMORY_MERGE_CANDIDATES_SYSTEM);
       expect(pass!.input).toContain(id);
-      expect(followUp.filter(isBatch).flatMap((request) => idsIn(request.input))).toContain(id);
-      // The follow-up: three batches (30, 30 and 8 entries) and its pass, after which nothing has changed.
-      expect(followUp).toHaveLength(4);
-      expect(runner.check()).toEqual([]);
+      expect(followUp).toEqual([]);
+      // …and it is still new: what the next scheduled consolidation is given, and nothing else.
+      expect(entriesNewSinceConsolidated(handle.db, workspace)).toEqual([id]);
     });
 
     it("takes a run on the schedule that failed part-way up again after its backoff, with no new deliveries, keeping what its earlier batch did", async () => {
@@ -1109,8 +1205,8 @@ describe("automatic memory consolidation", () => {
         if (next) return next(request);
         return { ok: true, value: isBatch(request) ? NOTHING : { groups: [] } };
       });
-      // Under its caps throughout: queued by the schedule alone.
-      const runner = consolidatorWith(sideCall as never, { caps: { maxEntries: 200, maxChars: 40_000 }, now: () => clock, neighbours: byAge });
+      // Queued by the schedule.
+      const runner = consolidatorWith(sideCall as never, { now: () => clock, neighbours: byAge });
       expect(runner.check()).toEqual([{ scope: workspace, trigger: "schedule" }]);
 
       runner.start();
@@ -1127,28 +1223,12 @@ describe("automatic memory consolidation", () => {
       await vi.waitFor(() => expect(requests.length).toBeGreaterThan(2));
       await runner.idle();
 
-      // The failed batch, then the one never reached, then the pass; the earlier batch's retirements stand.
-      expect(requests.slice(2).map((request) => (isBatch(request) ? idsIn(request.input) : request.system))).toEqual([
-        ids(entries.slice(30, 60)),
-        ids(entries.slice(60)),
-        MEMORY_MERGE_CANDIDATES_SYSTEM,
-      ]);
+      // The failed batch, then the one never reached, and no cross-batch pass on the schedule; the earlier batch's retirements stand.
+      expect(requests.slice(2).map((request) => (isBatch(request) ? idsIn(request.input) : request.system))).toEqual([ids(entries.slice(30, 60)), ids(entries.slice(60))]);
       expect(listMemories(handle.db, workspace)).toHaveLength(68);
       for (const entry of entries.slice(0, 2)) expect(everything(workspace).find((row) => row.id === entry.id)).toMatchObject({ retiredReason: "consolidated" });
-      expect(listConsolidations(handle.db, workspace).map((row) => row.status)).toEqual(["succeeded", "succeeded", "succeeded", "failed", "succeeded"]);
+      expect(listConsolidations(handle.db, workspace).map((row) => row.status)).toEqual(["succeeded", "succeeded", "failed", "succeeded"]);
       expect(runner.check()).toEqual([]);
-    });
-
-    it("stops as soon as the scope is under its caps, without the batches after or the cross-batch pass", async () => {
-      notes(workspace, 70);
-      const sideCall = vi.fn(async (request: AnyRequest): Promise<AnyAnswer> => retireSome(request, 15));
-
-      consolidatorWith(sideCall as never, { caps: { maxEntries: 60, maxChars: 40_000 }, neighbours: byAge }).start();
-      await consolidator!.idle();
-
-      expect(sideCall).toHaveBeenCalledTimes(1);
-      expect(listMemories(handle.db, workspace)).toHaveLength(55);
-      expect(listConsolidations(handle.db, workspace)).toMatchObject([{ status: "succeeded" }]);
     });
 
     it("finds duplicates that fell into different batches from ids and first lines alone, and merges them given their full bodies", async () => {
@@ -1170,7 +1250,7 @@ describe("automatic memory consolidation", () => {
         return { ok: true, value: { ...NOTHING, merge: [{ from: [first.id, second.id], body: merged, contradictsRepositoryFile: false }] } };
       });
 
-      consolidatorWith(sideCall as never, { caps: { maxEntries: 40, maxChars: 40_000 }, neighbours: byAge }).start();
+      askNow(consolidatorWith(sideCall as never, { neighbours: byAge }));
       await consolidator!.idle();
 
       const [one, two, candidates, merge] = requests;
@@ -1218,7 +1298,7 @@ describe("automatic memory consolidation", () => {
         return checked.success ? { ok: true, value: checked.data } : { ok: false, reason: "schema", message: checked.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`).join("; ") };
       });
 
-      consolidatorWith(sideCall as never, { caps: { maxEntries: 40, maxChars: 40_000 }, neighbours: byAge }).start();
+      askNow(consolidatorWith(sideCall as never, { neighbours: byAge }));
       await consolidator!.idle();
 
       expect(mergeRequest!.system).toBe(MEMORY_CROSS_BATCH_MERGE_SYSTEM);
@@ -1242,9 +1322,9 @@ describe("automatic memory consolidation", () => {
         running = false;
         return { ok: true, value: NOTHING };
       });
-      const runner = consolidatorWith(sideCall as never, { caps: { maxEntries: 60, maxChars: 40_000 }, now: () => clock, canStart: () => running, neighbours: byAge });
+      const runner = consolidatorWith(sideCall as never, { now: () => clock, canStart: () => running, neighbours: byAge });
 
-      runner.start();
+      askNow(runner);
       await runner.idle();
 
       expect(requests).toHaveLength(1);
@@ -1257,13 +1337,16 @@ describe("automatic memory consolidation", () => {
       clock += CONSOLIDATION_CHANGED_RETRY_MS;
       sideCall.mockImplementation(async (request: AnyRequest): Promise<AnyAnswer> => {
         requests.push(request);
-        return retireSome(request, 15);
+        return isBatch(request) ? retireSome(request, 15) : { ok: true, value: { groups: [] } };
       });
       runner.poke();
-      await vi.waitFor(() => expect(requests).toHaveLength(2));
+      await vi.waitFor(() => expect(requests.length).toBeGreaterThanOrEqual(2));
       await runner.idle();
+      // The batches it had not reached, and then the cross-batch pass.
       expect(idsIn(requests[1]!.input)).toEqual(ids(entries.slice(30, 60)));
-      expect(listMemories(handle.db, workspace)).toHaveLength(55);
+      expect(idsIn(requests[2]!.input)).toEqual(ids(entries.slice(60)));
+      expect(requests[3]!.system).toBe(MEMORY_MERGE_CANDIDATES_SYSTEM);
+      expect(listMemories(handle.db, workspace)).toHaveLength(45);
     });
   });
 
@@ -1307,12 +1390,12 @@ describe("automatic memory consolidation", () => {
       expect(pipelineBusy()).toBe(true);
       const runner = consolidatorWith(sideCall, { pipelineBusy });
 
-      runner.start();
+      askNow(runner);
       await runner.idle();
       expect(sideCall).not.toHaveBeenCalled();
       expect(listConsolidations(handle.db, workspace)).toEqual([]);
       // Still queued, and nothing recorded against it.
-      expect(runner.check()).toEqual([{ scope: workspace, trigger: "cap" }]);
+      expect(runner.check()).toEqual([{ scope: workspace, trigger: "manual" }]);
 
       // Picked up: no longer waiting, but its run is going.
       const going = createRun(handle.db, { itemId, agentId: listAgents(handle.db).find((agent) => agent.role === "implementer")!.id, action: "implement", status: "running" });
@@ -1343,9 +1426,9 @@ describe("automatic memory consolidation", () => {
         setItemHeld(handle.db, itemId, null);
         return { ok: true, value: NOTHING };
       });
-      const runner = consolidatorWith(sideCall as never, { caps: { maxEntries: 60, maxChars: 40_000 }, now: () => clock, pipelineBusy, neighbours: () => null });
+      const runner = consolidatorWith(sideCall as never, { now: () => clock, pipelineBusy, neighbours: () => null });
 
-      runner.start();
+      askNow(runner);
       await runner.idle();
       expect(requests).toHaveLength(1);
       expect(listConsolidations(handle.db, workspace).map((row) => row.status)).toEqual(["failed", "succeeded"]);
@@ -1354,7 +1437,7 @@ describe("automatic memory consolidation", () => {
 
       // Due again a minute later — not an hour, it is no failure — but not started while the item waits.
       clock += CONSOLIDATION_CHANGED_RETRY_MS;
-      expect(runner.check()).toEqual([{ scope: workspace, trigger: "cap" }]);
+      expect(runner.check()).toEqual([{ scope: workspace, trigger: "manual" }]);
       runner.poke();
       await new Promise((resolve) => setTimeout(resolve, 10));
       await runner.idle();
@@ -1363,14 +1446,15 @@ describe("automatic memory consolidation", () => {
       setItemHeld(handle.db, itemId, Date.now());
       sideCall.mockImplementation(async (request: AnyRequest): Promise<AnyAnswer> => {
         requests.push(request);
-        return retireSome(request, 15);
+        return request.system === MEMORY_CONSOLIDATE_SYSTEM ? retireSome(request, 15) : { ok: true, value: { groups: [] } };
       });
       runner.poke();
-      await vi.waitFor(() => expect(requests).toHaveLength(2));
+      await vi.waitFor(() => expect(requests.length).toBeGreaterThanOrEqual(2));
       await runner.idle();
-      // The batch that gave way, not the one already done.
+      // The batch that gave way, not the one already done; then the last and the cross-batch pass.
       expect(idsIn(requests[1]!.input)).toEqual(ids(entries.slice(30, 60)));
-      expect(listMemories(handle.db, workspace)).toHaveLength(55);
+      expect(idsIn(requests[2]!.input)).toEqual(ids(entries.slice(60)));
+      expect(listMemories(handle.db, workspace)).toHaveLength(45);
     });
 
     it("gives way at the slot to an item that became dispatchable while the call got ready: no call made, no slot taken, recorded as deferred", async () => {
@@ -1392,7 +1476,7 @@ describe("automatic memory consolidation", () => {
       });
       const acquire = vi.spyOn(slots, "acquire");
 
-      consolidatorWith(caller.sideCall, { pipelineBusy }).start();
+      askNow(consolidatorWith(caller.sideCall, { pipelineBusy }));
       await consolidator!.idle();
 
       expect(asked).not.toHaveBeenCalled();
@@ -1417,7 +1501,7 @@ describe("automatic memory consolidation", () => {
           },
         },
       );
-      runner.start();
+      askNow(runner);
       await runner.idle();
       expect(MEMORY_CONSOLIDATE_TIMEOUT_MS).toBe(180_000);
       expect(requests.map((request) => request.system)).toEqual([MEMORY_CONSOLIDATE_SYSTEM, MEMORY_PROPOSE_SKILLS_SYSTEM]);
@@ -1442,7 +1526,7 @@ describe("automatic memory consolidation", () => {
       } as unknown as AgentProvider;
       const { caller, slots } = realCaller(provider);
 
-      consolidatorWith(caller.sideCall).start();
+      askNow(consolidatorWith(caller.sideCall));
       await consolidator!.idle();
 
       // Cut at the cap, counting a byte a token: the first piece past it is the last.
@@ -1467,7 +1551,7 @@ describe("automatic memory consolidation", () => {
         },
       } as unknown as AgentProvider;
       const { caller, slots } = realCaller(provider);
-      consolidatorWith(caller.sideCall).start();
+      askNow(consolidatorWith(caller.sideCall));
       // Not `vi.waitFor`, which moves the faked clock on as it polls.
       for (let turn = 0; turn < 50 && slots.held() === 0; turn += 1) await vi.advanceTimersByTimeAsync(0);
       expect(slots.held()).toBe(1);
@@ -1486,24 +1570,25 @@ describe("automatic memory consolidation", () => {
     });
 
     it("backs a failing scope off an hour, four hours, then a day; says it is stuck at the third failure, once; and again only after a success (fake clock)", async () => {
-      notes(workspace, 10);
-      let clock = Date.now();
+      givenToFiveRuns(notes(workspace, 10));
+      let clock = Date.now() + DAY;
       let answer: AnyAnswer = { ok: false, reason: "schema", message: "The answer did not match the shape asked for: retire: Required" };
       const sideCall = vi.fn(async (request: AnyRequest): Promise<AnyAnswer> => (answer.ok ? { ok: true, value: { ...NOTHING, merge: [{ from: idsIn(request.input), body: "One.", contradictsRepositoryFile: false }] } } : answer));
       const runner = consolidatorWith(sideCall as never, { now: () => clock });
       const notices = () => messagesFrom(handle.db, "consolidation_stuck");
       /** Waits out `wait`: not due a millisecond before, due at it, and asked. */
-      const failAgainAfter = async (wait: number) => {
+      const failAgainAfter = async (wait: number, trigger: "schedule" | "manual" = "schedule") => {
         clock += wait - 1;
         expect(runner.check()).toEqual([]);
         clock += 1;
-        expect(runner.check()).toEqual([{ scope: workspace, trigger: "cap" }]);
+        expect(runner.check()).toEqual([{ scope: workspace, trigger }]);
         const calls = sideCall.mock.calls.length;
         runner.poke();
         await vi.waitFor(() => expect(sideCall.mock.calls.length).toBe(calls + 1));
         await runner.idle();
       };
 
+      // Due on the schedule.
       runner.start();
       await runner.idle();
       expect(sideCall).toHaveBeenCalledTimes(1);
@@ -1513,13 +1598,13 @@ describe("automatic memory consolidation", () => {
       expect(notices()).toEqual([]);
       await failAgainAfter(4 * 60 * 60 * 1000);
 
-      // The third in a row: one message to the person about the project, naming the scope, its size against its caps and the last reason.
+      // The third in a row: one message to the person about the project, naming the scope, what it holds and the last reason.
       expect(notices()).toHaveLength(1);
       const [notice] = notices();
       expect(notice).toMatchObject({ recipientId: LOCAL_PERSON_ID, projectId, options: null, handledAt: null });
       expect(notice!.body).toContain('Memory consolidation of the workspace "api" is stuck: it has failed 3 times in a row.');
-      expect(notice!.body).toContain("10 entries against a cap of 10");
-      expect(notice!.body).toContain("against a cap of 40,000");
+      expect(notice!.body).toContain("**Holds:** 10 entries, 880 characters.");
+      expect(notice!.body).not.toMatch(/cap/);
       expect(notice!.body).toContain("`schema` — The answer did not match the shape asked for: retire: Required");
 
       // The fourth waits a day, and is not said again.
@@ -1534,24 +1619,24 @@ describe("automatic memory consolidation", () => {
       expect(listMemories(handle.db, workspace)).toHaveLength(1);
       expect(notices()).toEqual([expect.objectContaining({ id: notice!.id, handledHow: "resolved", handledAt: clock })]);
 
-      // …so three more in a row, from an hour again, are said again.
+      // …so three more in a row, from an hour again, are said again: a person's this time, which goes on as theirs.
       answer = { ok: false, reason: "timeout", message: "The call took longer than its 90000 ms and was stopped." };
       for (let index = 0; index < 9; index += 1) byAgent(workspace, `Later note ${index}`, clock + index);
-      expect(runner.check()).toEqual([{ scope: workspace, trigger: "cap" }]);
-      runner.poke();
+      expect(runner.check()).toEqual([]);
+      runner.requestNow(workspace);
       await vi.waitFor(() => expect(failureReasons(workspace)[0]).toBe("timeout"));
       await runner.idle();
-      await failAgainAfter(60 * 60 * 1000);
+      await failAgainAfter(60 * 60 * 1000, "manual");
       expect(notices()).toHaveLength(1);
-      await failAgainAfter(4 * 60 * 60 * 1000);
+      await failAgainAfter(4 * 60 * 60 * 1000, "manual");
       expect(notices()).toHaveLength(2);
       expect(notices()[1]!.body).toContain("`timeout` — The call took longer than its 90000 ms and was stopped.");
       expect(notices()[1]!.handledAt).toBeNull();
     });
 
     it("sends the stuck message through the sender it is given, and says it the next failure when that sender refuses", async () => {
-      notes(workspace, 10);
-      let clock = Date.now();
+      givenToFiveRuns(notes(workspace, 10));
+      let clock = Date.now() + DAY;
       const sideCall = vi.fn(async (): Promise<AnyAnswer> => ({ ok: false, reason: "schema", message: "The answer did not match the shape asked for." }));
       let refuse = true;
       const sent: MessageSend[] = [];
@@ -1565,7 +1650,7 @@ describe("automatic memory consolidation", () => {
       });
       const failAgainAfter = async (wait: number) => {
         clock += wait;
-        expect(runner.check()).toEqual([{ scope: workspace, trigger: "cap" }]);
+        expect(runner.check()).toEqual([{ scope: workspace, trigger: "schedule" }]);
         const calls = sideCall.mock.calls.length;
         runner.poke();
         await vi.waitFor(() => expect(sideCall.mock.calls.length).toBe(calls + 1));
@@ -1602,7 +1687,7 @@ describe("automatic memory consolidation", () => {
           },
         },
       );
-      runner.start();
+      askNow(runner);
       await runner.idle();
 
       const [batch, folded] = listConsolidations(handle.db, workspace);
@@ -1628,7 +1713,7 @@ describe("automatic memory consolidation", () => {
           return true;
         },
       });
-      consolidatorWith(caller.sideCall, { now: () => clock }).start();
+      askNow(consolidatorWith(caller.sideCall, { now: () => clock }));
       await consolidator!.idle();
       const [row] = listConsolidations(handle.db, workspace);
       expect(row).toMatchObject({ status: "succeeded" });
@@ -1657,7 +1742,7 @@ describe("automatic memory consolidation", () => {
         workDirectory: () => ({ path: "/tmp", remove: () => {} }),
       });
 
-      consolidatorWith(caller.sideCall).start();
+      askNow(consolidatorWith(caller.sideCall));
       await vi.waitFor(() => expect(slots.waiting()).toBe(1));
       expect(heldDuringCall).toEqual([]);
 
@@ -1675,14 +1760,12 @@ describe("automatic memory consolidation", () => {
       const person = byPerson(workspace, "Mine.", Date.now() - DAY);
       const sideCall = vi.fn(async (): Promise<Answer> => ({ ok: true, value: mergeAll(notes, "All ten.") }));
       const runner = consolidatorWith(sideCall);
-      runner.start();
+      askNow(runner);
       await runner.idle();
       const [consolidation] = (await listConsolidationsCommand(recordFor(handle.db), { scope: workspace })).consolidations;
       const written = consolidation!.writtenIds;
       expect(listMemories(handle.db, workspace).map((entry) => entry.body).sort()).toEqual(["All ten.", "Mine."]);
 
-      // The caps the person's settings say, which a restore settles the scope under.
-      writeGuards(handle.db, { ...DEFAULT_GUARD_CONFIG, memoryScopeMaxEntries: 10 });
       const restored = await restoreConsolidationCommand(handle.db, recordFor(handle.db), { consolidationId: consolidation!.id });
 
       expect(restored).toMatchObject({ ok: true, restored: 10, retired: 1, consolidation: { status: "restored" } });
@@ -1692,26 +1775,26 @@ describe("automatic memory consolidation", () => {
       expect(await restoreConsolidationCommand(handle.db, recordFor(handle.db), { consolidationId: consolidation!.id })).toMatchObject({ ok: false });
       expect(await restoreConsolidationCommand(handle.db, recordFor(handle.db), { consolidationId: "nope" })).toMatchObject({ ok: false });
 
-      // Back over the cap, but nothing an agent wrote since the person's restore: not folded again at once.
+      // What the person put back is not new to the next scheduled one, so it is not folded straight back.
       expect(runner.check()).toEqual([]);
+      expect(entriesNewSinceConsolidated(handle.db, workspace)).toEqual([]);
     });
 
-    it("takes up a scope that individual restores bring back to the cap, though they touch only entries the consolidation retired", async () => {
+    it("leaves entries a person puts back one at a time new to the next scheduled one, and queues nothing for them now", async () => {
       const notes = Array.from({ length: 10 }, (_, index) => byAgent(workspace, `Note ${index}`, Date.now() - DAY + index));
       const sideCall = vi.fn(async (): Promise<Answer> => ({ ok: true, value: mergeAll(notes, "All ten.") }));
       const runner = consolidatorWith(sideCall);
-      runner.start();
+      askNow(runner);
       await runner.idle();
       expect(listMemories(handle.db, workspace)).toHaveLength(1);
-      expect(runner.check()).toEqual([]);
 
-      // A person puts nine of them back one at a time, later: ten active, at the cap.
+      // A person puts nine of them back one at a time, later.
       const later = Date.now() + 1_000;
       for (const entry of notes.slice(0, 9)) expect(restoreMemory(handle.db, entry.id, later).ok).toBe(true);
       expect(listMemories(handle.db, workspace)).toHaveLength(10);
 
-      expect(runner.check()).toEqual([{ scope: workspace, trigger: "cap" }]);
-      expect(runner.check()).toEqual([{ scope: workspace, trigger: "cap" }]);
+      expect(runner.check()).toEqual([]);
+      expect(entriesNewSinceConsolidated(handle.db, workspace).sort()).toEqual(notes.slice(0, 9).map((entry) => entry.id).sort());
     });
   });
 
@@ -1768,9 +1851,8 @@ describe("automatic memory consolidation", () => {
         requests.push({ request, active: ids(listMemories(handle.db, workspace)) });
         return { ok: true, value: NOTHING };
       });
-      const caps = { maxEntries: 16, maxChars: 40_000 };
 
-      consolidatorWith(sideCall as never, { caps }).start();
+      askNow(consolidatorWith(sideCall as never));
       await consolidator!.idle();
 
       const retired = [install[0]!, install[1]!, lint[0]!];
@@ -1783,7 +1865,7 @@ describe("automatic memory consolidation", () => {
       const rows = listConsolidations(handle.db, workspace);
       expect(rows).toHaveLength(2);
       const folded = rows.find((row) => row.retiredIds.length > 0)!;
-      expect(folded).toMatchObject({ status: "succeeded", writtenIds: [], trigger: "cap" });
+      expect(folded).toMatchObject({ status: "succeeded", writtenIds: [], trigger: "manual" });
       expect([...folded.retiredIds].sort()).toEqual(ids(retired).sort());
       expect(folded.note).toContain("3 entries that repeated another word for word were retired without asking a model");
       for (const entry of retired) expect(everything(workspace).find((row) => row.id === entry.id)).toMatchObject({ retiredReason: "consolidated", consolidationId: folded.id });
@@ -1791,24 +1873,9 @@ describe("automatic memory consolidation", () => {
       expect(rows.flatMap((row) => row.retiredIds)).not.toEqual(expect.arrayContaining([mine[0]!.id]));
       expect(rows.flatMap((row) => row.retiredIds)).not.toEqual(expect.arrayContaining([mine[1]!.id]));
 
-      const restored = restoreConsolidation(handle.db, folded.id, { caps });
+      const restored = restoreConsolidation(handle.db, folded.id);
       expect(restored).toMatchObject({ ok: true, restored: 3, retired: 0 });
       expect(ids(listMemories(handle.db, workspace)).sort()).toEqual(ids([...install, ...lint, ...distinct, ...operators, ...mine]).sort());
-    });
-
-    it("asks no model at all when folding them alone brings a scope queued for its cap under its caps", async () => {
-      const at = Date.now() - DAY;
-      UNRELATED.slice(0, 8).forEach((body, index) => byAgent(workspace, body, at + index));
-      const copies = [byAgent(workspace, "Run pnpm lint before pushing.", at + 10), byAgent(workspace, "run pnpm lint, before pushing", at + 11)];
-      const sideCall = vi.fn(async (): Promise<AnyAnswer> => ({ ok: true, value: NOTHING }));
-
-      consolidatorWith(sideCall as never, { caps: { maxEntries: 10, maxChars: 40_000 } }).start();
-      await consolidator!.idle();
-
-      expect(sideCall).not.toHaveBeenCalled();
-      expect(listConsolidations(handle.db, workspace)).toEqual([expect.objectContaining({ status: "succeeded", retiredIds: [copies[0]!.id], writtenIds: [] })]);
-      expect(listMemories(handle.db, workspace)).toHaveLength(9);
-      expect(consolidator!.check()).toEqual([]);
     });
 
     it("marks near duplicates the full-text index finds in the input of the batch they share, and nothing else", async () => {
@@ -1823,7 +1890,7 @@ describe("automatic memory consolidation", () => {
         return { ok: true, value: NOTHING };
       });
 
-      consolidatorWith(sideCall as never, { caps: { maxEntries: 10, maxChars: 40_000 } }).start();
+      askNow(consolidatorWith(sideCall as never));
       await consolidator!.idle();
 
       expect(requests).toHaveLength(1);
@@ -1852,7 +1919,7 @@ describe("automatic memory consolidation", () => {
         return { ok: true, value: isBatch(request) ? NOTHING : { groups: [] } };
       });
 
-      consolidatorWith(sideCall as never, { caps: { maxEntries: 40, maxChars: 40_000 }, neighbours }).start();
+      askNow(consolidatorWith(sideCall as never, { neighbours }));
       await consolidator!.idle();
 
       const batches = requests.filter(isBatch);
@@ -1919,7 +1986,7 @@ describe("automatic memory consolidation", () => {
         return noSkills();
       });
 
-      consolidatorWith(sideCall, { proposeSkills }).start();
+      askNow(consolidatorWith(sideCall, { proposeSkills }));
       await consolidator!.idle();
 
       expect(order).toEqual(["consolidate", "propose"]);
@@ -1957,7 +2024,7 @@ describe("automatic memory consolidation", () => {
     it("are not asked for after a consolidation that fails", async () => {
       Array.from({ length: 10 }, (_, index) => byAgent(workspace, `Agent note ${index}`, Date.now() - DAY + index));
       const proposeSkills = vi.fn(noSkills);
-      consolidatorWith(async () => ({ ok: false, reason: "schema", message: "Not the shape asked for." }), { proposeSkills }).start();
+      askNow(consolidatorWith(async () => ({ ok: false, reason: "schema", message: "Not the shape asked for." }), { proposeSkills }));
       await consolidator!.idle();
 
       expect(listConsolidations(handle.db, workspace)).toMatchObject([{ status: "failed" }]);
@@ -1967,7 +2034,7 @@ describe("automatic memory consolidation", () => {
     it("leave the consolidation applied, and post nothing, when the call fails or throws", async () => {
       const agents = Array.from({ length: 10 }, (_, index) => byAgent(workspace, `Agent note ${index}`, Date.now() - DAY + index));
       const sideCall = vi.fn(async (): Promise<Answer> => ({ ok: true, value: mergeAll(agents, "All ten.") }));
-      consolidatorWith(sideCall, { proposeSkills: async () => ({ ok: false, reason: "timeout", message: "It ran past its time." }) }).start();
+      askNow(consolidatorWith(sideCall, { proposeSkills: async () => ({ ok: false, reason: "timeout", message: "It ran past its time." }) }));
       await consolidator!.idle();
 
       const [consolidation] = listConsolidations(handle.db, workspace);
@@ -1980,11 +2047,13 @@ describe("automatic memory consolidation", () => {
 
       consolidator!.stop();
       const more = Array.from({ length: 10 }, (_, index) => byAgent(workspace, `Later note ${index}`, Date.now() + 1_000 + index));
-      consolidatorWith(async () => ({ ok: true, value: mergeAll(more, "Ten more.") }), {
-        proposeSkills: async () => {
-          throw new Error("The backend went away.");
-        },
-      }).start();
+      askNow(
+        consolidatorWith(async () => ({ ok: true, value: mergeAll(more, "Ten more.") }), {
+          proposeSkills: async () => {
+            throw new Error("The backend went away.");
+          },
+        }),
+      );
       await consolidator!.idle();
       expect(listConsolidations(handle.db, workspace)[0]).toMatchObject({ status: "succeeded" });
       expect(listMemories(handle.db, workspace).map((entry) => entry.body).sort()).toEqual(["All ten.", "Ten more."]);
@@ -2009,7 +2078,7 @@ describe("automatic memory consolidation", () => {
         return noSkills();
       });
 
-      consolidatorWith(sideCall as never, { caps: { maxEntries: 60, maxChars: 40_000 }, neighbours: () => null, proposeSkills }).start();
+      askNow(consolidatorWith(sideCall as never, { neighbours: () => null, proposeSkills }));
       await consolidator!.idle();
       expect(order).toEqual(["batch", "batch"]);
       expect(proposeSkills).not.toHaveBeenCalled();
@@ -2017,7 +2086,7 @@ describe("automatic memory consolidation", () => {
       consolidator!.stop();
       failSecond = false;
       order.length = 0;
-      consolidatorWith(sideCall as never, { caps: { maxEntries: 60, maxChars: 40_000 }, neighbours: () => null, proposeSkills, now: () => Date.now() + 2 * HOUR }).start();
+      askNow(consolidatorWith(sideCall as never, { neighbours: () => null, proposeSkills, now: () => Date.now() + 2 * HOUR }));
       await consolidator!.idle();
       expect(order.at(-1)).toBe("propose");
       expect(order.filter((call) => call === "propose")).toHaveLength(1);
@@ -2044,7 +2113,7 @@ describe("automatic memory consolidation", () => {
         return { ok: true, value: request.schema.parse({ skills: [proposal(workspace, [reworded.id, untouched.id])] }) };
       });
 
-      consolidatorWith(sideCall as never, { caps: { maxEntries: 30, maxChars: 40_000 }, neighbours: () => null, proposeSkills }).start();
+      askNow(consolidatorWith(sideCall as never, { neighbours: () => null, proposeSkills }));
       await consolidator!.idle();
 
       expect(proposeSkills).toHaveBeenCalledTimes(1);
@@ -2066,14 +2135,14 @@ describe("automatic memory consolidation", () => {
       return { sideCall, release: (answer: Answer) => release(answer) };
     }
 
-    it("runs on a scope under both caps and not due on the schedule, at once, recorded with the trigger manual", async () => {
+    it("runs on a scope not due on the schedule, at once, recorded with the trigger manual", async () => {
       const entries = notes(workspace, 3);
       const sideCall = vi.fn(async (_request: ConsolidateRequest): Promise<Answer> => ({ ok: true, value: mergeAll(entries, "All three, as one.") }));
       const changed = vi.fn();
       const runner = consolidatorWith(sideCall, { onPendingChanged: changed });
       runner.start();
       await runner.idle();
-      // Not due by itself: under its caps, and never a day old with five runs.
+      // Not due by itself: never a day old with five runs.
       expect(runner.check()).toEqual([]);
       expect(sideCall).not.toHaveBeenCalled();
 
@@ -2096,14 +2165,14 @@ describe("automatic memory consolidation", () => {
       notes(workspace, 10);
       const clock = Date.now();
       for (let index = 0; index < 3; index += 1) {
-        const row = startConsolidation(handle.db, { scope: workspace, trigger: "cap", now: clock - 3 * HOUR + index });
+        const row = startConsolidation(handle.db, { scope: workspace, trigger: "schedule", now: clock - 3 * HOUR + index });
         failConsolidation(handle.db, row.id, { reason: "error", note: "The backend fell over.", now: clock - 3 * HOUR + index + 1 });
       }
       const sideCall = vi.fn(async (): Promise<Answer> => ({ ok: true, value: NOTHING }));
       const runner = consolidatorWith(sideCall, { now: () => clock });
       runner.start();
       await runner.idle();
-      // Over its cap, and backing off: the automatic loop leaves it until tomorrow.
+      // Backing off: the automatic loop leaves it until tomorrow.
       expect(runner.check()).toEqual([]);
       expect(sideCall).not.toHaveBeenCalled();
 
@@ -2145,7 +2214,8 @@ describe("automatic memory consolidation", () => {
       const held = heldCall();
       const runner = consolidatorWith(held.sideCall);
       runner.start();
-      // The workspace, over its cap, is consolidating.
+      // The workspace, asked for first, is consolidating.
+      expect(runner.requestNow(workspace).outcome).toBe("started");
       await vi.waitFor(() => expect(held.sideCall).toHaveBeenCalledTimes(1));
       expect(runner.requestNow(project)).toMatchObject({ outcome: "queued", behind: "consolidation" });
       expect(runner.pending(project)).toBe("queued");
@@ -2232,14 +2302,14 @@ describe("automatic memory consolidation", () => {
     });
 
     it("writes a failed row when it fails, as any other does, and the next automatic attempt backs off from it", async () => {
-      notes(workspace, 10);
-      let clock = Date.now();
+      givenToFiveRuns(notes(workspace, 10));
+      let clock = Date.now() + DAY;
       const sideCall = vi.fn(async (): Promise<Answer> => ({ ok: false, reason: "error", message: "The backend fell over." }));
       const runner = consolidatorWith(sideCall, { now: () => clock });
       // The automatic one fails: an hour's backoff.
       runner.start();
       await runner.idle();
-      expect(triggers(workspace)).toEqual(["cap:failed"]);
+      expect(triggers(workspace)).toEqual(["schedule:failed"]);
 
       // Asked for inside that hour, and failing too: two in a row.
       expect(runner.requestNow(workspace).outcome).toBe("started");
@@ -2251,7 +2321,7 @@ describe("automatic memory consolidation", () => {
       clock += CONSOLIDATION_BACKOFF_MS[0];
       expect(runner.check()).toEqual([]);
       clock += CONSOLIDATION_BACKOFF_MS[1] - CONSOLIDATION_BACKOFF_MS[0];
-      expect(runner.check()).toEqual([{ scope: workspace, trigger: "cap" }]);
+      expect(runner.check()).toEqual([{ scope: workspace, trigger: "schedule" }]);
     });
   });
 });
