@@ -3566,7 +3566,9 @@ export const messages = sqliteTable(
      * `MessageHandledBy` as JSON (EO-918, migration 0183): who answered or
      * dismissed it — the person, the assistant, or an outside MCP client.
      * Null while open, on one EO resolved, and on every message handled
-     * before the column, which reads as the person.
+     * before the column, which reads as the person — or, on a replica's
+     * copy (`fromRecord`), as not known until the next pull reads it
+     * again: the build that pulled it dropped who.
      */
     handledBy: text("handled_by", { mode: "json" }),
     /**

@@ -18,10 +18,12 @@ import {
   insertMessage,
   listOccurrences,
   listOpenMessages,
+  markEveryMessageOwn,
   markMessageHandled,
   pendingCommands,
   recordOccurrence,
   sweepHandledMessages,
+  upsertReplicaMessage,
 } from "../db/repos/index.js";
 import { pendingCount, rememberLatest } from "../db/repos/recordPendingRepo.js";
 import { getSetting, setSetting } from "../db/repos/settingsRepo.js";
@@ -870,6 +872,37 @@ describe("a message on the record itself", () => {
     } finally {
       server.stop();
     }
+  });
+});
+
+describe("who handled a message pressed before EO kept who (EO-918)", () => {
+  it("reads as the person on the record once it marks every message its own at launch, and so on the copy a desktop pulls", async () => {
+    const pressed = insertMessage(recordDb.db, { recipientId: annaId, source: JOB_MESSAGE_SOURCE.skipped, body: "Skipped.", options: ["Leave it"] });
+    markMessageHandled(recordDb.db, pressed.id, "answered", "Leave it");
+    // As 0184's backfill, which cannot tell the record's database from a desktop's, may leave it.
+    recordDb.db.update(messages).set({ handledBy: null, fromRecord: true }).run();
+    expect(getMessage(recordDb.db, pressed.id)?.handledBy).toBeNull();
+
+    markEveryMessageOwn(recordDb.db);
+
+    expect(getMessage(recordDb.db, pressed.id)?.handledBy).toEqual({ kind: "person" });
+    await annaDesk.record.sync();
+    expect(getMessage(annaDesk.handle.db, pressed.id)?.handledBy).toEqual({ kind: "person" });
+  });
+
+  it("reads as the person on a copy a record older than who pressed sends, where nobody else could press", () => {
+    const pressed = { ...insertMessage(recordDb.db, { recipientId: annaId, source: JOB_MESSAGE_SOURCE.skipped, body: "Skipped.", options: ["Leave it"] }), handledAt: 5, handledHow: "dismissed" as const };
+    delete (pressed as Partial<Message>).handledBy;
+
+    expect(upsertReplicaMessage(annaDesk.handle.db, pressed as Message)).toBe("written");
+
+    expect(getMessage(annaDesk.handle.db, pressed.id)?.handledBy).toEqual({ kind: "person" });
+  });
+
+  it("names nobody where who is not known", () => {
+    expect(messageHandledWords({ handledHow: "answered", answer: "Carry on now", handledBy: null }, true)).toBe("Answered Carry on now");
+    expect(messageHandledWords({ handledHow: "dismissed", answer: null, handledBy: null })).toBe("Dismissed");
+    expect(messageHandledWords({ handledHow: "answered", answer: "Carry on now", handledBy: { kind: "assistant", agentId: "a" } })).toBe("Answered Carry on now · by the assistant");
   });
 });
 
