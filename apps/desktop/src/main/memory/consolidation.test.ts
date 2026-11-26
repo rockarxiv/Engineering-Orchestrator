@@ -410,8 +410,10 @@ describe("the operations a consolidation answers with (EO-573)", () => {
         ["The ledger is kept in UTC. Save logs.", "The ledger is kept in local time. Save logs.", "The ledger is kept in local time."],
         // A source that says what it corrects, after the new value.
         ["The ledger is kept in UTC; export it with make ledger.", "The ledger is kept in local time; export it with make ledger.", "The ledger is kept in local time, not UTC."],
-        ["Always run `pnpm test` before pushing any code. Save logs.", "Always run `pnpm lint` before pushing any code. Save logs.", "Run `pnpm lint` before pushing."],
-        ["Run `pnpm test` before pushing.", "Run `make check` before pushing.", "Run `make check` before you push."],
+        ["Always run `pnpm test` before pushing any code. Save logs.", "Always run `pnpm lint` before pushing any code. Save logs.", "Always run `pnpm lint` before pushing any code."],
+        ["Run `pnpm test` before pushing. Save logs.", "Run `make check` before pushing. Save logs.", "- Run `make check` before pushing."],
+        // The source's sentence up to the change, the entry's own clause after it.
+        ["Run `pnpm test` before pushing, and save logs.", "Run `make check` before pushing, and save logs.", "Run make check before pushing."],
         // A negation either way.
         ["Run the migrations before tests. Save logs.", "Do not run the migrations before tests. Save logs.", "Do not run the migrations before tests."],
         ["Do not run the migrations before tests. Save logs.", "Run the migrations before tests. Save logs.", "Run the migrations before tests."],
@@ -491,6 +493,54 @@ describe("the operations a consolidation answers with (EO-573)", () => {
     }
   });
 
+  it("refuses a value written another way, a source about other conditions, and a negation of another action, under either source-backed reason (EO-913)", () => {
+    for (const reason of BOTH) {
+      // The reviewer's probe: the same duration in another notation, and the same value in others.
+      for (const [was, body, source] of [
+        ["Use a timeout of 4.0 seconds for the build. Save logs.", "Use a timeout of 4 seconds for the build. Save logs.", "Use a timeout of 4 seconds for the build."],
+        ["Use a timeout of 4000ms for the build. Save logs.", "Use a timeout of 4s for the build. Save logs.", "Use a timeout of 4s for the build."],
+        ["Keep 1,000 rows per page. Save logs.", "Keep 1000 rows per page. Save logs.", "Keep 1000 rows per page."],
+        ["Set the ratio to 50% for the build. Save logs.", "Set the ratio to 0.5 for the build. Save logs.", "Set the ratio to 0.5 for the build."],
+        ["Use Node v18 for the build. Save logs.", "Use Node 18 for the build. Save logs.", "Use Node 18 for the build."],
+        ["Set the ratio to 0.5 for the build. Save logs.", "Set the ratio to 50% for the build. Save logs.", "Set the ratio to 50% for the build."],
+        ["Use a timeout of 4s for the build. Save logs.", "Use a timeout of 4000ms for the build. Save logs.", "Use a timeout of 4000ms for the build."],
+      ] as const) {
+        const parsed = corrected(reason, entry("a", was, NOW - 2 * DAY), body, [source]);
+        expect(parsed.success, `${reason}: ${body}`).toBe(false);
+        // A thousands separator or a percent sign dropped is refused before the numbers are read, as a mark taken out.
+        expect(said(parsed), `${reason}: ${body}`).toMatch(/same number written another way|taking out "[,%]"/);
+      }
+      // The reviewer's probe: 16 said of another environment, or only as a fallback, or qualified by the sentence after it.
+      const local = entry("a", "Use Postgres 15 for local database testing. Save logs.", NOW - 2 * DAY);
+      const sixteen = "Use Postgres 16 for local database testing. Save logs.";
+      for (const source of [
+        "Use Postgres 16 for remote database testing.",
+        "Use Postgres 16 only as a fallback for local database testing.",
+        "Use Postgres 16 for local database testing only as a fallback.",
+        "If Postgres 15 is unavailable, use Postgres 16 for local database testing.",
+        "Use Postgres 16 for local database testing. It is only a fallback.",
+        "Use Postgres 16 for local database testing — only as a fallback.",
+        "Use Postgres 16 for local database testing; only when 15 is missing.",
+        "When CI is down: use Postgres 16 for local database testing.",
+        "Do not use Postgres 16 for local database testing.",
+      ]) {
+        const parsed = corrected(reason, local, sixteen, [source]);
+        expect(parsed.success, `${reason}: ${source}`).toBe(false);
+        expect(said(parsed), `${reason}: ${source}`).toMatch(/but no sentence of/);
+      }
+      expect(corrected(reason, local, sixteen, ["Use Postgres 16 for local database testing."]).success, reason).toBe(true);
+      // The reviewer's probe: a negation of another action bears out none of this one.
+      const smoke = entry("a", "Run database smoke tests nightly. Save logs.", NOW - 2 * DAY);
+      const negated = "Do not run database smoke tests nightly. Save logs.";
+      for (const source of ["Do not skip database smoke tests nightly.", "Never skip database smoke tests nightly.", "Do not run database smoke tests on Fridays."]) {
+        const parsed = corrected(reason, smoke, negated, [source]);
+        expect(parsed.success, `${reason}: ${source}`).toBe(false);
+        expect(said(parsed), `${reason}: ${source}`).toMatch(/but no sentence of/);
+      }
+      expect(corrected(reason, smoke, negated, ["Do not run database smoke tests nightly."]).success, reason).toBe(true);
+    }
+  });
+
   it("never takes a rewrite that sets contradictsRepositoryFile, nor one that changes only the flag (EO-913)", () => {
     const always = entry("a", "Always run `pnpm test` before pushing any code. Save logs.", NOW - 2 * DAY);
     const smoke = "Browser smoke tests before pushing verify screenshots.";
@@ -507,7 +557,7 @@ describe("the operations a consolidation answers with (EO-573)", () => {
     const count = entry("c", "Use count > 10.", NOW);
     for (const flag of [false, true]) expect(rewrite(count, "Use count < 10.", flag, "repository_file", ["Use count < 10 in the ledger."]).success, String(flag)).toBe(false);
     // Set alongside a correction the file bears out: still refused.
-    const file = "Run `pnpm lint` before pushing.";
+    const file = "Always run `pnpm lint` before pushing any code.";
     const fixed = "Always run `pnpm lint` before pushing any code. Save logs.";
     expect(rewrite(always, fixed, true, "repository_file", [file]).success).toBe(false);
     // Cleared by a correction the file bears out: the entry now says what the file does.
@@ -539,6 +589,10 @@ describe("the operations a consolidation answers with (EO-573)", () => {
       ["Check the date with:\n- ~~~sh\n  echo today\n  ~~~", "Check the date with:\n- ~~~sh\n  echo 2026-11-26\n  ~~~"],
       ["Check the date with:\n1. ```sh\n   echo today\n   ```", "Check the date with:\n1. ```sh\n   echo 2026-11-26\n   ```"],
       ["Check the date with:\n>\n>     echo today", "Check the date with:\n>\n>     echo 2026-11-26"],
+      // The reviewer's probe: a fence in a block quote in a list item, and the other way round.
+      ["Check the date with:\n- > ~~~sh\n  > echo today\n  > ~~~", "Check the date with:\n- > ~~~sh\n  > echo 2026-11-26\n  > ~~~"],
+      ["Check the date with:\n> - ~~~sh\n>   echo today\n>   ~~~", "Check the date with:\n> - ~~~sh\n>   echo 2026-11-26\n>   ~~~"],
+      ["Check the date with:\n1. > > ```\n   > > echo today\n   > > ```", "Check the date with:\n1. > > ```\n   > > echo 2026-11-26\n   > > ```"],
     ] as const) {
       const parsed = rewrite(said, body);
       expect(parsed.success, body).toBe(false);
@@ -643,6 +697,24 @@ describe("the operations a consolidation answers with (EO-573)", () => {
     const two = entry("t", "Broken yesterday, fixed on Monday.", written);
     expect(rewrite("Broken 2026-11-25, fixed on Monday.", two).success).toBe(true);
     expect(rewrite("Broken 2026-11-25, fixed on 2026-11-23.", two).success).toBe(false);
+  });
+
+  it("refuses a rewrite of a note with many relative dates at once, without trying every way of placing them (EO-913)", () => {
+    const written = Date.UTC(2026, 10, 26, 15);
+    // The reviewer's probe: many date spans, every one dated, and a word after the last changed.
+    const said = `${Array.from({ length: 60 }, () => "today").join(", ")} it broke.`;
+    const body = `${Array.from({ length: 60 }, () => "2026-11-26").join(", ")} it failed.`;
+    expect(said.length).toBeLessThanOrEqual(MAX_MEMORY_NOTE_CHARS);
+    const started = performance.now();
+    const parsed = consolidationAnswerSchema([entry("m", said, written)], { repositoryFiles: [] }).safeParse(answer({ rewrite: [{ id: "m", body, contradictsRepositoryFile: false, reason: "relative_date" }] }));
+    expect(performance.now() - started).toBeLessThan(250);
+    expect(parsed.success).toBe(false);
+    expect(parsed.error?.issues.map((issue) => issue.message).join(" ")).toMatch(/changes more than the relative dates/);
+    // ...and takes the same rewrite with the word kept.
+    const kept = consolidationAnswerSchema([entry("m", said, written)], { repositoryFiles: [] }).safeParse(
+      answer({ rewrite: [{ id: "m", body: body.replace("failed", "broke"), contradictsRepositoryFile: false, reason: "relative_date" }] }),
+    );
+    expect(kept.success).toBe(true);
   });
 
   it("resolves the relative days and months it can, and no others", () => {
@@ -754,8 +826,10 @@ describe("what a consolidation is told (EO-573, EO-913)", () => {
     expect(prompt).toMatch(/never "Use Postgres 16 for tests\."/);
     expect(prompt).toMatch(/"before" for "prior to", `pnpm test` for `pnpm {2}test`/);
     expect(prompt).toMatch(/"tonight" or "this morning", whose time of day a date would lose/);
-    expect(prompt).toMatch(/a word in code \(inside a code span, however many backticks open it, a fenced code block opened with backticks or tildes, a line indented four spaces — either also inside a block quote or a list item/);
-    expect(prompt).toMatch(/the same value in another notation \("CI" for "continuous integration", "2" for "two", code as prose\)/);
+    expect(prompt).toMatch(/a word in code \(inside a code span, however many backticks open it, a fenced code block opened with backticks or tildes, a line indented four spaces — either also inside block quotes or list items, nested in any order/);
+    expect(prompt).toMatch(/the same value in another notation \("CI" for "continuous integration", "2" for "two", "4 seconds" for "4\.0 seconds", "4s" for "4000ms", "18" for "v18", code as prose\)/);
+    expect(prompt).toMatch(/must be word for word a sentence of the file standing on its own — the same instruction under the same conditions/);
+    expect(prompt).toMatch(/A negation is borne out only by a sentence that negates the same action/);
     expect(prompt).toMatch(/never "Released before 2026-11-25\."/);
     expect(prompt).toMatch(/Any other relative phrase .* stays exactly as it is/);
     expect(prompt).toMatch(/it never sets it, and an entry is never rewritten only to change it/);
