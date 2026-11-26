@@ -16,6 +16,7 @@ import { asRecordWatch, listItemWatches } from "../db/repos/itemWatchesRepo.js";
 import { enqueueWatchCommand } from "../db/repos/recordCommandsRepo.js";
 import { highestRunEventSeq } from "../db/repos/runEventsRepo.js";
 import { readProjectMemories } from "../db/repos/memoriesRepo.js";
+import { entriesNewSinceConsolidated } from "../db/repos/memoryConsolidationsRepo.js";
 import { readProjectSkills } from "../db/repos/skillsRepo.js";
 import {
   adoptLocalPersonRows,
@@ -676,8 +677,22 @@ export async function moveProjectToRecord(options: MoveProjectOptions): Promise<
     // too — memory travels with its project, history and all — and again
     // when one has changed since, as the items are.
     const newMemories = readProjectMemories(db, projectId).filter((entry) => stale(sent.memories, entry.id, entry.updatedAt));
+    // With which of them this machine's last consolidation had settled
+    // (EO-913): the project's consolidation history stays here, and a
+    // record that took every entry it brought for new would send a
+    // settled scope whole to its next scheduled consolidation.
+    const newInScope = new Map<string, Set<string>>();
+    const isNew = (entry: (typeof newMemories)[number]) => {
+      const key = `${entry.scope.kind}:${entry.scope.id}`;
+      let held = newInScope.get(key);
+      if (held === undefined) newInScope.set(key, (held = new Set(entriesNewSinceConsolidated(db, entry.scope))));
+      return held.has(entry.id);
+    };
     for (const page of chunk(newMemories, PAGE.memories)) {
-      const problem = await send({ memories: page });
+      const memorySettled = page
+        .filter((entry) => entry.retiredAt === null && entry.source.type !== "person" && !isNew(entry))
+        .map((entry) => ({ id: entry.id, version: entry.updatedAt }));
+      const problem = await send({ memories: page, memorySettled });
       if (problem !== null) return problem;
       for (const entry of page) sent.memories.set(entry.id, entry.updatedAt);
       carried += page.length;
@@ -901,6 +916,7 @@ function emptyPage(): RecordAdoptPage {
     extensions: [],
     attachments: [],
     memories: [],
+    memorySettled: [],
     skills: [],
   };
 }

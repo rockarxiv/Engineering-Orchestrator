@@ -394,9 +394,9 @@ describe("the operations a consolidation answers with (EO-573)", () => {
   });
 
   it("refuses a phrase a source happens to say that the rewrite made only by deleting words (EO-913)", () => {
-    const always = entry("a", "Always run pnpm test before pushing any code.", NOW - 2 * DAY);
+    const always = entry("a", "Always run `pnpm test` before pushing any code.", NOW - 2 * DAY);
     const other = "Check the branch name before pushing code.";
-    const shorter = { id: "a", body: "Run pnpm test before pushing code.", contradictsRepositoryFile: false };
+    const shorter = { id: "a", body: "Run `pnpm test` before pushing code.", contradictsRepositoryFile: false };
     // "before pushing code" is the file's, and the newer entry's, but every word of it was the entry's own.
     const file = consolidationAnswerSchema([always], { repositoryFiles: [other] }).safeParse(answer({ rewrite: [{ ...shorter, reason: "repository_file" }] }));
     expect(file.success).toBe(false);
@@ -405,19 +405,19 @@ describe("the operations a consolidation answers with (EO-573)", () => {
     expect(newer.success).toBe(false);
     expect(newer.error?.issues.map((issue) => issue.message).join(" ")).toMatch(/not one or more whole sentences of a newer entry/);
     // A correction that puts the source's sentence in place of the one it corrects is taken.
-    const logs = entry("a", "Always run pnpm test before pushing any code. Save logs.", NOW - 2 * DAY);
-    const lint = { id: "a", body: "Run pnpm lint before pushing. Save logs.", contradictsRepositoryFile: false };
-    expect(consolidationAnswerSchema([logs], { repositoryFiles: ["Run pnpm lint before pushing."] }).safeParse(answer({ rewrite: [{ ...lint, reason: "repository_file" }] })).success).toBe(true);
+    const logs = entry("a", "Always run `pnpm test` before pushing any code. Save logs.", NOW - 2 * DAY);
+    const lint = { id: "a", body: "Run `pnpm lint` before pushing. Save logs.", contradictsRepositoryFile: false };
+    expect(consolidationAnswerSchema([logs], { repositoryFiles: ["Run `pnpm lint` before pushing."] }).safeParse(answer({ rewrite: [{ ...lint, reason: "repository_file" }] })).success).toBe(true);
     // A new word common to every text is no evidence: "the" joined to the entry's words.
     expect(
       consolidationAnswerSchema([always], { repositoryFiles: ["Run the pnpm checks."] }).safeParse(
-        answer({ rewrite: [{ id: "a", body: "Always run the pnpm test before pushing any code.", contradictsRepositoryFile: false, reason: "repository_file" }] }),
+        answer({ rewrite: [{ id: "a", body: "Always run the `pnpm test` before pushing any code.", contradictsRepositoryFile: false, reason: "repository_file" }] }),
       ).success,
     ).toBe(false);
   });
 
   it("refuses a paraphrase that shares only a few words with the source, under either source-backed reason (EO-913)", () => {
-    const always = entry("a", "Always run pnpm test before pushing any code. Save logs.", NOW - 2 * DAY);
+    const always = entry("a", "Always run `pnpm test` before pushing any code. Save logs.", NOW - 2 * DAY);
     const smoke = "Browser smoke tests before pushing verify screenshots.";
     const under = (reason: "repository_file" | "newer_entry", body: string, at = always, source = smoke) =>
       consolidationAnswerSchema(reason === "repository_file" ? [at] : [at, entry("n", source, NOW - DAY)], { repositoryFiles: reason === "repository_file" ? [source] : [] }).safeParse(
@@ -430,7 +430,7 @@ describe("the operations a consolidation answers with (EO-573)", () => {
       expect(paraphrase.success, reason).toBe(false);
       expect(message(paraphrase), reason).toMatch(/not one or more whole sentences/);
       // The whole sentence carried over, with the entry shortened beside it.
-      const beside = under(reason, "Run pnpm test. Browser smoke tests before pushing verify screenshots. Save logs.");
+      const beside = under(reason, "Run `pnpm test`. Browser smoke tests before pushing verify screenshots. Save logs.");
       expect(beside.success, reason).toBe(false);
       expect(message(beside), reason).toMatch(/not one or more whole sentences/);
       // The pnpm instruction replaced by the source's sentence on browser smoke tests: another fact, not a correction of it.
@@ -443,25 +443,25 @@ describe("the operations a consolidation answers with (EO-573)", () => {
       expect(repeated.success, reason).toBe(false);
       expect(message(repeated), reason).toMatch(/says nothing it did not, so it corrects nothing/);
       // A sign changed in another sentence, beside a correction the source bears out: a change outside it.
-      const threshold = entry("a", "Run pnpm test before pushing. The threshold is -1.", NOW - 2 * DAY);
-      const sign = under(reason, "Run pnpm lint before pushing. The threshold is 1.", threshold, "Run pnpm lint before pushing.");
+      const threshold = entry("a", "Run `pnpm test` before pushing. The threshold is -1.", NOW - 2 * DAY);
+      const sign = under(reason, "Run `pnpm lint` before pushing. The threshold is 1.", threshold, "Run `pnpm lint` before pushing.");
       expect(sign.success, reason).toBe(false);
       expect(message(sign), reason).toMatch(/not one or more whole sentences/);
       // ...and the sign corrected where the source says it, the rest kept: taken.
       const read = entry("a", "The threshold is -1; it is read at start.", NOW - 2 * DAY);
       expect(under(reason, "The threshold is 1; it is read at start.", read, "The threshold is 1.").success, reason).toBe(true);
       // The entry replaced whole by the source's sentence: the source again, which is retired, not rewritten.
-      const single = entry("a", "Always run pnpm test before pushing any code.", NOW - 2 * DAY);
-      const only = under(reason, "Always run pnpm lint before pushing any code.", single, "Always run pnpm lint before pushing any code.");
+      const single = entry("a", "Always run `pnpm test` before pushing any code.", NOW - 2 * DAY);
+      const only = under(reason, "Always run `pnpm lint` before pushing any code.", single, "Always run `pnpm lint` before pushing any code.");
       expect(only.success, reason).toBe(false);
       expect(message(only), reason).toMatch(/says nothing but what/);
       // A punctuation-only change corrects nothing.
-      expect(under(reason, "Always run pnpm test before pushing any code! Save logs.").success, reason).toBe(false);
+      expect(under(reason, "Always run `pnpm test` before pushing any code! Save logs.").success, reason).toBe(false);
     }
   });
 
   it("never takes a rewrite that sets contradictsRepositoryFile, nor one that changes only the flag (EO-913)", () => {
-    const always = entry("a", "Always run pnpm test before pushing any code. Save logs.", NOW - 2 * DAY);
+    const always = entry("a", "Always run `pnpm test` before pushing any code. Save logs.", NOW - 2 * DAY);
     const smoke = "Browser smoke tests before pushing verify screenshots.";
     const rewrite = (at: typeof always, body: string, contradictsRepositoryFile: boolean, reason: string, files: string[], others: (typeof always)[] = []) =>
       consolidationAnswerSchema([at, ...others], { repositoryFiles: files }).safeParse(answer({ rewrite: [{ id: at.id, body, contradictsRepositoryFile, reason }] }));
@@ -476,18 +476,44 @@ describe("the operations a consolidation answers with (EO-573)", () => {
     const count = entry("c", "Use count > 10.", NOW);
     for (const flag of [false, true]) expect(rewrite(count, "Use count < 10.", flag, "repository_file", ["Use count < 10 in the ledger."]).success, String(flag)).toBe(false);
     // Set alongside a correction the file bears out: still refused.
-    const file = "Run pnpm lint before pushing.";
-    expect(rewrite(always, "Run pnpm lint before pushing. Save logs.", true, "repository_file", [file]).success).toBe(false);
+    const file = "Run `pnpm lint` before pushing.";
+    expect(rewrite(always, "Run `pnpm lint` before pushing. Save logs.", true, "repository_file", [file]).success).toBe(false);
     // Cleared by a correction the file bears out: the entry now says what the file does.
-    expect(rewrite(wasFlagged, "Run pnpm lint before pushing. Save logs.", false, "repository_file", [file]).success).toBe(true);
+    expect(rewrite(wasFlagged, "Run `pnpm lint` before pushing. Save logs.", false, "repository_file", [file]).success).toBe(true);
     // A newer entry's correction keeps the flag as it was, either way.
     const newer = entry("n", file, NOW - DAY);
-    expect(rewrite(always, "Run pnpm lint before pushing. Save logs.", false, "newer_entry", [], [newer]).success).toBe(true);
-    expect(rewrite(always, "Run pnpm lint before pushing. Save logs.", true, "newer_entry", [], [newer]).success).toBe(false);
-    expect(rewrite(wasFlagged, "Run pnpm lint before pushing. Save logs.", false, "newer_entry", [], [newer]).success).toBe(false);
+    expect(rewrite(always, "Run `pnpm lint` before pushing. Save logs.", false, "newer_entry", [], [newer]).success).toBe(true);
+    expect(rewrite(always, "Run `pnpm lint` before pushing. Save logs.", true, "newer_entry", [], [newer]).success).toBe(false);
+    expect(rewrite(wasFlagged, "Run `pnpm lint` before pushing. Save logs.", false, "newer_entry", [], [newer]).success).toBe(false);
   });
 
-  it("holds a relative_date rewrite to the day the phrase meant, counted from the day the entry was written, and to its span (EO-913)", () => {
+    it("refuses a rewording that disagrees with the entry in nothing concrete, however the source words it, under either source-backed reason (EO-913)", () => {
+    const logs = entry("a", "Run pnpm test before pushing any code. Save logs.", NOW - 2 * DAY);
+    const under = (reason: "repository_file" | "newer_entry", at: typeof logs, body: string, source: string) =>
+      consolidationAnswerSchema(reason === "repository_file" ? [at] : [at, entry("n", source, NOW - DAY)], { repositoryFiles: reason === "repository_file" ? [source] : [] }).safeParse(
+        answer({ rewrite: [{ id: at.id, body, contradictsRepositoryFile: false, reason }] }),
+      );
+    for (const reason of ["repository_file", "newer_entry"] as const) {
+      // A synonym and a shortening, the source's sentence word for word: the same instruction, in other words.
+      const synonym = under(reason, logs, "Execute pnpm test before pushing. Save logs.", "Execute pnpm test before pushing.");
+      expect(synonym.success, reason).toBe(false);
+      expect(synonym.error?.issues.map((issue) => issue.message).join(" "), reason).toMatch(/disagrees with it in no number, name, path, code or negation/);
+      // A command in plain words changed for another: nothing EO can tell from a synonym, so left as it is.
+      expect(under(reason, logs, "Run pnpm lint before pushing. Save logs.", "Run pnpm lint before pushing.").success, reason).toBe(false);
+      // The same change, with the command as code: a concrete disagreement.
+      const coded = entry("a", "Run `pnpm test` before pushing any code. Save logs.", NOW - 2 * DAY);
+      expect(under(reason, coded, "Run `pnpm lint` before pushing. Save logs.", "Run `pnpm lint` before pushing.").success, reason).toBe(true);
+      // A negation, a version and an acronym are each one.
+      const migrations = entry("a", "Run the migrations before tests. Save logs.", NOW - 2 * DAY);
+      expect(under(reason, migrations, "Do not run the migrations before tests. Save logs.", "Do not run the migrations before tests.").success, reason).toBe(true);
+      const postgres = entry("a", "The tests need Postgres 15. Save logs.", NOW - 2 * DAY);
+      expect(under(reason, postgres, "The tests need Postgres 16. Save logs.", "The tests need Postgres 16.").success, reason).toBe(true);
+      const ledger = entry("a", "The ledger is kept in UTC. Save logs.", NOW - 2 * DAY);
+      expect(under(reason, ledger, "The ledger is kept in local time. Save logs.", "The ledger is kept in local time.").success, reason).toBe(true);
+    }
+  });
+
+it("holds a relative_date rewrite to the day the phrase meant, counted from the day the entry was written, and to its span (EO-913)", () => {
     // Written 2026-11-26.
     const written = Date.UTC(2026, 10, 26, 15);
     const released = entry("r", "Released yesterday.", written);
@@ -539,6 +565,9 @@ describe("the operations a consolidation answers with (EO-573)", () => {
       ["Counts go in today_count.", "Counts go in 2026-11-26_count."],
       ["Write today.json first.", "Write 2026-11-26.json first."],
       ["Read config.today first.", "Read config.2026-11-26 first."],
+      ["Use the ``today`` column for grouping.", "Use the ``2026-11-26`` column for grouping."],
+      ["Use the `` `today` `` column for grouping.", "Use the `` `2026-11-26` `` column for grouping."],
+      ["Use the ```today``` column for grouping.", "Use the ```2026-11-26``` column for grouping."],
     ] as const) {
       const parsed = rewrite(body, entry("k", said, written));
       expect(parsed.success, body).toBe(false);
@@ -546,6 +575,18 @@ describe("the operations a consolidation answers with (EO-573)", () => {
     }
     // ...while the prose beside it may be dated, the code kept as it was.
     expect(rewrite("Released 2026-11-26; see the `today` column.", entry("k", "Released today; see the `today` column.", written)).success).toBe(true);
+    // Not a character changes outside the date: not a space, in code or in prose, nor a letter's case.
+    for (const [said, body] of [
+      ["Released yesterday. Prefix is `a  b`.", "Released 2026-11-25. Prefix is `a b`."],
+      ["Released yesterday.  Then tagged.", "Released 2026-11-25. Then tagged."],
+      ["Released yesterday.", "Released  2026-11-25."],
+      ["Released yesterday.", "Released on  2026-11-25."],
+      ["Yesterday it was released.", "yesterday it was released."],
+    ] as const) {
+      expect(rewrite(body, entry("w", said, written)).success, body).toBe(false);
+    }
+    expect(rewrite("Released 2026-11-25. Prefix is `a  b`.", entry("w", "Released yesterday. Prefix is `a  b`.", written)).success).toBe(true);
+    expect(rewrite("On 2026-11-25 it was released.", entry("w", "Yesterday it was released.", written)).success).toBe(true);
     // A phrase that says a time of day keeps it: a date would lose it.
     for (const [said, body] of [
       ["Disable the job tonight.", "Disable the job on 2026-11-26."],
@@ -669,7 +710,8 @@ describe("what a consolidation is told (EO-573, EO-913)", () => {
     expect(prompt).toMatch(/keeps at least as many of that sentence's words as it adds, and as it drops/);
     expect(prompt).toMatch(/only repeats the entry's in other or fewer words corrects nothing/);
     expect(prompt).toMatch(/"tonight" or "this morning", whose time of day a date would lose/);
-    expect(prompt).toMatch(/a word in code \(inside backticks/);
+    expect(prompt).toMatch(/a word in code \(inside a code span, however many backticks open it/);
+    expect(prompt).toMatch(/differs from it in a number, a name or path, a code span, an acronym or a negation/);
     expect(prompt).toMatch(/never "Released before 2026-11-25\."/);
     expect(prompt).toMatch(/Any other relative phrase .* stays exactly as it is/);
     expect(prompt).toMatch(/it never sets it, and an entry is never rewritten only to change it/);

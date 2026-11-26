@@ -24,7 +24,8 @@ import { items, itemTypes, memories, projects, workspaces } from "../schema.js";
  * function here deletes a row.
  */
 
-type Row = typeof memories.$inferSelect;
+/** A row as this module writes it: `settled_version` is only a project move's (`projectMoveRepo`), and left as it is. */
+type Row = Omit<typeof memories.$inferSelect, "settledVersion">;
 
 function toView(row: Row): MemoryEntryView {
   const source: MemorySource =

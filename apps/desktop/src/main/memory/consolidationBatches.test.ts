@@ -11,6 +11,7 @@ import {
   pickCandidateGroups,
   planBatches,
   planNewEntryBatches,
+  refreshBatch,
   type BatchableEntry,
 } from "./consolidationBatches.js";
 
@@ -121,7 +122,7 @@ describe("a scheduled consolidation's batches (EO-913)", () => {
     expect(planNewEntryBatches([], scope, new Map())).toEqual([]);
   });
 
-  it("puts each entry in at most one batch, and sends each new entry with its own neighbours however the lists overlap", () => {
+  it("sends each new entry with its own neighbours however the lists overlap, a shared one once in its batch", () => {
     const scope = entries(20, 100);
     const [a, b, c] = [scope[10]!, scope[11]!, scope[12]!];
     const neighbours = new Map([
@@ -171,25 +172,34 @@ describe("a scheduled consolidation's batches (EO-913)", () => {
     expect(new Set(ids(batches.flat())).size).toBe(batches.flat().length);
   });
 
-  it("brings a new entry's own neighbours into the batch it is placed in before an overlapping group can close that batch (EO-913)", () => {
+  it("sends every new entry with its whole list in one batch, though an overlapping group closed the batch it was first given in (EO-913)", () => {
     const scope = entries(60, 1_000);
     // a is oldest, then c, then b: b is one of a's neighbours, and its only neighbour is d.
     const [a, c, b, d] = [scope[40]!, scope[41]!, scope[42]!, scope[30]!];
-    const neighbours = new Map([
+    const lists = new Map([
       [a.id, [...scope.slice(0, 7).map((entry) => entry.id), b.id]],
-      // c shares scope[0] with a, so they are one group, too large for one batch.
+      // c shares scope[0] with a, and the two lists do not fit one batch.
       [c.id, [scope[0]!.id, ...scope.slice(10, 17).map((entry) => entry.id)]],
       [b.id, [d.id]],
     ]);
-    const batches = planNewEntryBatches([a, c, b], scope, neighbours);
-    const batchOf = (id: string) => batches.findIndex((batch) => ids(batch).includes(id));
-    // a's list fills 9,000 characters, and c's would take it past 15,000: d still joins b first.
-    expect(batchOf(d.id)).toBe(batchOf(b.id));
-    expect(batchOf(b.id)).toBe(batchOf(a.id));
-    expect(batchOf(c.id)).not.toBe(batchOf(a.id));
-    for (const id of scope.slice(10, 17).map((entry) => entry.id)) expect(batchOf(id)).toBe(batchOf(c.id));
-    for (const batch of batches) expect(charsOf(batch)).toBeLessThanOrEqual(CONSOLIDATION_BATCH_MAX_CHARS);
-    expect(new Set(ids(batches.flat())).size).toBe(batches.flat().length);
+    const batches = planNewEntryBatches([a, c, b], scope, lists);
+    const together = (id: string) => batches.some((batch) => [id, ...lists.get(id)!].every((one) => ids(batch).includes(one)));
+    for (const id of [a.id, c.id, b.id]) expect(together(id), id).toBe(true);
+    for (const batch of batches) {
+      expect(charsOf(batch)).toBeLessThanOrEqual(CONSOLIDATION_BATCH_MAX_CHARS);
+      expect(new Set(ids(batch)).size).toBe(batch.length);
+    }
+  });
+
+  it("gives a neighbour many new entries rank to every batch they fill, not only the first (EO-913)", () => {
+    const shared = { id: "shared", body: "Shared context.", createdAt: NOW - 2_000_000 };
+    const fresh = entries(31, 100);
+    const lists = new Map(fresh.map((entry) => [entry.id, [shared.id]]));
+    const batches = planNewEntryBatches(fresh, [shared, ...fresh], lists);
+    expect(batches.map((batch) => batch.length)).toEqual([30, 3]);
+    for (const batch of batches) expect(ids(batch)).toContain(shared.id);
+    // Each new entry in exactly one batch.
+    expect(batches.flat().filter((entry) => entry.id !== shared.id)).toHaveLength(31);
   });
 
   it("starts another batch where the next new entry and its neighbours would take one over its limits", () => {
@@ -224,6 +234,34 @@ describe("a scheduled consolidation's batches (EO-913)", () => {
     const scope = entries(50, 200);
     const fresh = [scope[30]!, scope[20]!];
     expect(planNewEntryBatches(fresh, scope, null).map(ids)).toEqual([[scope[20]!.id, scope[30]!.id]]);
+  });
+});
+
+describe("a planned batch, once the batches before it were applied (EO-913)", () => {
+  const ids = (batch: readonly { id: string }[]) => batch.map((entry) => entry.id);
+  it("leaves out what they retired, gives what they folded or rewrote it into once, and follows a replacement replaced again", () => {
+    const [a, b, c, d] = entries(4, 100);
+    const m = { id: "m", body: "Folded.", createdAt: NOW };
+    const r = { id: "r", body: "Rewritten again.", createdAt: NOW + 1 };
+    const now = new Map([m, r].map((entry) => [entry.id, entry]));
+    // a and b were folded into m; c was retired outright; m was then rewritten as r.
+    const replaced = new Map([
+      [a!.id, ["m"]],
+      [b!.id, ["m"]],
+      [c!.id, []],
+      ["m", ["r"]],
+    ]);
+    expect(ids(refreshBatch([a!, b!, c!, d!], replaced, (id) => now.get(id)))).toEqual([d!.id, "r"]);
+    // Untouched, it is as planned.
+    expect(refreshBatch([d!], replaced, (id) => now.get(id))).toEqual([d!]);
+    // What it was folded into is gone too: nothing in its place.
+    expect(ids(refreshBatch([a!, d!], new Map([[a!.id, ["gone"]]]), () => undefined))).toEqual([d!.id]);
+  });
+
+  it("puts a replacement in only as far as the batch's limits allow", () => {
+    const [a, d] = entries(2, 100);
+    const long = { id: "long", body: "L".repeat(CONSOLIDATION_BATCH_MAX_CHARS), createdAt: NOW };
+    expect(ids(refreshBatch([a!, d!], new Map([[a!.id, ["long"]]]), () => long))).toEqual([d!.id]);
   });
 });
 

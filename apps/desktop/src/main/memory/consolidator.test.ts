@@ -63,6 +63,7 @@ import {
   MEMORY_CONSOLIDATE_SYSTEM,
   MEMORY_CROSS_BATCH_MERGE_SYSTEM,
   MEMORY_PROPOSE_SKILLS_SYSTEM,
+  resolvedDate,
 } from "./consolidation.js";
 import { CONSOLIDATION_BATCH_MAX_CHARS, CONSOLIDATION_BATCH_MAX_ENTRIES, firstLine, MEMORY_MERGE_CANDIDATES_SYSTEM } from "./consolidationBatches.js";
 import { createMemoryConsolidator, readRepositoryFiles, systemAgentSetup, type MemoryConsolidator, type MemoryConsolidatorOptions } from "./consolidator.js";
@@ -130,6 +131,23 @@ describe("automatic memory consolidation", () => {
     const written = addMemory(handle.db, { scope, body, source: { type: "person", personId: null }, now: at });
     if (!written.ok) throw new Error(written.problem);
     return written.entry;
+  }
+
+  /** The real side caller, over a backend that answers `data`: the answer is held to the request's own schema. */
+  function answeringWith(data: unknown) {
+    const provider = {
+      async *sideCall(): AsyncIterable<AgentEvent> {
+        yield { type: "result", data } satisfies AgentEvent;
+      },
+    } as unknown as AgentProvider;
+    return createSideCaller({
+      db: handle.db,
+      provider: () => provider,
+      smallModel: async () => "small",
+      guards: () => ({ perItemBudgetCents: null, dailyBudgetCents: null }),
+      slots: createSideCallSlots({ limit: () => 1, busy: () => 0 }),
+      workDirectory: () => ({ path: "/tmp", remove: () => {} }),
+    });
   }
 
   /**
@@ -335,20 +353,19 @@ describe("automatic memory consolidation", () => {
 
     it("retires, merges and rewrites under one consolidation id, leaves what it does not name, keeps the newest replaced entry's age, and restore puts the earlier set back", async () => {
       const at = Date.now() - 3 * DAY;
-      const agents = Array.from({ length: 18 }, (_, index) => byAgent(workspace, `Agent note ${index}: ${"z".repeat(600)}`, at + index * HOUR));
+      const agents = Array.from({ length: 18 }, (_, index) =>
+        byAgent(workspace, index === 3 ? `Run the tests with \`make test\`. Agent note 3: ${"z".repeat(600)}` : `Agent note ${index}: ${"z".repeat(600)}`, at + index * HOUR),
+      );
       const people = [byPerson(workspace, "A person wrote this.", at), byPerson(workspace, "And this.", at)];
       const before = listMemories(handle.db, workspace).map((entry) => [entry.id, entry.body, entry.createdAt]);
-      const sideCall = vi.fn(
-        async (): Promise<Answer> => ({
-          ok: true,
-          value: {
-            // agents[0] is in no operation: it stays as it was.
-            retire: agents.slice(4).map((entry) => ({ id: entry.id, reason: "Stale: the flow it describes is gone." })),
-            merge: [{ body: "Tests need Postgres 16 (since 2026-10-15).", from: [agents[2]!.id, agents[1]!.id], contradictsRepositoryFile: false }],
-            rewrite: [{ id: agents[3]!.id, body: "The API tests run with `make test` now; the CLAUDE.md is out of date.", contradictsRepositoryFile: true, reason: "repository_file" }],
-          },
-        }),
-      );
+      // Held to the real schema: the rewrite puts the CLAUDE.md's sentence in place of the one it corrects.
+      const rewritten = `Run the tests with \`pnpm test:api\`. Agent note 3: ${"z".repeat(600)}`;
+      const sideCall = answeringWith({
+        // agents[0] is in no operation: it stays as it was.
+        retire: agents.slice(4).map((entry) => ({ id: entry.id, reason: "Stale: the flow it describes is gone." })),
+        merge: [{ body: "Tests need Postgres 16 (since 2026-10-15).", from: [agents[2]!.id, agents[1]!.id], contradictsRepositoryFile: false }],
+        rewrite: [{ id: agents[3]!.id, body: rewritten, contradictsRepositoryFile: false, reason: "repository_file" }],
+      }).sideCall;
 
       askNow(consolidatorWith(sideCall));
       await consolidator!.idle();
@@ -364,12 +381,12 @@ describe("automatic memory consolidation", () => {
       expect(consolidation!.retiredIds.sort()).toEqual(retired.map((entry) => entry.id).sort());
 
       const written = active.filter((entry) => entry.consolidationId === consolidation!.id);
-      expect(written.map((entry) => entry.body).sort()).toEqual(["Tests need Postgres 16 (since 2026-10-15).", "The API tests run with `make test` now; the CLAUDE.md is out of date."]);
+      expect(written.map((entry) => entry.body).sort()).toEqual([rewritten, "Tests need Postgres 16 (since 2026-10-15)."].sort());
       expect(consolidation!.writtenIds.sort()).toEqual(written.map((entry) => entry.id).sort());
       // A merged entry keeps the age and source of the newest it replaced, whatever order `from` names them in…
       expect(written.find((entry) => entry.body.startsWith("Tests need"))).toMatchObject({ createdAt: agents[2]!.createdAt, source: { type: "run", runId, itemId } });
-      // …and a rewritten one its own entry's, with the flag it was given.
-      expect(written.find((entry) => entry.body.startsWith("The API tests"))).toMatchObject({ createdAt: agents[3]!.createdAt, contradictsRepositoryFile: true });
+      // …and a rewritten one its own entry's.
+      expect(written.find((entry) => entry.body === rewritten)).toMatchObject({ createdAt: agents[3]!.createdAt, contradictsRepositoryFile: false });
 
       expect(active.find((entry) => entry.id === agents[0]!.id)).toMatchObject({ consolidationId: null, retiredAt: null, body: agents[0]!.body });
       for (const person of people) expect(active.find((entry) => entry.id === person.id)).toMatchObject({ retiredAt: null, body: person.body });
@@ -380,16 +397,18 @@ describe("automatic memory consolidation", () => {
       expect(listMemories(handle.db, workspace).map((entry) => [entry.id, entry.body, entry.createdAt])).toEqual(before);
     });
 
-    it("skips a rewrite that is its entry word for word with the same flag, leaving that entry as it is", async () => {
+    it("skips, in the repository, a rewrite that is its entry word for word with the same flag, leaving that entry as it is", () => {
+      // The answer schema refuses such a rewrite (EO-913); what applying one does is the repository's, so it is tested there.
       const agents = Array.from({ length: 10 }, (_, index) => byAgent(workspace, `Note ${index}`, Date.now() - DAY + index));
-      const sideCall = vi.fn(
-        async (): Promise<Answer> => ({
-          ok: true,
-          value: { ...NOTHING, retire: [{ id: agents[1]!.id, reason: "Stale." }], rewrite: [{ id: agents[0]!.id, body: agents[0]!.body, contradictsRepositoryFile: false, reason: "relative_date" }] },
-        }),
-      );
-      askNow(consolidatorWith(sideCall));
-      await consolidator!.idle();
+      const row = startConsolidation(handle.db, { scope: workspace, trigger: "manual", now: Date.now() });
+      const applied = applyConsolidation(handle.db, {
+        id: row.id,
+        sent: agents,
+        answer: { ...NOTHING, retire: [{ id: agents[1]!.id, reason: "Stale." }], rewrite: [{ id: agents[0]!.id, body: agents[0]!.body, contradictsRepositoryFile: false }] },
+        note: null,
+        now: Date.now(),
+      });
+      expect(applied.ok).toBe(true);
 
       const [consolidation] = listConsolidations(handle.db, workspace);
       expect(consolidation).toMatchObject({ status: "succeeded", retiredIds: [agents[1]!.id], writtenIds: [] });
@@ -399,16 +418,15 @@ describe("automatic memory consolidation", () => {
     it("stores an entry flagged as contradicting the workspace's file with that flag, and never changes the file", async () => {
       const before = { text: readFileSync(join(folder, "CLAUDE.md"), "utf8"), modified: statSync(join(folder, "CLAUDE.md")).mtimeMs };
       const agents = Array.from({ length: 10 }, (_, index) => byAgent(workspace, `Note ${index}`, Date.now() - DAY + index));
-      const sideCall = vi.fn(
-        async (): Promise<Answer> => ({
-          ok: true,
-          value: {
-            retire: [],
-            merge: [{ body: "The ledger is in UTC.", from: agents.slice(0, 9).map((entry) => entry.id), contradictsRepositoryFile: false }],
-            rewrite: [{ id: agents[9]!.id, body: "Run the API tests with `make test`; `pnpm test:api` was removed on 2026-10-12.", contradictsRepositoryFile: true, reason: "repository_file" }],
-          },
-        }),
-      );
+      // Held to the real schema: a flag is set by a merge, which carries the entry it is about; a rewrite never sets one.
+      const sideCall = answeringWith({
+        retire: [],
+        merge: [
+          { body: "The ledger is in UTC.", from: agents.slice(0, 8).map((entry) => entry.id), contradictsRepositoryFile: false },
+          { body: "Run the API tests with `make test`; `pnpm test:api` was removed on 2026-10-12.", from: [agents[8]!.id, agents[9]!.id], contradictsRepositoryFile: true },
+        ],
+        rewrite: [],
+      }).sideCall;
 
       askNow(consolidatorWith(sideCall));
       await consolidator!.idle();
@@ -450,15 +468,16 @@ describe("automatic memory consolidation", () => {
     it("checks a project's entries against its workspace's CLAUDE.md, and keeps the flag on one that corrects it (EO-514)", async () => {
       const at = Date.now() - 3 * DAY;
       const agents = Array.from({ length: 10 }, (_, index) => byAgent(project, `Project note ${index}`, at + index));
+      // Held to the real schema: the flag goes on the merge that carries the correcting entry.
       const sideCall = vi.fn(
-        async (_request: ConsolidateRequest): Promise<Answer> => ({
-          ok: true,
-          value: {
-            retire: [],
-            merge: [{ body: "The ledger is in UTC.", from: agents.slice(0, 9).map((entry) => entry.id), contradictsRepositoryFile: false }],
-            rewrite: [{ id: agents[9]!.id, body: "Run the API tests with `make test`; `pnpm test:api` was removed on 2026-10-12.", contradictsRepositoryFile: true, reason: "repository_file" }],
-          },
-        }),
+        answeringWith({
+          retire: [],
+          merge: [
+            { body: "The ledger is in UTC.", from: agents.slice(0, 8).map((entry) => entry.id), contradictsRepositoryFile: false },
+            { body: "Run the API tests with `make test`; `pnpm test:api` was removed on 2026-10-12.", from: [agents[8]!.id, agents[9]!.id], contradictsRepositoryFile: true },
+          ],
+          rewrite: [],
+        }).sideCall as (request: ConsolidateRequest) => Promise<Answer>,
       );
 
       askNow(consolidatorWith(sideCall));
@@ -474,23 +493,6 @@ describe("automatic memory consolidation", () => {
   describe("the progress an answer makes (EO-573)", () => {
     function fill(count = 10) {
       return Array.from({ length: count }, (_, index) => byAgent(workspace, `Note ${index}`, Date.now() - DAY + index));
-    }
-
-    /** The real side caller, over a backend that answers `data`: the answer is held to the request's own schema. */
-    function answeringWith(data: unknown) {
-      const provider = {
-        async *sideCall(): AsyncIterable<AgentEvent> {
-          yield { type: "result", data } satisfies AgentEvent;
-        },
-      } as unknown as AgentProvider;
-      return createSideCaller({
-        db: handle.db,
-        provider: () => provider,
-        smallModel: async () => "small",
-        guards: () => ({ perItemBudgetCents: null, dailyBudgetCents: null }),
-        slots: createSideCallSlots({ limit: () => 1, busy: () => 0 }),
-        workDirectory: () => ({ path: "/tmp", remove: () => {} }),
-      });
     }
 
     it("applies an answer however little it changes: one retirement of ten", async () => {
@@ -1030,6 +1032,35 @@ describe("automatic memory consolidation", () => {
     /** `count` new notes, each on its own, so a schedule run without neighbours batches them 30 at a time. */
     // Written before the run that reads them, oldest first: a run reads what was written by the moment it starts.
     const newNotes = (count: number) => Array.from({ length: count }, (_, index) => byAgent(project, `New fact ${index}: ${"n".repeat(60)}`, Date.now() - count + index));
+
+    it("gives a neighbour two batches share to the second as the first left it, so neither is applied against a stale entry (EO-913)", async () => {
+      const old = settledScope();
+      const shared = old[0]!;
+      const fresh = newNotes(31);
+      givenToFiveRuns(fresh);
+      const inputs: string[] = [];
+      let merged: string | null = null;
+      const sideCall = vi.fn(async (request: AnyRequest): Promise<AnyAnswer> => {
+        inputs.push(request.input);
+        // The first batch folds the shared neighbour into its first new entry; the second changes nothing.
+        const value = inputs.length === 1 ? { ...NOTHING, merge: [{ from: [shared.id, fresh[0]!.id], body: "The shared fact, and the first new one.", contradictsRepositoryFile: false }] } : NOTHING;
+        return { ok: true, value: request.schema.parse(value) };
+      });
+      // Every new entry ranks the same old one as its only neighbour.
+      const runner = consolidatorWith(sideCall as never, { neighbours: (_scope, entries) => new Map(entries.map((entry) => [entry.id, [shared.id]])) });
+      runner.start();
+      await runner.idle();
+
+      expect(inputs).toHaveLength(2);
+      expect(idsIn(inputs[0]!)).toContain(shared.id);
+      merged = listMemories(handle.db, project).find((entry) => entry.body === "The shared fact, and the first new one.")?.id ?? null;
+      expect(merged).not.toBeNull();
+      // The second batch has the room, so it is given the neighbour too — as the first batch left it.
+      expect(idsIn(inputs[1]!)).not.toContain(shared.id);
+      expect(idsIn(inputs[1]!)).toContain(merged);
+      expect(listConsolidations(handle.db, project).filter((row) => row.trigger === "schedule" && row.status !== "succeeded")).toEqual([]);
+      expect(entriesNewSinceConsolidated(handle.db, project)).toEqual([]);
+    });
 
     it("keeps the entries a run never reached new when EO quits between two of its batches, so they are given after the restart", async () => {
       settledScope();
@@ -2616,16 +2647,18 @@ describe("automatic memory consolidation", () => {
       const at = Date.now() - DAY;
       const entries = Array.from({ length: 40 }, (_, index) => byAgent(workspace, `Note ${index}: ${"y".repeat(80)}`, at + index * 1_000));
       const [a, b, untouched] = [entries[0]!, entries[1]!, entries[5]!];
-      const shorter = "Notes 0 and 1, merged and then reworded.";
+      // The fold keeps the age of the newer of the two, b, and the pass dates its "yesterday" from that (EO-913).
+      const shorter = `Notes 0 and 1, checked ${resolvedDate("yesterday", b.createdAt)!}.`;
       const sideCall = vi.fn(async (request: AnyRequest): Promise<AnyAnswer> => {
         if (request.system === MEMORY_CONSOLIDATE_SYSTEM) {
           // The first batch folds two entries into one; the second changes nothing.
-          return { ok: true, value: request.input.includes(a.id) ? { ...NOTHING, merge: [{ from: [a.id, b.id], body: "Notes 0 and 1.", contradictsRepositoryFile: false }] } : NOTHING };
+          return { ok: true, value: request.input.includes(a.id) ? { ...NOTHING, merge: [{ from: [a.id, b.id], body: "Notes 0 and 1, checked yesterday.", contradictsRepositoryFile: false }] } : NOTHING };
         }
-        const folded = listMemories(handle.db, workspace).find((entry) => entry.body === "Notes 0 and 1.")!;
+        const folded = listMemories(handle.db, workspace).find((entry) => entry.body === "Notes 0 and 1, checked yesterday.")!;
         if (request.system === MEMORY_MERGE_CANDIDATES_SYSTEM) return { ok: true, value: { groups: [{ ids: [folded.id, entries[35]!.id] }] } };
-        // The pass's last call only rewords the folded one: a rewrite of an entry folded from several.
-        return { ok: true, value: { ...NOTHING, rewrite: [{ id: folded.id, body: shorter, contradictsRepositoryFile: false }] } };
+        // The pass's last call only dates the folded one: a rewrite of an entry folded from several.
+        const value = { ...NOTHING, rewrite: [{ id: folded.id, body: shorter, contradictsRepositoryFile: false, reason: "relative_date" as const }] };
+        return { ok: true, value: request.schema.parse(value) };
       });
       const proposeSkills = vi.fn(async (request: AnyRequest): Promise<AnyAnswer> => {
         const reworded = listMemories(handle.db, workspace).find((entry) => entry.body === shorter)!;

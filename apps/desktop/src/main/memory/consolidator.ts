@@ -88,6 +88,7 @@ import {
   pickCandidateGroups,
   planBatches,
   planNewEntryBatches,
+  refreshBatch,
   type EntryNeighbours,
 } from "./consolidationBatches.js";
 import { containerOfScope, containerWorkFinishedAt } from "./containerScope.js";
@@ -715,10 +716,13 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
     let plan: MemoryEntryView[][];
     let likelyDuplicates: ReadonlyMap<string, readonly string[]>;
     if (fresh !== null) {
+      // Each new entry not yet handled, with its neighbours among every
+      // entry the run may give — one an earlier batch already had
+      // included, since it is this entry's context.
       const newOnes = pending.filter((entry) => fresh.has(entry.id));
-      const neighbours = newOnes.length > 0 && pending.length > 1 ? neighboursOf(scope, newOnes, pending, NEW_ENTRY_NEIGHBOURS) : null;
-      plan = planNewEntryBatches(newOnes, pending, neighbours, CONSOLIDATION_BATCH_LIMITS);
-      likelyDuplicates = likelyDuplicatesOf(nearDuplicateGroups(plan.flat(), neighbours));
+      const neighbours = newOnes.length > 0 && entries.length > 1 ? neighboursOf(scope, newOnes, entries, NEW_ENTRY_NEIGHBOURS) : null;
+      plan = planNewEntryBatches(newOnes, entries, neighbours, CONSOLIDATION_BATCH_LIMITS);
+      likelyDuplicates = likelyDuplicatesOf(nearDuplicateGroups([...new Set(plan.flat())], neighbours));
     } else {
       const neighbours = pending.length > 1 ? neighboursOf(scope, pending) : null;
       // Likely duplicates, by the full-text index: each set shares a batch, marked in its input.
@@ -730,12 +734,24 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
     // A scheduled run's batches are never the whole scope, and say so.
     const batched = fresh !== null || plan.length > 1 || sequence.batches > 0;
 
-    for (const [at, batch] of plan.entries()) {
+    // What this run's batches retired, each with what it wrote from it:
+    // a later batch planned with one is given what it became (EO-913).
+    const replaced = new Map<string, string[]>();
+    for (const [at, planned] of plan.entries()) {
       if (at > 0 && mayContinue(scope, trigger, readAt) !== "continue") return;
+      const batch = refreshBatch(planned, replaced, (id) => {
+        const entry = getMemory(db, id);
+        return entry === undefined || entry.retiredAt !== null ? undefined : entry;
+      });
+      // Every new entry it was for was retired or replaced by an earlier
+      // batch: nothing is left to ask.
+      if (batch.length === 0 || (fresh !== null && !batch.some((entry) => fresh.has(entry.id)))) continue;
       const part = batched ? { index: at + 1, count: plan.length, ...(fresh !== null ? { fresh } : {}) } : undefined;
       const applied = await consolidateBatch(scope, trigger, facts, readAt, batch, part, likelyDuplicates);
       if (applied === null) return;
       record(applied);
+      for (const id of applied.consolidation.retiredIds) replaced.set(id, []);
+      for (const written of applied.written) for (const id of written.from) replaced.set(id, [...(replaced.get(id) ?? []), written.id]);
       sequence.batches += 1;
       sequence.at = now();
       for (const entry of batch) sequence.done.add(versionOf(entry));

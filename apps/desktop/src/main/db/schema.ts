@@ -3378,6 +3378,16 @@ export const memories = sqliteTable(
      * on every other row. No foreign key, for `replaces_id`'s reason.
      */
     supersededIds: text("superseded_ids", { mode: "json" }).$type<string[]>().notNull().default([]),
+    /**
+     * On an organisation's record, for an entry a project move brought
+     * that the sender's last consolidation had settled (EO-913, migration
+     * 0185): the version (`updated_at`) it arrived as, and once the move
+     * is finalised that moment, which finalising stamps it with. Equal to
+     * `updated_at` while the entry is still what the handover carried, so
+     * a scheduled consolidation does not take it for new. Null on every
+     * other entry, and never sent anywhere.
+     */
+    settledVersion: integer("settled_version"),
   },
   (table) => [
     index("idx_memories_scope").on(table.scopeKind, table.scopeId, table.retiredAt),

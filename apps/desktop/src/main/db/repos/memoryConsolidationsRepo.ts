@@ -370,9 +370,22 @@ function runApplied(db: Db, scope: MemoryScope, run: number, trigger: MemoryCons
  * to give, which is what its retry goes on with. Anything else is, whoever
  * wrote it — an agent's note, an edit — including what was written while
  * a run was going. A scope never consolidated is new through and through.
+ *
+ * On an organisation's record, a project moved there arrives with none of
+ * its consolidation history, and finalising the move stamps every entry
+ * it brought as changed. So until the record finishes a run of its own,
+ * the point counted from is the handover (`handedOverAt`): what the
+ * sender's last finished run had settled, still as it arrived, is not new
+ * (`settled_version`), and everything else is, however old its stamp.
  */
 export function entriesNewSinceConsolidated(db: Db, scope: MemoryScope, options: { until?: number } = {}): string[] {
-  const since = lastFinishedRunAt(db, scope);
+  const finished = lastFinishedRunAt(db, scope);
+  // A project moved to this record since: what the sender had settled is
+  // not new, whatever finalising the move stamped it with; everything
+  // else the scope holds is, however old its stamp (`settled_version`).
+  const handedOver = handedOverAt(db, scope);
+  const handover = handedOver !== null && (finished === null || handedOver > finished);
+  const since = handover ? handedOver : finished;
   // Every row that settled the scope since, however many there are: what
   // they wrote is theirs, not new.
   const later =
@@ -397,7 +410,8 @@ export function entriesNewSinceConsolidated(db: Db, scope: MemoryScope, options:
         eq(memories.scopeId, scope.id),
         isNull(memories.retiredAt),
         ne(memories.sourceKind, "person"),
-        ...(since === null ? [] : [gte(memories.updatedAt, since)]),
+        ...(since === null || handover ? [] : [gte(memories.updatedAt, since)]),
+        ...(handover ? [sql`${memories.settledVersion} is not ${memories.updatedAt}`] : []),
         ...(options.until === undefined ? [] : [lte(memories.updatedAt, options.until)]),
       ),
     )
@@ -405,6 +419,22 @@ export function entriesNewSinceConsolidated(db: Db, scope: MemoryScope, options:
     .all()
     .filter((row) => !own.has(`${row.id}@${row.updatedAt}`) && !(row.consolidationId !== null && restoredBy.get(row.consolidationId) === row.updatedAt))
     .map((row) => row.id);
+}
+
+/**
+ * When a project move last handed the scope to this record with entries
+ * its sender had settled (EO-913, `settled_version`), or null where none
+ * did: the moment the move was finalised, which is what such an entry's
+ * `settled_version` holds from then on.
+ */
+function handedOverAt(db: Db, scope: MemoryScope): number | null {
+  return (
+    db
+      .select({ at: sql<number | null>`max(${memories.settledVersion})` })
+      .from(memories)
+      .where(and(eq(memories.scopeKind, scope.kind), eq(memories.scopeId, scope.id)))
+      .get()?.at ?? null
+  );
 }
 
 /**

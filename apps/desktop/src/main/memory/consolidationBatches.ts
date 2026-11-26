@@ -117,20 +117,22 @@ export const NEW_ENTRY_NEIGHBOURS = 8;
  * rest of the scope is not sent, so what it costs follows the new notes,
  * not the size of memory.
  *
- * Every entry is in at most one batch — two batches given one entry would
- * have the second refused once the first retired it — so new entries
- * whose lists overlap, or that are in each other's, are one group: the
- * union of each one's own list, kept whole in one batch, so each new
- * entry is sent with every neighbour it ranks however the lists overlap.
- * Groups are packed into batches oldest new entry first, a group that
- * would take a batch over `limits` starting the next. Only a group too
- * large for any batch is cut, new entry by new entry: each with its
- * neighbours not yet placed, best first, as far as they fit — never past
- * `limits`, however long they are — and, before the batch is closed, every new
- * entry that brings with its own neighbours as far as they fit there —
- * so a new entry goes without part of its list only where the batch it
- * is in could hold no more. Without neighbours — the index
- * could not be asked — the new entries go alone, by age.
+ * Each new entry's own list — itself and its neighbours — goes into one
+ * batch whole wherever it fits a batch at all: into the batch being
+ * filled where what it adds to it fits there, the next batch otherwise.
+ * An entry already in the batch is not counted again, so new entries whose
+ * lists overlap share it; an entry in an earlier batch is given again
+ * wherever a later new entry ranks it, since that new entry's context is
+ * the point. A list too long for any batch is cut: the new entry and its
+ * neighbours best first, as far as they fit, never past `limits`. Lists
+ * that share entries are taken one after another, in order of their
+ * oldest new entry, so overlapping ones tend to share a batch. A new entry
+ * that one batch already gave as a neighbour is still given again with
+ * its own list where that did not fit there. What an earlier batch of the
+ * run retired or replaced is put right before a later one is sent
+ * (`refreshBatch`), so no batch is given an entry as it no longer is.
+ * Without neighbours — the index could not be asked — the new entries go
+ * alone, by age.
  */
 export function planNewEntryBatches<T extends BatchableEntry>(
   fresh: readonly T[],
@@ -150,7 +152,7 @@ export function planNewEntryBatches<T extends BatchableEntry>(
     }
     return unit;
   });
-  // Lists that share an entry are one group.
+  // Lists that share an entry are taken one after another, so they tend to share a batch.
   const parent = new Map<string, string>();
   const root = (id: string): string => {
     let at = id;
@@ -169,7 +171,6 @@ export function planNewEntryBatches<T extends BatchableEntry>(
   }
 
   const batches: T[][] = [];
-  const placed = new Set<string>();
   let batch: T[] = [];
   let chars = 0;
   const flush = () => {
@@ -179,63 +180,65 @@ export function planNewEntryBatches<T extends BatchableEntry>(
   };
   const add = (member: T) => {
     batch.push(member);
-    placed.add(member.id);
     chars += member.body.length;
   };
   const fits = (count: number, size: number) => batch.length + count <= limits.maxEntries && chars + size <= limits.maxChars;
   const sizeOf = (members: readonly T[]) => members.reduce((sum, member) => sum + member.body.length, 0);
-  const unitOf = new Map(units.map((unit) => [unit[0]!.id, unit]));
-  const widened = new Set<string>();
-  /** With `unit` in the batch being filled: each new entry in it, and in what that brings, has its own list joined to it where it fits. */
-  const widen = (unit: readonly T[]) => {
-    widened.add(unit[0]!.id);
-    const queue = [unit];
-    for (let next = queue.shift(); next !== undefined; next = queue.shift()) {
-      for (const member of next) {
-        if (!placed.has(member.id)) {
-          if (!fits(1, member.body.length)) continue;
-          add(member);
-        }
-        if (!batch.includes(member) || widened.has(member.id)) continue;
-        const own = unitOf.get(member.id);
-        if (own === undefined) continue;
-        widened.add(member.id);
-        queue.push(own);
-      }
-    }
-  };
-  // In order of each group's oldest new entry: the order units are in.
-  for (const group of groups.values()) {
-    const members = [...new Set(group.flat())];
-    const size = sizeOf(members);
-    if (members.length <= limits.maxEntries && size <= limits.maxChars) {
-      if (!fits(members.length, size)) flush();
-      members.forEach(add);
+  for (const unit of [...groups.values()].flat()) {
+    const missing = unit.filter((member) => !batch.includes(member));
+    if (fits(missing.length, sizeOf(missing))) {
+      missing.forEach(add);
       continue;
     }
-    // Too large for one batch: new entry by new entry. Placing one brings
-    // in, while its batch is still being filled, the own lists of the new
-    // entries among its neighbours — and theirs — as far as they fit, so
-    // a new entry's ranked context is never left for a later batch it
-    // cannot be in.
     flush();
-    for (const unit of group) {
-      const [head, ...rest] = unit as [T, ...T[]];
-      if (placed.has(head.id)) continue;
-      const members = [head, ...rest.filter((member) => !placed.has(member.id))];
-      if (batch.length > 0 && !fits(members.length, sizeOf(members))) flush();
-      // The new entry first, then its neighbours best first while they
-      // fit: a list of long entries is cut rather than taken past the
-      // batch's limits.
-      if (batch.length > 0 && !fits(1, head.body.length)) flush();
-      add(head);
-      for (const member of members.slice(1)) if (fits(1, member.body.length)) add(member);
-      widen(unit);
-    }
-    flush();
+    // Too long for any batch: the new entry, then its neighbours best
+    // first while they fit.
+    const [head, ...rest] = unit as [T, ...T[]];
+    add(head);
+    for (const member of rest) if (fits(1, member.body.length)) add(member);
   }
   flush();
   return batches;
+}
+
+/**
+ * A planned batch as it is to be sent, once the batches of its run before
+ * it have been applied (EO-913): an entry one of them retired is left out,
+ * and in its place go the entries it was folded or rewritten into, still
+ * active and not already in the batch, as far as they fit `limits` — so a
+ * neighbour two batches shared reaches the second as the first left it,
+ * and no batch is given an entry as it no longer is. `replaced` maps each
+ * entry the run retired to what it wrote from it, `current` reads an
+ * entry as it is now (undefined once it is retired).
+ */
+export function refreshBatch<T extends BatchableEntry>(
+  batch: readonly T[],
+  replaced: ReadonlyMap<string, readonly string[]>,
+  current: (id: string) => T | undefined,
+  limits: BatchLimits = CONSOLIDATION_BATCH_LIMITS,
+): T[] {
+  if (!batch.some((entry) => replaced.has(entry.id))) return [...batch];
+  const kept = batch.filter((entry) => !replaced.has(entry.id));
+  const ids = new Set(kept.map((entry) => entry.id));
+  let chars = kept.reduce((sum, entry) => sum + entry.body.length, 0);
+  const into = (id: string, seen: Set<string>): string[] => {
+    if (seen.has(id)) return [];
+    seen.add(id);
+    const next = replaced.get(id);
+    return next === undefined ? [id] : next.flatMap((one) => into(one, seen));
+  };
+  for (const entry of batch) {
+    if (!replaced.has(entry.id)) continue;
+    for (const id of into(entry.id, new Set())) {
+      if (ids.has(id)) continue;
+      const now = current(id);
+      if (now === undefined || kept.length + 1 > limits.maxEntries || chars + now.body.length > limits.maxChars) continue;
+      kept.push(now);
+      ids.add(id);
+      chars += now.body.length;
+    }
+  }
+  return kept.sort(byAge);
 }
 
 /** An entry's first line, as the cross-batch pass is shown it. */

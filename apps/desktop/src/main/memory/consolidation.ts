@@ -314,6 +314,53 @@ function terms(text: string): Set<string> {
   return found;
 }
 
+/**
+ * Where a text's code spans are, delimiters included, as Markdown reads
+ * them: a run of backticks to the next run of exactly as many, so
+ * ``` ``today`` ``` is one span however many backticks it is written
+ * with. A run that nothing closes is taken as code to the end of the
+ * text: a literal EO cannot place is left as it is.
+ */
+function codeSpans(text: string): [number, number][] {
+  const spans: [number, number][] = [];
+  const runs = [...text.matchAll(/`+/g)];
+  for (let at = 0; at < runs.length; at += 1) {
+    const open = runs[at]!;
+    const close = runs.findIndex((run, index) => index > at && run[0].length === open[0].length);
+    if (close === -1) {
+      spans.push([open.index, text.length]);
+      break;
+    }
+    spans.push([open.index, runs[close]!.index + runs[close]![0].length]);
+    at = close;
+  }
+  return spans;
+}
+
+/**
+ * What a sentence says that another word for the same thing cannot stand
+ * for (EO-913): each code span, each word with a digit in it (`16`,
+ * `-1`, `v1.2`), each name or path (`config.today`, `src/main`,
+ * `test:api`, `snake_case`), each acronym (`UTC`, `CI`), and whether it
+ * negates (`not`, `never`, `don't`). Two sentences that differ in none
+ * of these say the same thing in other words, as far as EO can tell, so
+ * one is no correction of the other.
+ */
+function concreteTerms(text: string): Set<string> {
+  const found = new Set<string>();
+  let prose = text;
+  for (const [start, end] of codeSpans(text)) {
+    found.add(`\`${text.slice(start, end).replace(/^`+|`+$/g, "").trim()}\``);
+    prose = prose.slice(0, start) + " ".repeat(end - start) + prose.slice(end);
+  }
+  for (const [raw] of prose.matchAll(/(?<![\p{L}\p{N}_])[-+]?[\p{L}\p{N}_]+(?:[.'’:/_-][\p{L}\p{N}_]+)*/gu)) {
+    const word = raw.replace(/^[-+]/, "");
+    if (/\p{N}/u.test(raw) || /[._:/]/.test(word) || /^\p{Lu}[\p{Lu}\p{N}]+$/u.test(word)) found.add(raw.toLowerCase());
+  }
+  if (/(?<![\p{L}\p{N}_])(?:no|not|never|nor|none|cannot|without)(?![\p{L}\p{N}_])|n['’]t(?![\p{L}\p{N}_])/iu.test(prose)) found.add("¬");
+  return found;
+}
+
 /** The fewest words a sentence a correction quotes may have: fewer is a phrase every text has, not a statement. */
 const MIN_QUOTED_WORDS = 3;
 
@@ -413,13 +460,18 @@ function changedSentences(entry: string, rewrite: string): { start: number; tail
  *   least as many of the replaced sentence's terms as it adds, and as it
  *   drops: a sentence on another subject that happens to share a word or
  *   two is not a correction of this one.
+ * - **A concrete disagreement.** The two differ in something no synonym
+ *   stands for (`concreteTerms`): a number, a name or path, a code span,
+ *   an acronym, or a negation. "Execute pnpm test" for "Run pnpm test"
+ *   differs in none, so however the source words it, it corrects nothing.
  * - **The entry's own beside it.** Something of the entry not common to
  *   every text is left outside the replaced sentences: an entry that would
  *   say only what the source says is the source again, and is retired
  *   rather than rewritten.
  *
- * A lexical check cannot tell a correction from a paraphrase that
- * happens to bring a new word; these are what it can tell.
+ * Where no such disagreement can be found, the entry is left as it is:
+ * a correction in plain words alone ("run" to "lint") is refused, which
+ * costs a rewrite the model could have made, never a fact.
  */
 function correctionProblem(rewrite: string, entry: string, sources: readonly string[], what: string): string | null {
   const had = entry.trim();
@@ -442,6 +494,11 @@ function correctionProblem(rewrite: string, entry: string, sources: readonly str
   const dropped = was.size - shared;
   if (added === 0) return `puts "${put}" for "${replaced}", which says nothing it did not, so it corrects nothing`;
   if (shared < added || shared < dropped) return `puts "${put}" for "${replaced}", which is about something else: a correction keeps at least as many of the words of the sentence it replaces as it adds or drops`;
+  const before = concreteTerms(replaced);
+  const after = concreteTerms(put);
+  if (before.size === after.size && [...after].every((term) => before.has(term))) {
+    return `puts "${put}" for "${replaced}", which disagrees with it in no number, name, path, code or negation, so it says the same in other words and corrects nothing`;
+  }
   const own = had.slice(0, changed.start) + had.slice(had.length - changed.tail);
   if (terms(own).size === 0) return `says nothing but what ${what} says, so the entry is retired rather than rewritten`;
   return null;
@@ -491,14 +548,13 @@ function escapeRegExp(text: string): string {
 }
 
 /**
- * Whether the phrase at `index` is code rather than prose: within
- * backticks, or joined to a name or a path — `today_count`,
+ * Whether the phrase at `index` is code rather than prose: within a code
+ * span, however many backticks open it (`codeSpans`), or joined to a name or a path — `today_count`,
  * `config.today`, `today.json`, `--yesterday` — which is a literal a date
  * never stands for, and stays exactly as it is.
  */
 function inCode(body: string, index: number, length: number): boolean {
-  const ticks = (body.slice(0, index).match(/`/g) ?? []).length;
-  if (ticks % 2 === 1) return true;
+  if (codeSpans(body).some(([start, end]) => index < end && index + length > start)) return true;
   const before = body[index - 1] ?? "";
   const after = body.slice(index + length, index + length + 2);
   return /[-_./\\@$#=]/.test(before) || /^(?:[-_/\\@=(]|\.\w)/.test(after);
@@ -508,8 +564,8 @@ function inCode(body: string, index: number, length: number): boolean {
  * Why a `relative_date` rewrite does not hold, or null where it does:
  * the rewrite must be its entry with one or more of the relative dates or
  * times it says each replaced by the date EO reckons it meant
- * (`resolvedDate`), and nothing else changed — not a word outside them,
- * nor the flag. A replacement is that date alone, or with "on" before a
+ * (`resolvedDate`), and nothing else changed — not a character outside
+ * them, a space or a backtick included, nor the flag. A replacement is that date alone, or with "on" before a
  * day and "in" or "during" before a month, so it keeps the time relation
  * the phrase had: "before 2026-11-25" for "yesterday" says something
  * else. A phrase EO cannot date stays exactly as it is, and so does one
@@ -523,17 +579,17 @@ function relativeDateProblem(rewrite: { body: string; contradictsRepositoryFile:
   const pieces: string[] = [];
   let at = 0;
   for (const phrase of phrases) {
-    pieces.push(escapeRegExp(body.slice(at, phrase.index)).replace(/\s+/g, "\\s+"), "([\\s\\S]*?)");
+    pieces.push(escapeRegExp(body.slice(at, phrase.index)), "([\\s\\S]*?)");
     at = phrase.index + phrase[0].length;
   }
-  pieces.push(escapeRegExp(body.slice(at)).replace(/\s+/g, "\\s+"));
+  pieces.push(escapeRegExp(body.slice(at)));
   const match = new RegExp(`^${pieces.join("")}$`).exec(rewrite.body.trim());
   if (match === null) return "gives relative_date, but the rewrite changes more than the relative dates and times the entry says";
   const written = isoDay(entry.createdAt);
   let replaced = 0;
   for (const [index, phrase] of phrases.entries()) {
-    const put = match[index + 1]!.trim();
-    if (put.toLowerCase() === phrase[0].toLowerCase()) continue;
+    const put = match[index + 1]!;
+    if (put === phrase[0]) continue;
     const meant = resolvedDate(phrase[0], entry.createdAt);
     if (meant === null) return `gives relative_date, but EO cannot tell what date "${phrase[0]}" in an entry written ${written} meant, so it stays as it is, not "${put}"`;
     replaced += 1;
@@ -541,10 +597,10 @@ function relativeDateProblem(rewrite: { body: string; contradictsRepositoryFile:
     const said = dates.length === 1 ? absoluteDates(put) : new Set<string>();
     if (said.size !== 1 || !said.has(meant)) return `gives relative_date, but "${phrase[0]}" in an entry written ${written} is ${meant}, not "${put}"`;
     const date = dates[0]!;
-    const before = put.slice(0, date.index).trim().toLowerCase();
-    const after = put.slice(date.index + date[0].length).trim();
+    const before = put.slice(0, date.index);
+    const after = put.slice(date.index + date[0].length);
     const prepositions = meant.length === 10 ? DAY_PREPOSITIONS : MONTH_PREPOSITIONS;
-    if (after !== "" || (before !== "" && !prepositions.has(before))) {
+    if (after !== "" || (before !== "" && !(before.endsWith(" ") && prepositions.has(before.slice(0, -1).toLowerCase())))) {
       return `gives relative_date, but "${put}", put for "${phrase[0]}", says more than ${meant}: only ${[...prepositions].map((word) => `"${word}"`).join(" or ")} may stand before it`;
     }
   }
@@ -697,7 +753,7 @@ const OPERATION_RULES = [
   "Answer with the changes to make, not with the entries to keep. Name only what changes: an entry you do not mention stays exactly as it is, so never list an entry just to keep it. There are three operations:",
   "- `retire`: `{ id, reason }` — retire one entry, saying in a few words why.",
   "- `merge`: `{ from, body, contradictsRepositoryFile }` — fold two or more entries (`from` holds at least two ids) into one new entry whose text is `body`.",
-  `- \`rewrite\`: \`{ id, body, reason, contradictsRepositoryFile }\` — replace one entry's text with \`body\`. \`reason\` is one of ${MEMORY_CONSOLIDATION_REWRITE_REASONS.map((reason) => `\`${reason}\``).join(", ")}: a relative date or time the entry says made absolute, a disagreement with a repository file you are given put right, or a correction by an entry you are given that was written after it. EO checks each reason against the change itself and refuses the whole answer where one does not hold. A \`relative_date\` rewrite replaces only the relative date or time with the date it meant, counted from the date the entry was written, and changes not one other character of the entry, nor contradictsRepositoryFile: a day as YYYY-MM-DD, alone or after "on", for "today", "yesterday", "tomorrow", "N days ago" or "in N days" — "yesterday" in an entry written 2026-11-26 is 2026-11-25, so "Released yesterday." becomes "Released 2026-11-25." or "Released on 2026-11-25.", never "Released before 2026-11-25." — and a month as YYYY-MM, alone or after "in" or "during", for "this month", "last month" or "next month". Any other relative phrase — "last week", "on Monday", "recently", "three months ago", and "tonight" or "this morning", whose time of day a date would lose — stays exactly as it is, and so does a word in code (inside backticks, or part of a name or path such as \`today_count\` or \`today.json\`). A \`repository_file\` rewrite replaces one or more whole sentences of the entry — from one full stop, semicolon, colon or line break to the next — with one or more whole sentences of the file, copied exactly, mark for mark, and leaves every other character of the entry exactly as it was: one correction per rewrite, and nothing else touched, not a sign, an operator or a word. The file's sentence must be about the same thing as the sentence it replaces and say something different of it: it keeps at least as many of that sentence's words as it adds, and as it drops. A sentence that only repeats the entry's in other or fewer words corrects nothing, and one about something else is no correction of it: leave the entry as it is. It must keep a sentence of the entry's own beside it, since an entry that would say only what the file says is retired instead. A \`newer_entry\` rewrite does the same with a whole sentence of the newer entry. A rewrite keeps the entry's contradictsRepositoryFile as it is, except that a \`repository_file\` rewrite may clear it; it never sets it, and an entry is never rewritten only to change it. There is no other reason to rewrite an entry: never rewrite one only to shorten it, reword it or tidy its style.`,
+  `- \`rewrite\`: \`{ id, body, reason, contradictsRepositoryFile }\` — replace one entry's text with \`body\`. \`reason\` is one of ${MEMORY_CONSOLIDATION_REWRITE_REASONS.map((reason) => `\`${reason}\``).join(", ")}: a relative date or time the entry says made absolute, a disagreement with a repository file you are given put right, or a correction by an entry you are given that was written after it. EO checks each reason against the change itself and refuses the whole answer where one does not hold. A \`relative_date\` rewrite replaces only the relative date or time with the date it meant, counted from the date the entry was written, and changes not one other character of the entry — not a space, a backtick or a letter's case — nor contradictsRepositoryFile: a day as YYYY-MM-DD, alone or after "on", for "today", "yesterday", "tomorrow", "N days ago" or "in N days" — "yesterday" in an entry written 2026-11-26 is 2026-11-25, so "Released yesterday." becomes "Released 2026-11-25." or "Released on 2026-11-25.", never "Released before 2026-11-25." — and a month as YYYY-MM, alone or after "in" or "during", for "this month", "last month" or "next month". Any other relative phrase — "last week", "on Monday", "recently", "three months ago", and "tonight" or "this morning", whose time of day a date would lose — stays exactly as it is, and so does a word in code (inside a code span, however many backticks open it, or part of a name or path such as \`today_count\` or \`today.json\`). A \`repository_file\` rewrite replaces one or more whole sentences of the entry — from one full stop, semicolon, colon or line break to the next — with one or more whole sentences of the file, copied exactly, mark for mark, and leaves every other character of the entry exactly as it was: one correction per rewrite, and nothing else touched, not a sign, an operator or a word. The file's sentence must be about the same thing as the sentence it replaces and say something different of it: it keeps at least as many of that sentence's words as it adds, and as it drops, and it differs from it in a number, a name or path, a code span, an acronym or a negation — "Execute pnpm test" for "Run pnpm test" differs in none, and is refused. A sentence that only repeats the entry's in other or fewer words corrects nothing, and one about something else is no correction of it: leave the entry as it is. It must keep a sentence of the entry's own beside it, since an entry that would say only what the file says is retired instead. A \`newer_entry\` rewrite does the same with a whole sentence of the newer entry. A rewrite keeps the entry's contradictsRepositoryFile as it is, except that a \`repository_file\` rewrite may clear it; it never sets it, and an entry is never rewritten only to change it. There is no other reason to rewrite an entry: never rewrite one only to shorten it, reword it or tidy its style.`,
   "Every id you name must be one of the entries you are given, and each id may appear only once in the whole answer — in one retire, one merge's `from`, or one rewrite. An answer with nothing to change has all three lists empty; that is a valid answer, and often the right one.",
   "What to change, and nothing else:",
   `- Merge entries that state the same fact into one, keeping every detail any of them adds. Keep each entry you merge or rewrite to one fact, at most ${MAX_MEMORY_NOTE_CHARS} characters: an answer with a longer one is refused whole. Entries about one topic that state different facts are not duplicates; leave them as they are.`,
