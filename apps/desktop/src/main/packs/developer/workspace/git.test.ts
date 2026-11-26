@@ -11,6 +11,7 @@ import {
   destinationKey,
   fetchBranch,
   git,
+  gitAccount,
   globalUserEmail,
   isAncestor,
   pushBranch,
@@ -1220,6 +1221,8 @@ git update-ref refs/heads/eo/APP-1 ${head}
     });
 
     it("takes nothing a push run inside its own prints for git's account, there too", previewedThenRefused);
+
+    it("keeps a push a configured reference-transaction hook runs out of its own, there too", trackingRefHookPushes);
   });
 
   it.skipIf(process.platform === "win32")("records its push and reads divergence where git is a wrapper that waits for git rather than becoming it", async () => {
@@ -1359,6 +1362,69 @@ git update-ref refs/heads/eo/APP-1 ${head}
     expect(await subTip()).toBe(await run(["rev-parse", "HEAD"], sub));
   });
 
+  it("publishes the submodule commit a rewritten commit needs before its lease goes through", async () => {
+    const { sub, subTip } = await withSubmodule();
+    const pushed = await pushBranch(repoPath, "bare", "eo/APP-1");
+    expect(pushed).toMatchObject({ ok: true, updated: true });
+    const old = sentBy(pushed);
+    // The rewrite needs a submodule commit its remote has never had.
+    await commit(sub, "again.ts", "// again\n");
+    await run(["add", "sub"], repoPath);
+    await run(["commit", "--amend", "-m", "rewritten with a new submodule commit"], repoPath);
+    const send = await localTip();
+
+    const rejected = await pushBranch(repoPath, "bare", "eo/APP-1");
+    expect(rejected).toMatchObject({ ok: false, rejection: "diverged" });
+    const leased = await pushBranch(repoPath, "bare", "eo/APP-1", { forceWithLease: { expect: old, destination: pushed.destination!, send } });
+
+    expect(leased).toMatchObject({ ok: true, updated: true, head: send });
+    expect(await remoteTip("eo/APP-1")).toBe(send);
+    expect(await subTip()).toBe(await run(["rev-parse", "HEAD"], sub));
+  });
+
+  it("sends no commit, leased or not, whose submodule commit no push of the submodule's branch publishes, as git does", async () => {
+    const { sub, subTip } = await withSubmodule();
+    const pushed = await pushBranch(repoPath, "bare", "eo/APP-1");
+    const old = sentBy(pushed);
+    const published = await subTip();
+    // A submodule commit on no branch of the submodule's: pushing the
+    // submodule's branch of the same name does not publish it.
+    await run(["checkout", "--detach"], sub);
+    await commit(sub, "again.ts", "// again\n");
+    await run(["add", "sub"], repoPath);
+    await run(["commit", "--amend", "-m", "rewritten with an unpublished submodule commit"], repoPath);
+    const send = await localTip();
+
+    const rejected = await pushBranch(repoPath, "bare", "eo/APP-1");
+    expect(rejected).toMatchObject({ ok: false, published: null });
+    const leased = await pushBranch(repoPath, "bare", "eo/APP-1", { forceWithLease: { expect: old, destination: pushed.destination!, send } });
+
+    expect(leased).toMatchObject({ ok: false, published: null });
+    expect(await remoteTip("eo/APP-1")).toBe(old);
+    expect(await subTip()).toBe(published);
+  });
+
+  it("sends no commit whose submodule commits it found from where a hook moved the branch back to", async () => {
+    const { sub, subTip } = await withSubmodule();
+    const pushed = await pushBranch(repoPath, "bare", "eo/APP-1");
+    const old = sentBy(pushed);
+    const published = await subTip();
+    await commit(sub, "again.ts", "// again\n");
+    await run(["add", "sub"], repoPath);
+    await run(["commit", "-m", "move the submodule again"], repoPath);
+    const hooks = join(repoPath, await run(["rev-parse", "--git-path", "hooks"], repoPath));
+    mkdirSync(hooks, { recursive: true });
+    const once = join(scratch, "moved-once");
+    // Moves the branch back to the commit already pushed, once.
+    writeFileSync(join(hooks, "pre-push"), `#!/bin/sh\n[ -f '${once}' ] && exit 0\n: > '${once}'\ngit update-ref refs/heads/eo/APP-1 ${old}\nexit 0\n`, { mode: 0o755 });
+
+    const refused = await pushBranch(repoPath, "bare", "eo/APP-1");
+
+    expect(refused).toMatchObject({ ok: false, published: null, rejection: "changed" });
+    expect(await remoteTip("eo/APP-1")).toBe(old);
+    expect(await subTip()).toBe(published);
+  });
+
   it("publishes no commit whose submodule commit its submodule's remote refuses, as git does", async () => {
     const { subTip } = await withSubmodule();
     writeFileSync(join(scratch, "sub.git", "hooks", "pre-receive"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
@@ -1401,6 +1467,76 @@ git update-ref refs/heads/eo/APP-1 ${head}
     unlinkSync(join(hooks, "pre-push"));
     expect(await pushBranch(repoPath, "bare", "eo/APP-1")).toMatchObject({ ok: true, updated: true });
     expect(await subTip()).toBe(await run(["rev-parse", "HEAD"], sub));
+  });
+
+  /**
+   * One hook a configuration registers for both `pre-push` and
+   * `reference-transaction`, which previews a push of its own as git
+   * updates the remote-tracking ref: it runs for both events, as git runs
+   * it, and its push goes through no gate of EO's, so EO's own push keeps
+   * where it went, and a lease follows it.
+   */
+  async function trackingRefHookPushes(): Promise<void> {
+    const log = join(scratch, "hook-log");
+    // One hook for both events: told apart by their arguments. On the
+    // tracking ref's transaction it previews a push of its own.
+    writeFileSync(
+      join(scratch, "both.sh"),
+      [
+        "#!/bin/sh",
+        '[ -z "$IN_BOTH" ] || exit 0',
+        "IN_BOTH=1; export IN_BOTH",
+        `if [ $# -eq 2 ]; then echo "pre-push $1" >> '${log}'; cat > /dev/null; exit 0; fi`,
+        `sed "s|^|$1 |" >> '${log}'`,
+        'if [ "$1" = committed ]; then git push --dry-run --porcelain bare HEAD:refs/heads/elsewhere > /dev/null 2>&1; fi',
+        "exit 0",
+        "",
+      ].join("\n"),
+      { mode: 0o755 },
+    );
+    await run(["config", "hook.both.command", `'${join(scratch, "both.sh")}'`], repoPath);
+    await run(["config", "hook.both.event", "pre-push"], repoPath);
+    await run(["config", "--add", "hook.both.event", "reference-transaction"], repoPath);
+    if (!(await registersHooks())) return;
+
+    const pushed = await pushBranch(repoPath, "bare", "eo/APP-1");
+
+    expect(pushed).toMatchObject({ ok: true, updated: true, destination: at(barePath) });
+    const told = readFileSync(log, "utf8");
+    expect(told).toContain("pre-push bare\n");
+    expect(told).toMatch(new RegExp(`^committed [0-9a-f]+ ${await localTip()} refs/remotes/bare/eo/APP-1$`, "m"));
+
+    const old = sentBy(pushed);
+    await run(["commit", "--amend", "-m", "rewritten"], repoPath);
+    const rejected = await pushBranch(repoPath, "bare", "eo/APP-1");
+    expect(rejected).toMatchObject({ ok: false, rejection: "diverged", destination: at(barePath) });
+    const leased = await pushBranch(repoPath, "bare", "eo/APP-1", { forceWithLease: { expect: old, destination: pushed.destination!, send: await localTip() } });
+    expect(leased).toMatchObject({ ok: true, updated: true, destination: at(barePath) });
+    expect(await remoteTip("eo/APP-1")).toBe(await localTip());
+  }
+
+  it("keeps a push a configured reference-transaction hook runs out of its own, and still runs that hook for every event it is registered for", trackingRefHookPushes);
+
+  it.skipIf(process.platform === "win32")("reads git's account of a push to a path with a line break in it", async () => {
+    const odd = join(scratch, "new\nline.git");
+    await run(["init", "--bare", odd], scratch);
+    await run(["remote", "set-url", "bare", odd], repoPath);
+    const tip = async (): Promise<string | null> => {
+      const read = await git(["rev-parse", "--verify", "--quiet", "refs/heads/eo/APP-1"], odd);
+      return read.ok ? read.stdout : null;
+    };
+
+    const pushed = await pushBranch(repoPath, "bare", "eo/APP-1");
+    expect(pushed).toMatchObject({ ok: true, updated: true });
+    expect(await tip()).toBe(sentBy(pushed));
+
+    // Somebody else's commit there, which the local branch lacks.
+    const theirs = await run(["commit-tree", `${sentBy(pushed)}^{tree}`, "-p", sentBy(pushed), "-m", "theirs"], repoPath);
+    await run(["push", odd, `${theirs}:refs/heads/eo/APP-1`], repoPath);
+    await run(["commit", "--amend", "-m", "rewritten"], repoPath);
+    const rejected = await pushBranch(repoPath, "bare", "eo/APP-1");
+    expect(rejected).toMatchObject({ ok: false, rejection: "diverged", published: null });
+    expect(await tip()).toBe(theirs);
   });
 
   it("resolves a relative push URL from the top of the checkout, where git does, though EO works from a directory inside it", async () => {
@@ -1508,6 +1644,35 @@ describe("pushRefusal", () => {
   it("is null where git gave the ref no refused status", () => {
     expect(pushRefusal("", refspec)).toBeNull();
     expect(pushRefusal(`To ../bare.git\n*\t${refspec}\t[new branch]\nDone`, refspec)).toBeNull();
+  });
+});
+
+describe("gitAccount", () => {
+  const marker = "EO-PUSH-GATE 0123";
+  const hex = (url: string): string => Buffer.from(url, "utf8").toString("hex");
+  const refspec = "abc^{commit}:refs/heads/eo/APP-1";
+
+  it("takes the status after a To header that spans as many lines as the URL does", () => {
+    const url = "/tmp/new\nline.git";
+    const account = gitAccount(`${marker} ${hex(url)}\nTo ${url}\n*\t${refspec}\t[new branch]\nDone\n`, marker);
+    expect(pushUpdated(account, refspec)).toBe(true);
+  });
+
+  it("takes no piece of a URL for a status line, nor any line not straight after the header", () => {
+    const url = `/tmp/x\n*\t${refspec}\t[new branch]\ny.git`;
+    // Git's own status for the ref, after the whole header, says it was rejected.
+    const account = gitAccount(`${marker} ${hex(url)}\nTo ${url}\n!\t${refspec}\t[rejected] (non-fast-forward)\nDone\n`, marker);
+    expect(pushUpdated(account, refspec)).toBe(false);
+    expect(pushDiverged(account, refspec)).toBe(true);
+    // A header that is not the URL's is not git's.
+    expect(gitAccount(`${marker} ${hex("/tmp/a.git")}\nTo /tmp/b.git\n*\t${refspec}\t[new branch]\n`, marker)).toBe("");
+  });
+
+  it("matches the header git prints for a URL that carries a user and password", () => {
+    const url = "https://tok:SECRET@example.com/acme/api.git";
+    const account = gitAccount(`${marker} ${hex(url)}\nTo https://example.com/acme/api.git\n*\t${refspec}\t[new branch]\n`, marker);
+    expect(pushUpdated(account, refspec)).toBe(true);
+    expect(account).not.toContain("SECRET");
   });
 });
 

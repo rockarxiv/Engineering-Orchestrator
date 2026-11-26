@@ -1590,6 +1590,70 @@ describe("before it opens or reuses one (EO-429)", () => {
       expect(notes(item).some((body) => body.includes("has diverged"))).toBe(false);
     });
 
+    it("records its push to a path with a line break in it, and refuses as diverged when the branch is rewritten there", async () => {
+      remotePath = join(scratch, "new\nline.git");
+      execFileSync("git", ["init", "--bare", remotePath], { encoding: "utf8" });
+      git(["push", remotePath, "main"], repoPath);
+      git(["remote", "set-url", "origin", remotePath], repoPath);
+      const item = story({ git: { branch: "eo/API-4", pullRequest: PULL_REQUEST } });
+      const worktree = worktreeFor(item);
+
+      await mergeRequestStep(item, onlyFinds(found));
+      const old = remoteTip()!;
+      expect(old).toBe(localTip());
+      // Pushed, and recorded — to no one place EO could check, so with no lease to follow it.
+      expect(gitStateOf(getItem(handle.db, item.id)!).pushedHead).toEqual(pushedTo(old, null));
+
+      rewriteIn(worktree);
+      const result = await mergeRequestStep(item, onlyFinds(found));
+
+      expect(result).toMatchObject({ ok: true, result: "remote_diverged" });
+      expect(remoteTip()).toBe(old);
+      expect(notes(item).at(-1)).toContain("has diverged");
+      expect(notes(item).at(-1)).toContain("did not force-push");
+    });
+
+    it("keeps where it pushed, and leases over it, where a hook its configuration registers for the tracking ref's transaction runs a push of its own", async () => {
+      const log = join(scratch, "hook-log");
+      const hook = join(scratch, "both.sh");
+      writeFileSync(
+        hook,
+        [
+          "#!/bin/sh",
+          '[ -z "$IN_BOTH" ] || exit 0',
+          "IN_BOTH=1; export IN_BOTH",
+          "if [ $# -eq 2 ]; then cat > /dev/null; exit 0; fi",
+          `sed "s|^|$1 |" >> '${log}'`,
+          'if [ "$1" = committed ]; then git push --dry-run --porcelain origin HEAD:refs/heads/elsewhere > /dev/null 2>&1; fi',
+          "exit 0",
+          "",
+        ].join("\n"),
+        { mode: 0o755 },
+      );
+      git(["config", "hook.both.command", `'${hook}'`], repoPath);
+      git(["config", "hook.both.event", "pre-push"], repoPath);
+      git(["config", "--add", "hook.both.event", "reference-transaction"], repoPath);
+      // A git that runs no hooks a configuration registers (before 2.54) has nothing here to test.
+      try {
+        execFileSync("git", ["hook", "list", "pre-push"], { cwd: repoPath, stdio: "ignore", windowsHide: true });
+      } catch {
+        return;
+      }
+      const item = story({ git: { branch: "eo/API-4", pullRequest: PULL_REQUEST } });
+      const worktree = worktreeFor(item);
+
+      await mergeRequestStep(item, onlyFinds(found));
+      const old = remoteTip()!;
+      expect(gitStateOf(getItem(handle.db, item.id)!).pushedHead).toEqual(pushedTo(old));
+      expect(readFileSync(log, "utf8")).toContain(`${old} refs/remotes/origin/eo/API-4`);
+
+      rewriteIn(worktree);
+      const rewritten = localTip();
+      expect(await mergeRequestStep(item, onlyFinds(found))).toMatchObject({ ok: true, result: "opened" });
+      expect(remoteTip()).toBe(rewritten);
+      expect(gitStateOf(getItem(handle.db, item.id)!).pushedHead).toEqual(pushedTo(rewritten));
+    });
+
     it("records its pushes, leases over its own and refuses a person's as diverged where git is a wrapper that waits for git rather than becoming it", async () => {
       const real = execFileSync("sh", ["-c", "command -v git"], { encoding: "utf8", windowsHide: true }).trim();
       const bin = join(scratch, "wrapped-git");
