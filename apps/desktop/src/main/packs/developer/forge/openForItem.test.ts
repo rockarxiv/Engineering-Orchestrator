@@ -1888,7 +1888,8 @@ describe("before it opens or reuses one (EO-429)", () => {
       expect(await mergeRequestStep(item, onlyFinds(found), (text) => progress.push(text))).toMatchObject({ ok: true, result: "remote_diverged" });
 
       expect(tipAt(repo)).toBe(theirs);
-      expect(retries().length).toBeGreaterThanOrEqual(3);
+      // One line each: "pushed over it" only once the lease went through.
+      expect(retries().filter((line) => line.includes("so pushed over it"))).toHaveLength(1);
       expect(retries().some((line) => line.includes("nothing was overwritten"))).toBe(true);
       for (const line of retries()) expect(line).not.toContain("SYNTHETIC");
       for (const body of notes(item).filter((note) => note.includes("--force-with-lease"))) expect(body).not.toContain("SYNTHETIC");
