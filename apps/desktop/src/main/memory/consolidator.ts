@@ -225,6 +225,8 @@ const keyOf = (scope: MemoryScope) => `${scope.kind}:${scope.id}`;
 /** The source of the message saying a scope's consolidation is stuck (EO-727); its subject is the scope's key. */
 export const CONSOLIDATION_STUCK_SOURCE = "consolidation_stuck";
 
+/** What a consolidation's row says when its project began moving to an organisation's record while it ran (EO-913). */
+const MOVING_NOTE = "This project began moving to your organisation's record while this consolidation ran, so nothing was changed here. Once the move is finished the record consolidates its memory; if it is abandoned, this is asked again here.";
 const PAUSED_NOTE = "EO was paused while this consolidation ran, so it was stopped and changed nothing. It is asked again once EO is resumed.";
 /**
  * What the last row of a retry says when it found nothing left to give
@@ -487,6 +489,7 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
       const facts = scopeFacts(db, tally.scope, options.workspacesElsewhere);
       if (facts === null) continue;
       if (facts.projectId !== null && options.heldElsewhere?.(facts.projectId) === true) continue;
+      if (movingNow(tally.scope)) continue;
       const state = consolidationState(db, tally.scope);
       // A container whose work has finished (EO-596): its memory ends,
       // once, before anything else is asked of it.
@@ -523,6 +526,21 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
   function heldElsewhereNow(scope: MemoryScope): boolean {
     const facts = scopeFacts(db, scope, options.workspacesElsewhere);
     return facts !== null && facts.projectId !== null && options.heldElsewhere?.(facts.projectId) === true;
+  }
+
+  /**
+   * Whether a scope's project is being moved to an organisation's record
+   * right now, read fresh (EO-913): from `beginAdoption` until the move is
+   * finished or abandoned. Nothing settles its memory meanwhile — no
+   * consolidation starts, goes on to its next batch or is applied, and no
+   * container's is skipped — since a settlement made while the move sends
+   * the project's memory could reach the record after the stamp that
+   * finalises the move, and be lost there: the record would take an entry
+   * this machine had settled for new.
+   */
+  function movingNow(scope: MemoryScope): boolean {
+    const facts = scopeFacts(db, scope, options.workspacesElsewhere);
+    return facts !== null && facts.projectId !== null && (getProject(db, facts.projectId as Uuid)?.adoptingAt ?? null) !== null;
   }
 
   /** The scope's active entries an agent wrote: what a consolidation may be given. People's are never sent, and never retired by it. */
@@ -639,7 +657,7 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
     }
     // Queued before its project was handed to a record (EO-482): the
     // record consolidates it now, and nothing here may touch the replica.
-    if (heldElsewhereNow(scope)) return;
+    if (heldElsewhereNow(scope) || movingNow(scope)) return;
     if (trigger === "container_done") return finishContainer(scope, facts, readAt, readNow);
     // Only what is new since the last consolidation, on the schedule; a
     // person asking, the whole scope (EO-913).
@@ -753,7 +771,12 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
       // Every new entry it was for was retired or replaced by an earlier
       // batch: nothing is left to ask.
       if (batch.length === 0 || (owned !== null && owned.size === 0)) continue;
-      const part = batched ? { index: at + 1, count: plan.length, ...(fresh !== null ? { fresh } : {}) } : undefined;
+      // A new entry here as another's neighbour, whose own batch is still
+      // to come, is context and nothing more: changed here, it would no
+      // longer be new, and its own batch — itself and its neighbours —
+      // would never be asked (EO-913).
+      const context = fresh === null || owned === null ? new Set<string>() : new Set(batch.filter((entry) => fresh.has(entry.id) && !owned.has(entry.id) && !sequence.done.has(versionOf(entry))).map((entry) => entry.id));
+      const part = batched ? { index: at + 1, count: plan.length, ...(fresh !== null ? { fresh, context } : {}) } : undefined;
       const applied = await consolidateBatch(scope, trigger, facts, readAt, batch, part, likelyDuplicates);
       if (applied === null) return;
       record(applied);
@@ -793,7 +816,7 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
    * batch deferred, so it is taken up again once the pipeline is idle.
    */
   function mayContinue(scope: MemoryScope, trigger: MemoryConsolidationTrigger, readAt: number): "continue" | "stop" {
-    if (stopped || heldElsewhereNow(scope)) return "stop";
+    if (stopped || heldElsewhereNow(scope) || movingNow(scope)) return "stop";
     if (!(options.canStart?.() ?? true)) {
       const row = startConsolidation(db, { scope, trigger, now: readAt, ...runOfRow() });
       failConsolidation(db, row.id, { reason: CONSOLIDATION_PAUSED_REASON, note: PAUSED_BETWEEN_NOTE, now: now() });
@@ -893,6 +916,10 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
       });
       return null;
     }
+    if (movingNow(scope)) {
+      failConsolidation(db, rowId, { reason: "changed", note: MOVING_NOTE, now: now() });
+      return null;
+    }
     const applied = applyConsolidation(db, {
       id: rowId,
       sent,
@@ -962,7 +989,7 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
     facts: { label: string; projectId: Uuid | null },
     readAt: number,
     sent: readonly MemoryEntryView[],
-    part: { index: number; count: number; fresh?: ReadonlySet<string> } | undefined,
+    part: { index: number; count: number; fresh?: ReadonlySet<string>; context?: ReadonlySet<string> } | undefined,
     likelyDuplicates: ReadonlyMap<string, readonly string[]>,
   ): Promise<Applied | null> {
     const tally = tallyOf(scope);
@@ -970,7 +997,7 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
     return onRow(scope, trigger, readAt, async (rowId, controller) => {
       const files = repositoryFiles(scope);
       const answer = await ask(rowId, controller, {
-        schema: consolidationAnswerSchema(sent, { repositoryFiles: files.map((file) => file.text) }),
+        schema: consolidationAnswerSchema(sent, { repositoryFiles: files.map((file) => file.text), ...(part?.context ? { context: part.context } : {}) }),
         system: MEMORY_CONSOLIDATE_SYSTEM,
         input: consolidationInput({
           scopeLabel: facts.label,
@@ -1041,6 +1068,10 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
         // And again with the answer in hand, in the same synchronous
         // stretch as the write: work reopened while the call ran makes the
         // answer stale, and it is dropped rather than applied.
+        if (movingNow(scope)) {
+          failConsolidation(db, rowId, { reason: "changed", note: MOVING_NOTE, now: now() });
+          return null;
+        }
         if (!containerStillFinished(scope)) {
           skipConsolidation(db, rowId, { note: containerReopenedNote(facts.label, at > 0), now: now() });
           return null;
@@ -1302,6 +1333,9 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
         reason: "held_by_record",
         message: `${Label} is of a project your organisation's record holds. The record consolidates its memory, and this desktop leaves it alone.`,
       };
+    }
+    if (movingNow(scope)) {
+      return { outcome: "refused", reason: "unavailable", message: `${Label} is of a project EO is moving to your organisation's record, so no consolidation was queued. Once the move is finished the record consolidates its memory.` };
     }
     if (!(options.canStart?.() ?? true)) {
       return { outcome: "refused", reason: "paused", message: "EO is paused, and no consolidation starts while it is, so none was queued. Resume EO and ask again." };

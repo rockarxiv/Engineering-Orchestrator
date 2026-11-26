@@ -240,6 +240,13 @@ export interface SentEntry {
 export interface ConsolidationGiven {
   /** The text of each workspace CLAUDE.md or AGENTS.md it was given: what a `repository_file` rewrite takes its words from. */
   repositoryFiles: readonly string[];
+  /**
+   * Entries it is shown as context only, which no operation may name: on
+   * the schedule, a new entry given as another's neighbour whose own batch
+   * is still to come (EO-913). Changed there, it would no longer be new,
+   * and its own batch would never be asked.
+   */
+  context?: ReadonlySet<string>;
 }
 
 const RELATIVE_TIME_SOURCE =
@@ -288,37 +295,11 @@ export function absoluteDates(body: string): Set<string> {
 }
 
 /**
- * A text's terms: its words, lowercased, without the punctuation around
- * them — `test:api`, `2026-10-24` and `v1.2` stay one word each, and a
- * sign before a number is kept, so `-1` is not `1` — less the common words
- * (`COMMON_WORDS`), each brought to one spelling: `re-run` is `rerun`,
- * and `tests`, `pushing` and `pushed` are `test` and `push`. What a
- * correction's quoted sentence is compared with the part of the entry it
- * replaces by.
- */
-function terms(text: string): Set<string> {
-  const found = new Set<string>();
-  for (const [raw] of text.toLowerCase().matchAll(/(?<![\p{L}\p{N}_])[-+]?[\p{L}\p{N}_]+(?:[.'’:/-][\p{L}\p{N}_]+)*/gu)) {
-    if (COMMON_WORDS.has(raw)) continue;
-    const sign = raw[0] === "-" || raw[0] === "+" ? raw[0] : "";
-    let term = sign + raw.slice(sign.length).replace(/[-'’]/g, "");
-    if (/^[a-z]+$/.test(term)) {
-      if (term.endsWith("ies") && term.length > 4) term = `${term.slice(0, -3)}y`;
-      else if (term.endsWith("ing") && term.length > 5) term = term.slice(0, -3);
-      else if (term.endsWith("ed") && term.length > 4) term = term.slice(0, -2);
-      else if (/(?:s|x|z|ch|sh)es$/.test(term) && term.length > 4) term = term.slice(0, -2);
-      else if (term.endsWith("s") && !term.endsWith("ss") && term.length > 3) term = term.slice(0, -1);
-    }
-    found.add(term);
-  }
-  return found;
-}
-
-/**
  * Where a text's code is, delimiters included (EO-913): fenced blocks
  * (a line opening with three or more backticks or tildes, to the line
  * closing it with as many of the same or more), indented lines (four
- * spaces or a tab), `<code>` and `<pre>` elements, and inline code spans
+ * spaces or a tab) — either of them inside a block quote too, and a
+ * fence opened after a list item's marker — `<code>` and `<pre>` elements, and inline code spans
  * as Markdown reads them — a run of backticks to the next run of exactly
  * as many, so ``` ``today`` ``` is one span however many backticks it is
  * written with. A fence or a run that nothing closes is taken as code to
@@ -331,16 +312,20 @@ function codeSpans(text: string): [number, number][] {
     const breakAt = text.indexOf("\n", at);
     const next = breakAt === -1 ? text.length : breakAt + 1;
     const line = text.slice(at, next).replace(/\r?\n$/, "");
+    // A block quote's markers are not the line's content: a fence or an
+    // indented line inside one is code all the same.
+    const inner = line.replace(/^(?: {0,3}>[ ]?)+/, "");
     if (fence !== null) {
-      const close = /^ {0,3}(`{3,}|~{3,})[ \t]*$/.exec(line);
+      const close = /^[ \t]*(`{3,}|~{3,})[ \t]*$/.exec(inner);
       if (close !== null && close[1]![0] === fence.char && close[1]!.length >= fence.length) {
         blocks.push([fence.start, at + line.length]);
         fence = null;
       }
     } else {
-      const open = /^ {0,3}(`{3,}|~{3,})/.exec(line);
-      if (open !== null && !(open[1]![0] === "`" && line.slice(open[0].length).includes("`"))) fence = { char: open[1]![0]!, length: open[1]!.length, start: at };
-      else if (/^(?: {4}|\t)/.test(line) && line.trim() !== "") blocks.push([at, at + line.length]);
+      // Nor are a list item's markers: a fence may open after them.
+      const open = /^(?:[ \t]*(?:[-*+]|\d{1,9}[.)])[ \t]+)*[ \t]*(`{3,}|~{3,})/.exec(inner);
+      if (open !== null && !(open[1]![0] === "`" && inner.slice(open[0].length).includes("`"))) fence = { char: open[1]![0]!, length: open[1]!.length, start: at };
+      else if (/^(?: {4}|\t)/.test(inner) && inner.trim() !== "") blocks.push([at, at + line.length]);
     }
     at = next;
   }
@@ -367,51 +352,39 @@ function codeSpans(text: string): [number, number][] {
   return blocks.sort((a, b) => a[0] - b[0]);
 }
 
-/** A word as `concreteTerms` and `lostFacts` read one: a sign before a number kept, and a name or path (`config.today`, `src/main`) one word. */
+/** A word as a correction is read by: a sign before a number kept, and a name or path (`config.today`, `src/main`, `don't`) one word. */
 const CONCRETE_WORD = /(?<![\p{L}\p{N}_])[-+]?[\p{L}\p{N}_]+(?:[.'’:/_-][\p{L}\p{N}_]+)*/gu;
 
 /** A digit and the word for it, so "2" said as "two" is not a number dropped. */
 const NUMBER_NAMES = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve"];
 
-/** Whether a sentence negates (`not`, `never`, `don't`). */
+/** Whether a text negates (`not`, `never`, `don't`). */
 function negates(prose: string): boolean {
   return /(?<![\p{L}\p{N}_])(?:no|not|never|nor|none|cannot|without)(?![\p{L}\p{N}_])|n['’]t(?![\p{L}\p{N}_])/iu.test(prose);
 }
 
-/**
- * What a sentence says that another word for the same thing cannot stand
- * for (EO-913): each piece of code (`codeSpans`), each word with a digit
- * in it (`16`, `-1`, `v1.2`), each name or path (`config.today`,
- * `src/main`, `test:api`, `snake_case`) and each acronym (`UTC`, `CI`),
- * as its text, lowercased, without the backticks around it.
- */
-function concreteTerms(text: string): string[] {
-  const found: string[] = [];
-  let prose = text;
-  for (const [start, end] of codeSpans(text)) {
-    found.push(text.slice(start, end).replace(/^`+|`+$/g, "").trim().toLowerCase());
-    prose = prose.slice(0, start) + " ".repeat(end - start) + prose.slice(end);
-  }
-  for (const [raw] of prose.matchAll(CONCRETE_WORD)) {
-    const word = raw.replace(/^[-+]/, "");
-    if (/\p{N}/u.test(raw) || /[._:/]/.test(word) || /^\p{Lu}[\p{Lu}\p{N}]+$/u.test(word)) found.push(raw.toLowerCase());
-  }
-  return found;
+/** A text's words, lowercased, with every negation taken out: "Do not run" and "Run", "don't" and "do", say the same but for it. */
+function withoutNegation(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/`/g, " ")
+    .replace(/\b(?:do|does|did)\s+not\b|\b(?:do|does|did)n['’]t\b/g, " ")
+    .replace(/\bcannot\b|\bcan['’]t\b/g, "can")
+    .replace(/\bwon['’]t\b/g, "will")
+    .replace(/n['’]t\b/g, "")
+    .replace(/\b(?:not|never|no)\b/g, " ")
+    .replace(/[^\p{L}\p{N}_'’.:/+-]+/gu, " ")
+    .trim();
 }
 
 /**
- * What of the facts the replaced sentence states the correction no longer
- * states (EO-913): each of its concrete terms (`concreteTerms`) the
- * correction does not say in any notation — not as a word of it, nor as
- * code or prose (`pnpm test` and pnpm test are one), nor a number as its
- * word ("2" as "two"), nor an acronym as the words it stands for ("CI" as
- * "continuous integration", whose initials are its letters) — and whether
- * it negates where the correction does not, or the other way round. Empty
- * where the correction says everything the sentence did, in other or
- * fewer words or with something added: that is notation or detail, not a
- * fact put right.
+ * Whether `put` says `term` in any notation (EO-913): as a word of it, or
+ * within it as code or prose (`pnpm test` and pnpm test are one), a
+ * number as its word ("2" as "two"), or an acronym as words whose initials
+ * are its letters ("CI" as "continuous integration"). A sign before a
+ * number is part of it: "-1" does not say 1.
  */
-function lostFacts(replaced: string, put: string): string[] {
+function sayer(put: string): (term: string) => boolean {
   const flat = put.replace(/`/g, "").toLowerCase();
   const words = [...flat.matchAll(CONCRETE_WORD)].map(([word]) => word);
   const said = new Set(words);
@@ -424,38 +397,26 @@ function lostFacts(replaced: string, put: string): string[] {
     return false;
   };
   const within = (term: string) => {
-    let from = 0;
-    for (;;) {
+    for (let from = 0; ; ) {
       const at = flat.indexOf(term, from);
       if (at === -1) return false;
-      // A sign before a number is part of it: "-1" does not say 1.
       const before = /^[\p{N}]/u.test(term) ? /[\p{L}\p{N}_+-]/u : /[\p{L}\p{N}_]/u;
       if (!before.test(flat[at - 1] ?? "") && !/[\p{L}\p{N}_]/u.test(flat[at + term.length] ?? "")) return true;
       from = at + 1;
     }
   };
-  const lost = concreteTerms(replaced).filter((term) => {
-    if (said.has(term) || within(term)) return false;
-    if (/^\d+$/.test(term) && said.has(NUMBER_NAMES[Number(term)] ?? "")) return false;
-    if (/^[a-z]{2,}$/.test(term) && spelled(term)) return false;
-    return true;
-  });
-  const strip = (text: string) => {
-    let prose = text;
-    for (const [start, end] of codeSpans(text)) prose = prose.slice(0, start) + " ".repeat(end - start) + prose.slice(end);
-    return prose;
+  return (term) => {
+    const word = term.toLowerCase();
+    if (said.has(word) || within(word)) return true;
+    if (/^\d+$/.test(word) && said.has(NUMBER_NAMES[Number(word)] ?? "")) return true;
+    return /^[a-z]{2,}$/.test(word) && spelled(word);
   };
-  if (negates(strip(replaced)) !== negates(strip(put))) lost.push("¬");
-  return lost;
 }
-
-/** The fewest words a sentence a correction quotes may have: fewer is a phrase every text has, not a statement. */
-const MIN_QUOTED_WORDS = 3;
 
 /**
  * Words too common to say what a sentence is about: left out of the
- * terms a correction is compared by. "no", "not" and "never" are not
- * among them — a correction may be one.
+ * terms a correction's context is compared by. "no", "not" and "never"
+ * are not among them — a correction may be one.
  */
 const COMMON_WORDS = new Set(
   "a an the and or but so of to in on at for by with from into onto as than then is are was were be been being it its this that these those there here any all some each every do does did has have had will would can could should may might must".split(" "),
@@ -506,120 +467,236 @@ function isWholeSentencesOf(quote: string, source: string): boolean {
   return false;
 }
 
+/** One piece of a text as a correction is diffed by: a word (`CONCRETE_WORD`), a run of whitespace, or one other mark. */
+interface Token {
+  text: string;
+  start: number;
+  kind: "word" | "space" | "mark";
+}
+
+const TOKEN = /(?<![\p{L}\p{N}_])(?:[-+](?=\p{N}))?[\p{L}\p{N}_]+(?:[.'’:/_-][\p{L}\p{N}_]+)*|\s+|[\s\S]/gu;
+
+function tokensOf(text: string): Token[] {
+  return [...text.matchAll(TOKEN)].map((match) => ({
+    text: match[0],
+    start: match.index,
+    kind: /^\s+$/.test(match[0]) ? "space" : /^[-+]?[\p{L}\p{N}_]/u.test(match[0]) && match[0].length > (/^[-+]/.test(match[0]) ? 1 : 0) ? "word" : "mark",
+  }));
+}
+
 /**
- * Where a rewrite differs from its entry, widened to whole sentences: the
- * text before `start` and the `tail` characters after the changed
- * sentences are the entry's own, character for character, in both, and
- * `replaced` is what the rewrite put `put` in place of. Null where the two
- * are the same text.
+ * Where two token lists differ (EO-913): each run of the first replaced
+ * by a run of the second, as half-open token ranges, by their longest
+ * common subsequence — everything between two runs is the same token for
+ * token, whitespace included. Runs only whitespace apart are one run.
  */
-function changedSentences(entry: string, rewrite: string): { start: number; tail: number; replaced: string; put: string } | null {
+function changedRuns(from: readonly Token[], to: readonly Token[]): { from: [number, number]; to: [number, number] }[] {
   let head = 0;
-  while (head < entry.length && head < rewrite.length && entry[head] === rewrite[head]) head += 1;
-  if (head === entry.length && head === rewrite.length) return null;
+  while (head < from.length && head < to.length && from[head]!.text === to[head]!.text) head += 1;
   let tail = 0;
-  while (tail < entry.length - head && tail < rewrite.length - head && entry[entry.length - 1 - tail] === rewrite[rewrite.length - 1 - tail]) tail += 1;
-  // Back to the start of the sentence the change begins in, and on to the
-  // end of the one it ends in, by breaks wholly within the text both share.
-  let start = 0;
-  for (const found of entry.slice(0, head).matchAll(SENTENCE_BREAK)) start = found.index + found[0].length;
-  const after = entry.slice(entry.length - tail);
-  const next = new RegExp(SENTENCE_BREAK.source).exec(after);
-  const kept = next === null ? 0 : tail - next.index;
-  return { start, tail: kept, replaced: entry.slice(start, entry.length - kept), put: rewrite.slice(start, rewrite.length - kept) };
+  while (tail < from.length - head && tail < to.length - head && from[from.length - 1 - tail]!.text === to[to.length - 1 - tail]!.text) tail += 1;
+  const a = from.slice(head, from.length - tail);
+  const b = to.slice(head, to.length - tail);
+  // Longest common subsequence of the middle, from the end.
+  const width = b.length + 1;
+  const table = new Uint32Array((a.length + 1) * width);
+  for (let i = a.length - 1; i >= 0; i -= 1) {
+    for (let j = b.length - 1; j >= 0; j -= 1) {
+      table[i * width + j] = a[i]!.text === b[j]!.text ? table[(i + 1) * width + j + 1]! + 1 : Math.max(table[(i + 1) * width + j]!, table[i * width + j + 1]!);
+    }
+  }
+  const runs: { from: [number, number]; to: [number, number] }[] = [];
+  let open: { from: [number, number]; to: [number, number] } | null = null;
+  let i = 0;
+  let j = 0;
+  const close = () => {
+    if (open !== null) runs.push(open);
+    open = null;
+  };
+  while (i < a.length || j < b.length) {
+    if (i < a.length && j < b.length && a[i]!.text === b[j]!.text) {
+      close();
+      i += 1;
+      j += 1;
+      continue;
+    }
+    open ??= { from: [head + i, head + i], to: [head + j, head + j] };
+    if (j < b.length && (i === a.length || table[i * width + j + 1]! >= table[(i + 1) * width + j]!)) j += 1;
+    else i += 1;
+    open.from[1] = head + i;
+    open.to[1] = head + j;
+  }
+  close();
+  // Runs with only whitespace between them, on both sides, are one.
+  const merged: { from: [number, number]; to: [number, number] }[] = [];
+  for (const run of runs) {
+    const last = merged[merged.length - 1];
+    const gap = (tokens: readonly Token[], start: number, end: number) => tokens.slice(start, end).every((token) => token.kind === "space");
+    if (last !== undefined && gap(from, last.from[1], run.from[0]) && gap(to, last.to[1], run.to[0])) {
+      last.from[1] = run.from[1];
+      last.to[1] = run.to[1];
+    } else merged.push({ from: [...run.from], to: [...run.to] });
+  }
+  return merged;
+}
+
+/** Whether a word says a value no synonym stands for: code (`codeSpans`), a number, a name or path, or an acronym. */
+function isConcrete(token: Token, code: readonly [number, number][]): boolean {
+  const word = token.text.replace(/^[-+]/, "");
+  return code.some(([start, end]) => token.start >= start && token.start < end) || /\p{N}/u.test(token.text) || /[._:/]/.test(word) || /^\p{Lu}[\p{Lu}\p{N}]+$/u.test(word);
+}
+
+/** A text as it is looked for in a source: no backticks, whitespace collapsed, lowercased. */
+function flattened(text: string): string {
+  return text.replace(/`/g, "").replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+/** Where `part` is in `whole` (both `flattened`), as whole words: "16" is not in "160", nor "1" in "-1". */
+function wordsAt(whole: string, part: string): number[] {
+  const found: number[] = [];
+  if (part === "") return found;
+  for (let from = 0; ; ) {
+    const at = whole.indexOf(part, from);
+    if (at === -1) return found;
+    const before = /^[\p{N}]/u.test(part) ? /[\p{L}\p{N}_+-]/u : /[\p{L}\p{N}_]/u;
+    if (!before.test(whole[at - 1] ?? "") && !/[\p{L}\p{N}_]/u.test(whole[at + part.length] ?? "")) found.push(at);
+    from = at + 1;
+  }
+}
+
+/** A text's terms, as a correction's context is compared by: its words, lowercased, less the common ones (`COMMON_WORDS`), each in one spelling (`terms`). */
+function terms(text: string): Set<string> {
+  const found = new Set<string>();
+  for (const [raw] of text.replace(/`/g, " ").toLowerCase().matchAll(CONCRETE_WORD)) {
+    if (COMMON_WORDS.has(raw)) continue;
+    const sign = raw[0] === "-" || raw[0] === "+" ? raw[0] : "";
+    let term = sign + raw.slice(sign.length).replace(/[-'’]/g, "");
+    if (/^[a-z]+$/.test(term)) {
+      if (term.endsWith("ies") && term.length > 4) term = `${term.slice(0, -3)}y`;
+      else if (term.endsWith("ing") && term.length > 5) term = term.slice(0, -3);
+      else if (term.endsWith("ed") && term.length > 4) term = term.slice(0, -2);
+      else if (/(?:s|x|z|ch|sh)es$/.test(term) && term.length > 4) term = term.slice(0, -2);
+      else if (term.endsWith("s") && !term.endsWith("ss") && term.length > 3) term = term.slice(0, -1);
+    }
+    found.add(term);
+  }
+  return found;
 }
 
 /**
  * Why a rewrite does not put right what `sources` say, or null where it
  * does (EO-913) — the evidence a `repository_file` or `newer_entry`
- * rewrite is held to, by the text itself (invariant 5):
+ * rewrite is held to, by the text itself (invariant 5). The rewrite is
+ * diffed against its entry token by token (`changedRuns`): every
+ * character outside the runs it changed is the entry's own, whitespace
+ * included, and each run must be one of two things.
  *
- * - **Each changed sentence the source's own words.** The rewrite is its
- *   entry with one run of whole sentences changed (`changedSentences`),
- *   every other character exactly as it was — a sign, an operator, a
- *   word dropped elsewhere is a change outside the correction — and that
- *   run is sentence for sentence what it was, as many and with the same
- *   breaks between them: each one changed is replaced by one whole
- *   sentence of a source, mark for mark, of `MIN_QUOTED_WORDS` words or
- *   more, that the entry did not already say. So a correction never
- *   takes a sentence out with it ("Keep backups." dropped beside a
- *   version put right), and each sentence it puts is checked on its own
- *   against the one it replaces.
- * - **About the same fact, and saying something else of it.** Compared
- *   term by term (`terms`), the source's sentence brings at least one the
- *   replaced sentence did not have — one that only repeats it, in fewer
- *   words or the same ones respelled, corrects nothing — and keeps at
- *   least as many of the replaced sentence's terms as it adds, and as it
- *   drops: a sentence on another subject that happens to share a word or
- *   two is not a correction of this one.
- * - **A fact it no longer states.** Something the replaced sentence said
- *   that no synonym stands for — a number, a name or path, code, an
- *   acronym — is not in the source's sentence in any notation, or one of
- *   the two negates and the other does not (`lostFacts`). "Execute pnpm
- *   test" for "Run pnpm test" changes no such thing, nor does "CI" for
- *   "continuous integration", nor a sentence that only adds a detail:
- *   copying the source shows where the words came from, not that they
- *   correct anything.
- * - **The entry's own beside it.** Something of the entry not common to
- *   every text is left outside the replaced sentences: an entry that would
- *   say only what the source says is the source again, and is retired
- *   rather than rewritten.
+ * - **A value replaced.** What the run took out holds at least one value
+ *   no synonym stands for — a number, a name or path, code or an acronym
+ *   (`isConcrete`) — that what it put in does not say in any notation
+ *   (`sayer`): `16` for `15`, `-1` for `1`, `` `pnpm lint` `` for
+ *   `` `pnpm test` ``, "local time" for "UTC". Every other word and mark
+ *   it took out is in what it put in, so a value is never replaced
+ *   together with the words beside it ("and keep backups" dropped with a
+ *   version put right), and a run that only rewords ("before" for "prior
+ *   to"), respaces (`pnpm  test`), repunctuates, spells out ("CI"), takes
+ *   words out or adds them is refused.
+ * - **A negation added or taken off**, every other word the same.
  *
- * Where no such disagreement can be found, the entry is left as it is:
- * a correction in plain words alone ("run" to "lint") is refused, which
- * costs a rewrite the model could have made, never a fact.
+ * And a sentence of a source bears each run out: it says what the run
+ * put in, word for word, and up to there neither still says the value
+ * the run took out nor negates where the rewritten sentence does not (or
+ * the other way round) — for a negation, the whole sentence negates as
+ * the rewritten one does; and it is about that
+ * sentence — it shares at least two of its other terms (or every one,
+ * where it has fewer), and at least half of its own are among them. A
+ * rewrite that would be only a source's sentences is that source again,
+ * and the entry is retired rather than rewritten.
+ *
+ * Where no such disagreement can be found, the entry is left as it is: a
+ * correction in plain words ("run" to "lint") is refused, which costs a
+ * rewrite the model could have made, never a fact.
  */
 function correctionProblem(rewrite: string, entry: string, sources: readonly string[], what: string): string | null {
   const had = entry.trim();
   const said = rewrite.trim();
-  const changed = changedSentences(had, said);
-  if (changed === null) return "changes nothing of the entry's text";
-  const put = changed.put.trim();
-  const replaced = changed.replaced.trim();
-  if (put === "") return `takes sentences out of the entry, which no ${what} puts right`;
-  if (replaced === "") return `adds a sentence to the entry rather than correcting one of it`;
-  const edges = (text: string) => `${/^\s*/.exec(text)![0]}|${/\s*$/.exec(text)![0]}`;
-  if (edges(changed.put) !== edges(changed.replaced)) return `changes the space around "${replaced}", which no ${what} puts right`;
-  const was = sentenceSpans(replaced);
-  const now = sentenceSpans(put);
-  const between = (text: string, spans: readonly [number, number][]) => spans.slice(1).map(([start], at) => text.slice(spans[at]![1], start));
-  if (was.length !== now.length || between(replaced, was).join("\u0000") !== between(put, now).join("\u0000")) {
-    return `puts "${put}" for "${replaced}", which is not the same sentences with some replaced by a source's: a correction replaces sentences one for one, and takes none out or adds none`;
-  }
-  let corrected = 0;
-  for (const [at, [start, end]] of was.entries()) {
-    const from = replaced.slice(start, end);
-    const to = put.slice(now[at]![0], now[at]![1]);
-    if (from === to) continue;
-    const problem = sentenceCorrectionProblem(from, to, had, sources, what);
-    if (problem !== null) return problem;
-    corrected += 1;
-  }
-  if (corrected === 0) return "changes nothing of the entry's sentences";
-  const own = had.slice(0, changed.start) + had.slice(had.length - changed.tail);
-  if (terms(own).size === 0) return `says nothing but what ${what} says, so the entry is retired rather than rewritten`;
-  return null;
-}
-
-/** Why one sentence `put` in place of `replaced` does not correct it by `sources`, or null where it does (`correctionProblem`). */
-function sentenceCorrectionProblem(replaced: string, put: string, entry: string, sources: readonly string[], what: string): string | null {
-  if (!sources.some((source) => isWholeSentencesOf(put, source))) {
-    return `changes "${replaced}" to "${put}", which is not a whole sentence of ${what}, word for word; a correction puts the source's sentence in place of the entry's and changes nothing else`;
-  }
-  if ((put.match(/[\p{L}\p{N}_]+/gu) ?? []).length < MIN_QUOTED_WORDS) return `quotes "${put}", too short a sentence of ${what} to be a correction`;
-  if (squashed(entry).includes(squashed(put))) return `quotes "${put}", which the entry already says`;
-  const was = terms(replaced);
-  const now = terms(put);
-  const shared = [...now].filter((term) => was.has(term)).length;
-  const added = now.size - shared;
-  const dropped = was.size - shared;
-  const lost = lostFacts(replaced, put);
-  // A negation taken off adds no word and still says the opposite; any
-  // other sentence that adds none only says less.
-  if (added === 0 && !lost.includes("¬")) return `puts "${put}" for "${replaced}", which says nothing it did not, so it corrects nothing`;
-  if (shared < added || shared < dropped) return `puts "${put}" for "${replaced}", which is about something else: a correction keeps at least as many of the words of the sentence it replaces as it adds or drops`;
-  if (lost.length === 0) {
-    return `puts "${put}" for "${replaced}", which still says every number, name, path, piece of code and acronym it did, in some notation, and negates as it did, so it says the same in other words or adds to it, and corrects nothing`;
+  if (had === said) return "changes nothing of the entry's text";
+  if (sources.some((source) => isWholeSentencesOf(said, source))) return `says nothing but what ${what} says, so the entry is retired rather than rewritten`;
+  const from = tokensOf(had);
+  const to = tokensOf(said);
+  const codeFrom = codeSpans(had);
+  const sentences = sentenceSpans(said);
+  const sourceSentences = sources.flatMap((source) => sentenceSpans(source).map(([start, end]) => source.slice(start, end)));
+  for (const run of changedRuns(from, to)) {
+    const out = from.slice(run.from[0], run.from[1]);
+    const into = to.slice(run.to[0], run.to[1]);
+    const outText = out.map((token) => token.text).join("");
+    const intoText = into.map((token) => token.text).join("");
+    const shown = `"${outText.trim()}" to "${intoText.trim()}"`;
+    const outWords = out.filter((token) => token.kind === "word");
+    const intoWords = into.filter((token) => token.kind === "word");
+    if (outWords.length === 0 && intoWords.length === 0) return `changes only spacing or punctuation, ${shown}, which nothing in ${what} bears out`;
+    const marks = (tokens: readonly Token[]) => tokens.filter((token) => token.kind === "mark").map((token) => token.text);
+    const intoMarks = marks(into);
+    const lostMark = marks(out).find((mark) => {
+      const at = intoMarks.indexOf(mark);
+      if (at === -1) return true;
+      intoMarks.splice(at, 1);
+      return false;
+    });
+    const position = into[0]?.start ?? to[run.to[0]]?.start ?? said.length;
+    const [sentenceStart, sentenceEnd] = sentences.find(([start, end]) => position >= start && position <= end) ?? [0, said.length];
+    const sentence = said.slice(sentenceStart, sentenceEnd);
+    const negation = withoutNegation(outText) === withoutNegation(intoText) && negates(outText) !== negates(intoText) && lostMark === undefined;
+    let lost: string[] = [];
+    if (!negation) {
+      if (intoWords.length === 0) return `takes "${outText.trim()}" out of the entry, which nothing in ${what} bears out: a correction replaces a value, and takes nothing else out`;
+      if (outWords.length === 0) return `adds "${intoText.trim()}" to the entry rather than correcting what it says`;
+      if (lostMark !== undefined) return `changes ${shown}, taking out "${lostMark}", which nothing in ${what} bears out`;
+      const kept = new Set(intoWords.map((token) => token.text.toLowerCase()));
+      const reworded = outWords.filter((token) => !isConcrete(token, codeFrom) && !kept.has(token.text.toLowerCase()));
+      if (reworded.length > 0) {
+        return `changes ${shown}, which takes out "${reworded.map((token) => token.text).join(" ")}": a correction replaces only a number, name, path, piece of code, acronym or negation the source contradicts, and keeps every other word of the entry as it was`;
+      }
+      const says = sayer(intoText);
+      lost = outWords.filter((token) => isConcrete(token, codeFrom) && !says(token.text)).map((token) => token.text);
+      if (lost.length === 0) {
+        return `changes ${shown}, which still says every number, name, path, piece of code and acronym it did, in some notation, and negates as it did, so it says the same in other words or adds to it, and corrects nothing`;
+      }
+    }
+    const around = terms(sentence);
+    for (const term of terms(intoText)) around.delete(term);
+    if (around.size === 0) return `changes ${shown} in a sentence with nothing else in it to tell which sentence of ${what} it follows`;
+    const needed = Math.min(2, around.size);
+    const wanted = flattened(intoText);
+    const leading = said.slice(sentenceStart, Math.max(sentenceStart, position));
+    const backs = (source: string) => {
+      if (negation) {
+        if (negates(source) !== negates(sentence)) return false;
+      } else {
+        // Up to where it says the new value, the source's sentence says
+        // what the entry's does up to it: not negated where the entry is
+        // not, and not still the value taken out — "local time, not UTC"
+        // bears out "local time" for "UTC", "never Postgres 16" and "Node
+        // 18 and Node 20" do not bear out 16 or 20.
+        const flat = flattened(source);
+        const fits = wordsAt(flat, wanted).some((at) => {
+          const before = flat.slice(0, at);
+          const stillSays = sayer(before);
+          return negates(before) === negates(leading) && !lost.some((term) => stillSays(term));
+        });
+        if (!fits) return false;
+      }
+      const own = terms(source);
+      for (const term of terms(intoText)) own.delete(term);
+      const shared = [...own].filter((term) => around.has(term)).length;
+      return shared >= needed && shared * 2 >= own.size;
+    };
+    if (!sourceSentences.some(backs)) {
+      return negation
+        ? `changes ${shown}, but no sentence of ${what} about "${sentence}" negates as it now does`
+        : `changes ${shown}, but no sentence of ${what} about "${sentence}" says "${intoText.trim()}" and no longer says "${lost.join(" ")}"`;
+    }
   }
   return null;
 }
@@ -742,11 +819,12 @@ function relativeDateProblem(rewrite: { body: string; contradictsRepositoryFile:
  *   relative dates or times it says each replaced by the date EO reckons
  *   it meant, from the day the entry was written (`resolvedDate`), and
  *   nothing else changed (`relativeDateProblem`).
- * - `repository_file` — the rewrite carries over a whole sentence of a
- *   repository file the call was given, and changes nothing outside it
+ * - `repository_file` — the rewrite replaces values of the entry, or a
+ *   negation, with what a sentence of a repository file the call was
+ *   given says in their place, and changes nothing else
  *   (`correctionProblem`). It may clear `contradictsRepositoryFile` — the
  *   entry now says what the file does — but never set it.
- * - `newer_entry` — the same, with a sentence of an entry the call was
+ * - `newer_entry` — the same, by a sentence of an entry the call was
  *   given that was written after this one, and the flag as it was.
  *
  * No rewrite sets `contradictsRepositoryFile`, nor changes the flag
@@ -797,7 +875,7 @@ export function consolidationAnswerSchema(sent: readonly SentEntry[], given: Con
   const known = new Set(sent.map((entry) => entry.id));
   const byId = new Map(sent.map((entry) => [entry.id, entry]));
   return MemoryConsolidationAnswerSchema.superRefine((answer, ctx) => {
-    checkOperations(known, answer, ctx);
+    checkOperations(known, answer, ctx, given.context);
     answer.rewrite.forEach((rewrite, at) => {
       const entry = byId.get(rewrite.id);
       const problem = entry === undefined ? null : rewriteReasonProblem(rewrite, entry, sent, given);
@@ -806,11 +884,12 @@ export function consolidationAnswerSchema(sent: readonly SentEntry[], given: Con
   });
 }
 
-function checkOperations(known: ReadonlySet<string>, answer: MemoryConsolidationOperations, ctx: z.RefinementCtx): void {
+function checkOperations(known: ReadonlySet<string>, answer: MemoryConsolidationOperations, ctx: z.RefinementCtx, context?: ReadonlySet<string>): void {
   const named = new Map<string, string>();
   const name = (id: string, path: (string | number)[]) => {
     const where = path.join(".");
     if (!known.has(id)) ctx.addIssue({ code: "custom", path, message: `names an entry it was not given: ${id}` });
+    else if (context?.has(id) === true) ctx.addIssue({ code: "custom", path, message: `names ${id}, which it was given as context only: a batch of its own handles it` });
     else if (named.has(id)) ctx.addIssue({ code: "custom", path, message: `names ${id} again, already named at ${named.get(id)}` });
     else named.set(id, where);
   };
@@ -876,7 +955,7 @@ const OPERATION_RULES = [
   "Answer with the changes to make, not with the entries to keep. Name only what changes: an entry you do not mention stays exactly as it is, so never list an entry just to keep it. There are three operations:",
   "- `retire`: `{ id, reason }` — retire one entry, saying in a few words why.",
   "- `merge`: `{ from, body, contradictsRepositoryFile }` — fold two or more entries (`from` holds at least two ids) into one new entry whose text is `body`.",
-  `- \`rewrite\`: \`{ id, body, reason, contradictsRepositoryFile }\` — replace one entry's text with \`body\`. \`reason\` is one of ${MEMORY_CONSOLIDATION_REWRITE_REASONS.map((reason) => `\`${reason}\``).join(", ")}: a relative date or time the entry says made absolute, a disagreement with a repository file you are given put right, or a correction by an entry you are given that was written after it. EO checks each reason against the change itself and refuses the whole answer where one does not hold. A \`relative_date\` rewrite replaces only the relative date or time with the date it meant, counted from the date the entry was written, and changes not one other character of the entry — not a space, a backtick or a letter's case — nor contradictsRepositoryFile: a day as YYYY-MM-DD, alone or after "on", for "today", "yesterday", "tomorrow", "N days ago" or "in N days" — "yesterday" in an entry written 2026-11-26 is 2026-11-25, so "Released yesterday." becomes "Released 2026-11-25." or "Released on 2026-11-25.", never "Released before 2026-11-25." — and a month as YYYY-MM, alone or after "in" or "during", for "this month", "last month" or "next month". Any other relative phrase — "last week", "on Monday", "recently", "three months ago", and "tonight" or "this morning", whose time of day a date would lose — stays exactly as it is, and so does a word in code (inside a code span, however many backticks open it, a fenced code block opened with backticks or tildes, a line indented four spaces, a <code> or <pre> element, or part of a name or path such as \`today_count\` or \`today.json\`). A \`repository_file\` rewrite replaces whole sentences of the entry — from one full stop, semicolon, colon or line break to the next — each with one whole sentence of the file, copied exactly, mark for mark, sentence for sentence: it takes no sentence out and adds none, and leaves every other character of the entry exactly as it was: one run of sentences per rewrite, and nothing else touched, not a sign, an operator or a word. The file's sentence must be about the same thing as the sentence it replaces and say something different of it: it keeps at least as many of that sentence's words as it adds, and as it drops, and it no longer says something the replaced sentence said — a number, a name or path, code or an acronym, in any notation — or negates where it did not, or the other way round. "Execute pnpm test" for "Run pnpm test", "CI" for "continuous integration", "2" for "two" and a sentence that only adds a detail change no such thing, and are refused. A sentence that only repeats the entry's in other or fewer words corrects nothing, and one about something else is no correction of it: leave the entry as it is. It must keep a sentence of the entry's own beside it, since an entry that would say only what the file says is retired instead. A \`newer_entry\` rewrite does the same with a whole sentence of the newer entry. A rewrite keeps the entry's contradictsRepositoryFile as it is, except that a \`repository_file\` rewrite may clear it; it never sets it, and an entry is never rewritten only to change it. There is no other reason to rewrite an entry: never rewrite one only to shorten it, reword it or tidy its style.`,
+  `- \`rewrite\`: \`{ id, body, reason, contradictsRepositoryFile }\` — replace one entry's text with \`body\`. \`reason\` is one of ${MEMORY_CONSOLIDATION_REWRITE_REASONS.map((reason) => `\`${reason}\``).join(", ")}: a relative date or time the entry says made absolute, a disagreement with a repository file you are given put right, or a correction by an entry you are given that was written after it. EO checks each reason against the change itself and refuses the whole answer where one does not hold. A \`relative_date\` rewrite replaces only the relative date or time with the date it meant, counted from the date the entry was written, and changes not one other character of the entry — not a space, a backtick or a letter's case — nor contradictsRepositoryFile: a day as YYYY-MM-DD, alone or after "on", for "today", "yesterday", "tomorrow", "N days ago" or "in N days" — "yesterday" in an entry written 2026-11-26 is 2026-11-25, so "Released yesterday." becomes "Released 2026-11-25." or "Released on 2026-11-25.", never "Released before 2026-11-25." — and a month as YYYY-MM, alone or after "in" or "during", for "this month", "last month" or "next month". Any other relative phrase — "last week", "on Monday", "recently", "three months ago", and "tonight" or "this morning", whose time of day a date would lose — stays exactly as it is, and so does a word in code (inside a code span, however many backticks open it, a fenced code block opened with backticks or tildes, a line indented four spaces — either also inside a block quote or a list item —, a <code> or <pre> element, or part of a name or path such as \`today_count\` or \`today.json\`). A \`repository_file\` rewrite puts right a value the file says otherwise, and nothing else: it replaces a number, a name or path, a piece of code or an acronym of the entry with what the file says in its place, written exactly as one sentence of the file writes it — \`16\` for \`15\`, \`-1\` for \`1\`, "\`pnpm lint\`" for "\`pnpm test\`", "local time" for "UTC" — or adds or takes off a negation ("Do not run" for "Run") where the file's sentence negates otherwise. Every other character of the entry stays exactly as it was: every other word, clause and sentence, every mark and every space, even in a sentence it corrects — "Use Postgres 15 for tests and keep backups." becomes "Use Postgres 16 for tests and keep backups.", never "Use Postgres 16 for tests." The file's sentence must be about the same thing as the entry's sentence, sharing its other words, and must not still say the old value or negate otherwise before the new one. A change of wording, spacing or punctuation alone ("before" for "prior to", \`pnpm test\` for \`pnpm  test\`), the same value in another notation ("CI" for "continuous integration", "2" for "two", code as prose), a command in plain words changed for another (pnpm lint for pnpm test, outside code), a word dropped or a detail added is no correction, and is refused: leave the entry as it is. An entry that would say only what the file says is retired instead. A \`newer_entry\` rewrite does the same with a sentence of the newer entry. A rewrite keeps the entry's contradictsRepositoryFile as it is, except that a \`repository_file\` rewrite may clear it; it never sets it, and an entry is never rewritten only to change it. There is no other reason to rewrite an entry: never rewrite one only to shorten it, reword it or tidy its style.`,
   "Every id you name must be one of the entries you are given, and each id may appear only once in the whole answer — in one retire, one merge's `from`, or one rewrite. An answer with nothing to change has all three lists empty; that is a valid answer, and often the right one.",
   "What to change, and nothing else:",
   `- Merge entries that state the same fact into one, keeping every detail any of them adds. Keep each entry you merge or rewrite to one fact, at most ${MAX_MEMORY_NOTE_CHARS} characters: an answer with a longer one is refused whole. Entries about one topic that state different facts are not duplicates; leave them as they are.`,
@@ -962,6 +1041,8 @@ export interface ConsolidationBatchPart {
   scopeEntries: number;
   scopeChars: number;
   fresh?: ReadonlySet<string>;
+  /** Of those, the ones given here only as another's neighbour, which a batch of their own handles: context, never named (`ConsolidationGiven.context`). */
+  context?: ReadonlySet<string>;
 }
 
 /**
@@ -970,17 +1051,20 @@ export interface ConsolidationBatchPart {
  * others it is likely a duplicate of (EO-576), and where `fresh` holds it,
  * that it is new since the last consolidation (EO-913).
  */
-function entryLines(entries: readonly MemoryEntryView[], likelyDuplicates?: ReadonlyMap<string, readonly string[]>, fresh?: ReadonlySet<string>): string[] {
+function entryLines(entries: readonly MemoryEntryView[], likelyDuplicates?: ReadonlyMap<string, readonly string[]>, fresh?: ReadonlySet<string>, context?: ReadonlySet<string>): string[] {
   const lines: string[] = [];
   for (const entry of [...entries].sort((a, b) => a.createdAt - b.createdAt || (a.id < b.id ? -1 : 1))) {
     const item = entry.source.type === "run" && entry.source.itemId !== null ? `; from item ${entry.source.itemId}` : "";
     const alike = likelyDuplicates?.get(entry.id) ?? [];
     const duplicate = alike.length > 0 ? `; likely a duplicate of ${alike.join(", ")}` : "";
-    const isNew = fresh?.has(entry.id) === true ? "; new since the last consolidation" : "";
+    const isNew = context?.has(entry.id) === true ? `; ${CONTEXT_MARK}` : fresh?.has(entry.id) === true ? "; new since the last consolidation" : "";
     lines.push("", `### ${entry.id} (written ${isoDay(entry.createdAt)}${item}${isNew}${entry.contradictsRepositoryFile ? "; already flagged as correcting the repository file" : ""}${duplicate})`, entry.body);
   }
   return lines;
 }
+
+/** How an entry given only as context is marked (`ConsolidationBatchPart.context`). */
+const CONTEXT_MARK = "new, and handled in a batch of its own: context here only";
 
 /** What a call is told about the entries marked as likely duplicates, when any are. */
 const LIKELY_DUPLICATES_NOTE =
@@ -1010,6 +1094,9 @@ export function consolidationInput(input: {
       `These are ${input.entries.length} of the agent-written memory entries of ${input.scopeLabel}, ${charsOf(input.entries)} characters${batch.count > 1 ? `: batch ${batch.index} of ${batch.count}` : ""}. Those marked "new since the last consolidation" were written or changed since the scope was last tidied; each is given with the existing entries most like it, which it may repeat, correct or be corrected by.`,
       `The scope's agents hold ${batch.scopeEntries} entries in ${batch.scopeChars} characters; the rest were tidied before and are not part of this, so change only these.`,
     );
+    if (input.entries.some((entry) => batch.context?.has(entry.id) === true)) {
+      lines.push(`Those marked "${CONTEXT_MARK}" are new too, but another batch gives each with its own neighbours: read them, and a newer one may correct another entry here, but name none of them in any operation — not to retire, merge or rewrite it. An answer that names one is refused whole.`);
+    }
   } else if (batch) {
     lines.push(
       `These are ${input.entries.length} of the agent-written memory entries of ${input.scopeLabel}, ${charsOf(input.entries)} characters: batch ${batch.index} of ${batch.count}, chosen so that entries alike tend to share one.`,
@@ -1025,7 +1112,7 @@ export function consolidationInput(input: {
     if (given.has(id) && here.length > 0) marks.set(id, here);
   }
   if (marks.size > 0) lines.push(LIKELY_DUPLICATES_NOTE);
-  lines.push("", "## Entries", ...entryLines(input.entries, marks, batch?.fresh));
+  lines.push("", "## Entries", ...entryLines(input.entries, marks, batch?.fresh, batch?.context));
   for (const file of input.repositoryFiles) {
     const whose = file.workspace === undefined ? "The workspace's" : `The workspace ${JSON.stringify(file.workspace)}'s`;
     lines.push("", `## ${whose} ${file.name}${file.truncated ? " (cut short to fit)" : ""}`, file.text);

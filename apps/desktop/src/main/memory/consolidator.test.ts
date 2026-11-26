@@ -22,7 +22,9 @@ import { sql } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DbHandle } from "../db/client.js";
 import {
+  activeMemoriesIn,
   addMemory,
+  getMemory,
   appendRunEvent,
   consolidationSlotTime,
   consolidationState,
@@ -51,6 +53,7 @@ import {
 import { buildEligibilityInput } from "../supervisor/buildTickInput.js";
 import { applyConsolidation, entriesNewSinceConsolidated, lastFinishedRunAt, runsDeliveredFromScopeQuery } from "../db/repos/memoryConsolidationsRepo.js";
 import { attachWorkspace, createTestItem, messagesFrom, openMigratedTestDb } from "../db/testHelpers.js";
+import { abandonAdoption, beginAdoption } from "../db/repos/projectsRepo.js";
 import { listConsolidationsCommand, restoreConsolidationCommand } from "../ipc/memoryCommands.js";
 import { recordFor } from "../record/localRecord.js";
 import { createSideCaller, type SideCallRequest } from "../sideCalls/sideCall.js";
@@ -1422,6 +1425,78 @@ describe("automatic memory consolidation", () => {
       expect(sent).toHaveLength(3);
       expect(sent[2]).toEqual(expect.arrayContaining([b.id, o3!.id]));
       expect(sent[2]).not.toContain(a.id);
+      expect(entriesNewSinceConsolidated(handle.db, project)).toEqual([]);
+    });
+
+    it("lets no batch change a new entry it has only as another's neighbour, so that entry's own batch is still asked (EO-913)", async () => {
+      settledScope();
+      const at = Date.now() - 10 * DAY;
+      const [o1, o2, o3] = [1, 2, 3].map((index) => byAgent(project, `Long old fact ${index}: ${"w".repeat(6_000)}`, at + index));
+      const a = byAgent(project, "New fact A about the payments ledger.", Date.now() - 2);
+      const b = byAgent(project, "The payments ledger was moved yesterday.", Date.now() - 1);
+      givenToFiveRuns([a, b]);
+      const ranked = new Map([
+        [a.id, [b.id, o1!.id, o2!.id]],
+        [b.id, [o3!.id]],
+      ]);
+      const dated = (id: string) => ({ ...NOTHING, rewrite: [{ id, body: `The payments ledger was moved ${new Date(b.createdAt - DAY).toISOString().slice(0, 10)}.`, contradictsRepositoryFile: false, reason: "relative_date" }] });
+      const run = async (answers: unknown[]) => {
+        const requests: ConsolidateRequest[] = [];
+        const runner = consolidatorWith(
+          (async (request: ConsolidateRequest) => {
+            requests.push(request);
+            return answeringWith(answers[requests.length - 1] ?? NOTHING).sideCall(request as never);
+          }) as never,
+          { neighbours: () => ranked },
+        );
+        runner.start();
+        await runner.idle();
+        runner.stop();
+        return requests;
+      };
+
+      // The reviewer's probe: A's batch, which has B only as A's neighbour, makes B's date absolute. Refused whole:
+      // B stays new and as it was, and nothing of that batch is applied.
+      const refused = await run([dated(b.id)]);
+      expect(refused).toHaveLength(1);
+      expect(refused[0]!.input).toMatch(new RegExp(`### ${b.id} \\([^)]*new, and handled in a batch of its own: context here only`));
+      expect(refused[0]!.input).toMatch(/name none of them in any operation/);
+      expect(getMemory(handle.db, b.id)?.retiredAt).toBeNull();
+      const failed = listConsolidations(handle.db, project)[0]!;
+      expect(failed.status).toBe("failed");
+      expect(failed.note).toMatch(new RegExp(`names ${b.id}, which it was given as context only`));
+      expect(entriesNewSinceConsolidated(handle.db, project)).toEqual([a.id, b.id]);
+    });
+
+    it("asks a new entry's own batch after one that had it only as context, and that batch may change it (EO-913)", async () => {
+      settledScope();
+      const at = Date.now() - 10 * DAY;
+      const [o1, o2, o3] = [1, 2, 3].map((index) => byAgent(project, `Long old fact ${index}: ${"w".repeat(6_000)}`, at + index));
+      const a = byAgent(project, "New fact A about the payments ledger.", Date.now() - 2);
+      const b = byAgent(project, "The payments ledger was moved yesterday.", Date.now() - 1);
+      givenToFiveRuns([a, b]);
+      const ranked = new Map([
+        [a.id, [b.id, o1!.id, o2!.id]],
+        [b.id, [o3!.id]],
+      ]);
+      const requests: ConsolidateRequest[] = [];
+      const answers = [NOTHING, { ...NOTHING, rewrite: [{ id: b.id, body: `The payments ledger was moved ${new Date(b.createdAt - DAY).toISOString().slice(0, 10)}.`, contradictsRepositoryFile: false, reason: "relative_date" }] }];
+      const runner = consolidatorWith(
+        (async (request: ConsolidateRequest) => {
+          requests.push(request);
+          return answeringWith(answers[requests.length - 1] ?? NOTHING).sideCall(request as never);
+        }) as never,
+        { neighbours: () => ranked },
+      );
+      runner.start();
+      await runner.idle();
+      // A's batch had B as context; B's own batch, with o3, was asked after it, and made B's date absolute.
+      expect(requests).toHaveLength(2);
+      expect(idsIn(requests[1]!.input)).toEqual(expect.arrayContaining([b.id, o3!.id]));
+      expect(requests[1]!.input).not.toMatch(/context here only/);
+      expect(getMemory(handle.db, b.id)?.retiredAt).not.toBeNull();
+      expect(activeMemoriesIn(handle.db, [project]).map((entry) => entry.body)).toContain(`The payments ledger was moved ${new Date(b.createdAt - DAY).toISOString().slice(0, 10)}.`);
+      expect(listConsolidations(handle.db, project).every((row) => row.status === "succeeded")).toBe(true);
       expect(entriesNewSinceConsolidated(handle.db, project)).toEqual([]);
     });
 
@@ -2882,6 +2957,46 @@ describe("automatic memory consolidation", () => {
         expect(runner.pending(scope)).toBeNull();
         expect(listConsolidations(handle.db, scope)).toEqual([]);
       }
+    });
+
+    it("settles nothing of a project while it is being moved to a record: none queued, none asked for, none applied (EO-913)", async () => {
+      const given = notes(workspace, 10);
+      givenToFiveRuns(given);
+      const clock = Date.now() + DAY;
+      let release: (() => void) | undefined;
+      const sideCall = vi.fn(async (request: ConsolidateRequest): Promise<Answer> => {
+        await new Promise<void>((resolve) => (release = resolve));
+        return { ok: true, value: request.schema.parse({ ...NOTHING, retire: [{ id: given[0]!.id, reason: "Stale." }] }) };
+      });
+      const runner = consolidatorWith(sideCall, { now: () => clock });
+
+      // Moving: the schedule queues nothing, and a person's request is refused.
+      expect(beginAdoption(handle.db, projectId as Uuid, clock)).toBeDefined();
+      expect(runner.check()).toEqual([]);
+      runner.start();
+      const asked = runner.requestNow(workspace);
+      expect(asked).toMatchObject({ outcome: "refused", reason: "unavailable" });
+      expect(asked.message).toContain("moving to your organisation's record");
+      await runner.idle();
+      expect(sideCall).not.toHaveBeenCalled();
+      expect(listConsolidations(handle.db, workspace)).toEqual([]);
+
+      // The move abandoned: due again.
+      abandonAdoption(handle.db, projectId as Uuid, clock);
+      expect(runner.check()).toEqual([{ scope: workspace, trigger: "schedule" }]);
+      // ...and a move begun while its call runs: its answer is not applied, and the entries stay new.
+      runner.poke();
+      for (let at = 0; at < 50 && release === undefined; at += 1) await new Promise((resolve) => setTimeout(resolve, 1));
+      expect(release).toBeDefined();
+      beginAdoption(handle.db, projectId as Uuid, clock);
+      release!();
+      await runner.idle();
+      const row = listConsolidations(handle.db, workspace)[0]!;
+      expect(row).toMatchObject({ status: "failed", retiredIds: [] });
+      expect(row.note).toContain("began moving to your organisation's record");
+      expect(getMemory(handle.db, given[0]!.id)?.retiredAt).toBeNull();
+      expect(entriesNewSinceConsolidated(handle.db, workspace)).toHaveLength(given.length);
+      runner.stop();
     });
 
     it("is refused once the consolidator is stopped", () => {
