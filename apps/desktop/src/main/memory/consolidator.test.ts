@@ -1022,6 +1022,37 @@ describe("automatic memory consolidation", () => {
       expect(entriesNewSinceConsolidated(handle.db, project)).toEqual([]);
     });
 
+    it("changes nothing — no fold, no call, no proposal — when the new entry it was queued for is retired while it waits, and leaves the watermark (EO-913)", async () => {
+      settledScope();
+      const watermark = consolidationWatermark(handle.db, project);
+      // Two old entries that repeat each other word for word: a run would fold them without a model.
+      byAgent(project, "A word-for-word repeat.", Date.now() - 5 * DAY);
+      byAgent(project, "A word-for-word repeat.", Date.now() - 5 * DAY + 1);
+      const fresh = byAgent(project, "One new fact.", Date.now());
+      givenToFiveRuns([fresh]);
+      const sideCall = vi.fn(async (): Promise<Answer> => ({ ok: true, value: NOTHING }));
+      const proposeSkills = vi.fn(async (): Promise<SideCallResult<unknown>> => ({ ok: true, value: { skills: [] } }));
+      let busy = true;
+      const runner = consolidatorWith(sideCall, { proposeSkills, pipelineBusy: () => busy });
+      expect(runner.check()).toEqual([{ scope: project, trigger: "schedule" }]);
+      runner.start();
+      const rows = listConsolidations(handle.db, project).length;
+
+      // Retired while the pipeline held it back.
+      expect(retireMemory(handle.db, fresh.id, { now: Date.now() + 1 }).ok).toBe(true);
+      expect(runner.pending(project)).toBe("queued");
+      busy = false;
+      runner.poke();
+      await vi.waitFor(() => expect(runner.pending(project)).toBeNull());
+      await runner.idle();
+
+      expect(sideCall).not.toHaveBeenCalled();
+      expect(proposeSkills).not.toHaveBeenCalled();
+      expect(listConsolidations(handle.db, project)).toHaveLength(rows);
+      expect(listMemories(handle.db, project).filter((entry) => entry.body === "A word-for-word repeat.")).toHaveLength(2);
+      expect(consolidationWatermark(handle.db, project)).toBe(watermark);
+    });
+
     it("is the whole scope, and the cross-batch pass, when a person asks", async () => {
       const old = settledScope();
       const requests: AnyRequest[] = [];
@@ -1184,6 +1215,9 @@ describe("automatic memory consolidation", () => {
       expect(listMemories(handle.db, workspace)).toHaveLength(58);
       expect(listConsolidations(handle.db, workspace).map((row) => row.status)).toEqual(["succeeded", "succeeded", "succeeded", "failed", "succeeded"]);
       expect(succeeded!.retiredIds.every((id) => everything(workspace).find((entry) => entry.id === id)!.retiredAt !== null)).toBe(true);
+      // Taken up where it stopped, the retry left out the batch already done as it was then: it completes no run, and the
+      // watermark stays where it was (EO-913).
+      expect(consolidationWatermark(handle.db, workspace)).toBeNull();
     });
 
     it("starts again from every entry when a run that stopped part-way is taken up long after", async () => {
