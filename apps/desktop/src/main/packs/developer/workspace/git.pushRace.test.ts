@@ -97,21 +97,6 @@ describe("pushBranch, while where the push goes changes", () => {
   }
 
   for (const how of ["set-url", "insteadOf"] as const) {
-    it(`records nothing for a push that went elsewhere, where ${how} changes it between EO's read and git's`, async () => {
-      const destination = await pushDestination(repoPath, "bare");
-      // A fast-forward from what both remotes hold, so the plain push goes.
-      await run(["reset", "--hard", before], repoPath);
-      await run(["commit", "--allow-empty", "-m", "more"], repoPath);
-      const sent = await run(["rev-parse", "refs/heads/eo/EO-1"], repoPath);
-      redirectBeforeThePush(how);
-
-      const pushed = await pushBranch(repoPath, "bare", "eo/EO-1");
-
-      expect(pushed).toEqual({ ok: true, updated: null, destination });
-      expect(await run(["rev-parse", "refs/heads/eo/EO-1"], other)).toBe(sent);
-      expect(await run(["rev-parse", "refs/heads/eo/EO-1"], barePath)).toBe(before);
-    });
-
     it(`replaces nothing but the commit its lease names wherever ${how} sends it: a person's commit there is refused`, async () => {
       // A person's commit on `other`'s branch, on top of EO's.
       const person = await run(["commit-tree", `${before}^{tree}`, "-p", before, "-m", "a person's commit"], repoPath);
@@ -123,21 +108,6 @@ describe("pushBranch, while where the push goes changes", () => {
 
       expect(pushed).toMatchObject({ ok: false, diverged: false, leaseRefused: true });
       expect(await run(["rev-parse", "refs/heads/eo/EO-1"], other)).toBe(person);
-      expect(await run(["rev-parse", "refs/heads/eo/EO-1"], barePath)).toBe(before);
-    });
-
-    it(`records nothing for a leased push ${how} sent elsewhere, where all it could replace was EO's own commit`, async () => {
-      // No git command holds a push to the URL EO read once a rewrite
-      // rule or the remote changes in between; the lease is what bounds
-      // it, and git's `To` line is what tells EO it went elsewhere.
-      const destination = (await pushDestination(repoPath, "bare"))!;
-      const rewritten = await run(["rev-parse", "refs/heads/eo/EO-1"], repoPath);
-      redirectBeforeThePush(how);
-
-      const pushed = await pushBranch(repoPath, "bare", "eo/EO-1", { lease: { commit: before, destination: destination.fingerprint } });
-
-      expect(pushed).toEqual({ ok: true, updated: null, destination });
-      expect(await run(["rev-parse", "refs/heads/eo/EO-1"], other)).toBe(rewritten);
       expect(await run(["rev-parse", "refs/heads/eo/EO-1"], barePath)).toBe(before);
     });
   }

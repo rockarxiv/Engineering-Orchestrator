@@ -229,13 +229,12 @@ export interface PushLease {
  * upstream `--set-upstream` would have set is set afterwards, since git
  * sets none for a push that names a commit.
  *
- * Where the push went is read from git's own output (EO-910): each push
- * URL's block starts `To <url>`, the URL with any `user@` taken out, so a
- * push whose `To` lines are not the URLs EO read just before it — the
- * remote's URL, or a rule rewriting it, changed in between — is recorded
- * as nothing. No git command can tie the push to the URLs read: a pinned
- * `remote.<name>.pushurl` is still rewritten by `url.<base>.insteadOf`,
- * and git before 2.46 cannot pin one at all.
+ * The push is recorded against where EO read it would go, just before it
+ * (EO-910): the remote's push URLs as `git remote get-url --push --all`
+ * lists them. A URL or rewrite rule changed between that read and git's
+ * is someone changing the remote underneath EO, out of scope by the
+ * person's ruling on EO-910; even then a lease can replace only the
+ * commit EO recorded pushing.
  *
  * Never `--force`: a remote branch that has diverged is a human's
  * decision, and the only thing EO could do by forcing is destroy work it
@@ -282,13 +281,12 @@ export async function pushBranch(repoPath: string, remote: string, branch: strin
     // What `--set-upstream` sets; best effort, as a push never failed on it.
     await git(["config", `branch.${branch}.remote`, remote], repoPath);
     await git(["config", `branch.${branch}.merge`, `refs/heads/${branch}`], repoPath);
-    // One `To` block, naming the URL EO read, and one status line for the
-    // branch, per push URL; anything else — a hook's output among git's,
-    // a URL that changed before git read it — is unreadable.
+    // One `To` block and one status line for the branch per push URL EO
+    // read; anything else — a hook's output among git's — is unreadable.
     const urls = read?.urls ?? [];
-    const to = stdout.split("\n").map((line) => line.replace(/\r$/, "")).filter((line) => line.startsWith("To ")).map((line) => line.slice(3));
+    const to = stdout.split("\n").map((line) => line.replace(/\r$/, "")).filter((line) => line.startsWith("To "));
     const flags = pushedRefLines(stdout, refspec).map((ref) => ref.flag);
-    const readable = urls.length > 0 && to.length === urls.length && to.every((url, index) => namesPushUrl(url, urls[index]!)) && flags.length === urls.length;
+    const readable = urls.length > 0 && to.length === urls.length && flags.length === urls.length;
     const moved = readable && flags.every((flag) => " +*=".includes(flag)) && flags.some((flag) => flag !== "=");
     return { ok: true, updated: moved ? commit : null, destination };
   } catch (error) {
@@ -322,35 +320,6 @@ function pushedRefLines(stdout: string, refspec: string): { flag: string; summar
     .map((line) => line.replace(/\r$/, ""))
     .filter((line) => line.length > 2 && line[1] === "\t" && line.slice(2).split("\t")[0] === refspec)
     .map((line) => ({ flag: line[0]!, summary: line.slice(2 + refspec.length + 1) }));
-}
-
-/**
- * Whether a push's `To <url>` line names `url` (EO-910). Git prints the
- * URL it pushed to with any `user@` or `user:password@` taken out
- * (`transport_anonymize_url`), so `git@github.com:o/r` shows as
- * `github.com:o/r`; the line is compared with the URL as read and with it
- * anonymised the same way. Only who signs in can differ between two URLs
- * that match, never the host or the repository.
- */
-export function namesPushUrl(line: string, url: string): boolean {
-  return line === url || line === anonymisedUrl(url);
-}
-
-/** `url` as git's `transport_anonymize_url` prints it. */
-function anonymisedUrl(url: string): string {
-  const at = url.indexOf("@");
-  const colon = url.indexOf(":");
-  const slash = url.indexOf("/");
-  // A local path, as git's `url_is_local_not_ssh` tells one, is kept whole.
-  if (at === -1 || colon === -1 || (slash !== -1 && slash < colon)) return url;
-  const rest = url.slice(at + 1);
-  const scheme = url.indexOf("://");
-  if (scheme === -1) return rest.includes(":") ? rest : url;
-  if (!/^[A-Za-z0-9+.-]*$/.test(url.slice(0, scheme))) return url;
-  // An `@` past the first slash after the scheme is part of the path.
-  const path = url.indexOf("/", scheme + 3);
-  if (path !== -1 && path < at) return url;
-  return url.slice(0, scheme + 3) + rest;
 }
 
 /**
