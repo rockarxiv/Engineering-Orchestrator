@@ -1640,7 +1640,9 @@ describe("before it opens or reuses one (EO-429)", () => {
       expect(notes(item).at(-1)).toContain("did not force-push");
     });
 
-    it("refuses as today where the push URL now differs from the recorded one only by a trailing space", async () => {
+    // Windows drops a trailing space from a path's last component, so there
+    // `remote.git ` is `remote.git` and the second repository cannot exist.
+    it.skipIf(process.platform === "win32")("refuses as today where the push URL now differs from the recorded one only by a trailing space", async () => {
       const { item, worktree, pushed } = await openedByEo();
       // A different repository, holding the same commit by coincidence.
       const spaced = `${remotePath} `;
