@@ -52,7 +52,7 @@ import { createRunSupervisor, type RunSupervisor } from "./runSupervisor.js";
 
 const LIMITS = { globalConcurrency: 1, perAgentConcurrency: 1, perRepositoryConcurrency: 1 };
 /** The notice a chat's turn posts when it cannot resume its thread because what its agent is given changed. */
-const ATTACHMENTS_CHANGED = /The MCP servers or skills attached to .* have changed/;
+const ATTACHMENTS_CHANGED = /The MCP servers[^.]* attached to .* have changed/;
 
 /** What the scripted review on a fork does: the writes it asks EO for, then whether it waits to be stopped. */
 interface ReviewScript {

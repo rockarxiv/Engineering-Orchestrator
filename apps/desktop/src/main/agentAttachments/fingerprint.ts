@@ -14,7 +14,9 @@ import { resolveAgentAttachments, resolveAgentAttachmentsForRun, type ResolvedAg
  *   outside that bag would be invisible until the app restarted;
  * - thread reuse in `supervisor/threadReuse.ts`, which refuses to resume
  *   when the instructions changed and has to refuse for the same reason
- *   when the tool surface did, on backends that re-send neither.
+ *   when the servers or CLIs did, on backends that re-send neither — and
+ *   which since EO-919 asks that of `fingerprintToolSurface` below, which
+ *   leaves the skills out.
  *
  * Three properties, and each of them is load-bearing:
  *
@@ -78,7 +80,7 @@ function serverContent(server: McpServer): unknown {
  * A skill's scope, for the one fingerprint that carries it.
  *
  * Only the provider cache's key (`agentSurfaceKey`) asks for it. The
- * thread-reuse hash is taken over the skills one run is given, already
+ * one-run hash is taken over the skills one run is given, already
  * narrowed by scope, so what matters there is which skills arrived and
  * what they say — moving a skill between two scopes that both take a run
  * in changes nothing that run can do (EO-470).
@@ -155,10 +157,10 @@ export function fingerprintAttachments(resolved: ResolvedAgentAttachments, optio
  *
  * Taken over the skills that run is actually given — those whose scope
  * takes in its project or its step's workspace — and not over everything
- * attached, so two runs of the same agent that receive different scoped
- * skills record different hashes, and a thread born under one set is
- * not resumed under the other (ARCHITECTURE.md §6.4). A run given only
- * global skills hashes exactly as it did before scopes existed.
+ * attached. A run given only global skills hashes exactly as it did
+ * before scopes existed. The key a warm backend is adopted by; what a
+ * run row records, and thread reuse compares, is the part of it without
+ * the skills (`agentToolSurfaceHash`, EO-919).
  *
  * Read from the database on every dispatch rather than cached: this is
  * the thing that has to notice an edit, so an answer of its own that
@@ -183,12 +185,74 @@ export function agentSurfaceKey(db: Db, agentId: string): string {
 }
 
 /**
+ * What a session is fixed to when it opens (EO-919): the MCP servers and
+ * the command-line tools, and not the skills.
+ *
+ * Both backends take servers and CLIs at the moment a session opens — on
+ * Claude they are arguments to the process that started it, on Codex the
+ * config its opening invocation carried, and a CLI is named only in the
+ * prompt that opens the thread — so a change to either refuses a resume.
+ * A skill's body is not: both read it when the agent loads it, from the
+ * generated plugin directory on Claude and through `skill_read` and the
+ * worktree's files on Codex, and EO writes both again before every
+ * resumed turn. Only the list in the opening prompt goes stale, and the
+ * resumed turn is told what changed instead (`agentAttachments/skillChanges.ts`).
+ *
+ * Taken over the same canonical form as the whole surface with the skills
+ * left empty, so an agent with no skills hashes exactly as it did when
+ * the run row recorded the whole surface. Prefixed, so a row written
+ * before this split — which holds the whole surface's hash — can be told
+ * from one written after it (`toolSurfaceVerdict`).
+ */
+export const TOOL_SURFACE_PREFIX = "tools:";
+
+export function fingerprintToolSurface(resolved: ResolvedAgentAttachments): string {
+  return `${TOOL_SURFACE_PREFIX}${fingerprintAttachments({ servers: resolved.servers, skills: [], cliTools: resolved.cliTools })}`;
+}
+
+/**
+ * Whether the tool surface a thread was born with (the run row's
+ * `agentAttachmentsHash`) is the one this run would open with:
+ *
+ * - `same` — the servers and CLIs match; skills are not asked about.
+ * - `changed` — they do not.
+ * - `changed-unsplit` — the row predates EO-919 and recorded servers,
+ *   CLIs and skills as one hash, which no longer matches. Which of the
+ *   three moved cannot be told, so the thread is refused as it was before
+ *   and the refusal says all three.
+ *
+ * Null reads as a thread born with nothing attached, as it always has:
+ * nothing could be attached before migration 0052.
+ */
+export type ToolSurfaceVerdict = "same" | "changed" | "changed-unsplit";
+
+export function toolSurfaceVerdict(recorded: string | null, resolved: ResolvedAgentAttachments): ToolSurfaceVerdict {
+  const tools = fingerprintToolSurface(resolved);
+  if (recorded === null) return tools === EMPTY_TOOL_SURFACE_HASH ? "same" : "changed";
+  if (recorded.startsWith(TOOL_SURFACE_PREFIX)) return recorded === tools ? "same" : "changed";
+  return recorded === fingerprintAttachments(resolved) ? "same" : "changed-unsplit";
+}
+
+/** `toolSurfaceVerdict` for one agent's run, read from the database. */
+export function agentToolSurfaceVerdict(db: Db, recorded: string | null, agentId: string, scope: SkillRunScope): ToolSurfaceVerdict {
+  return toolSurfaceVerdict(recorded, resolveAgentAttachmentsForRun(db, agentId, scope));
+}
+
+/** The tool surface one agent's run opens with, as the run row records it (EO-919). */
+export function agentToolSurfaceHash(db: Db, agentId: string, scope: SkillRunScope): string {
+  return fingerprintToolSurface(resolveAgentAttachmentsForRun(db, agentId, scope));
+}
+
+/**
  * The surface of an agent with nothing attached.
  *
  * Not a constant string but a computed one, so it cannot drift from what
- * `canonicalAttachments` produces for an empty pair. Its one reader is
- * `findReusableThread`, which uses it to read a run written before the
- * column existed as what it truthfully was: a thread born when nothing
- * could be attached to anything.
+ * `canonicalAttachments` produces for an empty pair. What a run row
+ * recorded for an agent with nothing attached before EO-919, when the
+ * row held the whole surface; a null on a row is read as
+ * `EMPTY_TOOL_SURFACE_HASH` now (`toolSurfaceVerdict`).
  */
 export const EMPTY_ATTACHMENTS_HASH = fingerprintAttachments({ servers: [], skills: [], cliTools: [] });
+
+/** A tool surface with no server and no CLI, prefixed as the run row records it. */
+export const EMPTY_TOOL_SURFACE_HASH = fingerprintToolSurface({ servers: [], skills: [], cliTools: [] });

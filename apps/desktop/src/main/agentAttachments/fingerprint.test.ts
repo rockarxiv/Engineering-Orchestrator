@@ -4,7 +4,8 @@ import type { DbHandle } from "../db/client.js";
 import { openMigratedTestDb } from "../db/testHelpers.js";
 import { archiveCliTool, listAgents, saveCliTool, saveMcpServer, saveSkill, setAgentAttachment, setAgentCliTool, setMcpServerEnabled } from "../db/repos/index.js";
 import { archiveMcpServer } from "../db/repos/mcpServersRepo.js";
-import { agentAttachmentsHash, agentSurfaceKey, canonicalAttachments, EMPTY_ATTACHMENTS_HASH } from "./fingerprint.js";
+import { resolveAgentAttachmentsForRun } from "../db/repos/agentAttachmentsRepo.js";
+import { agentAttachmentsHash, agentSurfaceKey, agentToolSurfaceHash, canonicalAttachments, EMPTY_ATTACHMENTS_HASH, EMPTY_TOOL_SURFACE_HASH, toolSurfaceVerdict } from "./fingerprint.js";
 
 /**
  * The fingerprint two stale things depend on (EO-106).
@@ -303,5 +304,73 @@ describe("agentAttachmentsHash, with command-line tools (EO-819)", () => {
 
   it("leaves the canonical form of an agent with no CLIs as it was before CLIs existed", () => {
     expect(canonicalAttachments({ servers: [], skills: [], cliTools: [] })).toBe(JSON.stringify({ servers: [], skills: [] }));
+  });
+});
+
+/**
+ * What a thread is held to on resume since EO-919: the servers and CLIs,
+ * compared apart from the skills.
+ */
+describe("toolSurfaceVerdict", () => {
+  const resolved = () => resolveAgentAttachmentsForRun(handle.db, implementer.id, UNSCOPED_RUN);
+  const tools = () => agentToolSurfaceHash(handle.db, implementer.id, UNSCOPED_RUN);
+  const verdict = (recorded: string | null) => toolSurfaceVerdict(recorded, resolved());
+
+  it("leaves skills out of the hash a run records, whatever they say", () => {
+    const before = tools();
+    const playbook = skill({ name: "House style" });
+    attach("skill", playbook.id);
+    expect(tools()).toBe(before);
+    saveSkill(handle.db, SkillDraftSchema.parse({ id: playbook.id, name: "House style", description: "Else.", body: "Changed." }));
+    expect(tools()).toBe(before);
+    expect(tools()).toBe(EMPTY_TOOL_SURFACE_HASH);
+  });
+
+  it("is the same after a skill is attached, edited or detached", () => {
+    const recorded = tools();
+    const playbook = skill({ name: "House style" });
+    attach("skill", playbook.id);
+    expect(verdict(recorded)).toBe("same");
+    saveSkill(handle.db, SkillDraftSchema.parse({ id: playbook.id, name: "House style", description: "A house playbook.", body: "Changed." }));
+    expect(verdict(recorded)).toBe("same");
+    attach("skill", playbook.id, false);
+    expect(verdict(recorded)).toBe("same");
+  });
+
+  it("is changed after a server is attached, edited or detached", () => {
+    const empty = tools();
+    const github = server({ name: "github" });
+    attach("mcpServer", github.id);
+    expect(verdict(empty)).toBe("changed");
+    const withServer = tools();
+    saveMcpServer(handle.db, McpServerDraftSchema.parse({ id: github.id, name: "github", transport: "stdio", command: "gh-mcp-2" }));
+    expect(verdict(withServer)).toBe("changed");
+    attach("mcpServer", github.id, false);
+    expect(verdict(empty)).toBe("same");
+  });
+
+  it("is changed after a CLI is attached", () => {
+    const empty = tools();
+    const saved = saveCliTool(handle.db, { name: "GitHub CLI", command: "gh", description: "GitHub from the shell." });
+    if (!saved.ok) throw new Error(saved.problems.join("\n"));
+    setAgentCliTool(handle.db, { agentId: implementer.id, cliToolId: saved.cliTool.id, attached: true });
+    expect(verdict(empty)).toBe("changed");
+  });
+
+  it("reads a null as a thread born with nothing attached", () => {
+    expect(verdict(null)).toBe("same");
+    attach("skill", skill({ name: "House style" }).id);
+    expect(verdict(null)).toBe("same");
+    attach("mcpServer", server({ name: "github" }).id);
+    expect(verdict(null)).toBe("changed");
+  });
+
+  it("holds a row from before the split to the whole surface, and says it cannot tell which part moved", () => {
+    const playbook = skill({ name: "House style" });
+    attach("skill", playbook.id);
+    const unsplit = agentAttachmentsHash(handle.db, implementer.id, UNSCOPED_RUN);
+    expect(verdict(unsplit)).toBe("same");
+    saveSkill(handle.db, SkillDraftSchema.parse({ id: playbook.id, name: "House style", description: "A house playbook.", body: "Changed." }));
+    expect(verdict(unsplit)).toBe("changed-unsplit");
   });
 });

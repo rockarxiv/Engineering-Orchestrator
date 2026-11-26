@@ -357,10 +357,26 @@ export type SkillCopy = z.infer<typeof SkillCopySchema>;
  * that was given any.
  */
 export const SKILLS_DELIVERED_EVENT = "skills_delivered";
+/**
+ * On a run that carried a thread on (EO-919): how what it was given
+ * differs from what the run before it on that thread was given, by slug.
+ * A change to skills alone no longer ends a conversation, and posts no
+ * comment; this is where it is recorded. Absent where nothing changed, on
+ * a run that opened its thread, and on a row from before EO-919. A run
+ * carried on with every skill removed writes the event with no skills and
+ * this beside it.
+ */
+export const SkillsDeliveredChangesSchema = z.object({
+  added: z.array(z.string()),
+  changed: z.array(z.string()),
+  removed: z.array(z.string()),
+});
+export type SkillsDeliveredChanges = z.infer<typeof SkillsDeliveredChangesSchema>;
 export const SkillsDeliveredEventSchema = z.object({
   type: z.literal(SKILLS_DELIVERED_EVENT),
   skillIds: z.array(z.string()),
   slugs: z.array(z.string()),
+  changes: SkillsDeliveredChangesSchema.optional(),
 });
 export type SkillsDeliveredEvent = z.infer<typeof SkillsDeliveredEventSchema>;
 

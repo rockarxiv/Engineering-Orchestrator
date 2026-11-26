@@ -110,7 +110,7 @@ import {
 import { invalidateRuntimeAuth, type AuthProbeRunner } from "../runtimes/auth.js";
 import { RUNTIMES, versionFor } from "../runtimes/catalog.js";
 import { git } from "../packs/developer/workspace/git.js";
-import { agentAttachmentsHash } from "../agentAttachments/fingerprint.js";
+import { agentToolSurfaceHash } from "../agentAttachments/fingerprint.js";
 import { deliverableAttachments } from "../agentAttachments/pluginDirectory.js";
 import { providerCacheKey, type ProviderIdentity } from "../engine.js";
 import { promptHash } from "../roles/prompts.js";
@@ -3413,7 +3413,7 @@ describe("attaching a catalogue entry to an agent, from a client", () => {
       threadId: "session-1",
       provider: implementer.provider,
       instructionsHash: promptHash(implementer.instructions),
-      agentAttachmentsHash: agentAttachmentsHash(handle.db, implementer.id, UNSCOPED_RUN),
+      agentAttachmentsHash: agentToolSurfaceHash(handle.db, implementer.id, UNSCOPED_RUN),
       cwd: CWD,
     });
     expect(findReusableThread(handle.db, { itemId: item.id, agent: implementer, cwd: CWD })).toEqual({ kind: "resume", run: prior });
@@ -3431,7 +3431,7 @@ describe("attaching a catalogue entry to an agent, from a client", () => {
     const decision = findReusableThread(handle.db, { itemId: item.id, agent: implementer, cwd: CWD });
     expect(decision.kind).toBe("refused");
     if (decision.kind === "resume") return;
-    expect(decision.reason).toContain("MCP servers or skills attached");
+    expect(decision.reason).toContain("MCP servers or command-line tools attached");
     expect(decision.reason).toContain(implementer.name);
   });
 

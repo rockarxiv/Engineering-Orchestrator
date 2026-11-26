@@ -230,6 +230,28 @@ export function listSkillVersions(db: Db, skillId: string): SkillVersion[] {
 }
 
 /**
+ * The newest version of a skill written at or before `at` (EO-919) — what
+ * the skill said then — and whether any was written after it. A skill
+ * whose history begins after `at` has no such version.
+ */
+export function skillVersionsAround(db: Db, skillId: string, at: number): { asOf: SkillVersion | undefined; writtenSince: boolean } {
+  const asOf = db
+    .select()
+    .from(skillVersions)
+    .where(and(eq(skillVersions.skillId, skillId), sql`${skillVersions.createdAt} <= ${at}`))
+    .orderBy(desc(skillVersions.createdAt), desc(skillVersions.id))
+    .limit(1)
+    .get();
+  const since = db
+    .select({ id: skillVersions.id })
+    .from(skillVersions)
+    .where(and(eq(skillVersions.skillId, skillId), sql`${skillVersions.createdAt} > ${at}`))
+    .limit(1)
+    .get();
+  return { asOf: asOf === undefined ? undefined : toVersion(asOf), writtenSince: since !== undefined };
+}
+
+/**
  * Every one of a skill's versions that carries a report (EO-728), oldest
  * first — what travels with a copy of it (`SkillCopySchema`), so the
  * installation that takes the copy can say who wrote it and why, for each

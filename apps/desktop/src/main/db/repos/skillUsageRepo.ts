@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { NO_SKILL_USAGE, SKILL_LOADED_EVENT, SKILLS_DELIVERED_EVENT, SKILLS_SETTLED_EVENT, type SkillUsage, type Uuid } from "@eo/core";
+import { NO_SKILL_USAGE, SKILL_LOADED_EVENT, SKILLS_DELIVERED_EVENT, SKILLS_SETTLED_EVENT, SkillsDeliveredEventSchema, type SkillUsage, type Uuid } from "@eo/core";
 import type { Db } from "../client.js";
 import { runEvents, runs, skillVersions } from "../schema.js";
 
@@ -156,4 +156,22 @@ export function skillsLoadedByRun(db: Db, runId: string): string[] {
     order by seq
   `);
   return [...new Set(rows.flatMap((row) => (typeof row.id === "string" ? [row.id] : [])))];
+}
+
+/**
+ * What one run was given (EO-919): its `skills_delivered` event — the
+ * skills' ids and slugs — and when it was written, which is when the
+ * backend was handed them. Null for a run given none, or one that never
+ * reached a backend. The first, since a run writes one.
+ */
+export function skillsDeliveredTo(db: Db, runId: string): { skillIds: string[]; slugs: string[]; at: number } | null {
+  const row = db.get<{ payload: string; ts: number } | undefined>(sql`
+    select payload, ts from ${runEvents}
+    where type = ${sql.raw(`'${SKILLS_DELIVERED_EVENT}'`)} and run_id = ${runId}
+    order by seq
+    limit 1
+  `);
+  if (row === undefined) return null;
+  const parsed = SkillsDeliveredEventSchema.safeParse(typeof row.payload === "string" ? JSON.parse(row.payload) : row.payload);
+  return parsed.success ? { skillIds: parsed.data.skillIds, slugs: parsed.data.slugs, at: row.ts } : null;
 }

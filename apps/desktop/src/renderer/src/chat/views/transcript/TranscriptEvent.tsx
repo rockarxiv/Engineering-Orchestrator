@@ -193,11 +193,26 @@ export function TranscriptEvent({ event }: { event: RunEventView }) {
     case "skills_delivered": {
       const slugs = field(event.payload, "slugs");
       const names = Array.isArray(slugs) ? slugs.map((slug) => asText(slug)) : [];
+      // What changed since the thread's previous run (EO-919), on a run
+      // that carried a conversation on: the record of it, since a change
+      // to skills alone posts no comment.
+      const changes = field(event.payload, "changes");
+      const changed = (["added", "changed", "removed"] as const).flatMap((kind) => {
+        const listed = field(changes, kind);
+        return Array.isArray(listed) && listed.length > 0 ? [`${kind} ${listed.map((slug) => asText(slug)).join(", ")}`] : [];
+      });
       return (
         <div className={cn(LINE, "text-ink-subtle")}>
           <BookOpen aria-hidden size={12} className={ICON} />
           <span className="min-w-0">
-            Given {names.length === 1 ? "the skill" : "the skills"} <span className="font-mono">{names.join(", ")}</span>
+            {names.length === 0 ? (
+              "Given no skills"
+            ) : (
+              <>
+                Given {names.length === 1 ? "the skill" : "the skills"} <span className="font-mono">{names.join(", ")}</span>
+              </>
+            )}
+            {changed.length > 0 ? <> — since the last run: {changed.join("; ")}</> : null}
           </span>
         </div>
       );

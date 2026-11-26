@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type AgentEvent, type AgentProvider, type RepositoryIndexAnswers, type RepositoryMcpServer, type Item, type Uuid, UNSCOPED_RUN } from "@eo/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { agentAttachmentsHash } from "../../../agentAttachments/fingerprint.js";
+import { agentToolSurfaceHash } from "../../../agentAttachments/fingerprint.js";
 import type { DbHandle } from "../../../db/client.js";
 import {
   createRun,
@@ -966,7 +966,7 @@ describe("what this must not disturb", () => {
     // weighs it up on the next one.
     const [first] = listRunsForItem(handle.db, item.id);
     expect(first?.threadId).toBe("session-1");
-    expect(first?.agentAttachmentsHash).toBe(agentAttachmentsHash(handle.db, implementer.id, UNSCOPED_RUN));
+    expect(first?.agentAttachmentsHash).toBe(agentToolSurfaceHash(handle.db, implementer.id, UNSCOPED_RUN));
 
     const reuse = findReusableThread(handle.db, { itemId: item.id, agent: implementer, cwd: workspace });
     expect(reuse.kind).toBe("resume");
@@ -1015,7 +1015,7 @@ describe("a run recovered after a crash", () => {
       threadId: "session-1",
       provider: implementer.provider,
       instructionsHash: promptHash(implementer.instructions),
-      agentAttachmentsHash: agentAttachmentsHash(handle.db, implementer.id, UNSCOPED_RUN),
+      agentAttachmentsHash: agentToolSurfaceHash(handle.db, implementer.id, UNSCOPED_RUN),
       cwd: workspace,
     });
     updateRun(handle.db, run.id, { status: "running", startedAt: Date.now() });

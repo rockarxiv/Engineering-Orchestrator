@@ -1,6 +1,6 @@
 import { LOCAL_PERSON_ID, McpServerDraftSchema, parsedResultOf, type Agent, type Item, UNSCOPED_RUN } from "@eo/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { agentAttachmentsHash, EMPTY_ATTACHMENTS_HASH } from "../agentAttachments/fingerprint.js";
+import { agentToolSurfaceHash, EMPTY_TOOL_SURFACE_HASH } from "../agentAttachments/fingerprint.js";
 import { listAgents, updateAgent } from "../db/repos/agentsRepo.js";
 import { setAgentAttachment } from "../db/repos/agentAttachmentsRepo.js";
 import { saveMcpServer } from "../db/repos/mcpServersRepo.js";
@@ -91,8 +91,9 @@ describe("createRunSupervisor", () => {
   it("records the tool surface the dispatched thread was started with", async () => {
     // The other half of what a session opens with, and recorded for the
     // same reason (EO-106): no backend re-sends configuration on resume
-    // either, so this row is the only record of which servers and skills
-    // the thread was born with. An agent with nothing attached still
+    // either, so this row is the only record of which servers and CLIs
+    // the thread was born with — not its skills, which a resumed turn is
+    // given afresh (EO-919). An agent with nothing attached still
     // records an answer — the empty surface is a surface.
     const github = saveMcpServer(handle.db, McpServerDraftSchema.parse({ name: "github", transport: "stdio", command: "gh-mcp" }));
     expect(github.ok).toBe(true);
@@ -104,8 +105,8 @@ describe("createRunSupervisor", () => {
     await supervisor.runOnce();
 
     const [run] = listRunsForItem(handle.db, item.id);
-    expect(run?.agentAttachmentsHash).toBe(agentAttachmentsHash(handle.db, implementer.id, UNSCOPED_RUN));
-    expect(run?.agentAttachmentsHash).not.toBe(EMPTY_ATTACHMENTS_HASH);
+    expect(run?.agentAttachmentsHash).toBe(agentToolSurfaceHash(handle.db, implementer.id, UNSCOPED_RUN));
+    expect(run?.agentAttachmentsHash).not.toBe(EMPTY_TOOL_SURFACE_HASH);
   });
 
   it("silently defers dispatch while a managed provider is updating", async () => {

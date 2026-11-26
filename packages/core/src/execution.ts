@@ -105,18 +105,23 @@ export interface Run {
    */
   instructionsHash: string | null;
   /**
-   * Hash of the MCP servers and skills attached to this run's agent,
-   * recorded at dispatch alongside `instructionsHash` (EO-106) — the
-   * tool surface the provider thread it started was born with, since
-   * neither backend re-sends configuration on resume either.
+   * Hash of the MCP servers and command-line tools attached to this
+   * run's agent, recorded at dispatch alongside `instructionsHash`
+   * (EO-106) — the tool surface the provider thread it started was born
+   * with, since neither backend re-sends configuration on resume either.
+   *
+   * Not its skills since EO-919, which a resumed turn is given afresh and
+   * told about (`fingerprintToolSurface`); such a hash starts `tools:`. A
+   * row from before then holds the hash of servers, CLIs and skills
+   * together, with no prefix, and is compared whole (`toolSurfaceVerdict`).
    *
    * Named for the agent rather than for the run: `attachments` in this
    * codebase already means the files on a comment, and a column called
    * `attachmentsHash` on a run would read as a hash of those.
    *
    * Null does *not* mean "no answer" here, which is where it parts
-   * company with `instructionsHash` above — see `findReusableThread`,
-   * which is the one place that reads it. Nothing could be attached
+   * company with `instructionsHash` above — see `toolSurfaceVerdict`,
+   * the one place that reads it. Nothing could be attached
    * before the column existed, so a row predating it had an empty tool
    * surface, and that is a fact rather than a gap.
    */

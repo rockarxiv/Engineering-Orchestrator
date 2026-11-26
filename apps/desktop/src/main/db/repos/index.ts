@@ -205,7 +205,7 @@ export {
 } from "./memoriesRepo.js";
 export { editedPredecessors, getMemorySearchEntry, searchMemories, similarMemoryNeighbours, supersededEntries } from "./memorySearchRepo.js";
 export { lastDeliveredAt, memoryDeliveredToRun, memoryUsageByEntry, usageOf } from "./memoryUseRepo.js";
-export { ownRunsToSettle, skillsGivenToRunsInFlight, skillsLoadedByRun, skillUsageById, usageOfSkill } from "./skillUsageRepo.js";
+export { ownRunsToSettle, skillsDeliveredTo, skillsGivenToRunsInFlight, skillsLoadedByRun, skillUsageById, usageOfSkill } from "./skillUsageRepo.js";
 export {
   addConsolidationSlotTime,
   appendConsolidationNote,
@@ -483,6 +483,7 @@ export {
   getSkillBySlug,
   listSkills,
   listSkillVersions,
+  skillVersionsAround,
   restoreSkillVersion,
   saveSkill,
   setSkillEnabled,

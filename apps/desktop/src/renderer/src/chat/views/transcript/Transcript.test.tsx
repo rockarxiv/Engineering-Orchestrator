@@ -184,6 +184,17 @@ describe("TranscriptEvent", () => {
     expect(screen.getByText(/Loaded the skill/)).toHaveTextContent("Loaded the skill house-style");
   });
 
+  it("says what changed in a resumed run's skills since the run before it (EO-919)", () => {
+    render(
+      <TranscriptEvent
+        event={event(13, "skills_delivered", { type: "skills_delivered", skillIds: ["s-1", "s-3"], slugs: ["e2e", "house-style"], changes: { added: ["e2e"], changed: ["house-style"], removed: ["review"] } })}
+      />,
+    );
+    expect(screen.getByText(/Given the skills/)).toHaveTextContent("Given the skills e2e, house-style — since the last run: added e2e; changed house-style; removed review");
+    render(<TranscriptEvent event={event(14, "skills_delivered", { type: "skills_delivered", skillIds: [], slugs: [], changes: { added: [], changed: [], removed: ["review"] } })} />);
+    expect(screen.getByText(/Given no skills/)).toHaveTextContent("Given no skills — since the last run: removed review");
+  });
+
   it("shows an unrecognised event rather than swallowing it", () => {
     render(<TranscriptEvent event={event(6, "some_future_kind", { detail: "surprise" })} />);
     expect(screen.getByText(/some_future_kind/)).toBeInTheDocument();

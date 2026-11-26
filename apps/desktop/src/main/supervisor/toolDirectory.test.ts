@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -33,7 +33,9 @@ import { fakeAppServer, note } from "../testing/fakeCodexAppServer.js";
 import { startTestWriteBridge, type TestWriteBridge } from "../testing/agentWrites.js";
 import { sendAgentWrite } from "../mcp/writeBridge.js";
 import { promptHash } from "../roles/prompts.js";
-import { agentAttachmentsHash } from "../agentAttachments/fingerprint.js";
+import { agentToolSurfaceHash } from "../agentAttachments/fingerprint.js";
+import { appendRunEvent, listRunEvents } from "../db/repos/runEventsRepo.js";
+import { archiveSkill } from "../db/repos/skillsRepo.js";
 import { createRunSupervisor, type RunSupervisorOptions } from "./runSupervisor.js";
 import { kindsPreparing } from "./testWorkspaceKinds.js";
 import { skillRunScope } from "./workspaceResolution.js";
@@ -186,7 +188,7 @@ function priorRun(overrides: Record<string, unknown> = {}) {
     threadId: PRIOR_THREAD,
     provider: implementer.provider,
     instructionsHash: promptHash(implementer.instructions),
-    agentAttachmentsHash: agentAttachmentsHash(handle.db, implementer.id, UNSCOPED_RUN),
+    agentAttachmentsHash: agentToolSurfaceHash(handle.db, implementer.id, UNSCOPED_RUN),
     cwd: CWD,
     ...overrides,
   });
@@ -225,7 +227,7 @@ describe("the three paths that reach a backend", () => {
       // What the thread was born with, as `dispatchRun` records it. A row
       // without it reads as the empty surface and is refused — which is
       // the next test.
-      agentAttachmentsHash: agentAttachmentsHash(handle.db, implementer.id, UNSCOPED_RUN),
+      agentAttachmentsHash: agentToolSurfaceHash(handle.db, implementer.id, UNSCOPED_RUN),
       cwd: CWD,
     });
     updateRun(handle.db, interrupted.id, { status: "running", startedAt: Date.now() });
@@ -342,7 +344,7 @@ describe("a thread whose agent's attachments changed while it waited", () => {
       status: "queued",
       threadId: PRIOR_THREAD,
       provider: implementer.provider,
-      agentAttachmentsHash: agentAttachmentsHash(handle.db, implementer.id, UNSCOPED_RUN),
+      agentAttachmentsHash: agentToolSurfaceHash(handle.db, implementer.id, UNSCOPED_RUN),
       cwd: CWD,
     });
     updateRun(handle.db, interrupted.id, { status: "running", startedAt: Date.now() });
@@ -354,7 +356,7 @@ describe("a thread whose agent's attachments changed while it waited", () => {
 
     expect(summary).toEqual({ reattached: 0, resumed: 0, orphaned: 1 });
     expect(turns).toEqual([]); // no resume, so nothing was pointed at a surface that had moved
-    expect(engineNotes().join("\n")).toContain("MCP servers or skills attached to");
+    expect(engineNotes().join("\n")).toContain("MCP servers or command-line tools attached to");
     // And the refusal did not take the directory with it: regenerating
     // for a resume that is not happening would have deleted it, since
     // there is now nothing to deliver.
@@ -375,7 +377,7 @@ describe("a thread whose agent's attachments changed while it waited", () => {
     // agent now has nothing attached. The reply is not lost: the new run
     // is seeded from the thread.
     expect(turns).toEqual([{ kind: "start", toolDirectory: undefined }]);
-    expect(engineNotes().join("\n")).toContain("MCP servers or skills attached to");
+    expect(engineNotes().join("\n")).toContain("MCP servers or command-line tools attached to");
   });
 });
 
@@ -387,9 +389,12 @@ describe("an attachment edit that lands while a run is being prepared", () => {
    * exactly.
    */
   function attachingDuringContext(): NonNullable<RunSupervisorOptions["buildContext"]> {
+    // Once: a reply that falls back to a fresh dispatch builds a context again.
+    let attached = false;
     return async () => {
       await Promise.resolve();
-      attachSkill("Late arrival");
+      if (!attached) attachServer("late-arrival");
+      attached = true;
       return "the follow-up prompt";
     };
   }
@@ -406,7 +411,7 @@ describe("an attachment edit that lands while a run is being prepared", () => {
     // has — not the old thread pointed at a new one.
     expect(turns).toEqual([{ kind: "start", toolDirectory: expectedPath() }]);
     expect(engineNotes().join("\n")).toContain("changed while this run was being prepared");
-    expect(existsSync(join(expectedPath(), "skills", "late-arrival", "SKILL.md"))).toBe(true);
+    expect(engineNotes().join("\n")).toContain("MCP servers or command-line tools attached to");
   });
 
   it("records the surface the run was actually given, so the next dispatch weighs up the truth", async () => {
@@ -420,7 +425,7 @@ describe("an attachment edit that lands while a run is being prepared", () => {
     // The row must hold the fingerprint the directory was written from.
     // Holding the pre-await one would make the *next* dispatch reuse this
     // thread against a surface it never had — the same bug, one run later.
-    expect(listRunsForItem(handle.db, item.id).at(-1)?.agentAttachmentsHash).toBe(agentAttachmentsHash(handle.db, implementer.id, UNSCOPED_RUN));
+    expect(listRunsForItem(handle.db, item.id).at(-1)?.agentAttachmentsHash).toBe(agentToolSurfaceHash(handle.db, implementer.id, UNSCOPED_RUN));
   });
 
   it("does not let a person's reply resume one either", async () => {
@@ -432,7 +437,7 @@ describe("an attachment edit that lands while a run is being prepared", () => {
     await supervisorFor(recording(), { buildContext: attachingDuringContext() }).resumeItem(item.id);
 
     expect(turns).toEqual([{ kind: "start", toolDirectory: expectedPath() }]);
-    expect(engineNotes().join("\n")).toContain("MCP servers or skills attached to");
+    expect(engineNotes().join("\n")).toContain("MCP servers or command-line tools attached to");
   });
 });
 
@@ -631,9 +636,149 @@ describe("scoped skills reach the run they are scoped to", () => {
     const skills = join(expectedPath(), "skills");
     expect(["house-style", "e2e-for-p", "build-in-w"].map((slug) => existsSync(join(skills, slug, "SKILL.md")))).toEqual([true, true, true]);
     expect(["e2e-elsewhere", "build-elsewhere"].map((slug) => existsSync(join(skills, slug)))).toEqual([false, false]);
-    // And the run recorded the hash of what it was given, not of every
-    // skill attached — the hash thread reuse compares.
-    expect(listRunsForItem(handle.db, item.id)[0]?.agentAttachmentsHash).toBe(agentAttachmentsHash(handle.db, implementer.id, { projectId, workspaceId: workspace.id }));
-    expect(listRunsForItem(handle.db, item.id)[0]?.agentAttachmentsHash).not.toBe(agentAttachmentsHash(handle.db, implementer.id, UNSCOPED_RUN));
+    // And the run recorded the hash thread reuse compares: its servers
+    // and CLIs, which no skill's scope moves (EO-919).
+    expect(listRunsForItem(handle.db, item.id)[0]?.agentAttachmentsHash).toBe(agentToolSurfaceHash(handle.db, implementer.id, { projectId, workspaceId: workspace.id }));
+  });
+});
+
+/**
+ * A change to skills alone carries the conversation on (EO-919).
+ *
+ * The directory is written again before the resumed turn, so a skill
+ * loaded there says what it says now and one removed is not there to
+ * load; the turn's first message lists what changed; no comment is
+ * posted; and the run's `skills_delivered` records the change. A server
+ * changing still starts fresh, as the cases above hold.
+ */
+describe("a thread whose skills alone changed", () => {
+  let messages: string[];
+
+  /** The recorder above, keeping what each resumed turn was sent, and saying which skills it delivered. */
+  function delivering(slugs: string[]): AgentProvider {
+    const events: AgentEvent[] = [{ type: "skills_delivered", slugs }, { type: "result", data: validImplementResult }];
+    return {
+      start: (opts) => {
+        turns.push({ kind: "start", toolDirectory: opts.toolDirectory });
+        return replay(events, opts.writeBridge);
+      },
+      resume: (_threadId, message, opts) => {
+        turns.push({ kind: "resume", toolDirectory: opts?.toolDirectory });
+        messages.push(message);
+        return replay(events, opts?.writeBridge);
+      },
+    };
+  }
+
+  /** The previous run's thread was given these skills, as `recordSkillUsage` records it. */
+  function givenTo(runId: string, skills: { id: string; slug: string }[]) {
+    appendRunEvent(handle.db, runId as never, "skills_delivered", { type: "skills_delivered", skillIds: skills.map((skill) => skill.id), slugs: skills.map((skill) => skill.slug) });
+  }
+
+  /** A write after the previous run was given its skills, whatever millisecond this is. */
+  const later = () => Date.now() + 60_000;
+
+  function editBody(skill: { id: string; name: string; description: string }, body: string) {
+    const saved = saveSkill(handle.db, SkillDraftSchema.parse({ id: skill.id, name: skill.name, description: skill.description, body }), later());
+    if (!saved.ok) throw new Error(saved.problems.join("\n"));
+  }
+
+  const newestRun = () => listRunsForItem(handle.db, item.id).at(-1)!;
+  const deliveredEvent = (runId: string) => listRunEvents(handle.db, runId as never).find((event) => event.type === "skills_delivered")?.payload;
+
+  beforeEach(() => {
+    messages = [];
+  });
+
+  it("resumes a dispatch after an edit, a creation and an archive, and tells the turn what changed", async () => {
+    updateAgent(handle.db, implementer.id, { config: { reuseThreadPerItem: true } });
+    const style = attachSkill("House style");
+    const review = attachSkill("Review");
+    const prior = priorRun();
+    givenTo(prior.id, [style, review]);
+
+    editBody(style, "Read the diff twice.");
+    archiveSkill(handle.db, review.id, later());
+    attachSkill("E2E");
+    postComment(handle.db, { itemId: item.id, author: { type: "human" }, body: "Carry on." });
+
+    await supervisorFor(delivering(["e2e", "house-style"])).runOnce();
+
+    expect(turns).toEqual([{ kind: "resume", toolDirectory: expectedPath() }]);
+    // The directory holds the skills as they are now: the edited body, the new skill, and not the archived one.
+    const skills = join(expectedPath(), "skills");
+    expect(readFileSync(join(skills, "house-style", "SKILL.md"), "utf8")).toContain("Read the diff twice.");
+    expect(existsSync(join(skills, "e2e", "SKILL.md"))).toBe(true);
+    expect(existsSync(join(skills, "review"))).toBe(false);
+    // The first message lists the change, each skill by slug, name and description.
+    const said = messages[0] ?? "";
+    expect(said).toContain("## Your skills have changed");
+    expect(said).toMatch(/Added — [^\n]*\n- `e2e` \(E2E\) — A house playbook\./);
+    expect(said).toMatch(/Changed — [^\n]*Load a changed skill again[^\n]*\n- `house-style` \(House style\) — A house playbook\./);
+    expect(said).toMatch(/Removed — [^\n]*no longer available[^\n]*\n- `review` \(Review\) — A house playbook\./);
+    // No comment for a skills-only change; the run's skills_delivered records it.
+    expect(engineNotes().join("\n")).not.toContain("have changed");
+    expect(deliveredEvent(newestRun().id)).toMatchObject({ slugs: ["e2e", "house-style"], changes: { added: ["e2e"], changed: ["house-style"], removed: ["review"] } });
+  });
+
+  it("says nothing of skills when none changed", async () => {
+    updateAgent(handle.db, implementer.id, { config: { reuseThreadPerItem: true } });
+    const style = attachSkill("House style");
+    const prior = priorRun();
+    givenTo(prior.id, [style]);
+    postComment(handle.db, { itemId: item.id, author: { type: "human" }, body: "Carry on." });
+
+    await supervisorFor(delivering(["house-style"])).runOnce();
+
+    expect(turns).toEqual([{ kind: "resume", toolDirectory: expectedPath() }]);
+    expect(messages[0]).not.toContain("Your skills have changed");
+    expect(deliveredEvent(newestRun().id)).not.toHaveProperty("changes");
+  });
+
+  it("records the change on a run left with no skill at all", async () => {
+    updateAgent(handle.db, implementer.id, { config: { reuseThreadPerItem: true } });
+    attachServer();
+    const style = attachSkill("House style");
+    const prior = priorRun();
+    givenTo(prior.id, [style]);
+    archiveSkill(handle.db, style.id, later());
+    postComment(handle.db, { itemId: item.id, author: { type: "human" }, body: "Carry on." });
+
+    await supervisorFor(recording()).runOnce();
+
+    expect(turns).toEqual([{ kind: "resume", toolDirectory: expectedPath() }]);
+    expect(deliveredEvent(newestRun().id)).toEqual({ type: "skills_delivered", skillIds: [], slugs: [], changes: { added: [], changed: [], removed: ["house-style"] } });
+  });
+
+  it("resumes a parked run on a person's reply, with the same listing", async () => {
+    const style = attachSkill("House style");
+    const parked = priorRun();
+    givenTo(parked.id, [style]);
+    updateRun(handle.db, parked.id, { status: "awaiting_input", endedAt: 1_000 });
+    editBody(style, "Read the diff twice.");
+    postComment(handle.db, { itemId: item.id, author: { type: "human" }, body: "Carry on." });
+
+    await supervisorFor(delivering(["house-style"])).resumeItem(item.id);
+
+    expect(turns).toEqual([{ kind: "resume", toolDirectory: expectedPath() }]);
+    expect(messages[0]).toMatch(/Changed — [^\n]*\n- `house-style` \(House style\)/);
+    expect(readFileSync(join(expectedPath(), "skills", "house-style", "SKILL.md"), "utf8")).toContain("Read the diff twice.");
+    expect(engineNotes().join("\n")).not.toContain("have changed");
+    expect(deliveredEvent(newestRun().id)).toMatchObject({ changes: { added: [], changed: ["house-style"], removed: [] } });
+  });
+
+  it("still starts a parked run fresh on a reply once a server changed, naming only servers and CLIs", async () => {
+    attachSkill("House style");
+    const parked = priorRun();
+    updateRun(handle.db, parked.id, { status: "awaiting_input", endedAt: 1_000 });
+    attachServer();
+    postComment(handle.db, { itemId: item.id, author: { type: "human" }, body: "Carry on." });
+
+    await supervisorFor(delivering(["house-style"])).resumeItem(item.id);
+
+    expect(turns).toEqual([{ kind: "start", toolDirectory: expectedPath() }]);
+    const notes = engineNotes().join("\n");
+    expect(notes).toContain("The MCP servers or command-line tools attached to");
+    expect(notes).not.toContain("or skills");
   });
 });

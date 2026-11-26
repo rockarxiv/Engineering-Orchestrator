@@ -39,6 +39,8 @@ import { assembleSeedContext, type ContextRepositoryInput } from "@eo/engine";
 import { agentSpawnEnvironment, resolveCliToolPath } from "../agentAttachments/cliTools.js";
 import { readToolDirectoryServers, TOOL_PLUGIN_NAME, writeToolDirectory } from "../agentAttachments/pluginDirectory.js";
 import { attachmentEnvironment } from "../agentAttachments/serverEnvironment.js";
+import { withSkillChanges } from "../agentAttachments/skillChanges.js";
+import { skillReadAnswer } from "../agentAttachments/worktreeSkills.js";
 import { attachmentsForRun } from "../db/repos/agentAttachmentsRepo.js";
 import { insertAttachments, listAgents, saveMcpServer, setAgentAttachment } from "../db/repos/index.js";
 import { createTestItem, openMigratedTestDb, openMigratedTestDbAt } from "../db/testHelpers.js";
@@ -845,6 +847,19 @@ const CAPABILITIES = [
       withoutSkills: [],
     },
   },
+  // A change to skills alone carries the conversation on (EO-919): EO
+  // writes the skills as they are now where the backend reads them, and
+  // says what changed at the end of the resumed turn's first message.
+  {
+    name: "an edited, an added and a removed skill on a resumed thread",
+    what: "a thread opened with two skills, resumed after one was edited, one added and one removed (EO-919): the resumed turn's first message is EO's, listing the change, as the backend received it; the turn is given the added and the edited skill and not the removed one; loading the edited one returns its current body and its supporting file is the current one; and the removed one is neither offered nor on disk",
+    same: {
+      told: true,
+      offered: ["fresh-skill", "house-style"],
+      edited: { body: true, notes: "Read it twice.\n" },
+      removed: { offered: false, onDisk: false },
+    },
+  },
   {
     name: "command-line tools in the opening prompt",
     what: "a turn that opens a thread with command-line tools EO found installed (EO-820) ends its prompt with one \"## Command-line tools\" section naming each — the command, its description on one line, its absolute path and its version — worded by the one shared function; a turn given none has no such heading; and giving them changes nothing else the backend is handed — no allowedTools entry, no sandbox or permission setting, no launch argument (invariant 11)",
@@ -1128,6 +1143,22 @@ const SCOPED_SKILLS: Skill[] = [
   scopedSkill("build-in-w", { kind: "workspace", workspaceId: "workspace-w" }),
   scopedSkill("build-in-v", { kind: "workspace", workspaceId: "workspace-v" }),
 ];
+/**
+ * A thread's skills before and after a learning review (EO-919): one
+ * edited — its body and its supporting file — one added, one removed.
+ */
+const SKILLS_BEFORE: Skill[] = [scopedSkill("house-style", { kind: "global" }), scopedSkill("e2e-for-p", { kind: "project", projectId: "project-p" })];
+const SKILLS_AFTER: Skill[] = [
+  { ...scopedSkill("house-style", { kind: "global" }), body: "# house-style\nRead the diff twice.\n", files: [{ path: "notes.md", content: "Read it twice.\n" }], updatedAt: 2 },
+  scopedSkill("fresh-skill", { kind: "global" }),
+];
+/** What the supervisor sends a resumed turn whose skills changed so (`withSkillChanges`). */
+const RESUMED_WITH_CHANGES = withSkillChanges("carry on", {
+  added: [{ slug: "fresh-skill", name: "fresh-skill", description: "How to fresh-skill." }],
+  changed: [{ slug: "house-style", name: "house-style", description: "How to house-style." }],
+  removed: [{ slug: "e2e-for-p", name: "e2e-for-p", description: "How to e2e-for-p." }],
+});
+
 /** The events a turn says about EO's skills (EO-715): what it was given and what it loaded. */
 const skillUsageOf = (events: readonly AgentEvent[]): AgentEvent[] => events.filter((event) => event.type === "skills_delivered" || event.type === "skill_loaded");
 /** The skill folders under a directory, by slug — the files a backend finds. */
@@ -3527,6 +3558,30 @@ const CLAUDE: Record<CapabilityName, Proof> = {
     return { started: skillUsageOf(startedEvents), resumed: skillUsageOf(resumedEvents), withoutSkills: skillUsageOf(bareEvents) };
   },
 
+  "an edited, an added and a removed skill on a resumed thread": async () => {
+    // Claude's delivery is the directory EO generates for the run, which
+    // the supervisor writes again before every resumed turn
+    // (`prepareToolDirectory`); the resumed CLI is pointed back at it and
+    // offers its skills through the SDK's allowlist, read out of it. The
+    // `Skill` tool loads a skill's SKILL.md from there.
+    const toolDirectory = join(scratchDirectory(), "plugin");
+    writeToolDirectory(toolDirectory, attachmentsForRun({ servers: [], skills: SKILLS_BEFORE }, SCOPED_RUN));
+    const started = scripted([sdk.init(), sdk.result()]);
+    await collect(createClaudeProvider({ runQuery: started.runQuery, enableCommentTool: false }).start({ ...startOpts, toolDirectory, skillScope: SCOPED_RUN }));
+    writeToolDirectory(toolDirectory, attachmentsForRun({ servers: [], skills: SKILLS_AFTER }, SCOPED_RUN));
+    const resumed = scripted([sdk.says("continued"), sdk.result({ result: "continued" })]);
+    const events = await collect(createClaudeProvider({ runQuery: resumed.runQuery, enableCommentTool: false }).resume("sess-1", RESUMED_WITH_CHANGES, { cwd: "/tmp/wt", toolDirectory, skillScope: SCOPED_RUN }));
+    const said = (await firstSaid(resumed.calls[0])) ?? "";
+    const allowlist = ((resumed.calls[0]?.options["skills"] as string[] | undefined) ?? []).map((name) => name.split(":").pop() ?? name);
+    const skills = join(toolDirectory, "skills");
+    return {
+      told: said.startsWith(RESUMED_WITH_CHANGES),
+      offered: offeredIn(events),
+      edited: { body: readFileSync(join(skills, "house-style", "SKILL.md"), "utf8").includes("Read the diff twice."), notes: readFileSync(join(skills, "house-style", "notes.md"), "utf8") },
+      removed: { offered: offeredIn(events).includes("e2e-for-p") || allowlist.includes("e2e-for-p"), onDisk: existsSync(join(skills, "e2e-for-p")) },
+    };
+  },
+
   "command-line tools in the opening prompt": async () => {
     // Read off the first user message and the options the SDK is handed,
     // from a provider with an allowlist of its own, so an entry added for
@@ -5044,6 +5099,32 @@ const CODEX: Record<CapabilityName, Proof> = {
     return { started: skillUsageOf(startedEvents), resumed: skillUsageOf(resumedEvents), withoutSkills: skillUsageOf(bareEvents) };
   },
 
+  "an edited, an added and a removed skill on a resumed thread": async () => {
+    // Codex's delivery: the provider holds the agent's skills, and is
+    // built again when they change (`agentSurfaceKey`); a resumed turn
+    // writes the supporting files into `<cwd>/.agent/skills` again and
+    // says which skills it delivered. `skill_read` is answered by EO, from
+    // the skill as it stands and only for a skill the turn delivered
+    // (`readSkillForAgent`), so the body is `skillReadAnswer`'s of the
+    // skill the turn says it was given.
+    const cwd = scratchDirectory();
+    const turn = [note.turnStarted(), note.agentMessage("ok"), note.turnCompleted()];
+    const started = codexOver({ after: { "turn/start": turn } }, { attachedSkills: SKILLS_BEFORE });
+    await collect(started.provider.start({ ...startOpts, cwd, skillScope: SCOPED_RUN }));
+    const resumed = codexOver({ after: { "turn/start": turn } }, { attachedSkills: SKILLS_AFTER });
+    const events = await collect(resumed.provider.resume("thr-persisted", RESUMED_WITH_CHANGES, { cwd, skillScope: SCOPED_RUN }));
+    const said = (resumed.fake.paramsOf("turn/start")?.["input"] as { text: string }[] | undefined)?.map((part) => part.text).join("") ?? "";
+    const skills = join(cwd, ".agent", "skills");
+    const served = (slug: string) => (offeredIn(events).includes(slug) ? SKILLS_AFTER.find((skill) => skill.slug === slug) : undefined);
+    const edited = served("house-style");
+    return {
+      told: said.startsWith(RESUMED_WITH_CHANGES),
+      offered: offeredIn(events),
+      edited: { body: edited !== undefined && skillReadAnswer(edited).text.includes("Read the diff twice."), notes: readFileSync(join(skills, "house-style", "notes.md"), "utf8") },
+      removed: { offered: offeredIn(events).includes("e2e-for-p"), onDisk: existsSync(join(skills, "e2e-for-p")) },
+    };
+  },
+
   "command-line tools in the opening prompt": async () => {
     // Read off the turn's input, and compared whole: the launch's
     // arguments (where a sandbox or an approval setting would be passed
@@ -5353,6 +5434,7 @@ describe("the shared list", () => {
       "backend memory off",
       "scoped skills",
       "skill load detection",
+      "an edited, an added and a removed skill on a resumed thread",
       "command-line tools in the opening prompt",
       "a side call returns structured output",
       "a side call streams its answer's words",

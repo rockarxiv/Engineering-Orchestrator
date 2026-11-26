@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { UNSCOPED_RUN, type Agent, type Run, type Uuid } from "@eo/core";
-import { agentAttachmentsHash, EMPTY_ATTACHMENTS_HASH } from "../agentAttachments/fingerprint.js";
+import { toolSurfaceVerdict, type ToolSurfaceVerdict } from "../agentAttachments/fingerprint.js";
+import { resolveAgentAttachmentsForRun, type ResolvedAgentAttachments } from "../db/repos/agentAttachmentsRepo.js";
 import type { Db } from "../db/client.js";
 import { getItem, listItemAttachments, listRunsForItem } from "../db/repos/index.js";
 import { promptHash } from "../roles/prompts.js";
@@ -206,7 +207,7 @@ function neverRan(agent: Agent): string {
  * a person reading three refusals for one thread learns less than they
  * do from the first.
  */
-function refusalFor(run: Run, agent: Agent, cwd: string, wantedHash: string, wantedAttachments: string, wantedFiles: string): string | null {
+function refusalFor(run: Run, agent: Agent, cwd: string, wantedHash: string, wantedAttachments: ResolvedAgentAttachments, wantedFiles: string): string | null {
   // A row predating A-07 recorded no backend at all. `resumeBlockedReason`
   // trusts one of these and resumes it, because there a person is waiting
   // on a reply and a wrong guess costs them their answer. Here the whole
@@ -263,14 +264,21 @@ function refusalFor(run: Run, agent: Agent, cwd: string, wantedHash: string, wan
   }
 
   // The same rule as the two above, about the other half of what a
-  // session is opened with (EO-106). Neither backend re-sends
-  // configuration on resume any more than it re-sends instructions:
-  // Claude's `mcpServers` and `plugins` are command-line arguments to the
-  // process that started the session, and Codex's servers are in the
-  // config object its opening invocation carried. So a reused thread
-  // keeps the servers and skills it was born with, and attaching a
-  // GitHub server to an agent mid-item would appear to work while
-  // changing nothing at all — silently, until the thread happened to end.
+  // session is opened with (EO-106) — its MCP servers and command-line
+  // tools. Neither backend re-sends configuration on resume any more than
+  // it re-sends instructions: Claude's `mcpServers` are command-line
+  // arguments to the process that started the session, Codex's servers
+  // are in the config object its opening invocation carried, and a CLI is
+  // named only in the prompt that opens the thread. So a reused thread
+  // keeps the servers it was born with, and attaching a GitHub server to
+  // an agent mid-item would appear to work while changing nothing at all.
+  //
+  // Skills are not asked about (EO-919). Both backends read a skill when
+  // the agent loads it, and the dispatch writes the current ones where
+  // each reads them before the resumed turn, which is told what changed
+  // (`agentAttachments/skillChanges.ts`). A row from before that split
+  // recorded all three as one hash, and one that no longer matches is
+  // refused as it always was, in words that say so.
   //
   // Null is where this parts company with `instructionsHash` above, and
   // the difference is a fact rather than a preference. Instructions
@@ -278,18 +286,9 @@ function refusalFor(run: Run, agent: Agent, cwd: string, wantedHash: string, wan
   // it, and a gap is never a match. Nothing could be attached before
   // migration 0052 existed, so a row predating it is not missing an
   // answer — its thread was born with an empty tool surface, and that is
-  // what it is read as. The consequence is worth stating plainly: a
-  // dispatch that forgot to record this reads as "nothing was attached",
-  // which is a refusal for any agent that has something attached, and a
-  // resume only for one that has nothing. Both are the truthful answer
-  // for a thread that predates the column.
-  if ((run.agentAttachmentsHash ?? EMPTY_ATTACHMENTS_HASH) !== wantedAttachments) {
-    return (
-      `The MCP servers or skills attached to ${agent.name} have changed since its last run on this ticket. A ` +
-      `provider session keeps the tools it was started with, so the conversation couldn't be carried over — this ` +
-      `ticket is starting fresh, which is how it picks the new ones up.`
-    );
-  }
+  // what it is read as (`toolSurfaceVerdict`).
+  const surface = toolSurfaceVerdict(run.agentAttachmentsHash, wantedAttachments);
+  if (surface !== "same") return toolsChangedRefusal(agent, surface);
 
   // The item's own files, on the instructions' rule (EO-703). A fresh
   // dispatch lists them beside the description and a resumed thread is
@@ -315,7 +314,21 @@ function refusalFor(run: Run, agent: Agent, cwd: string, wantedHash: string, wan
 }
 
 /**
- * The same refusal as the attachment rule above, for the moment *after*
+ * Why a thread whose MCP servers or CLI tools changed since its last run
+ * is not carried on (EO-106, EO-919). `changed-unsplit` is a row from
+ * before EO compared skills apart, whose one hash cannot say which moved.
+ */
+export function toolsChangedRefusal(agent: Agent, verdict: Exclude<ToolSurfaceVerdict, "same">): string {
+  const what = verdict === "changed" ? "MCP servers or command-line tools" : "MCP servers, command-line tools or skills";
+  return (
+    `The ${what} attached to ${agent.name} have changed since its last run on this ticket. A provider session ` +
+    `keeps the tools it was started with, so the conversation couldn't be carried over — this ticket is starting ` +
+    `fresh, which is how it picks the new ones up.`
+  );
+}
+
+/**
+ * The same refusal as the tool-surface rule above, for the moment *after*
  * this file has already answered (EO-107).
  *
  * `findReusableThread` weighs a thread up before the dispatch assembles
@@ -328,11 +341,13 @@ function refusalFor(run: Run, agent: Agent, cwd: string, wantedHash: string, wan
  * Worded for when it happens rather than for what changed: by this point
  * the thread was genuinely reusable and stopped being so while the run
  * was being prepared, which is a different and stranger thing to read
- * than "they have changed since its last run".
+ * than "they have changed since its last run". Only servers and CLIs can
+ * get here (EO-919): a thread that was reusable was weighed up against a
+ * row that splits them from the skills, or matched an older row whole.
  */
 export function staleAttachmentsRefusal(agent: Agent): string {
   return (
-    `The MCP servers or skills attached to ${agent.name} changed while this run was being prepared. A provider ` +
+    `The MCP servers or command-line tools attached to ${agent.name} changed while this run was being prepared. A provider ` +
     `session keeps the tools it was started with, so the conversation it was going to carry on couldn't be used — ` +
     `this run assembles the full context instead, which is how it picks the new ones up.`
   );
@@ -362,7 +377,9 @@ export function staleAttachmentsRefusal(agent: Agent): string {
 export function findReusableThread(db: Db, query: ThreadReuseQuery): ThreadReuse {
   const { itemId, agent, cwd } = query;
   const wantedHash = promptHash(agent.instructions);
-  // The tool surface this dispatch would open a session with (EO-106).
+  // The tool surface this dispatch would open a session with (EO-106),
+  // resolved whole: its servers and CLIs are what a thread is weighed up
+  // against, and a row from before EO-919 against the whole of it.
   // Read once here rather than per candidate: it is the same answer for
   // every row, and it is a database read.
   //
@@ -371,7 +388,7 @@ export function findReusableThread(db: Db, query: ThreadReuseQuery): ThreadReuse
   // surface, one scoped elsewhere is not. Worked out from the item by the
   // same function the dispatch uses, so the two cannot disagree.
   const item = getItem(db, itemId);
-  const wantedAttachments = agentAttachmentsHash(db, agent.id, item ? skillRunScope(db, item) : UNSCOPED_RUN);
+  const wantedAttachments = resolveAgentAttachmentsForRun(db, agent.id, item ? skillRunScope(db, item) : UNSCOPED_RUN);
   const wantedFiles = itemFilesHash(db, itemId);
 
   const mine = listRunsForItem(db, itemId)
