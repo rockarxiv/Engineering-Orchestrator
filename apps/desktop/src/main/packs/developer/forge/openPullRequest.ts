@@ -89,10 +89,12 @@ export interface OpenPullRequestInput {
    * (EO-910). True means the caller has published the branch itself — EO
    * replacing its own last push — and this carries on exactly as after a
    * push that went through, without pushing again. Told where the push
-   * was rejected (`destinationKey`, or null for no one place), so that the
-   * push replacing it goes there or nowhere.
+   * was rejected (`destinationKey`, or null for no one place) and the
+   * commit it sent (null where the branch moved while git pushed, so that
+   * cannot be said), so that the push replacing it sends that commit
+   * there, or nothing anywhere.
    */
-  onDiverged?: (rejected: { destination: string | null }) => Promise<boolean>;
+  onDiverged?: (rejected: { destination: string | null; head: string | null }) => Promise<boolean>;
 }
 
 /** What came of asking for reviewers, on a pull request this created. */
@@ -204,12 +206,15 @@ export async function openPullRequest(input: OpenPullRequestInput): Promise<Open
   if (!pushed.ok) {
     // Moved the branch at one of several push URLs though it failed at
     // another: it is published all the same.
-    if (pushed.published !== null) input.onPushed?.({ head: pushed.published, destination: pushed.destination });
+    // Only where git is known to have sent it: a branch that moved while
+    // git pushed leaves the commit that went unknown.
+    if (pushed.published !== null && pushed.confirmed) input.onPushed?.({ head: pushed.published, destination: pushed.destination });
     const classified = classifyPushError(pushed.error, pushed.rejection === "diverged", pushed.status);
-    if (!(classified.diverged && input.onDiverged && (await input.onDiverged({ destination: pushed.destination })))) {
+    const rejected = { destination: pushed.destination, head: pushed.confirmed ? pushed.head : null };
+    if (!(classified.diverged && input.onDiverged && (await input.onDiverged(rejected)))) {
       return { ...fail(classified.message, classified.final), diverged: classified.diverged };
     }
-  } else if (pushed.updated) {
+  } else if (pushed.updated && pushed.confirmed) {
     input.onPushed?.(pushed);
   }
 

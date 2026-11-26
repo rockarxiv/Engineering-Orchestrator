@@ -124,10 +124,28 @@ describe("a failed push, whose divergence git's status for the ref settles (EO-9
     expect(classified.message).not.toContain("SECRET");
   });
 
-  it("is classified as any other failure where no rejection is in it", () => {
-    expect(classifyPushError("fatal: unable to access: Could not resolve host", false, null)).toEqual({
-      ...classifyForgeError("fatal: unable to access: Could not resolve host"),
-      diverged: false,
+  it.each([
+    ["a hook that says a command was not found", "hook: command not found: SYNTHETIC_SECRET\nerror: failed to push some refs to 'origin'"],
+    ["a hook that says the credentials failed", "remote: Authentication failed for https://tok:SYNTHETIC_SECRET@example.com/acme/api.git"],
+    ["a git that speaks French", "Total 3 (delta 0)\nremote: refus de https://tok:SYNTHETIC_SECRET@example.com\nerreur : impossible de pousser des références vers 'origin'"],
+    ["a remote that cannot be reached", "fatal: unable to access 'https://tok:SYNTHETIC_SECRET@example.com/': Could not resolve host"],
+  ])("repeats nothing git printed where the ref has no status: %s", (_, raw) => {
+    const classified = classifyPushError(raw, false, null);
+    expect(classified.diverged).toBe(false);
+    expect(classified.message).not.toContain("SYNTHETIC");
+    expect(classified.message).not.toContain("example.com");
+  });
+
+  it("tries again where it does not recognise what git said, a git in another language included", () => {
+    expect(classifyPushError("erreur : impossible de pousser des références vers 'origin'", false, null)).toMatchObject({ final: false, diverged: false });
+    expect(classifyPushError("fatal: unable to access: Could not resolve host", false, null)).toMatchObject({ final: false, diverged: false });
+  });
+
+  it("stops where the credentials were refused, or the source is ambiguous, saying which in its own words", () => {
+    expect(classifyPushError("fatal: Authentication failed for 'https://example.com/'", false, null).message).toContain("credentials");
+    expect(classifyPushError("error: src refspec refs/heads/eo/API-4 matches more than one\nerror: failed to push some refs", false, null)).toMatchObject({
+      final: true,
+      message: expect.stringContaining("same name"),
     });
   });
 });

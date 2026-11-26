@@ -1,8 +1,8 @@
 import { gitStateOf } from "@eo/core";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { eq, sql } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Item, Uuid } from "@eo/core";
@@ -25,7 +25,7 @@ import { createBuiltinRunners } from "../builtins.js";
 import { workspaces } from "../../../db/schema.js";
 import { attachWorkspace, createTestItem, openMigratedTestDb } from "../../../db/testHelpers.js";
 import { REPOSITORY_INDEX_DIRECTORIES } from "../repositoryIntelligence/index.js";
-import { currentBranch, destinationKey, statusPorcelain } from "../workspace/git.js";
+import { canonicalPath, currentBranch, destinationKey, statusPorcelain } from "../workspace/git.js";
 import type { CliResult, CliRunner } from "./cli.js";
 import { updateItemText } from "../../../ipc/domainCommands.js";
 import { openPullRequestForItem } from "./openForItem.js";
@@ -67,7 +67,10 @@ function recorder(replies: CliResult[]): { run: CliRunner; calls: string[][] } {
 const git = (args: string[], cwd: string) => execFileSync("git", args, { cwd, encoding: "utf8" });
 
 /** What EO records of a push of `eo/API-4` to `destination` — the bare remote, unless a test says otherwise (EO-910). */
-const pushedTo = (commit: string, destination: string | null = remotePath) => ({ commit, ref: "refs/heads/eo/API-4", destination: destination === null ? null : destinationKey(destination) });
+/** Where EO records a push as going: the URL, or for a local path the repository it resolves to. */
+const placeOf = (destination: string): string =>
+  destinationKey(/^[a-z+]+:\/\//.test(destination) ? destination : canonicalPath(isAbsolute(destination) ? destination : join(repoPath, destination)));
+const pushedTo = (commit: string, destination: string | null = remotePath) => ({ commit, ref: "refs/heads/eo/API-4", destination: destination === null ? null : placeOf(destination) });
 
 function story(overrides: Partial<Parameters<typeof createTestItem>[1]> = {}): Item {
   return createTestItem(handle.db, {
@@ -1659,7 +1662,7 @@ describe("before it opens or reuses one (EO-429)", () => {
       expect(tipAt(elsewhere)).toBe(ours);
       expect(remoteTip()).toBe(ours);
       expect(notes(item).at(-1)).toContain("did not force-push");
-      expect(progress.some((line) => line.includes("rejected somewhere other than the one server EO last pushed it to"))).toBe(true);
+      expect(progress.some((line) => line.includes("rejected somewhere other than the one place EO last pushed it to"))).toBe(true);
       expect(progress.some((line) => line.includes(remotePath) || line.includes(elsewhere))).toBe(false);
     });
 
@@ -1930,8 +1933,113 @@ describe("before it opens or reuses one (EO-429)", () => {
       expect(tipAt(a)).toBe(ours);
       expect(tipAt(b)).toBe(theirs);
       expect(gitStateOf(getItem(handle.db, item.id)!).pushedHead).toEqual(pushedTo(ours, a));
-      expect(progress.some((line) => line.includes("rejected somewhere other than the one server EO last pushed it to"))).toBe(true);
+      expect(progress.some((line) => line.includes("rejected somewhere other than the one place EO last pushed it to"))).toBe(true);
       expect(notes(item).at(-1)).toContain("did not force-push");
+    });
+
+    /** EO's first push of the item's branch, by whichever pull request path `pullRequest` picks, and the commit it pushed. */
+    async function firstPush(item: Item, pullRequest: string | null): Promise<void> {
+      const refused: CliResult = { ok: false, stdout: "", error: "HTTP 422: Validation Failed", notFound: false };
+      await mergeRequestStep(item, pullRequest === null ? async () => refused : onlyFinds(found));
+    }
+
+    // Windows symlinks need a privilege a test runner rarely has.
+    it.skipIf(process.platform === "win32").each([
+      ["on the first open", null],
+      ["with the pull request already open", PULL_REQUEST],
+    ])("refuses when the path it pushes to now resolves to another repository holding the same commit, though git's configuration never changed, %s", async (_, pullRequest) => {
+      const a = bare("a.git");
+      const b = bare("b.git");
+      const link = join(scratch, "link.git");
+      symlinkSync(a, link);
+      git(["remote", "set-url", "origin", link], repoPath);
+      const item = story({ git: { branch: "eo/API-4", pullRequest } });
+      const worktree = worktreeFor(item);
+      await firstPush(item, pullRequest);
+      const ours = tipAt(a)!;
+      expect(gitStateOf(getItem(handle.db, item.id)!).pushedHead).toEqual(pushedTo(ours, a));
+      // Somebody else's repository, holding the same commit; the symlink
+      // is pointed at it.
+      git(["push", b, `${ours}:refs/heads/eo/API-4`], repoPath);
+      unlinkSync(link);
+      symlinkSync(b, link);
+      rewriteIn(worktree);
+      const progress: string[] = [];
+
+      const result = await mergeRequestStep(item, onlyFinds(found), (text) => progress.push(text));
+
+      expect(result).toMatchObject({ ok: true, result: "remote_diverged" });
+      expect(tipAt(a)).toBe(ours);
+      expect(tipAt(b)).toBe(ours);
+      expect(progress.some((line) => line.includes("rejected somewhere other than the one place EO last pushed it to"))).toBe(true);
+      expect(notes(item).at(-1)).toContain("did not force-push");
+    });
+
+    it.each([
+      ["on the first open", null],
+      ["with the pull request already open", PULL_REQUEST],
+    ])("forces nothing when the branch moved while its push was rejected, rather than pushing a commit that was never refused, %s", async (_, pullRequest) => {
+      const item = story({ git: { branch: "eo/API-4", pullRequest } });
+      const worktree = worktreeFor(item);
+      await firstPush(item, pullRequest);
+      const ours = remoteTip()!;
+      rewriteIn(worktree);
+      // A pre-push hook moves the branch on, once, while git pushes it.
+      const replacement = git(["commit-tree", `${localTip()}^{tree}`, "-p", ours, "-m", "a hook's commit"], repoPath).trim();
+      const marker = join(scratch, "moved");
+      const hook = join(repoPath, git(["rev-parse", "--git-path", "hooks"], repoPath).trim(), "pre-push");
+      writeFileSync(hook, `#!/bin/sh\n[ -e '${marker}' ] || { touch '${marker}'; git update-ref refs/heads/eo/API-4 ${replacement}; }\n`, { mode: 0o755 });
+
+      const result = await mergeRequestStep(item, onlyFinds(found));
+
+      expect(result).toMatchObject({ ok: true, result: "remote_diverged" });
+      expect(remoteTip()).toBe(ours);
+      expect(gitStateOf(getItem(handle.db, item.id)!).pushedHead).toEqual(pushedTo(ours));
+      expect(notes(item).at(-1)).toContain("did not force-push");
+    });
+
+    it.each([
+      ["on the first open", null],
+      ["with the pull request already open", PULL_REQUEST],
+    ])("pushes and records the branch itself, though a tag is named exactly like its commit's hash, %s", async (_, pullRequest) => {
+      const item = story({ git: { branch: "eo/API-4", pullRequest } });
+      const worktree = worktreeFor(item);
+      await firstPush(item, pullRequest);
+      const old = remoteTip()!;
+      rewriteIn(worktree);
+      const rewritten = localTip();
+      git(["tag", rewritten, "main"], repoPath);
+
+      const result = await mergeRequestStep(item, pullRequest === null ? recorder([noneYet, created, found]).run : onlyFinds(found));
+
+      expect(result).toMatchObject({ ok: true, result: "opened" });
+      expect(remoteTip()).toBe(rewritten);
+      expect(gitStateOf(getItem(handle.db, item.id)!).pushedHead).toEqual(pushedTo(rewritten));
+      expect(notes(item).some((body) => body.includes(`--force-with-lease=eo/API-4:${old}`) && body.includes(rewritten))).toBe(true);
+    });
+
+    it.each([
+      ["on the first open", null],
+      ["with the pull request already open", PULL_REQUEST],
+    ])("tells a pre-push hook the branch it pushes, on its stdin, for the push and for the one that replaces it, %s", async (_, pullRequest) => {
+      const told = join(scratch, "stdin.log");
+      const hook = join(repoPath, git(["rev-parse", "--git-path", "hooks"], repoPath).trim(), "pre-push");
+      // Refuses anything but the branch pushed by its own name.
+      writeFileSync(hook, `#!/bin/sh\nwhile read local sha remote rest; do echo "$local $remote" >> '${told}'; [ "$local" = refs/heads/eo/API-4 ] || exit 1; done\n`, { mode: 0o755 });
+      const item = story({ git: { branch: "eo/API-4", pullRequest } });
+      const worktree = worktreeFor(item);
+      await firstPush(item, pullRequest);
+      rewriteIn(worktree);
+
+      const result = await mergeRequestStep(item, pullRequest === null ? recorder([noneYet, created, found]).run : onlyFinds(found));
+
+      expect(result).toMatchObject({ ok: true, result: "opened" });
+      expect(remoteTip()).toBe(localTip());
+      // The first push, and the leased one: git leaves a ref it rejects
+      // itself off the hook's stdin.
+      const lines = readFileSync(told, "utf8").trim().split("\n");
+      expect(lines).toHaveLength(2);
+      for (const line of lines) expect(line).toBe("refs/heads/eo/API-4 refs/heads/eo/API-4");
     });
 
     it("keeps what a hook printed out of a refusal that is not divergence, whichever hook refused", async () => {
@@ -1946,8 +2054,8 @@ describe("before it opens or reuses one (EO-429)", () => {
       for (const pullRequest of [null, PULL_REQUEST]) {
         updateItem(handle.db, item.id, { git: { pullRequest } });
         for (const refusing of ["pre-push", "pre-receive"] as const) {
-          if (refusing === "pre-push") writeFileSync(local, '#!/bin/sh\necho "refusing a push to $2"\necho "refusing a push to $2" >&2\nexit 1\n', { mode: 0o755 });
-          else writeFileSync(serverHook, `#!/bin/sh\necho 'refusing https://${user}@example.com' >&2\nexit 1\n`, { mode: 0o755 });
+          if (refusing === "pre-push") writeFileSync(local, '#!/bin/sh\necho "refusing a push to $2"\necho "command not found: $2" >&2\nexit 1\n', { mode: 0o755 });
+          else writeFileSync(serverHook, `#!/bin/sh\necho 'command not found: https://${user}@example.com' >&2\nexit 1\n`, { mode: 0o755 });
           const progress: string[] = [];
 
           const result = await mergeRequestStep(item, onlyFinds(found), (text) => progress.push(text));

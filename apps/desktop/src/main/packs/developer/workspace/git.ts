@@ -5,7 +5,7 @@
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, realpathSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { lstat, mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, normalize, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -174,37 +174,33 @@ export async function listTree(repoPath: string, ref: string, path: string): Pro
  * did not write. Re-pushing an unchanged branch is a no-op that exits 0,
  * which is what makes a retry safe.
  *
- * The commit is read first and pushed by name — `<commit>:refs/heads/
- * <branch>` — so what is reported as `head` is exactly what git sent, and
- * exactly to that ref, whatever a `remote.<name>.push` would otherwise
- * map the branch to (EO-910). Only that ref: `--no-follow-tags`, so a tag
- * the destination refuses cannot fail a push whose branch went through.
- * The branch's upstream is then set as `--set-upstream` would have.
+ * The branch is pushed by its full name onto the same name —
+ * `refs/heads/<branch>:refs/heads/<branch>` — so a `pre-push` hook reads
+ * the branch on its stdin as it always did, git can take the source for
+ * nothing else (a tag named like a commit's hash would win over the hash
+ * itself; a ref that shares the name makes git refuse rather than guess),
+ * and it lands on that ref whatever a `remote.<name>.push` would map it
+ * to (EO-910). The commit is read before the push and again after it:
+ * git reads the branch once, before any hook runs, so where it has not
+ * moved in between, `head` is what git sent (`confirmed`); where it has,
+ * which commit went cannot be said, and nothing is recorded as EO's.
+ * Only that ref: `--no-follow-tags`, so a tag the destination refuses
+ * cannot fail a push whose branch went through. The branch's upstream is
+ * then set as `--set-upstream` would have.
  *
  * Pinned to one destination, and still pushed by the remote's name, so
  * that what git does for a push to that remote — its `receivepack`, the
  * local `pre-push` hook told the remote's name, the remote-tracking ref
- * moved by its fetch refspec — is what it always was. Where the remote
- * pushes to one URL (`pushDestination`), that URL is read once, exactly,
- * and the environment git is given clears the remote's push URLs and
- * gives it one: a name made up for this push alone, which a
- * `url.<that URL>.insteadOf` beside it maps back onto the URL. Git
- * applies a rewrite once, and nothing configured can name a rewrite of a
- * name it never saw — so neither a second rewrite of the URL nor a change
- * to the remote's push URLs while EO works reaches another server, and
- * `destination` is the fingerprint of the URL the push actually went to.
- * The URL is never on git's command line, where a timeout's error would
- * repeat it. Where that pin cannot be shown to hold — several push URLs,
- * one git cannot name exactly, a `receivepack` or a remote helper that
- * decides for itself where the push lands, or a git too old to clear a
- * remote's push URLs from the environment — the push goes by the
+ * moved by its fetch refspec — is what it always was (`pinPush`). The
+ * URL is never on git's command line, where a timeout's error would
+ * repeat it. Where the pin cannot be shown to hold the push goes by the
  * remote's name unpinned, as it always did, with `destination` null.
  *
- * `updated` is whether the remote's branch actually moved to `head`, read
- * off `--porcelain`: an up-to-date push changes nothing, and its `head`
- * may be a commit somebody else put there — so it is not EO's to record
- * as its own. A push that failed says in `published` the commit it sent
- * if it moved the branch at any of its URLs all the same — several push
+ * `updated` is whether the remote's branch actually moved, read off
+ * `--porcelain`: an up-to-date push changes nothing, and its `head` may
+ * be a commit somebody else put there — so it is not EO's to record as
+ * its own. A push that failed says in `published` the commit it sent if
+ * it moved the branch at any of its URLs all the same — several push
  * URLs can each answer differently — and in `rejection` whether git
  * refused the ref because the remote's branch has commits the local one
  * lacks (`diverged`), read off the ref's own status rather than anything
@@ -214,35 +210,56 @@ export async function listTree(repoPath: string, ref: string, path: string): Pro
  * always EO's own push it replaces: the head EO itself last pushed for
  * the item (EO-910), so the lease is that exact commit, checked by the
  * server the push reaches, and anything anybody else pushed since is
- * refused rather than lost. It goes only to the destination it names —
- * the fingerprint EO recorded with that head — and where the remote no
- * longer pushes to exactly that one URL, nothing is pushed at all
- * (`rejection: "destination"`).
+ * refused rather than lost. It sends only the commit the rejected push
+ * sent (`send`), and only to the destination it names — the fingerprint
+ * EO recorded with that head. Where the branch is at another commit now,
+ * or the remote no longer pushes to exactly that one place, nothing is
+ * pushed at all (`rejection: "changed"`, `"destination"`).
  */
 export async function pushBranch(
   repoPath: string,
   remote: string,
   branch: string,
-  options: NetworkGitOptions & { forceWithLease?: { expect: string; destination: string } } = {},
+  options: NetworkGitOptions & { forceWithLease?: { expect: string; destination: string; send: string } } = {},
 ): Promise<PushOutcome> {
-  const head = await git(["rev-parse", "--verify", `refs/heads/${branch}^{commit}`], repoPath);
-  if (!head.ok) return { ok: false, error: head.error, published: null, destination: null, rejection: "other", status: null };
-  const pin = await pinPush(repoPath, remote);
-  const destination = pin === null ? null : destinationKey(pin.url);
-  if (options.forceWithLease && destination !== options.forceWithLease.destination) {
+  const ref = `refs/heads/${branch}`;
+  const tip = (): Promise<GitOutcome> => git(["rev-parse", "--verify", `${ref}^{commit}`], repoPath);
+  const head = await tip();
+  if (!head.ok) return { ok: false, error: head.error, head: null, confirmed: false, published: null, destination: null, rejection: "other", status: null };
+  if (options.forceWithLease && head.stdout !== options.forceWithLease.send) {
     return {
       ok: false,
-      error: `${remote} does not push to exactly the one URL EO last pushed this branch to, so nothing was pushed.`,
+      error: `${branch} is no longer at the commit whose push was rejected, so nothing was pushed.`,
+      head: head.stdout,
+      confirmed: false,
       published: null,
-      destination,
+      destination: null,
+      rejection: "changed",
+      status: null,
+    };
+  }
+  const pin = await pinPush(repoPath, remote);
+  const pinned = pin === null ? null : destinationKey(pin.url);
+  if (options.forceWithLease && pinned !== options.forceWithLease.destination) {
+    return {
+      ok: false,
+      error: `${remote} does not push to exactly the one place EO last pushed this branch to, so nothing was pushed.`,
+      head: head.stdout,
+      confirmed: false,
+      published: null,
+      destination: pinned,
       rejection: "destination",
       status: null,
     };
   }
-  const ref = `refs/heads/${branch}`;
-  const refspec = `${head.stdout}:${ref}`;
+  const refspec = `${ref}:${ref}`;
   const lease = options.forceWithLease ? [`--force-with-lease=${branch}:${options.forceWithLease.expect}`] : [];
   const env = { ...process.env, ...NON_INTERACTIVE_GIT_ENV, ...(pin === null ? {} : pin.env) };
+  // Still where it was read: then that is the commit git sent.
+  const confirm = async (): Promise<boolean> => {
+    const after = await tip();
+    return after.ok && after.stdout === head.stdout;
+  };
   try {
     const { stdout } = await execFileAsync("git", composeGitArgs(["push", "--porcelain", "--no-follow-tags", ...lease, remote, refspec], process.platform), {
       cwd: repoPath,
@@ -252,11 +269,12 @@ export async function pushBranch(
       timeout: options.timeoutMs ?? NETWORK_TIMEOUT_MS,
       ...(options.signal ? { signal: options.signal } : {}),
     });
+    const confirmed = await confirm();
     // Best effort: the push has happened, and a missing upstream costs a
     // person's `git status` its ahead/behind, nothing of EO's.
     await git(["config", `branch.${branch}.remote`, remote], repoPath);
     await git(["config", `branch.${branch}.merge`, ref], repoPath);
-    return { ok: true, stdout: stdout.trim(), head: head.stdout, updated: pushUpdated(stdout, refspec), destination };
+    return { ok: true, stdout: stdout.trim(), head: head.stdout, confirmed, updated: pushUpdated(stdout, refspec), destination: wentTo(stdout, pinned) };
   } catch (error) {
     // `--porcelain` prints each ref's status on stdout, and that status
     // is what tells divergence from any other refusal. Read untrimmed:
@@ -267,8 +285,10 @@ export async function pushBranch(
     return {
       ok: false,
       error: stdout.trim() ? `${stderr}\n${stdout.trim()}` : stderr,
+      head: head.stdout,
+      confirmed: await confirm(),
       published: pushUpdated(stdout, refspec) ? head.stdout : null,
-      destination,
+      destination: wentTo(stdout, pinned),
       rejection: pushDiverged(stdout, refspec) ? "diverged" : "other",
       status: pushRefusal(stdout, refspec),
     };
@@ -276,39 +296,133 @@ export async function pushBranch(
 }
 
 /**
- * The one URL a push to `remote` goes to, and the environment that holds
+ * The pinned destination, unless git says it pushed to more than one
+ * place — which a pin that held cannot do, and one a git too old to
+ * clear a remote's push URLs held only until the remote was given one
+ * more (`pinPush`).
+ */
+function wentTo(porcelain: string, pinned: string | null): string | null {
+  return porcelain.split("\n").filter((line) => line.startsWith("To ")).length > 1 ? null : pinned;
+}
+
+/**
+ * The one place a push to `remote` goes, and the environment that holds
  * it there (`pushBranch`), or null where that cannot be shown to hold.
  *
- * The environment comes after any configuration the environment already
- * gives git, and after every configuration file: an empty
+ * The remote's push URL is read once, exactly (`pushDestination`), and
+ * made into the place it reaches (`reachedBy`). The environment git is
+ * given then comes after any configuration the environment already gives
+ * git, and after every configuration file: an empty
  * `remote.<name>.pushurl` clears the remote's push URLs, the next gives
- * it the made-up name, and `url.<URL>.insteadOf` maps that name back.
+ * it a name made up for this push alone, and `url.<that place>.insteadOf`
+ * maps the name back onto it. Git applies a rewrite once, and nothing
+ * configured can name a rewrite of a name it never saw — so neither a
+ * second rewrite of the URL nor a change to the remote's push URLs while
+ * EO works reaches another server.
+ *
  * Asked of git again under exactly that environment, the remote must
- * push to exactly that URL and nothing else — a git that cannot clear
- * the list keeps the URLs it had beside the new one, and is not pinned.
+ * push to exactly that place and nothing else. A git older than 2.46
+ * cannot clear the list from the environment — it keeps the URLs it had
+ * beside an empty one — so where the remote has no push URL of its own,
+ * which is the usual `origin`, the environment only gives it one, and
+ * asked again git must say the same. A remote with push URLs of its own,
+ * on such a git, is not pinned at all. Nor is one with a `receivepack`
+ * or a remote helper (`vcs`), either of which decides for itself where
+ * the push lands, whatever the URL.
  */
 async function pinPush(repoPath: string, remote: string): Promise<{ url: string; env: Record<string, string> } | null> {
-  const url = await pushDestination(repoPath, remote);
-  if (url === null) return null;
-  // Either decides for itself where the push lands, whatever the URL.
+  const resolved = await pushDestination(repoPath, remote);
+  if (resolved === null) return null;
   for (const key of ["receivepack", "vcs"]) {
     const set = await git(["config", "--get-all", `remote.${remote}.${key}`], repoPath);
     if (set.ok) return null;
   }
+  const url = await reachedBy(repoPath, resolved);
+  if (url === null) return null;
   const alias = `eo-push-${randomUUID()}:`;
   const given = Number.parseInt(process.env["GIT_CONFIG_COUNT"] ?? "", 10);
   const index = Number.isInteger(given) && given > 0 ? given : 0;
-  const pins: [string, string][] = [
-    [`remote.${remote}.pushurl`, ""],
+  const pinsFor = (clear: boolean): [string, string][] => [
+    ...(clear ? ([[`remote.${remote}.pushurl`, ""]] as [string, string][]) : []),
     [`remote.${remote}.pushurl`, alias],
     [`url.${url}.insteadOf`, alias],
   ];
-  const env: Record<string, string> = { GIT_CONFIG_COUNT: String(index + pins.length) };
-  pins.forEach(([key, value], offset) => {
-    env[`GIT_CONFIG_KEY_${index + offset}`] = key;
-    env[`GIT_CONFIG_VALUE_${index + offset}`] = value;
-  });
-  return (await pushDestination(repoPath, remote, env)) === url ? { url, env } : null;
+  const ownPushUrls = (await git(["config", "--get-all", `remote.${remote}.pushurl`], repoPath)).ok;
+  for (const clear of ownPushUrls ? [true] : [true, false]) {
+    const pins = pinsFor(clear);
+    const env: Record<string, string> = { GIT_CONFIG_COUNT: String(index + pins.length) };
+    pins.forEach(([key, value], offset) => {
+      env[`GIT_CONFIG_KEY_${index + offset}`] = key;
+      env[`GIT_CONFIG_VALUE_${index + offset}`] = value;
+    });
+    if ((await pushDestination(repoPath, remote, env)) === url) return { url, env };
+  }
+  return null;
+}
+
+/** The transports whose URL alone names the repository a push reaches. */
+const ROUTED_SCHEMES = new Set(["https", "http", "ssh", "git", "git+ssh", "ssh+git"]);
+
+/**
+ * The place a push to `url` reaches, as EO pins and records it, or null
+ * where the URL alone does not say (EO-910).
+ *
+ * A network URL — `https://`, `ssh://`, `git://`, `user@host:path` — is
+ * its own answer: the server it names is the one that takes the push. A
+ * local path is not. A symlink anywhere in it can be pointed at another
+ * repository with nothing in git's configuration changing, so a path is
+ * pinned and recorded as the repository it resolves to now
+ * (`localRepository`), and a push to the same path once the symlink
+ * points elsewhere is a push to somewhere else. Anything else — a remote
+ * helper (`<transport>::<address>`, a scheme git hands to
+ * `git-remote-<scheme>`), a `file://` URL git would decode, a path git
+ * would expand (`~`) — decides where it lands by means EO cannot check,
+ * and is pinned to nothing.
+ */
+async function reachedBy(repoPath: string, url: string): Promise<string | null> {
+  if (/^[A-Za-z][A-Za-z0-9+.-]*::/.test(url)) return null;
+  const scheme = /^([A-Za-z][A-Za-z0-9+.-]*):\/\//.exec(url)?.[1]?.toLowerCase();
+  if (scheme === "file") return url.startsWith("file:///") && !url.includes("%") ? localRepository(url.slice("file://".length)) : null;
+  if (scheme !== undefined) return ROUTED_SCHEMES.has(scheme) ? url : null;
+  // Git's own test: a path unless a colon comes before any slash, which
+  // makes it `host:path` over SSH — a drive letter aside, on Windows.
+  const colon = url.indexOf(":");
+  const slash = url.indexOf("/");
+  const drive = process.platform === "win32" && /^[A-Za-z]:[\\/]/.test(url);
+  if (colon !== -1 && !(slash !== -1 && slash < colon) && !drive) return url;
+  if (url.startsWith("~")) return null;
+  return localRepository(resolve(repoPath, url));
+}
+
+/**
+ * The repository a push to the local path `path` reaches, by a path with
+ * no symlink in it, or null where git might reach another (EO-910).
+ *
+ * Git looks for `<path>/.git` before `<path>`, and for `<path>.git` where
+ * `<path>` is not a repository, so the resolved path is taken only where
+ * it is itself a bare repository with no `.git` inside it. Its refs must
+ * be its own: no `commondir` sending them to another repository, and
+ * none of `HEAD`, `refs`, `packed-refs` or `reftable` a symlink.
+ */
+async function localRepository(path: string): Promise<string | null> {
+  let real: string;
+  try {
+    real = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(await realpath(path, { encoding: "buffer" }));
+  } catch {
+    return null;
+  }
+  const entry = async (name: string): Promise<"file" | "directory" | "other" | "absent"> => {
+    try {
+      const stat = await lstat(join(real, name));
+      return stat.isSymbolicLink() ? "other" : stat.isFile() ? "file" : stat.isDirectory() ? "directory" : "other";
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code === "ENOENT" ? "absent" : "other";
+    }
+  };
+  if ((await entry(".git")) !== "absent" || (await entry("commondir")) !== "absent") return null;
+  if ((await entry("HEAD")) !== "file" || (await entry("objects")) !== "directory" || (await entry("refs")) !== "directory") return null;
+  if (!["absent", "file"].includes(await entry("packed-refs")) || !["absent", "directory"].includes(await entry("reftable"))) return null;
+  return real;
 }
 
 /** This refspec's porcelain status lines, one per URL the push went to. */
@@ -339,43 +453,75 @@ export function pushDiverged(porcelain: string, refspec: string): boolean {
   });
 }
 
+/** The statuses git gives a refused ref, as `pushRefusal` may repeat them. */
+const REFUSED_STATUSES = new Set(["[rejected]", "[remote rejected]", "[remote failure]"]);
+
+/**
+ * The reasons beside a refused ref's status that are git's own words —
+ * its own client's, or the ones `git receive-pack` sends — and so may be
+ * repeated. Anything else there is the server's to choose, and a server
+ * or its hook can choose to say anything.
+ */
+const REFUSED_REASONS = new Set([
+  "non-fast-forward",
+  "fetch first",
+  "stale info",
+  "already exists",
+  "needs force",
+  "atomic push failed",
+  "hook declined",
+  "pre-receive hook declined",
+  "deny updating a hidden ref",
+  "failed to update ref",
+  "shallow update not allowed",
+  "branch is currently checked out",
+  "missing necessary objects",
+  "unpacker error",
+]);
+
 /**
  * How git refused `refspec`, from its own status line, in words that
- * cannot carry anything a hook or a server chose to print: the bracketed
- * status, and the reason beside it only where that is a plain phrase
- * (`pre-receive hook declined`). Null where git gave the ref no status —
- * a local `pre-push` hook that refused, a remote that could not be
- * reached.
+ * cannot carry anything a hook or a server chose to print: one of git's
+ * statuses (`[remote rejected]`), and the reason beside it only where
+ * that is one git itself gives (`pre-receive hook declined`), never one a
+ * server made up. Null where git gave the ref no status — a local
+ * `pre-push` hook that refused, a remote that could not be reached.
  */
 export function pushRefusal(porcelain: string, refspec: string): string | null {
   for (const line of refStatuses(porcelain, refspec)) {
     const [flag, , summary = ""] = line.split("\t");
     if (flag !== "!") continue;
     const status = /^\[[a-z ]+\]/.exec(summary)?.[0];
-    if (status === undefined) return "[rejected]";
-    const reason = /^ \(([A-Za-z0-9 ._'-]+)\)$/.exec(summary.slice(status.length))?.[1];
-    return reason === undefined ? status : `${status} (${reason})`;
+    if (status === undefined || !REFUSED_STATUSES.has(status)) return "[rejected]";
+    const reason = /^ \((.*)\)$/.exec(summary.slice(status.length))?.[1];
+    return reason !== undefined && REFUSED_REASONS.has(reason) ? `${status} (${reason})` : status;
   }
   return null;
 }
 
 /**
- * A push that went through says which commit it sent, whether that moved
- * the remote's branch, and where it went (`destinationKey`, or null). One
- * that failed says what git said, which commit it published anyway, if
- * any, where it was going, and why it was refused: `diverged`, refused
- * for the ref by every account git gave; `destination`, never sent,
- * because a lease's destination no longer holds; anything else `other`
- * — and, in `status`, how git refused the ref (`pushRefusal`).
+ * A push that went through says which commit it read to send (`head`),
+ * whether the branch was still there once git had pushed, so that this
+ * is the commit git sent (`confirmed`), whether that moved the remote's
+ * branch, and where it went (`destinationKey`, or null). One that failed
+ * says the same of what it tried to send, what git said, which commit it
+ * published anyway, if any, where it was going, and why it was refused:
+ * `diverged`, refused for the ref by every account git gave;
+ * `destination`, never sent, because a lease's destination no longer
+ * holds; `changed`, never sent, because the branch is no longer at the
+ * commit a lease was to send; anything else `other` — and, in `status`,
+ * how git refused the ref (`pushRefusal`).
  */
 export type PushOutcome =
-  | { ok: true; stdout: string; head: string; updated: boolean; destination: string | null }
+  | { ok: true; stdout: string; head: string; confirmed: boolean; updated: boolean; destination: string | null }
   | {
       ok: false;
       error: string;
+      head: string | null;
+      confirmed: boolean;
       published: string | null;
       destination: string | null;
-      rejection: "diverged" | "destination" | "other";
+      rejection: "diverged" | "destination" | "changed" | "other";
       status: string | null;
     };
 
@@ -419,7 +565,8 @@ export async function pushDestination(repoPath: string, remote: string, env?: Re
 
 /**
  * A push URL as EO keeps it on an item: a SHA-256 fingerprint of the
- * whole URL, exactly as git resolved it. Two URLs that differ anywhere —
+ * whole URL, exactly as git resolved it — for a local path, of the
+ * repository it resolves to (`reachedBy`). Two URLs that differ anywhere —
  * an SSH user who picks the repository, a host, a path — never share
  * one, and a credential written into the URL (`https://user:token@…`)
  * never reaches the database. A changed credential makes it another
