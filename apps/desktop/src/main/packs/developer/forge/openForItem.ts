@@ -27,6 +27,7 @@ import {
   pushBranch,
   pushDestination,
   rebaseOntoBase,
+  type PushDestination,
   statusPorcelain,
 } from "../workspace/git.js";
 import { resolveStackTargetWithAnswer } from "../workspace/stackAnswer.js";
@@ -37,7 +38,7 @@ import type { PullRequestFacts } from "./body.js";
 import { createCliRunner, type CliRunner } from "./cli.js";
 import { classifyForgeError } from "./errors.js";
 import { forgePullRequestState, resolveMergeState } from "./mergeState.js";
-import { openPullRequest, type ReviewerRequest } from "./openPullRequest.js";
+import { openPullRequest, type OwnPushLease, type ReviewerRequest } from "./openPullRequest.js";
 import { codeSpan } from "../../../codeSpan.js";
 
 /**
@@ -421,7 +422,7 @@ async function openNew(
     ...(signal ? { signal } : {}),
     ...(ended ? { onlyAdoptOpen: true } : {}),
     reviewers: reviewers.value,
-    onPushed: (commit) => recordPush(db, item, workspace.config.repoPath, workspace.config.forgeRemote, commit),
+    onPushed: async (commit, destination) => recordPush(db, item, commit, destination),
     onDiverged: () => leaseOverOwnPush(db, item, workspace.config.repoPath, workspace.config.forgeRemote, branch, options),
   });
 
@@ -629,31 +630,41 @@ async function pushAlreadyOpen(
     return alreadyOpen;
   }
 
-  // A restack since the last push rewrote the branch (EO-780): the remote
-  // holds the history it replaced, so this push replaces it in turn —
-  // with a lease, so anything pushed there since EO last looked is refused
-  // rather than lost. Read fresh, since the restack is a dispatch's doing
-  // and this item may predate it.
+  // A restack since the last push rewrote the branch (EO-780), so the
+  // remote holds the history it replaced and this push is rejected as
+  // diverged. It is replaced the same way as a rebase by the item's own
+  // agent (EO-910): only over the commit EO recorded pushing, with the
+  // lease pinned to it, and refused as divergence otherwise. Read fresh,
+  // since the restack is a dispatch's doing and this item may predate it.
   const { restacked } = gitStateOf(getItem(db, item.id) ?? item);
   onProgress?.(
     restacked
-      ? `The pull request is already open and "${branch}" was restacked since it was last pushed, so pushing it to ${remote} with --force-with-lease.`
+      ? `The pull request is already open and "${branch}" was restacked since it was last pushed, so pushing it to ${remote}, over EO's own last push if the remote still holds it.`
       : `The pull request is already open, so pushing "${branch}" to ${remote}.`,
   );
-  const pushed = await pushBranch(repoPath, remote, branch, { ...(signal ? { signal } : {}), ...(restacked ? { forceWithLease: true } : {}) });
+  const pushed = await pushBranch(repoPath, remote, branch, signal ? { signal } : {});
   if (pushed.ok) {
-    if (pushed.updated !== null) await recordPush(db, item, repoPath, remote, pushed.updated);
+    if (pushed.updated !== null) recordPush(db, item, pushed.updated, pushed.destination);
     if (restacked) updateItem(db, item.id, { git: { restacked: false } });
     return alreadyOpen;
   }
 
   const classified = classifyForgeError(pushed.error);
-  // The item's own agent rebased the branch, and the remote holds only
-  // what EO pushed before (EO-910): replaced, with a lease, and the step
-  // carries on as after any push.
-  if (classified.diverged && pushed.diverged && (await leaseOverOwnPush(db, item, repoPath, remote, branch, options))) {
-    if (restacked) updateItem(db, item.id, { git: { restacked: false } });
-    return alreadyOpen;
+  // The branch was rewritten — by the item's own agent, or a restack —
+  // and the remote holds only what EO pushed before (EO-910): replaced,
+  // with a lease, and the step carries on as after any push. A leased
+  // push that failed for any other reason, a hook's say included, is
+  // answered as that push's failure.
+  if (classified.diverged && pushed.diverged) {
+    const lease = await leaseOverOwnPush(db, item, repoPath, remote, branch, options);
+    if (lease.kind === "pushed") {
+      if (restacked) updateItem(db, item.id, { git: { restacked: false } });
+      return alreadyOpen;
+    }
+    if (lease.kind === "failed") {
+      const failed = classifyForgeError(lease.error);
+      return failed.final ? { kind: "failed", reason: failed.message } : { kind: "retryable", reason: failed.message };
+    }
   }
   if (classified.diverged && !gitStateOf(item).namedBranch) {
     const target = await resolveSendTarget(db, workspace, item, run, signal);
@@ -669,42 +680,47 @@ async function pushAlreadyOpen(
 }
 
 /**
- * Remembers the commit a push of EO's put on the item's branch, and the
- * one push URL it went to (EO-910). Called only for a push git exited 0
- * for and reported as having updated the branch.
+ * Remembers the commit a push of EO's put on the item's branch, and
+ * where it went (EO-910). Called only for a push git exited 0 for and
+ * reported as having updated the branch, wherever it went: whether the
+ * record may be forced over is decided when it is used.
  */
-async function recordPush(db: Db, item: Item, repoPath: string, remote: string, commit: string): Promise<void> {
-  updateItem(db, item.id, { git: { pushedHead: { commit, pushUrl: await pushDestination(repoPath, remote) } } });
+function recordPush(db: Db, item: Item, commit: string, destination: PushDestination | null): void {
+  updateItem(db, item.id, { git: { pushedHead: { commit, pushUrl: destination?.fingerprint ?? null } } });
 }
 
 /**
  * A push rejected as diverged, answered by replacing EO's own last push
- * (EO-910). The item's agent rebased the branch, so the remote still
- * holds the commits EO pushed before it; where the remote's branch is
- * exactly the commit EO last pushed for this item, EO pushes again with
- * `--force-with-lease=<branch>:<that commit>`. The lease is the check —
- * the server refuses it unless its branch is that commit — so anybody
- * else's push in between is never overwritten.
+ * (EO-910). The branch was rewritten — by the item's agent, or a restack
+ * — so the remote still holds the commits EO pushed before; where the
+ * remote's branch is exactly the commit EO last pushed for this item, EO
+ * pushes again with `--force-with-lease=<branch>:<that commit>`. The
+ * lease is the check — the server refuses it unless its branch is that
+ * commit — so anybody else's push in between is never overwritten.
  *
  * Only in the ordinary case: a branch EO cut, a record of EO's push, the
- * remote with exactly the one push URL recorded with it, and no
- * submodules. Anything else, and a lease that does not go through, is
- * false: refused as divergence, as before.
+ * remote with exactly one push URL and it the one recorded, and no
+ * submodules. Anything else, a lease the server refused, or a retry that
+ * moved nothing, is `refused`: divergence, as before. A retry that failed
+ * otherwise — a hook rejecting it — is `failed`, with what git said.
  */
-async function leaseOverOwnPush(db: Db, item: Item, repoPath: string, remote: string, branch: string, options: OpenForItemOptions): Promise<boolean> {
+async function leaseOverOwnPush(db: Db, item: Item, repoPath: string, remote: string, branch: string, options: OpenForItemOptions): Promise<OwnPushLease> {
   const { signal, onProgress } = options;
+  const refused: OwnPushLease = { kind: "refused" };
   const state = gitStateOf(getItem(db, item.id) ?? item);
   const recorded = state.pushedHead;
-  if (state.namedBranch || recorded === null || recorded.pushUrl === null) return false;
-  if ((await pushDestination(repoPath, remote)) !== recorded.pushUrl) return false;
+  if (state.namedBranch || recorded === null || recorded.pushUrl === null) return refused;
+  const destination = await pushDestination(repoPath, remote);
+  if (destination === null || destination.urls !== 1 || destination.fingerprint !== recorded.pushUrl) return refused;
   const submodules = await listTree(repoPath, `refs/heads/${branch}`, ".gitmodules");
-  if (!submodules.ok || submodules.stdout !== "") return false;
+  if (!submodules.ok || submodules.stdout !== "") return refused;
 
   onProgress?.(`"${branch}" on ${remote} holds the commit EO last pushed for ${item.key}, so pushing over it with --force-with-lease.`);
   const pushed = await pushBranch(repoPath, remote, branch, { lease: recorded.commit, ...(signal ? { signal } : {}) });
-  if (!pushed.ok || pushed.updated === null) return false;
+  if (!pushed.ok) return pushed.staleLease ? refused : { kind: "failed", error: pushed.error };
+  if (pushed.updated === null) return refused;
 
-  updateItem(db, item.id, { git: { pushedHead: { commit: pushed.updated, pushUrl: recorded.pushUrl } } });
+  recordPush(db, item, pushed.updated, pushed.destination);
   postComment(db, {
     itemId: item.id,
     author: { type: "engine" },
@@ -714,7 +730,7 @@ async function leaseOverOwnPush(db: Db, item: Item, repoPath: string, remote: st
       `which EO pushed for this ticket, and now holds \`${pushed.updated}\`. ` +
       `The push used \`--force-with-lease=${branch}:${recorded.commit}\`, so anything else on the remote branch would have been refused rather than overwritten.`,
   });
-  return true;
+  return { kind: "pushed" };
 }
 
 /**
