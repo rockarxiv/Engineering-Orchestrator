@@ -3434,6 +3434,16 @@ export const memoryConsolidations = sqliteTable(
      * own note for a scope on no project. Null otherwise.
      */
     stuckNoticedAt: integer("stuck_noticed_at"),
+    /**
+     * Whether it is the last row of a run that finished (EO-913, migration
+     * 0183): every batch it planned applied, and the cross-batch pass where
+     * it had one. A run is the rows sharing `started_at`; the newest
+     * finished one is what a scheduled consolidation's new entries are
+     * counted from (`entriesNewSinceConsolidated`). False on every other
+     * row; null on rows from before it was recorded, whose run is read as
+     * finished where none of its rows failed.
+     */
+    endsRun: integer("ends_run", { mode: "boolean" }),
   },
   (table) => [index("idx_memory_consolidations_scope").on(table.scopeKind, table.scopeId, table.startedAt)],
 );

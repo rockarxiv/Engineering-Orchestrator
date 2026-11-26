@@ -95,6 +95,7 @@ export function startConsolidation(db: Db, input: { scope: MemoryScope; trigger:
     // Counted from nothing: a consolidation that makes no side call held no slot (EO-577).
     slotHeldMs: 0,
     stuckNoticedAt: null,
+    endsRun: false,
   };
   db.insert(memoryConsolidations).values(row).run();
   return toView(row);
@@ -116,6 +117,17 @@ export function addConsolidationSlotTime(db: Db, id: string, ms: number): void {
 /** How long a consolidation's side calls held a global slot, or null for one recorded before that was counted (EO-577). */
 export function consolidationSlotTime(db: Db, id: string): number | null {
   return db.select({ ms: memoryConsolidations.slotHeldMs }).from(memoryConsolidations).where(eq(memoryConsolidations.id, id)).get()?.ms ?? null;
+}
+
+/**
+ * Marks a consolidation as the last row of a run that finished (EO-913):
+ * what moves the point a scheduled consolidation's new entries are
+ * counted from. Asked once every batch of the run, and its cross-batch
+ * pass where it had one, has applied — so a run EO quit part-way through
+ * never is, whatever its rows say.
+ */
+export function markConsolidationRunFinished(db: Db, id: string): void {
+  db.update(memoryConsolidations).set({ endsRun: true }).where(eq(memoryConsolidations.id, id)).run();
 }
 
 /** Marks the failure EO said its scope is stuck at (EO-577), so the same run of failures is not said again. */
@@ -159,7 +171,8 @@ export function recordSkippedConsolidation(db: Db, input: { scope: MemoryScope; 
  * scope as it is, and backs nothing off.
  */
 export function skipConsolidation(db: Db, id: string, input: { note: string; now: number }): void {
-  db.update(memoryConsolidations).set({ status: "skipped", finishedAt: input.now, note: input.note }).where(eq(memoryConsolidations.id, id)).run();
+  // A skip settles the scope and ends its run, as a finished run does.
+  db.update(memoryConsolidations).set({ status: "skipped", finishedAt: input.now, note: input.note, endsRun: true }).where(eq(memoryConsolidations.id, id)).run();
 }
 
 /**
@@ -269,36 +282,49 @@ export function consolidationState(db: Db, scope: MemoryScope): ScopeConsolidati
  *
  * "Since its last consolidation" is since the last one that finished:
  * every row of one run starts at the moment it read its entries
- * (EO-574), and the newest run none of whose rows failed is the point
- * counted from. A run that stopped part-way is not, so the entries its
- * unfinished batches were to be given are still new when it is taken up
- * again, after a restart as well. Nor is a person's restore: it says
+ * (EO-574), and the newest run whose last row says it finished
+ * (`ends_run`, `markConsolidationRunFinished`) is the point counted from.
+ * A run that stopped part-way never says so — a batch failed, EO was
+ * paused, or EO quit between two batches and left no row at all for the
+ * rest — so the entries its unfinished batches were to be given are
+ * still new when it is taken up again, after a restart as well. Rows from
+ * before that was recorded say nothing, and their run counts as finished
+ * where none of them failed. Nor is a person's restore a point: it says
  * what it put back is to stay, not that everything else was tidied.
  *
  * What a consolidation or a restore itself wrote, as it wrote it, is not
- * new: what a run merged or rewrote, and what a restore put back, which a
- * person keeping is not a reason to fold it again. Anything else is,
- * whoever wrote it — an agent's note, an edit — including what was
- * written while a run was going. A scope never consolidated is new
- * through and through.
+ * new: what a run merged or rewrote, and what a restore put back — the
+ * entries it lists, and those a skill had taken (`moved_to_skill`), which
+ * keep its id — which a person keeping is not a reason to fold again. A
+ * later edit or restore of one by hand is new. Anything else is, whoever
+ * wrote it — an agent's note, an edit — including what was written while
+ * a run was going. A scope never consolidated is new through and through.
  */
 export function entriesNewSinceConsolidated(db: Db, scope: MemoryScope): string[] {
   const rows = recentRows(db, scope);
-  // Each run's rows share the moment it read its entries; it finished if none of them failed.
-  const runs = new Map<number, boolean>();
+  // Each run's rows share the moment it read its entries. One finished if
+  // a row of it says so; one from before that was recorded, if none of
+  // its rows failed.
+  const runs = new Map<number, { ends: boolean; recorded: boolean; failed: boolean }>();
   for (const row of rows) {
-    if (row.status === "running") continue;
-    runs.set(row.startedAt, (runs.get(row.startedAt) ?? true) && row.status !== "failed");
+    const run = runs.get(row.startedAt) ?? { ends: false, recorded: false, failed: false };
+    if (row.endsRun !== null) run.recorded = true;
+    if (row.endsRun === true) run.ends = true;
+    if (row.status === "failed" || row.status === "running") run.failed = true;
+    runs.set(row.startedAt, run);
   }
   let since: number | null = null;
-  for (const [at, finished] of runs) if (finished && (since === null || at > since)) since = at;
-  const own = new Set(
-    rows
-      .filter((row) => since !== null && (settledAt(row) ?? row.startedAt) >= since && writtenAt(row) !== null)
-      .flatMap((row) => [...row.retiredIds, ...row.writtenIds].map((id) => `${id}@${writtenAt(row)}`)),
-  );
+  for (const [at, run] of runs) {
+    const finished = run.recorded ? run.ends : !run.failed;
+    if (finished && (since === null || at > since)) since = at;
+  }
+  const later = rows.filter((row) => since !== null && (settledAt(row) ?? row.startedAt) >= since && writtenAt(row) !== null);
+  const own = new Set(later.flatMap((row) => [...row.retiredIds, ...row.writtenIds].map((id) => `${id}@${writtenAt(row)}`)));
+  // A restore puts back, at its moment, what a skill took from it too:
+  // those keep its id, and are named on no list of it.
+  const restoredBy = new Map(later.filter((row) => row.status === "restored").map((row) => [row.id, row.restoredAt]));
   return db
-    .select({ id: memories.id, updatedAt: memories.updatedAt })
+    .select({ id: memories.id, updatedAt: memories.updatedAt, consolidationId: memories.consolidationId })
     .from(memories)
     .where(
       and(
@@ -311,7 +337,7 @@ export function entriesNewSinceConsolidated(db: Db, scope: MemoryScope): string[
     )
     .orderBy(memories.createdAt, memories.id)
     .all()
-    .filter((row) => !own.has(`${row.id}@${row.updatedAt}`))
+    .filter((row) => !own.has(`${row.id}@${row.updatedAt}`) && !(row.consolidationId !== null && restoredBy.get(row.consolidationId) === row.updatedAt))
     .map((row) => row.id);
 }
 

@@ -218,6 +218,7 @@ export {
   failConsolidation,
   getConsolidation,
   listConsolidations,
+  markConsolidationRunFinished,
   markConsolidationStuckNoticed,
   recordSkippedConsolidation,
   skipConsolidation,

@@ -8,6 +8,7 @@ import {
   CONSOLIDATION_DEFERRED_REASON,
   CONSOLIDATION_PAUSED_REASON,
   consolidationAnswerSchema,
+  saysRelativeTime,
   consolidationDue,
   consolidationInput,
   crossBatchMergeInput,
@@ -138,7 +139,7 @@ describe("when a scope is due a consolidation (EO-480)", () => {
       const retry = NOW - HOUR + 60_000 + HOUR;
       expect(due({ state: partway, now: retry - 1 }).decision).toEqual({ kind: "none" });
       const after = due({ state: partway, now: retry, runs: 0 });
-      expect(after.decision).toEqual({ kind: "consolidate", trigger: "schedule" });
+      expect(after.decision).toEqual({ kind: "consolidate", trigger: "schedule", resumes: true });
       expect(after.asked).toEqual([]);
       // Nothing left new: nothing to take up.
       expect(due({ state: partway, now: retry, fresh: 0 }).decision).toEqual({ kind: "none" });
@@ -148,7 +149,20 @@ describe("when a scope is due a consolidation (EO-480)", () => {
 
     it("goes on as a person's consolidation where a person's one stopped part-way, new entries or none", () => {
       const partway = state({ ...settled(NOW - HOUR), failuresSince: [failure(NOW - HOUR + 60_000, "error", { trigger: "manual" })] });
-      expect(due({ state: partway, now: NOW + HOUR, fresh: 0 }).decision).toEqual({ kind: "consolidate", trigger: "manual" });
+      expect(due({ state: partway, now: NOW + HOUR, fresh: 0 }).decision).toEqual({ kind: "consolidate", trigger: "manual", resumes: true });
+    });
+
+    it("is not one for a run of the old cap trigger, from before EO-913: that scope waits for its day and five runs like any other", () => {
+      // A cap batch succeeded, the next failed; a new entry is there.
+      const partway = state({ ...settled(NOW - HOUR), failuresSince: [failure(NOW - HOUR + 60_000, "error", { trigger: "cap" })] });
+      const retry = NOW - HOUR + 60_000 + HOUR;
+      expect(due({ state: partway, now: retry, runs: 0, fresh: 3 }).decision).toEqual({ kind: "none" });
+      expect(due({ state: partway, now: retry + DAY, runs: 4, fresh: 3 }).decision).toEqual({ kind: "none" });
+      // Its day and its runs come: due on the schedule, as a run of its own.
+      expect(due({ state: partway, now: retry + DAY, runs: 5, fresh: 3 }).decision).toEqual({ kind: "consolidate", trigger: "schedule" });
+      // Nor is a container's container_done one, whose retry is containerDoneDue's.
+      const container = state({ ...settled(NOW - HOUR), failuresSince: [failure(NOW - HOUR + 60_000, "error", { trigger: "container_done" })] });
+      expect(due({ state: container, now: retry, runs: 0, fresh: 3 }).decision).toEqual({ kind: "none" });
     });
 
     it("is not one for a failure from before the scope was settled — a restore since, say", () => {
@@ -241,13 +255,14 @@ describe("when a scope is due a consolidation (EO-480)", () => {
 });
 
 describe("the operations a consolidation answers with (EO-573)", () => {
+  // Oldest first: a was written first, d last.
   const sent = [
-    { id: "a", body: "Tests need Postgres 15." },
-    { id: "b", body: "Tests need Postgres 16 since yesterday." },
-    { id: "c", body: "The ledger is in UTC." },
-    { id: "d", body: "Run `pnpm test` before pushing." },
+    { id: "a", body: "Tests need Postgres 15.", createdAt: NOW - 4 * DAY },
+    { id: "b", body: "Tests need Postgres 16 since yesterday.", createdAt: NOW - 3 * DAY },
+    { id: "c", body: "The ledger is in UTC.", createdAt: NOW - 2 * DAY },
+    { id: "d", body: "Run `pnpm test` before pushing.", createdAt: NOW - DAY },
   ];
-  const schema = consolidationAnswerSchema(sent);
+  const schema = consolidationAnswerSchema(sent, { repositoryFiles: true });
   const answer = (overrides: Record<string, unknown> = {}) => ({ retire: [], merge: [], rewrite: [], ...overrides });
   const accepts = (value: unknown) => schema.safeParse(value).success;
 
@@ -306,7 +321,6 @@ describe("the operations a consolidation answers with (EO-573)", () => {
 
   it("refuses a rewrite without a reason from its list, so one that only shortens an entry cannot be applied (EO-913)", () => {
     const shorter = { id: "d", body: "Run `pnpm test` first.", contradictsRepositoryFile: false };
-    for (const reason of ["relative_date", "repository_file", "newer_entry"]) expect(accepts(answer({ rewrite: [{ ...shorter, reason }] })), reason).toBe(true);
     const without = schema.safeParse(answer({ rewrite: [shorter] }));
     expect(without.success).toBe(false);
     expect(without.error?.issues.map((issue) => issue.path.join("."))).toContain("rewrite.0.reason");
@@ -316,11 +330,45 @@ describe("the operations a consolidation answers with (EO-573)", () => {
     // The shape the backend is held to says so too.
     expect(MemoryConsolidationAnswerSchema.safeParse(answer({ rewrite: [{ ...shorter, id: "anything" }] })).success).toBe(false);
   });
+
+  it("refuses a shortening that gives a reason which does not hold, under each of them (EO-913)", () => {
+    const given = (repositoryFiles: boolean, entries = sent) => (value: unknown) => consolidationAnswerSchema(entries, { repositoryFiles }).safeParse(value);
+    const shorter = { id: "d", body: "Run `pnpm test` first.", contradictsRepositoryFile: false };
+    // d says no relative date; no repository file was given; nothing given is newer than d.
+    for (const reason of ["relative_date", "repository_file", "newer_entry"]) {
+      const parsed = given(false)(answer({ rewrite: [{ ...shorter, reason }] }));
+      expect(parsed.success, reason).toBe(false);
+      expect(parsed.error?.issues.map((issue) => issue.path.join(".")), reason).toContain("rewrite.0.reason");
+    }
+    // d alone, with a file: newer_entry has no newer entry to point to.
+    expect(given(true, [sent[3]!])(answer({ rewrite: [{ ...shorter, reason: "newer_entry" }] })).success).toBe(false);
+  });
+
+  it("takes each reason where what the call was given bears it out (EO-913)", () => {
+    const run = (repositoryFiles: boolean) => (value: unknown) => consolidationAnswerSchema(sent, { repositoryFiles }).safeParse(value).success;
+    // b says "yesterday", and the rewrite says the day.
+    expect(run(false)(answer({ rewrite: [{ id: "b", body: "Tests need Postgres 16 since 2026-10-24.", contradictsRepositoryFile: false, reason: "relative_date" }] }))).toBe(true);
+    expect(run(false)(answer({ rewrite: [{ id: "b", body: "Tests need Postgres 16 since October 24, 2026.", contradictsRepositoryFile: false, reason: "relative_date" }] }))).toBe(true);
+    // ...but not one that drops the relative date without saying one, nor one that keeps only a date it already said.
+    expect(run(false)(answer({ rewrite: [{ id: "b", body: "Tests need Postgres 16.", contradictsRepositoryFile: false, reason: "relative_date" }] }))).toBe(false);
+    const dated = [{ id: "e", body: "Since yesterday (2026-10-24) tests need Postgres 16, and run in CI on every push.", createdAt: NOW }];
+    expect(consolidationAnswerSchema(dated, { repositoryFiles: false }).safeParse(answer({ rewrite: [{ id: "e", body: "2026-10-24: Postgres 16.", contradictsRepositoryFile: false, reason: "relative_date" }] })).success).toBe(false);
+    // a is older than b, which corrects it.
+    expect(run(false)(answer({ rewrite: [{ id: "a", body: "Tests need Postgres 16.", contradictsRepositoryFile: false, reason: "newer_entry" }] }))).toBe(true);
+    // A repository file was given.
+    expect(run(true)(answer({ rewrite: [{ id: "c", body: "The ledger is in local time.", contradictsRepositoryFile: false, reason: "repository_file" }] }))).toBe(true);
+    expect(run(false)(answer({ rewrite: [{ id: "c", body: "The ledger is in local time.", contradictsRepositoryFile: false, reason: "repository_file" }] }))).toBe(false);
+  });
+
+  it("finds the relative dates an entry may say, and not a plain one", () => {
+    for (const body of ["Fixed yesterday.", "Broken since last week.", "Released three days ago.", "Due in two weeks.", "Merged on Monday.", "Changed this sprint."]) expect(saysRelativeTime(body), body).toBe(true);
+    for (const body of ["Run `pnpm test` before pushing.", "Fixed on 2026-11-20.", "The weekday cron runs at 09:00.", "Use Day.js for dates."]) expect(saysRelativeTime(body), body).toBe(false);
+  });
 });
 
 describe("how long a merged or rewritten entry may be (EO-591)", () => {
-  const sent = ["a", "b", "c"].map((id) => ({ id, body: `${id} `.repeat(900) }));
-  const schema = consolidationAnswerSchema(sent);
+  const sent = ["a", "b", "c"].map((id) => ({ id, body: `${id} `.repeat(900), createdAt: NOW }));
+  const schema = consolidationAnswerSchema(sent, { repositoryFiles: true });
   const answer = (overrides: Record<string, unknown>) => ({ retire: [], merge: [], rewrite: [], ...overrides });
   const atLimit = "x".repeat(MAX_MEMORY_NOTE_CHARS);
   const overLimit = "x".repeat(MAX_MEMORY_NOTE_CHARS + 1);
@@ -328,7 +376,7 @@ describe("how long a merged or rewritten entry may be (EO-591)", () => {
   it(`refuses a merge or a rewrite whose body is longer than ${String(MAX_MEMORY_NOTE_CHARS)} characters, and takes one of exactly that`, () => {
     expect(MAX_MEMORY_NOTE_CHARS).toBe(1_000);
     expect(schema.safeParse(answer({ merge: [{ from: ["a", "b"], body: atLimit, contradictsRepositoryFile: false }] })).success).toBe(true);
-    expect(schema.safeParse(answer({ rewrite: [{ id: "c", body: atLimit, contradictsRepositoryFile: false, reason: "relative_date" }] })).success).toBe(true);
+    expect(schema.safeParse(answer({ rewrite: [{ id: "c", body: atLimit, contradictsRepositoryFile: false, reason: "repository_file" }] })).success).toBe(true);
 
     const merge = schema.safeParse(answer({ merge: [{ from: ["a", "b"], body: overLimit, contradictsRepositoryFile: false }] }));
     expect(merge.success).toBe(false);
@@ -337,7 +385,7 @@ describe("how long a merged or rewritten entry may be (EO-591)", () => {
     expect(rewrite.success).toBe(false);
     expect(rewrite.error?.issues.map((issue) => issue.path.join("."))).toContain("rewrite.0.body");
     // Whitespace around the body is not counted.
-    expect(schema.safeParse(answer({ rewrite: [{ id: "c", body: `  ${atLimit}\n`, contradictsRepositoryFile: false, reason: "relative_date" }] })).success).toBe(true);
+    expect(schema.safeParse(answer({ rewrite: [{ id: "c", body: `  ${atLimit}\n`, contradictsRepositoryFile: false, reason: "repository_file" }] })).success).toBe(true);
     // One long body refuses the whole answer, whatever else it holds.
     expect(
       schema.safeParse(
@@ -400,7 +448,7 @@ describe("what a consolidation is told (EO-573, EO-913)", () => {
 describe("a consolidation's answer carries no skills (EO-575)", () => {
   it("has the three operations and nothing else, and its prompt says nothing of skills", () => {
     expect(Object.keys(MemoryConsolidationAnswerSchema.shape).sort()).toEqual(["merge", "retire", "rewrite"]);
-    const schema = consolidationAnswerSchema([{ id: "a", body: "Entry a." }]);
+    const schema = consolidationAnswerSchema([{ id: "a", body: "Entry a.", createdAt: NOW }], { repositoryFiles: false });
     const parsed = schema.parse({ retire: [], merge: [], rewrite: [], skills: [{ slug: "run-e2e" }] });
     expect(parsed).toEqual({ retire: [], merge: [], rewrite: [] });
     expect(MEMORY_CONSOLIDATE_SYSTEM).not.toMatch(/skill/i);

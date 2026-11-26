@@ -14,6 +14,7 @@ import {
   type MemoryContainerDoneAnswer,
   type MemoryConsolidationAnswer,
   type MemoryConsolidationOperations,
+  type MemoryConsolidationRewriteReason,
   type MemorySkillProposalsAnswer,
   type MemoryConsolidationTrigger,
   type MemoryEntryView,
@@ -141,8 +142,13 @@ export function stuckNoticeBody(input: {
   return lines.join("\n");
 }
 
-/** What the scheduler should do about one scope now. */
-export type ConsolidationDecision = { kind: "consolidate"; trigger: MemoryConsolidationTrigger } | { kind: "none" };
+/**
+ * What the scheduler should do about one scope now. `resumes` is a run
+ * that stopped part-way taken up again under its own trigger
+ * (`failedSinceSettled`), which alone may go on from where it stopped
+ * (EO-913); any other starts from the scope as it is.
+ */
+export type ConsolidationDecision = { kind: "consolidate"; trigger: MemoryConsolidationTrigger; resumes?: true } | { kind: "none" };
 
 /**
  * Whether the scope's last consolidation failed after the scope was last
@@ -174,8 +180,11 @@ export function failedSinceSettled(state: ScopeConsolidationState): boolean {
  *   with none has nothing new to tidy, and is left.
  * - **A run that stopped part-way** (`failedSinceSettled`) is taken up
  *   again once its backoff is over, with the trigger it ran under: a
- *   person's `manual` one goes on over the whole scope, anything else on
- *   the schedule — which needs a new entry still to give it.
+ *   person's `manual` one goes on over the whole scope, a `schedule` one
+ *   while a new entry is still there to give it. No other trigger's
+ *   failure skips the day and the five runs: a `cap` one, from before
+ *   EO-913 removed that trigger, waits for the schedule as any scope
+ *   does, and a container's `container_done` is `containerDoneDue`'s.
  *
  * Every one needs an agent-written entry: a person's are never sent, so a
  * scope of only those has nothing to consolidate. `runsDeliveredSince` is
@@ -199,8 +208,9 @@ export function consolidationDue(input: {
   // scope's last consolidation, so the day and the five runs would be
   // counted from them, and its failed batch never retried.
   if (failedSinceSettled(state)) {
-    if (state.failuresSince[0]!.trigger === "manual") return { kind: "consolidate", trigger: "manual" };
-    return input.newEntries() > 0 ? { kind: "consolidate", trigger: "schedule" } : { kind: "none" };
+    const interrupted = state.failuresSince[0]!.trigger;
+    if (interrupted === "manual") return { kind: "consolidate", trigger: "manual", resumes: true };
+    if (interrupted === "schedule") return input.newEntries() > 0 ? { kind: "consolidate", trigger: "schedule", resumes: true } : { kind: "none" };
   }
   const since = state.lastConsolidatedAt ?? tally.oldestAgentAt;
   if (since === null || now - since <= MEMORY_CONSOLIDATION_INTERVAL_MS) return { kind: "none" };
@@ -212,6 +222,68 @@ export function consolidationDue(input: {
 export interface SentEntry {
   id: string;
   body: string;
+  /** When it was written: what says whether another entry given is newer (`newer_entry`). */
+  createdAt: number;
+}
+
+/** What else a consolidation's call was given, which a rewrite's reason is checked against (EO-913). */
+export interface ConsolidationGiven {
+  /** Whether it was given a workspace's CLAUDE.md or AGENTS.md: a `repository_file` rewrite needs one. */
+  repositoryFiles: boolean;
+}
+
+/**
+ * A relative date or time an entry may say — "yesterday", "last week",
+ * "three days ago", "in two weeks", "on Monday" — which a `relative_date`
+ * rewrite makes absolute (EO-913). Matched case-insensitively.
+ */
+const RELATIVE_TIME =
+  /\b(?:yesterday|today|tonight|tomorrow|recently|lately|the other day|(?:last|next|this|coming|past|previous)\s+(?:night|morning|evening|week(?:end)?|month|year|quarter|sprint|release|(?:mon|tues|wednes|thurs|fri|satur|sun)day)|(?:\d+|an?|one|two|three|four|five|six|seven|eight|nine|ten|a few|few|several|couple of)\s+(?:minutes?|hours?|days?|weeks?|months?|years?)\s+(?:ago|back|from now)|in\s+(?:\d+|an?|one|two|three|four|five|six|seven|eight|nine|ten|a few|a couple of)\s+(?:minutes?|hours?|days?|weeks?|months?|years?)|(?:on\s+)?(?:mon|tues|wednes|thurs|fri|satur|sun)day)\b/i;
+
+const MONTH = "(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)";
+/** An absolute date: `2026-11-26`, `November 26, 2026`, `26 November 2026`, `November 2026`. Every match, case-insensitively. */
+const ABSOLUTE_DATE = new RegExp(`\\b(?:\\d{4}-\\d{2}-\\d{2}|${MONTH}\\.?\\s+(?:\\d{1,2}(?:st|nd|rd|th)?,?\\s+)?\\d{4}|\\d{1,2}(?:st|nd|rd|th)?\\s+${MONTH}\\.?,?\\s+\\d{4})\\b`, "gi");
+
+/** Whether a body says a relative date or time (`RELATIVE_TIME`). */
+export function saysRelativeTime(body: string): boolean {
+  return RELATIVE_TIME.test(body);
+}
+
+/** The absolute dates a body says, normalised for comparison. */
+function absoluteDates(body: string): Set<string> {
+  return new Set([...body.matchAll(ABSOLUTE_DATE)].map((match) => match[0].toLowerCase().replace(/[\s.,]+/g, " ")));
+}
+
+/**
+ * Why a rewrite's reason does not hold, or null where it does (EO-913):
+ * what EO can check of the claim without a model (invariant 5), so a
+ * rewrite that only shortens or rewords an entry is refused under any
+ * reason it gives.
+ *
+ * - `relative_date` — the entry says a relative date or time, and the
+ *   rewrite says an absolute date the entry did not.
+ * - `repository_file` — the call was given a repository file to agree
+ *   with.
+ * - `newer_entry` — the call was given an entry written after this one.
+ */
+export function rewriteReasonProblem(
+  rewrite: { reason: MemoryConsolidationRewriteReason; body: string },
+  entry: SentEntry,
+  sent: readonly SentEntry[],
+  given: ConsolidationGiven,
+): string | null {
+  switch (rewrite.reason) {
+    case "relative_date": {
+      if (!saysRelativeTime(entry.body)) return "gives relative_date, but the entry says no relative date or time";
+      const before = absoluteDates(entry.body);
+      if (![...absoluteDates(rewrite.body)].some((date) => !before.has(date))) return "gives relative_date, but the rewrite says no absolute date the entry did not";
+      return null;
+    }
+    case "repository_file":
+      return given.repositoryFiles ? null : "gives repository_file, but no repository file was given";
+    case "newer_entry":
+      return sent.some((other) => other.id !== entry.id && other.createdAt > entry.createdAt) ? null : "gives newer_entry, but no entry given is newer than this one";
+  }
 }
 
 /**
@@ -229,9 +301,17 @@ export interface SentEntry {
  * call (EO-574). None of them carries skill proposals: those are asked
  * for in a call of their own (EO-575, `skillProposalsAnswerSchema`).
  */
-export function consolidationAnswerSchema(sent: readonly SentEntry[]): z.ZodType<MemoryConsolidationAnswer> {
+export function consolidationAnswerSchema(sent: readonly SentEntry[], given: ConsolidationGiven): z.ZodType<MemoryConsolidationAnswer> {
   const known = new Set(sent.map((entry) => entry.id));
-  return MemoryConsolidationAnswerSchema.superRefine((answer, ctx) => checkOperations(known, answer, ctx));
+  const byId = new Map(sent.map((entry) => [entry.id, entry]));
+  return MemoryConsolidationAnswerSchema.superRefine((answer, ctx) => {
+    checkOperations(known, answer, ctx);
+    answer.rewrite.forEach((rewrite, at) => {
+      const entry = byId.get(rewrite.id);
+      const problem = entry === undefined ? null : rewriteReasonProblem(rewrite, entry, sent, given);
+      if (problem !== null) ctx.addIssue({ code: "custom", path: ["rewrite", at, "reason"], message: `${rewrite.id} ${problem}` });
+    });
+  });
 }
 
 function checkOperations(known: ReadonlySet<string>, answer: MemoryConsolidationOperations, ctx: z.RefinementCtx): void {
@@ -304,12 +384,12 @@ const OPERATION_RULES = [
   "Answer with the changes to make, not with the entries to keep. Name only what changes: an entry you do not mention stays exactly as it is, so never list an entry just to keep it. There are three operations:",
   "- `retire`: `{ id, reason }` — retire one entry, saying in a few words why.",
   "- `merge`: `{ from, body, contradictsRepositoryFile }` — fold two or more entries (`from` holds at least two ids) into one new entry whose text is `body`.",
-  `- \`rewrite\`: \`{ id, body, reason, contradictsRepositoryFile }\` — replace one entry's text with \`body\`. \`reason\` is one of ${MEMORY_CONSOLIDATION_REWRITE_REASONS.map((reason) => `\`${reason}\``).join(", ")}: a relative date or time made absolute, a disagreement with the repository file put right, or a correction by a newer entry you are given. There is no other reason to rewrite an entry: never rewrite one only to shorten it, reword it or tidy its style.`,
+  `- \`rewrite\`: \`{ id, body, reason, contradictsRepositoryFile }\` — replace one entry's text with \`body\`. \`reason\` is one of ${MEMORY_CONSOLIDATION_REWRITE_REASONS.map((reason) => `\`${reason}\``).join(", ")}: a relative date or time the entry says made absolute (the rewrite must then say the date, as YYYY-MM-DD), a disagreement with a repository file you are given put right, or a correction by an entry you are given that was written after it. EO checks each reason against what you were given and refuses the whole answer where one does not hold. There is no other reason to rewrite an entry: never rewrite one only to shorten it, reword it or tidy its style.`,
   "Every id you name must be one of the entries you are given, and each id may appear only once in the whole answer — in one retire, one merge's `from`, or one rewrite. An answer with nothing to change has all three lists empty; that is a valid answer, and often the right one.",
   "What to change, and nothing else:",
   `- Merge entries that state the same fact into one, keeping every detail any of them adds. Keep each entry you merge or rewrite to one fact, at most ${MAX_MEMORY_NOTE_CHARS} characters: an answer with a longer one is refused whole. Entries about one topic that state different facts are not duplicates; leave them as they are.`,
   "- Retire what is stale, contradicted by a newer entry, or derivable from the code itself — what an agent would see by reading the repository. Between two entries that disagree, the newer one is current.",
-  "- Write relative dates and times (\"yesterday\", \"last week\", \"in two days\") as absolute dates, using the date each entry was written.",
+  "- Write relative dates and times (\"yesterday\", \"last week\", \"in two days\") as absolute dates (YYYY-MM-DD), using the date each entry was written.",
   "- When the workspace's CLAUDE.md or AGENTS.md is given — for a project, those of each of its workspaces — treat it as current: an entry that disagrees with it is rewritten to agree, or retired. The one exception is an entry that is plainly newer than the file and says it corrects it; keep it, and flag it by setting contradictsRepositoryFile to true on the merge or rewrite that carries it — a rewrite may keep its text as it is to do only that. An entry already flagged stays flagged unless you change it. Never suggest editing the file.",
   "- Do not invent anything an entry does not say.",
   "- How many entries there are, and how long they are, is no reason to change any of them. A distinct, current, useful entry stays exactly as it is, and a change you are unsure of is better left out.",
@@ -604,7 +684,7 @@ export function containerDoneInput(input: {
  * kept fact is drawn from is one of the entries it was given, and none is
  * drawn on by two. Checked again when the answer comes back (invariant 5).
  */
-export function containerDoneAnswerSchema(sent: readonly SentEntry[]): z.ZodType<MemoryContainerDoneAnswer> {
+export function containerDoneAnswerSchema(sent: readonly { id: string }[]): z.ZodType<MemoryContainerDoneAnswer> {
   const known = new Set(sent.map((entry) => entry.id));
   return MemoryContainerDoneAnswerSchema.superRefine((answer, ctx) => {
     const named = new Map<string, string>();
@@ -629,7 +709,7 @@ export const CONTAINER_DONE_RETIRE_REASON = "only true while the container's wor
  * merge, one drawn from one a rewrite, and every entry given that no kept
  * fact is drawn from is retired.
  */
-export function containerDoneOperations(sent: readonly SentEntry[], answer: MemoryContainerDoneAnswer): MemoryConsolidationOperations {
+export function containerDoneOperations(sent: readonly { id: string }[], answer: MemoryContainerDoneAnswer): MemoryConsolidationOperations {
   const kept = new Set(answer.keep.flatMap((keep) => keep.from));
   return {
     retire: sent.filter((entry) => !kept.has(entry.id)).map((entry) => ({ id: entry.id, reason: CONTAINER_DONE_RETIRE_REASON })),

@@ -36,6 +36,7 @@ import {
   lastRestoredAt,
   listAgents,
   listSkills,
+  markConsolidationRunFinished,
   markConsolidationStuckNoticed,
   memoryScopeProjectId,
   projectWorkspaceList,
@@ -259,6 +260,8 @@ type Applied = Extract<ApplyConsolidationResult, { ok: true }>;
  * starts again from its entries as they are.
  */
 interface Sequence {
+  /** What it ran under: only a retry of the same run goes on with it (EO-913). */
+  trigger: MemoryConsolidationTrigger;
   done: Set<string>;
   /**
    * The entries its consolidations wrote by folding two or more into one,
@@ -419,7 +422,7 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
     }
   };
   /** Due scopes, in the order they became due. One entry per scope: at most one consolidation per scope is queued or running. */
-  const queue = new Map<string, { scope: MemoryScope; trigger: MemoryConsolidationTrigger }>();
+  const queue = new Map<string, { scope: MemoryScope; trigger: MemoryConsolidationTrigger; resumes?: true }>();
   /** Scopes whose batches have not all run yet, by key (EO-574). */
   const sequences = new Map<string, Sequence>();
   let running: Promise<void> | null = null;
@@ -473,11 +476,11 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
         newEntries: () => entriesNewSinceConsolidated(db, tally.scope).length,
       });
       if (decision.kind === "consolidate") {
-        queue.set(key, { scope: tally.scope, trigger: decision.trigger });
+        queue.set(key, { scope: tally.scope, trigger: decision.trigger, ...(decision.resumes ? { resumes: decision.resumes } : {}) });
         pendingChanged(tally.scope);
       }
     }
-    return [...queue.values()];
+    return [...queue.values()].map(({ scope, trigger }) => ({ scope, trigger }));
   }
 
   /** Whether a scope's project is consolidated somewhere else, read fresh (EO-482). */
@@ -528,11 +531,21 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
    * Each batch is its own consolidation, applied on its own as soon as
    * its answer comes back, so a later one failing leaves it in place. A
    * failure ends the sequence there: its row backs the scope off, and the
-   * retry takes up the entries no batch of this sequence has had yet
+   * retry (`resumes`, queued for the run that stopped under the trigger it
+   * ran under) takes up the entries no batch of this sequence has had yet
    * (`sequences`, for `SEQUENCE_KEPT_MS`), leaving those that had them to
-   * the cross-batch pass where there is one. A scheduled run that stopped
-   * part-way is not the scope's last consolidation either, so its new
-   * entries are still new to the retry, after a restart too.
+   * the cross-batch pass where there is one. Any other run — a person
+   * asking now, a later day's schedule — starts from the scope as it is.
+   * Only a run that got to its end is marked as finished
+   * (`markConsolidationRunFinished`), on its last row, so one that stopped
+   * part-way, EO quitting between two batches included, is not the point
+   * a scheduled one's new entries are counted from: they are still new to
+   * the retry, after a restart too.
+   *
+   * A scheduled run with no new entry left to give — the one it was queued
+   * for retired or edited back while it waited, or each already had by the
+   * batches of the run it resumes — changes nothing and asks nothing, not
+   * even to fold duplicates or propose skills.
    *
    * What a run is given is read when it starts, before its first side
    * call waits for its slot. Entries written after that — an agent's note
@@ -554,7 +567,7 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
    * skill proposals over the scope as it now is (EO-575, `proposeSkills`).
    * A run that failed or stopped part-way asks for none: its retry will.
    */
-  async function consolidate(scope: MemoryScope, trigger: MemoryConsolidationTrigger): Promise<void> {
+  async function consolidate(scope: MemoryScope, trigger: MemoryConsolidationTrigger, resumesRun = false): Promise<void> {
     const key = keyOf(scope);
     // The moment this run reads what it is given: every row it writes,
     // each batch's and the cross-batch pass's, starts then, so a write by
@@ -576,13 +589,20 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
     const onlyNew = trigger !== "manual";
     const fresh = onlyNew ? new Set(entriesNewSinceConsolidated(db, scope)) : null;
     const kept = sequences.get(key);
-    const resumes = kept !== undefined && now() - kept.at <= SEQUENCE_KEPT_MS && consolidationState(db, scope).failuresSince.length > 0;
-    const sequence = resumes ? kept : { done: new Set<string>(), folded: new Set<string>(), batches: 0, at: now() };
+    const resumes =
+      resumesRun && kept !== undefined && kept.trigger === trigger && now() - kept.at <= SEQUENCE_KEPT_MS && consolidationState(db, scope).failuresSince.length > 0;
+    const sequence: Sequence = resumes ? kept : { trigger, done: new Set<string>(), folded: new Set<string>(), batches: 0, at: now() };
+    // Nothing new left to give: nothing is asked, and nothing written.
+    if (fresh !== null && !read.some((entry) => fresh.has(entry.id) && !sequence.done.has(entry.id))) {
+      sequences.delete(key);
+      return;
+    }
     sequences.set(key, sequence);
     /** This run's last consolidation to succeed: what the skills proposed after it are posted under. */
     let last: Applied | null = null;
     const succeeded = async () => {
       sequences.delete(key);
+      if (last !== null) markConsolidationRunFinished(db, last.consolidation.id);
       // A skill is the project's, a workspace's or everyone's; a
       // container's memory ends with its work (EO-596), so none is
       // proposed from it.
@@ -836,14 +856,15 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
     const tally = tallyOf(scope);
     if (!tally) return null;
     return onRow(scope, trigger, readAt, async (rowId, controller) => {
+      const files = repositoryFiles(scope);
       const answer = await ask(rowId, controller, {
-        schema: consolidationAnswerSchema(sent),
+        schema: consolidationAnswerSchema(sent, { repositoryFiles: files.length > 0 }),
         system: MEMORY_CONSOLIDATE_SYSTEM,
         input: consolidationInput({
           scopeLabel: facts.label,
           entries: sent,
           ...(part ? { batch: { ...part, scopeEntries: tally.agentEntries, scopeChars: tally.agentChars } } : {}),
-          repositoryFiles: repositoryFiles(scope),
+          repositoryFiles: files,
           likelyDuplicates,
           now: now(),
         }),
@@ -897,7 +918,7 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
         return;
       }
       const part = plan.length > 1 ? { index: at + 1, count: plan.length, scopeEntries: read.length } : undefined;
-      const applied = await onRow(scope, "container_done", readAt, async (rowId, controller) => {
+      const applied: Applied | null = await onRow(scope, "container_done", readAt, async (rowId, controller) => {
         const answer = await ask(rowId, controller, {
           schema: containerDoneAnswerSchema(batch),
           system: MEMORY_CONTAINER_DONE_SYSTEM,
@@ -918,6 +939,7 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
         return apply(rowId, scope, batch, containerDoneOperations(batch, answer), said, into);
       });
       if (applied === null) return;
+      if (at === plan.length - 1) markConsolidationRunFinished(db, applied.consolidation.id);
     }
   }
 
@@ -966,7 +988,8 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
       if (groups.length === 0) return apply(rowId, scope, [], NO_OPERATIONS);
       const sent = groups.flat();
       const answer = await ask(rowId, controller, {
-        schema: consolidationAnswerSchema(sent),
+        // Given no repository file: a `repository_file` rewrite is the batches'.
+        schema: consolidationAnswerSchema(sent, { repositoryFiles: false }),
         system: MEMORY_CROSS_BATCH_MERGE_SYSTEM,
         input: crossBatchMergeInput({ scopeLabel: facts.label, groups, now: now() }),
         projectId: facts.projectId,
@@ -1121,7 +1144,7 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
           runningKey = key;
           pendingChanged(next.scope);
           try {
-            await consolidate(next.scope, next.trigger);
+            await consolidate(next.scope, next.trigger, next.resumes === true);
           } finally {
             queue.delete(key);
             runningKey = null;

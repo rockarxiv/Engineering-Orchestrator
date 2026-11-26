@@ -117,14 +117,18 @@ export const NEW_ENTRY_NEIGHBOURS = 8;
  * rest of the scope is not sent, so what it costs follows the new notes,
  * not the size of memory.
  *
- * New entries are taken oldest first, each with its neighbours, into the
- * batch being filled; one whose unit — itself and its neighbours not yet
- * in a batch — would take that batch over `limits` starts the next, and a
- * unit larger than a batch is a batch on its own. Every entry is in at
- * most one batch, so a new entry already placed as an earlier one's
- * neighbour is not placed again, and a neighbour two new entries share
- * goes with the first. Without neighbours — the index could not be asked
- * — the new entries go alone, by age.
+ * Every entry is in at most one batch — two batches given one entry would
+ * have the second refused once the first retired it — so new entries
+ * whose lists overlap, or that are in each other's, are one group: the
+ * union of each one's own list, kept whole in one batch, so each new
+ * entry is sent with every neighbour it ranks however the lists overlap.
+ * Groups are packed into batches oldest new entry first, a group that
+ * would take a batch over `limits` starting the next. Only a group too
+ * large for any batch is cut, new entry by new entry: each with its
+ * neighbours not yet placed, and a new entry already placed in the batch
+ * being filled with its own that still fit there — so only there can a
+ * new entry go without part of its list. Without neighbours — the index
+ * could not be asked — the new entries go alone, by age.
  */
 export function planNewEntryBatches<T extends BatchableEntry>(
   fresh: readonly T[],
@@ -134,31 +138,77 @@ export function planNewEntryBatches<T extends BatchableEntry>(
 ): T[][] {
   const byId = new Map(entries.map((entry) => [entry.id, entry]));
   for (const entry of fresh) byId.set(entry.id, entry);
-  const placed = new Set<string>();
-  const batches: T[][] = [];
-  let batch: T[] = [];
-  let chars = 0;
-  for (const entry of [...fresh].sort(byAge)) {
-    if (placed.has(entry.id)) continue;
+  // Each new entry's own list: itself and its nearest neighbours, best first.
+  const units = [...new Map(fresh.map((entry) => [entry.id, entry])).values()].sort(byAge).map((entry) => {
     const unit = [entry];
     for (const id of neighbours?.get(entry.id) ?? []) {
       if (unit.length > NEW_ENTRY_NEIGHBOURS) break;
       const neighbour = byId.get(id);
-      if (neighbour !== undefined && !placed.has(id) && !unit.includes(neighbour)) unit.push(neighbour);
+      if (neighbour !== undefined && !unit.includes(neighbour)) unit.push(neighbour);
     }
-    const size = unit.reduce((sum, member) => sum + member.body.length, 0);
-    if (batch.length > 0 && (batch.length + unit.length > limits.maxEntries || chars + size > limits.maxChars)) {
-      batches.push(batch.sort(byAge));
-      batch = [];
-      chars = 0;
-    }
-    for (const member of unit) {
-      batch.push(member);
-      placed.add(member.id);
-    }
-    chars += size;
+    return unit;
+  });
+  // Lists that share an entry are one group.
+  const parent = new Map<string, string>();
+  const root = (id: string): string => {
+    let at = id;
+    while (parent.get(at) !== at) at = parent.get(at)!;
+    parent.set(id, at);
+    return at;
+  };
+  for (const unit of units) {
+    for (const member of unit) if (!parent.has(member.id)) parent.set(member.id, member.id);
+    for (const member of unit.slice(1)) parent.set(root(member.id), root(unit[0]!.id));
   }
-  if (batch.length > 0) batches.push(batch.sort(byAge));
+  const groups = new Map<string, T[][]>();
+  for (const unit of units) {
+    const key = root(unit[0]!.id);
+    groups.set(key, [...(groups.get(key) ?? []), unit]);
+  }
+
+  const batches: T[][] = [];
+  const placed = new Set<string>();
+  let batch: T[] = [];
+  let chars = 0;
+  const flush = () => {
+    if (batch.length > 0) batches.push(batch.sort(byAge));
+    batch = [];
+    chars = 0;
+  };
+  const add = (member: T) => {
+    batch.push(member);
+    placed.add(member.id);
+    chars += member.body.length;
+  };
+  const fits = (count: number, size: number) => batch.length + count <= limits.maxEntries && chars + size <= limits.maxChars;
+  const sizeOf = (members: readonly T[]) => members.reduce((sum, member) => sum + member.body.length, 0);
+  // In order of each group's oldest new entry: the order units are in.
+  for (const group of groups.values()) {
+    const members = [...new Set(group.flat())];
+    const size = sizeOf(members);
+    if (members.length <= limits.maxEntries && size <= limits.maxChars) {
+      if (!fits(members.length, size)) flush();
+      members.forEach(add);
+      continue;
+    }
+    // Too large for one batch: new entry by new entry.
+    flush();
+    for (const unit of group) {
+      const [head, ...rest] = unit as [T, ...T[]];
+      if (placed.has(head.id)) {
+        // Placed with an earlier new entry: its own neighbours join it
+        // where that batch is still being filled and they fit.
+        if (!batch.includes(head)) continue;
+        for (const member of rest) if (!placed.has(member.id) && fits(1, member.body.length)) add(member);
+        continue;
+      }
+      const members = [head, ...rest.filter((member) => !placed.has(member.id))];
+      if (batch.length > 0 && !fits(members.length, sizeOf(members))) flush();
+      members.forEach(add);
+    }
+    flush();
+  }
+  flush();
   return batches;
 }
 
