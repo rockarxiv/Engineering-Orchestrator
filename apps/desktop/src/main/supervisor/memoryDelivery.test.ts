@@ -2,9 +2,10 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FOLDER_KIND, MEMORY_DELIVERED_EVENT, MEMORY_USED_EVENT, MEMORY_NOTE_DEFINITION, MEMORY_NOTE_TOOL_NAME, memoryNoteEnabled, type Agent, type AgentEvent, type AgentProvider, type AgentProviderStartOptions, type Item, type MemoryScope, type Uuid } from "@eo/core";
+import type { SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DbHandle } from "../db/client.js";
-import { addMemory, appendRunEvent, memoryDeliveredToRun, createProject, createRun, createStep, createWorkspace, deleteItem, getRun, listAgents, listCommentsForItem, listMemories, postComment, listRunEvents, listRunsForItem, listSideCalls, retireMemory, updateAgent, updateItem, updateRun } from "../db/repos/index.js";
+import { addMemory, appendRunEvent, appendRunEventAt, memoryDeliveredToRun, createProject, createRun, createStep, createWorkspace, deleteItem, getRun, listAgents, listCommentsForItem, listMemories, postComment, listRunEvents, listRunsForItem, listSideCalls, retireMemory, updateAgent, updateItem, updateRun } from "../db/repos/index.js";
 import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import { listAgentDetails, saveAgent } from "../ipc/configCommands.js";
 import { listMemoryCommand, searchMemoryCommand } from "../ipc/memoryCommands.js";
@@ -15,8 +16,12 @@ import * as eoServer from "../mcp/eoServer.mjs";
 import { eoMcpStdioConfig } from "../mcp/serviceConfig.js";
 import { MEMORY_SECTION_HEADING } from "../memory/selection.js";
 import { MEMORY_WRITING_SECTION_HEADING, renderMemoryWritingSection } from "../memory/writing.js";
+import { createClaudeProvider } from "../providers/claude.js";
+import { createCodexProvider } from "../providers/codex.js";
+import { CodexClient, dropWarmCodexThread } from "../providers/codexClient.js";
 import { createFakeProvider } from "../providers/fake.js";
 import { validImplementResult } from "../providers/fixtures.js";
+import { fakeAppServer, note, type FakeAppServer } from "../testing/fakeCodexAppServer.js";
 import { startTestWriteBridge, type TestWriteBridge } from "../testing/agentWrites.js";
 import { createRunSupervisor, type RunSupervisorOptions } from "./runSupervisor.js";
 
@@ -60,6 +65,7 @@ describe("memory on a dispatch", () => {
   });
 
   afterEach(async () => {
+    dropWarmCodexThread();
     await writes.close();
     handle.close();
     rmSync(folder, { recursive: true, force: true });
@@ -147,7 +153,7 @@ describe("memory on a dispatch", () => {
     expect(run.status).toBe("succeeded");
   });
 
-  it("when the selection fails, sends the newest entries with a line saying selection did not run, and the run proceeds", async () => {
+  it("when the selection fails, sends the newest entries, where none was delivered before, with a line saying selection did not run, and the run proceeds", async () => {
     Array.from({ length: 10 }, (_, index) => remember(project, `Entry ${index}. ${"z".repeat(1_500)}`, 1_000 + index));
     const { provider, starts } = capturing();
 
@@ -159,8 +165,98 @@ describe("memory on a dispatch", () => {
     expect(context).toContain("Entry 9.");
     expect(context).toContain("Entry 8.");
     expect(context).not.toContain("Entry 7.");
-    expect(memoryEvents()).toEqual([expect.objectContaining({ mode: "fallback", selectionRan: false, reason: expect.stringMatching(/^error:/) })]);
+    expect(memoryEvents()).toEqual([expect.objectContaining({ mode: "fallback", selectionRan: false, reason: expect.stringMatching(/^error:/), ordering: "recently_delivered" })]);
     expect(listRunsForItem(handle.db, item.id)[0]?.status).toBe("succeeded");
+  });
+
+  /**
+   * The fallback's order reaches both backends alike (EO-914, invariant
+   * 12): the selection fails on the agent's own backend, and the turn
+   * then crosses **the real adapter** — the Claude provider over a
+   * stubbed `query`, the Codex provider and client over a stubbed
+   * app-server — carrying the entries most recently given to earlier
+   * runs, then the newest.
+   */
+  describe.each(["claude", "codex"] as const)("when the selection fails on %s", (name) => {
+    const EXECUTABLE = "/opt/eo/runtimes/codex/bin/codex";
+
+    function realAdapter() {
+      const claudeCalls: { prompt: AsyncIterable<SDKUserMessage> }[] = [];
+      const messages = [
+        { type: "system", subtype: "init", session_id: "sess_1" },
+        { type: "result", subtype: "success", result: JSON.stringify(validImplementResult), structured_output: validImplementResult, total_cost_usd: 0.01, usage: { input_tokens: 10, output_tokens: 10 }, session_id: "sess_1" },
+      ] as unknown as SDKMessage[];
+      const runQuery = ((call: (typeof claudeCalls)[number]) => {
+        claudeCalls.push(call);
+        return (async function* () {
+          for (const message of messages) yield message;
+        })();
+      }) as never;
+      const fakes: FakeAppServer[] = [];
+      const codex = createCodexProvider({
+        executablePath: EXECUTABLE,
+        createCodex: () => {
+          const fake = fakeAppServer({
+            model: "gpt-6.1-sol",
+            after: { "turn/start": [note.turnStarted(), note.agentMessage(JSON.stringify(validImplementResult)), note.tokenUsage({ input: 10, output: 10 }), note.turnCompleted()] },
+          });
+          fakes.push(fake);
+          return new CodexClient({ executablePath: EXECUTABLE, spawn: fake.spawn, shutdownGraceMs: 200 });
+        },
+      });
+      const provider = name === "claude" ? createClaudeProvider({ runQuery, enableCommentTool: false }) : codex;
+      /** The text the run's turn sent the backend, as it crossed — the first call; a learning review may follow it. */
+      const crossed = async (): Promise<string> => {
+        if (name === "codex") return JSON.stringify(fakes[0]!.paramsOf("turn/start"));
+        for await (const message of claudeCalls[0]!.prompt) return JSON.stringify(message);
+        return "";
+      };
+      return { provider, crossed, claudeCalls, fakes };
+    }
+
+    it("sends the entries most recently given to earlier runs first, then the newest, and records the ordering", async () => {
+      const implementer = listAgents(handle.db).find((agent) => agent.role === "implementer")!;
+      updateAgent(handle.db, implementer.id, { provider: name });
+      const e = Array.from({ length: 8 }, (_, index) => remember(project, `Entry ${index}. ${"z".repeat(1_000)}`, 1_000 + index));
+      const earlier = createRun(handle.db, { itemId: item.id, agentId: implementer.id, action: "implement", status: "succeeded" });
+      const given = (entryIds: string[], ts: number) =>
+        appendRunEventAt(handle.db, earlier.id, { seq: ts, ts }, MEMORY_DELIVERED_EVENT, { type: MEMORY_DELIVERED_EVENT, entryIds, candidateCount: 8, mode: "selected", selectionRan: true, reason: null });
+      given([e[1]!], 100);
+      given([e[0]!], 200);
+      const asked: string[] = [];
+      const refusing: AgentProvider = {
+        ...createFakeProvider({}),
+        async *sideCall() {
+          yield { type: "error", message: "The selection was refused.", retryable: false } satisfies AgentEvent;
+        },
+      };
+      const over = realAdapter();
+
+      await supervisorWith(over.provider, {
+        provider: (backend) => {
+          asked.push(backend);
+          return refusing;
+        },
+        smallModel: async () => null,
+      }).runOnce();
+
+      const run = listRunsForItem(handle.db, item.id).find((candidate) => candidate.id !== earlier.id)!;
+      expect(run.provider).toBe(name);
+      expect(run.status).toBe("succeeded");
+      // The selection was asked of the agent's own backend, and failed.
+      expect(asked).toEqual([name]);
+      expect(listSideCalls(handle.db).filter((call) => call.purpose === "memory_select")).toEqual([expect.objectContaining({ backend: name, runId: run.id, outcome: "failed" })]);
+      // Given before, most recent first (e0, e1), then the newest never
+      // given (e7): 3 × 1,009 characters fit in 4,000; a fourth would not.
+      const events = listRunEvents(handle.db, run.id).filter((event) => event.type === MEMORY_DELIVERED_EVENT).map((event) => event.payload);
+      expect(events).toEqual([expect.objectContaining({ entryIds: [e[0], e[1], e[7]], candidateCount: 8, mode: "fallback", selectionRan: false, ordering: "recently_delivered" })]);
+      // And that is what crossed the adapter to the backend.
+      expect(name === "claude" ? over.claudeCalls.length : over.fakes.length).toBeGreaterThan(0);
+      const sent = await over.crossed();
+      expect(sent).toContain("Selection did not run for this dispatch, so these are the entries most recently given to earlier runs, then the newest");
+      for (const index of [0, 1, 7]) expect(sent).toContain(`Entry ${index}.`);
+      for (const index of [2, 3, 4, 5, 6]) expect(sent).not.toContain(`Entry ${index}.`);
+    });
   });
 
   it("closes the run unstarted, and says so, when EO is paused while the selection runs", async () => {

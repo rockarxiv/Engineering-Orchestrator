@@ -218,21 +218,37 @@ export type MemorySelection = z.infer<typeof MemorySelectionSchema>;
  *   delivered; nothing was asked.
  * - `selected` — a selection side call picked them.
  * - `fallback` — selection was needed and did not run (it failed, timed
- *   out, or was refused), so the newest entries up to the threshold were
- *   delivered instead.
+ *   out, or was refused), so the candidates were delivered up to the
+ *   threshold in the order its `ordering` names instead.
  * - `none` — there were no candidates.
  */
 export const MEMORY_SELECTION_MODES = ["all", "selected", "fallback", "none"] as const;
 export const MemorySelectionModeSchema = z.enum(MEMORY_SELECTION_MODES);
 export type MemorySelectionMode = z.infer<typeof MemorySelectionModeSchema>;
 
+/**
+ * The order a fallback delivered the candidates in (EO-914).
+ *
+ * - `recently_delivered` — those most recently given to an earlier run
+ *   first, by the newest `memory_delivered` event naming each, then
+ *   those never given, newest first.
+ *
+ * A fallback recorded before EO-914 carries no ordering; it delivered
+ * the newest entries.
+ */
+export const MEMORY_FALLBACK_ORDERINGS = ["recently_delivered"] as const;
+export const MemoryFallbackOrderingSchema = z.enum(MEMORY_FALLBACK_ORDERINGS);
+export type MemoryFallbackOrdering = z.infer<typeof MemoryFallbackOrderingSchema>;
+
 /** The run event that records what a dispatch was given. */
 export const MEMORY_DELIVERED_EVENT = "memory_delivered";
 
 /**
  * Its payload: which entries, and whether selection ran. `reason` is the
- * side call's own sentence on a fallback, so "why did this run get the
- * newest entries?" has an answer in the run's log.
+ * side call's own sentence on a fallback, so "why did this run not get
+ * the entries a selection picked?" has an answer in the run's log, and
+ * `ordering` says what order the fallback delivered them in — present on
+ * a fallback, absent on every other mode.
  */
 export const MemoryDeliveredEventSchema = z.object({
   type: z.literal(MEMORY_DELIVERED_EVENT),
@@ -241,6 +257,7 @@ export const MemoryDeliveredEventSchema = z.object({
   mode: MemorySelectionModeSchema,
   selectionRan: z.boolean(),
   reason: z.string().nullable(),
+  ordering: MemoryFallbackOrderingSchema.optional(),
 });
 export type MemoryDeliveredEvent = z.infer<typeof MemoryDeliveredEventSchema>;
 
@@ -619,20 +636,10 @@ export type LearningReviewEvent = z.infer<typeof LearningReviewEventSchema>;
 // ── Consolidation (EO-480) ───────────────────────────────────────
 
 /**
- * The most active entries one scope holds before it is consolidated. A
- * guardrail setting (`GuardConfigView.memoryScopeMaxEntries`); this is its
- * default.
+ * How long after a scope's last consolidation the scheduled one may come
+ * round. A scope's size never brings one round (EO-913): memory is not
+ * capped, and consolidation is hygiene.
  */
-export const DEFAULT_MEMORY_SCOPE_MAX_ENTRIES = 200;
-
-/**
- * The most characters of active entries one scope holds before it is
- * consolidated. A guardrail setting (`GuardConfigView.memoryScopeMaxChars`);
- * this is its default.
- */
-export const DEFAULT_MEMORY_SCOPE_MAX_CHARS = 40_000;
-
-/** How long after a scope's last consolidation the scheduled one may come round. */
 export const MEMORY_CONSOLIDATION_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 /** How many runs must have been given a scope's memory since its last consolidation for the scheduled one. */
@@ -670,9 +677,13 @@ export const MEMORY_CONSOLIDATE_MAX_OUTPUT_TOKENS = 24_000;
 /**
  * Why a consolidation was queued.
  *
- * - `cap` — the scope reached its entry or character cap.
- * - `schedule` — a day has passed since the last one and at least five
- *   runs have been given the scope's memory since.
+ * - `cap` — the scope reached its entry or character cap. No longer
+ *   queued (EO-913): size never starts a consolidation. Kept so the rows
+ *   it was recorded on before then still read.
+ * - `schedule` — a day has passed since the last one, at least five runs
+ *   have been given the scope's memory since, and entries were written or
+ *   changed since it. Given only those entries, each with its nearest
+ *   neighbours (EO-913).
  * - `manual` — a person asked for it (`memory:consolidateNow`, EO-589),
  *   whether or not the scope was due and however it was backing off.
  * - `container_done` — every item filed under a container has finished
@@ -692,8 +703,10 @@ export type MemoryConsolidationTrigger = z.infer<typeof MemoryConsolidationTrigg
  * - `succeeded` — it retired what it replaced and wrote what it returned.
  * - `failed` — its side call failed or answered outside its schema, and
  *   memory was left as it was. Asked again later, with backoff.
- * - `skipped` — there was nothing it may rewrite: the scope is over a cap
- *   on the strength of people's entries alone, which are never rewritten.
+ * - `skipped` — it changed nothing on purpose: a `container_done` whose
+ *   container's work was reopened before it could be applied (EO-596), or,
+ *   on rows from before EO-913, a scope over a cap on people's entries
+ *   alone.
  * - `restored` — it succeeded, and a person has since put back the set
  *   from before it.
  */
@@ -728,8 +741,8 @@ export const MAX_MEMORY_RETIRE_REASON_CHARS = 300;
  * The operations a `memory_consolidate` side call answers with (EO-573):
  * what changes, and nothing else. An entry it does not name stays exactly
  * as it is. The checks one particular call adds — every id one it was
- * given, none named twice, and an answer that does not grow the scope —
- * are `consolidationAnswerSchema` in the main process.
+ * given, and none named twice — are `consolidationAnswerSchema` in the
+ * main process.
  */
 
 /** Retire one entry it was given, saying why: stale, contradicted, a duplicate, or derivable from the code. */
@@ -773,6 +786,26 @@ export const MemoryConsolidationOperationsSchema = z.object({
   rewrite: z.array(MemoryConsolidationRewriteSchema),
 });
 export type MemoryConsolidationOperations = z.infer<typeof MemoryConsolidationOperationsSchema>;
+
+/**
+ * Why a consolidation may rewrite an entry (EO-913) — the only reasons it
+ * may, so a rewrite that only shortens or rewords an entry is not one:
+ *
+ * - `relative_date` — a relative date or time made absolute.
+ * - `repository_file` — the entry disagreed with the workspace's
+ *   CLAUDE.md or AGENTS.md, and now agrees with it or is flagged as
+ *   correcting it.
+ * - `newer_entry` — a newer entry it was given corrects it.
+ */
+export const MEMORY_CONSOLIDATION_REWRITE_REASONS = ["relative_date", "repository_file", "newer_entry"] as const;
+export const MemoryConsolidationRewriteReasonSchema = z.enum(MEMORY_CONSOLIDATION_REWRITE_REASONS);
+export type MemoryConsolidationRewriteReason = z.infer<typeof MemoryConsolidationRewriteReasonSchema>;
+
+/** A rewrite as a consolidation answers with it: with the reason it is made, without which it is refused (EO-913). */
+export const MemoryConsolidationAnswerRewriteSchema = MemoryConsolidationRewriteSchema.extend({
+  reason: MemoryConsolidationRewriteReasonSchema,
+});
+export type MemoryConsolidationAnswerRewrite = z.infer<typeof MemoryConsolidationAnswerRewriteSchema>;
 
 /**
  * What the cross-batch pass's first call answers with (EO-574): groups of
@@ -907,10 +940,13 @@ export type SkillProposalStatus = z.infer<typeof SkillProposalStatusSchema>;
  * Skill proposals are not in it — they are asked for in a call of their
  * own once a consolidation has succeeded (`MemorySkillProposalsAnswerSchema`),
  * so a scope's answer never has to carry whole SKILL.md drafts beside its
- * changes.
+ * changes. Each rewrite says why it is made (EO-913,
+ * `MEMORY_CONSOLIDATION_REWRITE_REASONS`); one that does not is refused.
  */
-export const MemoryConsolidationAnswerSchema = MemoryConsolidationOperationsSchema;
-export type MemoryConsolidationAnswer = MemoryConsolidationOperations;
+export const MemoryConsolidationAnswerSchema = MemoryConsolidationOperationsSchema.extend({
+  rewrite: z.array(MemoryConsolidationAnswerRewriteSchema),
+});
+export type MemoryConsolidationAnswer = z.infer<typeof MemoryConsolidationAnswerSchema>;
 
 /**
  * One fact a `container_done` consolidation keeps (EO-596): the container

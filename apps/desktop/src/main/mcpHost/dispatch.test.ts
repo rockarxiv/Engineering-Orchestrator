@@ -809,8 +809,6 @@ const STORED_GUARDS: GuardConfigView = {
   agentMentionDepth: 6,
   watchRoundTripsPerItem: 9,
   memoryDeliveryChars: 6_000,
-  memoryScopeMaxEntries: 150,
-  memoryScopeMaxChars: 30_000,
   skillStaleAfterRuns: 15,
   skillArchiveAfterRuns: 40,
   skillMaxBodyChars: 6_000,
@@ -1236,6 +1234,31 @@ describe("a composite tool", () => {
     }
     expect(set).not.toHaveBeenCalled();
     expect(readGuards(handle.db).runMemoryMaxMb).toBeNull();
+  });
+
+  it("reads and writes guardrails over a stored configuration that still holds the memory per scope caps, which neither shows nor keeps (EO-913)", async () => {
+    setSetting(handle.db, "engine.guards", { ...STORED_GUARDS, memoryScopeMaxEntries: 150, memoryScopeMaxChars: 30_000 });
+    const set = vi.fn((payload: GuardConfigView) => writeGuards(handle.db, payload));
+    registerHandler("guards:get", () => readGuards(handle.db), opts);
+    registerHandler("guards:set", set, opts);
+
+    const read = await tool("guardrails_get").run(dispatch, {});
+    expect(read.ok).toBe(true);
+    if (read.ok) {
+      expect(read.text).not.toMatch(/memory per scope/i);
+      expect(read.data).not.toHaveProperty("memoryScopeMaxEntries");
+    }
+
+    const written = await tool("guardrails_set").run(dispatch, { dailyBudgetCents: 2_000 });
+    expect(written.ok).toBe(true);
+    if (written.ok) expect(written.refused).toBe(false);
+    expect(set.mock.calls[0]![0]).not.toHaveProperty("memoryScopeMaxEntries");
+    expect(readGuards(handle.db)).toEqual({ ...STORED_GUARDS, dailyBudgetCents: 2_000 });
+
+    // Sent as a field, it is not one any more: dropped, and nothing else changes.
+    const stale = await tool("guardrails_set").run(dispatch, { memoryScopeMaxEntries: 10 });
+    expect(stale.ok).toBe(true);
+    expect(readGuards(handle.db)).toEqual({ ...STORED_GUARDS, dailyBudgetCents: 2_000 });
   });
 
   /**

@@ -714,7 +714,7 @@ export function createRemoteRecord(options: RemoteRecordOptions): RemoteRecord {
       return { skill: getSkill(db, copy.id) ?? null, problem: null };
     },
 
-    /** Undone on the record that made it, under its caps; what it changed is copied here at once. */
+    /** Undone on the record that made it; what it changed is copied here at once. */
     async restoreMemoryConsolidation(consolidationId) {
       const answer = await ask("record:restoreMemoryConsolidation", { deviceId: options.deviceId, consolidationId });
       if (!answer.ok) {

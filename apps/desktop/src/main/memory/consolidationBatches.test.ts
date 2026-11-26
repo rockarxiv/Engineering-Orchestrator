@@ -2,14 +2,15 @@ import type { MemoryEntryView } from "@eo/core";
 import { describe, expect, it } from "vitest";
 import { consolidationAnswerSchema, consolidationInput, crossBatchMergeInput, MEMORY_CROSS_BATCH_MERGE_SYSTEM } from "./consolidation.js";
 import {
-  batchTargets,
   CONSOLIDATION_BATCH_MAX_CHARS,
   CONSOLIDATION_BATCH_MAX_ENTRIES,
   firstLine,
   mergeCandidatesInput,
   mergeCandidatesSchema,
+  NEW_ENTRY_NEIGHBOURS,
   pickCandidateGroups,
   planBatches,
+  planNewEntryBatches,
   type BatchableEntry,
 } from "./consolidationBatches.js";
 
@@ -101,20 +102,87 @@ describe("cutting a scope into batches", () => {
   });
 });
 
-describe("what a batch is asked for", () => {
-  it("is the scope's targets in the batch's share, never more than the batch holds", () => {
-    const batch = entries(30, 500);
-    expect(batchTargets(batch, { entries: 111, chars: 56_000 }, { entries: 100, chars: 20_000 })).toEqual({ entries: 28, chars: Math.ceil((15_000 * 20_000) / 56_000) });
-    expect(batchTargets(batch, { entries: 40, chars: 20_000 }, { entries: 100, chars: 30_000 })).toEqual({ entries: 30, chars: 15_000 });
+describe("a scheduled consolidation's batches (EO-913)", () => {
+  const ids = (batch: readonly { id: string }[]) => batch.map((entry) => entry.id);
+
+  it("sends each new entry with up to 8 of its nearest neighbours, best first, and nothing else of the scope", () => {
+    const scope = entries(200, 300);
+    const fresh = [scope[150]!];
+    // Twelve neighbours ranked for it; only the best eight go with it.
+    const ranked = [3, 9, 27, 81, 4, 16, 64, 5, 25, 125, 6, 36].map((index) => scope[index]!.id);
+    const batches = planNewEntryBatches(fresh, scope, new Map([[scope[150]!.id, ranked]]));
+    expect(NEW_ENTRY_NEIGHBOURS).toBe(8);
+    expect(batches).toHaveLength(1);
+    expect(ids(batches[0]!).sort()).toEqual([scope[150]!.id, ...ranked.slice(0, 8)].sort());
   });
 
+  it("is nothing for a scope with no new entry, however large", () => {
+    const scope = entries(500, 400);
+    expect(planNewEntryBatches([], scope, new Map())).toEqual([]);
+  });
+
+  it("puts each entry in at most one batch, and gives a new entry placed as an earlier one's neighbour its own neighbours too", () => {
+    const scope = entries(20, 100);
+    const [a, b, c] = [scope[10]!, scope[11]!, scope[12]!];
+    // a finds b, and b finds older scope[2]: all fit one batch, so scope[2] goes with b.
+    const neighbours = new Map([
+      [a.id, [scope[1]!.id, b.id]],
+      [b.id, [scope[1]!.id, scope[2]!.id]],
+      [c.id, [scope[1]!.id, scope[3]!.id]],
+    ]);
+    const batches = planNewEntryBatches([a, b, c], scope, neighbours);
+    const all = batches.flat();
+    expect(new Set(ids(all)).size).toBe(all.length);
+    expect(batches).toHaveLength(1);
+    expect(ids(all).sort()).toEqual([scope[1]!, scope[2]!, scope[3]!, a, b, c].map((entry) => entry.id).sort());
+  });
+
+  it("puts a new entry into the batch that already holds its nearest neighbour, where it fits there, rather than the newest batch", () => {
+    // 1,100 characters each: the first two units, of six and nine, do not fit one batch of 15,000.
+    const scope = entries(60, 1_100);
+    const [first, second, third] = [scope[40]!, scope[50]!, scope[55]!];
+    const neighbours = new Map([
+      [first.id, scope.slice(0, 5).map((entry) => entry.id)],
+      [second.id, scope.slice(10, 18).map((entry) => entry.id)],
+      // Its nearest is in the first batch; the rest are not placed.
+      [third.id, [scope[0]!.id, scope[20]!.id]],
+    ]);
+    const batches = planNewEntryBatches([first, second, third], scope, neighbours);
+    expect(batches).toHaveLength(2);
+    expect(ids(batches[0]!)).toEqual(expect.arrayContaining([first.id, third.id, scope[0]!.id, scope[20]!.id]));
+    expect(ids(batches[1]!)).toContain(second.id);
+    for (const batch of batches) expect(charsOf(batch)).toBeLessThanOrEqual(CONSOLIDATION_BATCH_MAX_CHARS);
+  });
+
+  it("starts another batch where the next new entry and its neighbours would take one over its limits", () => {
+    const scope = entries(60, 1_000);
+    const fresh = [scope[40]!, scope[50]!];
+    const neighbours = new Map([
+      [scope[40]!.id, scope.slice(0, 8).map((entry) => entry.id)],
+      [scope[50]!.id, scope.slice(10, 18).map((entry) => entry.id)],
+    ]);
+    // Nine entries of 1,000 characters each: two units do not fit one batch of 15,000.
+    const batches = planNewEntryBatches(fresh, scope, neighbours);
+    expect(batches).toHaveLength(2);
+    expect(ids(batches[0]!)).toContain(scope[40]!.id);
+    expect(ids(batches[1]!)).toContain(scope[50]!.id);
+    for (const batch of batches) expect(charsOf(batch)).toBeLessThanOrEqual(CONSOLIDATION_BATCH_MAX_CHARS);
+  });
+
+  it("sends the new entries alone, by age, where the index could not be asked", () => {
+    const scope = entries(50, 200);
+    const fresh = [scope[30]!, scope[20]!];
+    expect(planNewEntryBatches(fresh, scope, null).map(ids)).toEqual([[scope[20]!.id, scope[30]!.id]]);
+  });
+});
+
+describe("what a batch is asked for", () => {
   it("is told which batch it is, what the whole scope holds, and to change only its own entries", () => {
     const view = (id: string, body: string): MemoryEntryView =>
       ({ id, body, createdAt: NOW, contradictsRepositoryFile: false, source: { type: "run", runId: null, itemId: null } }) as unknown as MemoryEntryView;
     const input = consolidationInput({
       scopeLabel: 'the project "EO"',
       entries: [view("a", "One."), view("b", "Two.")],
-      targets: { entries: 1, chars: 4 },
       batch: { index: 2, count: 4, scopeEntries: 111, scopeChars: 56_000 },
       repositoryFiles: [],
       now: NOW,
@@ -122,7 +190,25 @@ describe("what a batch is asked for", () => {
     expect(input).toContain("batch 2 of 4");
     expect(input).toContain("The scope's agents hold 111 entries in 56000 characters");
     expect(input).toContain("change only these");
-    expect(input).toContain("Target for this batch: about 1 entries and about 4 characters");
+    expect(input).not.toMatch(/target/i);
+  });
+
+  it("is told, on the schedule, that it is given what is new with the entries most like it, each new one marked (EO-913)", () => {
+    const view = (id: string, body: string): MemoryEntryView =>
+      ({ id, body, createdAt: NOW, contradictsRepositoryFile: false, source: { type: "run", runId: null, itemId: null } }) as unknown as MemoryEntryView;
+    const input = consolidationInput({
+      scopeLabel: 'the project "EO"',
+      entries: [view("a", "One."), view("b", "Two.")],
+      batch: { index: 1, count: 1, scopeEntries: 135, scopeChars: 58_956, fresh: new Set(["b"]) },
+      repositoryFiles: [],
+      now: NOW,
+    });
+    expect(input).toContain("each is given with the existing entries most like it");
+    expect(input).toContain("The scope's agents hold 135 entries in 58956 characters; the rest were tidied before and are not part of this");
+    expect(input).toMatch(/^### b \(written [^)]*; new since the last consolidation\)$/m);
+    expect(input).toMatch(/^### a \(written [^)]*\d\)$/m);
+    expect(input).not.toContain("batch 1 of 1");
+    expect(input).not.toMatch(/target/i);
   });
 
   it("marks likely duplicates on their entries, naming only others in the same call (EO-576)", () => {
@@ -132,8 +218,7 @@ describe("what a batch is asked for", () => {
       consolidationInput({
         scopeLabel: 'the project "EO"',
         entries: [view("a", "One."), view("b", "One!"), view("c", "Two."), view("d", "Three.")],
-        targets: { entries: 1, chars: 4 },
-        repositoryFiles: [],
+          repositoryFiles: [],
         ...(likelyDuplicates ? { likelyDuplicates } : {}),
         now: NOW,
       });

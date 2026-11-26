@@ -8,6 +8,7 @@ import {
   MEMORY_CONSOLIDATION_INTERVAL_MS,
   MEMORY_CONSOLIDATION_MIN_RUNS,
   MemoryConsolidationAnswerSchema,
+  MEMORY_CONSOLIDATION_REWRITE_REASONS,
   MemoryContainerDoneAnswerSchema,
   MemorySkillProposalsAnswerSchema,
   type MemoryContainerDoneAnswer,
@@ -21,16 +22,14 @@ import type { ScopeConsolidationState, ScopeTally } from "../db/repos/memoryCons
 
 /**
  * Automatic memory consolidation, the pure half (EO-480, ARCHITECTURE.md,
- * "What an agent is given"): when a scope is due, what it is asked to
- * shrink to, what it is told, and the shape its answer is held to. The
- * database and the scheduling are `consolidator.ts`.
+ * "What an agent is given"): when a scope is due, what it is told, and the
+ * shape its answer is held to. The database and the scheduling are
+ * `consolidator.ts`.
+ *
+ * Consolidation is hygiene, never a matter of size (EO-913): a scope is
+ * not capped, nothing is asked to shrink to a target, and an entry is
+ * rewritten only for one of the reasons a rewrite may give.
  */
-
-/** A scope's caps, from the guardrails. */
-export interface MemoryCaps {
-  maxEntries: number;
-  maxChars: number;
-}
 
 /**
  * How long a scope waits after a failed consolidation (EO-577): an hour
@@ -81,16 +80,6 @@ export function consecutiveFailures(state: ScopeConsolidationState): ScopeConsol
   return state.failuresSince.filter((failure) => countsAsFailure(failure.reason));
 }
 
-/** Whether a scope has reached either cap. People's entries count toward it. */
-export function reachesCap(tally: ScopeTally, caps: MemoryCaps): boolean {
-  return tally.agentEntries + tally.personEntries >= caps.maxEntries || tally.agentChars + tally.personChars >= caps.maxChars;
-}
-
-/** Whether people's entries alone are over a cap — which consolidation records and leaves alone. */
-export function peopleAloneOverCap(tally: ScopeTally, caps: MemoryCaps): boolean {
-  return tally.personEntries >= caps.maxEntries || tally.personChars >= caps.maxChars;
-}
-
 /**
  * When a scope that failed may be asked again, or null when it has not
  * failed since it last succeeded. A budget refusal waits for the budget,
@@ -123,42 +112,37 @@ export function stuckNoticeOwed(state: ScopeConsolidationState): ScopeConsolidat
 
 /**
  * The message saying a scope's consolidation is stuck
- * (EO-577): which scope, what it holds against its caps, how many times
- * in a row it has failed and why the last one did — and that nothing
- * else is held up by it.
+ * (EO-577): which scope, what it holds, how many times in a row it has
+ * failed and why the last one did — and that nothing else is held up by
+ * it.
  */
 export function stuckNoticeBody(input: {
   scopeLabel: string;
   tally: ScopeTally;
-  caps: MemoryCaps;
   failures: number;
   last: { reason: string | null; note: string | null };
   retryAt: number | null;
 }): string {
-  const { tally, caps } = input;
+  const { tally } = input;
   const entries = tally.agentEntries + tally.personEntries;
   const chars = tally.agentChars + tally.personChars;
   const reason = input.last.reason ?? "error";
   const lines = [
     `Memory consolidation of ${input.scopeLabel} is stuck: it has failed ${input.failures} times in a row.`,
     "",
-    `- **Size:** ${entries} entries against a cap of ${caps.maxEntries}, and ${chars.toLocaleString("en-US")} characters against a cap of ${caps.maxChars.toLocaleString("en-US")}.`,
+    `- **Holds:** ${entries} entries, ${chars.toLocaleString("en-US")} characters.`,
     `- **Last failure:** \`${reason}\`${input.last.note ? ` — ${input.last.note}` : ""}`,
   ];
   if (input.retryAt !== null) lines.push(`- **Next attempt:** ${new Date(input.retryAt).toISOString().replace("T", " ").slice(0, 16)} UTC, and a day apart after that until one succeeds.`);
   lines.push(
     "",
-    "The scope keeps working as it is: agents are still given its memory and can still write to it, and no delivery waits on this. Retiring or editing entries by hand in Memory makes it smaller in the meantime. This message is not repeated until a consolidation of the scope succeeds, which resolves it.",
+    "The scope keeps working as it is: agents are still given its memory and can still write to it, and no delivery waits on this. This message is not repeated until a consolidation of the scope succeeds, which resolves it.",
   );
   return lines.join("\n");
 }
 
 /** What the scheduler should do about one scope now. */
-export type ConsolidationDecision =
-  | { kind: "consolidate"; trigger: MemoryConsolidationTrigger }
-  /** Over a cap on people's entries alone, with nothing of the agents' left to fold: said once, and left. */
-  | { kind: "skip"; note: string }
-  | { kind: "none" };
+export type ConsolidationDecision = { kind: "consolidate"; trigger: MemoryConsolidationTrigger } | { kind: "none" };
 
 /**
  * Whether the scope's last consolidation failed after the scope was last
@@ -176,109 +160,55 @@ export function failedSinceSettled(state: ScopeConsolidationState): boolean {
 }
 
 /**
- * Whether a scope over a cap is newly so, rather than left that way on
- * purpose: never settled, written to since it was last settled (by
- * anyone — an agent's note or a person's entry), or settled under other
- * caps (a guardrail was changed) — or one whose last consolidation
- * failed after it was settled. A scope a person restored, or one held
- * over by people's entries alone, that nobody has touched since is not.
- */
-function newlyOverCap(state: ScopeConsolidationState, caps: MemoryCaps): boolean {
-  if (state.settled === null || state.changedSinceSettled) return true;
-  if (failedSinceSettled(state)) return true;
-  const then = state.settled.caps;
-  return then === null || then.maxEntries !== caps.maxEntries || then.maxChars !== caps.maxChars;
-}
-
-export function peopleOverCapNote(tally: ScopeTally, caps: MemoryCaps): string {
-  return (
-    `People's entries alone come to ${tally.personEntries} entries and ${tally.personChars.toLocaleString("en-US")} characters, ` +
-    `over this scope's cap of ${caps.maxEntries} entries or ${caps.maxChars.toLocaleString("en-US")} characters. ` +
-    `Consolidation never rewrites a person's entry, so they were left as written.`
-  );
-}
-
-/**
  * Whether a scope is due a consolidation (EO-480).
  *
  * - Never while one is running for it, or while a failed one is backing
  *   off (`retryAt`).
- * - **Cap:** the scope has reached its entry or character cap — whoever's
- *   entries took it there — and is newly over it (`newlyOverCap`), and
- *   the agents' entries exceed what a consolidation would leave of them.
- *   When people's entries alone are over the cap and the agents' are
- *   already within that, there is nothing to fold: that is recorded once
- *   (`skip`), which settles the scope until it changes again.
+ * - Never for its size (EO-913): a scope holding many entries, or many
+ *   characters, is not due for that.
  * - **Schedule:** more than 24 hours since it was last consolidated (or,
- *   never consolidated, since its oldest agent-written entry), and at
- *   least five runs given its memory since then.
+ *   never consolidated, since its oldest agent-written entry), at least
+ *   five runs given its memory since then, and at least one agent-written
+ *   entry written or changed since its last consolidation
+ *   (`newEntries`) — what a scheduled consolidation is given. A scope
+ *   with none has nothing new to tidy, and is left.
+ * - **A failure since the scope was last settled** (`failedSinceSettled`)
+ *   is taken up again once its backoff is over, without waiting for
+ *   another day and five runs: a person's `manual` one as `manual`, over
+ *   the whole scope, anything else on the schedule — which needs a new
+ *   entry to give it. Never a failure of a `cap` consolidation from
+ *   before EO-913, which size no longer starts: that scope waits for its
+ *   day and five runs like any other.
  *
- * Both need an agent-written entry: a person's are never sent, so a scope
- * of only those has nothing to consolidate. `runsDeliveredSince` is asked
- * only when the day has passed, because it reads run events.
+ * Every one needs an agent-written entry: a person's are never sent, so a
+ * scope of only those has nothing to consolidate. `runsDeliveredSince` is
+ * asked only when the day has passed, because it reads run events, and
+ * `newEntries` only once everything else says yes.
  */
 export function consolidationDue(input: {
   tally: ScopeTally;
   state: ScopeConsolidationState;
-  caps: MemoryCaps;
   now: number;
   runsDeliveredSince: (since: number) => number;
+  /** How many agent-written entries were written or changed since the scope's last consolidation (`entriesNewSinceConsolidated`). */
+  newEntries: () => number;
 }): ConsolidationDecision {
-  const { tally, state, caps, now } = input;
+  const { tally, state, now } = input;
   if (state.running) return { kind: "none" };
   const retry = retryAt(state);
   if (retry !== null && now < retry) return { kind: "none" };
-
-  if (reachesCap(tally, caps) && newlyOverCap(state, caps)) {
-    const targets = consolidationTargets(tally, caps);
-    if (tally.agentEntries > 0 && (tally.agentEntries > targets.entries || tally.agentChars > targets.chars)) return { kind: "consolidate", trigger: "cap" };
-    if (peopleAloneOverCap(tally, caps)) return { kind: "skip", note: peopleOverCapNote(tally, caps) };
-  }
-
   if (tally.agentEntries === 0) return { kind: "none" };
-  // A run on the schedule that stopped part-way: its successful batches
-  // made it the scope's last consolidation, so the day and the five runs
-  // would be counted from them, and its failed batch never retried.
-  if (failedSinceSettled(state)) return { kind: "consolidate", trigger: "schedule" };
+  // A run that stopped part-way: its successful batches made it the
+  // scope's last consolidation, so the day and the five runs would be
+  // counted from them, and its failed batch never retried.
+  if (failedSinceSettled(state) && state.failuresSince[0]!.trigger !== "cap") {
+    if (state.failuresSince[0]!.trigger === "manual") return { kind: "consolidate", trigger: "manual" };
+    return input.newEntries() > 0 ? { kind: "consolidate", trigger: "schedule" } : { kind: "none" };
+  }
   const since = state.lastConsolidatedAt ?? tally.oldestAgentAt;
   if (since === null || now - since <= MEMORY_CONSOLIDATION_INTERVAL_MS) return { kind: "none" };
-  return input.runsDeliveredSince(since) >= MEMORY_CONSOLIDATION_MIN_RUNS ? { kind: "consolidate", trigger: "schedule" } : { kind: "none" };
-}
-
-/**
- * What a consolidation is asked to bring the agents' entries to. An aim,
- * not a test (EO-573): an answer that falls short of it but makes the
- * scope smaller is applied all the same.
- */
-export interface ConsolidationTargets {
-  /** The entries it aims for. */
-  entries: number;
-  /** The characters it aims for. */
-  chars: number;
-}
-
-/**
- * One limit's target for the agents' entries.
- *
- * About half the cap less what people's entries take, so the scope lands
- * near half and is not consolidated again a few notes later. Where
- * people's entries take most of that, the agents keep up to a tenth of
- * the cap — but never more than the room left under it, so a
- * consolidation that reaches its aim never leaves a scope at or over a
- * cap people's entries alone do not reach. Only where they do reach it is
- * there no room at all; then the agents' share is held to that tenth, and
- * the cap cannot be met whatever is done with it.
- */
-function targetFor(cap: number, people: number): number {
-  const half = Math.floor(cap / 2) - people;
-  const tenth = Math.ceil(cap / 10);
-  const room = cap - 1 - people;
-  if (room < 0) return tenth;
-  return Math.max(0, Math.min(Math.max(half, tenth), room));
-}
-
-export function consolidationTargets(tally: ScopeTally, caps: MemoryCaps): ConsolidationTargets {
-  return { entries: targetFor(caps.maxEntries, tally.personEntries), chars: targetFor(caps.maxChars, tally.personChars) };
+  if (input.runsDeliveredSince(since) < MEMORY_CONSOLIDATION_MIN_RUNS) return { kind: "none" };
+  return input.newEntries() > 0 ? { kind: "consolidate", trigger: "schedule" } : { kind: "none" };
 }
 
 /** An entry a consolidation was given, as far as its answer is checked against it. */
@@ -287,54 +217,16 @@ export interface SentEntry {
   body: string;
 }
 
-/** The agents' entries and characters an answer leaves, against what it was given. */
-export interface ConsolidationChange {
-  entriesBefore: number;
-  entriesAfter: number;
-  charsBefore: number;
-  charsAfter: number;
-}
-
-/**
- * What applying an answer would leave of the entries it was given. Every
- * id it names is assumed to be one of them, named once — what
- * `consolidationAnswerSchema` holds it to.
- */
-export function consolidationChange(sent: readonly SentEntry[], answer: MemoryConsolidationOperations): ConsolidationChange {
-  const bodies = new Map(sent.map((entry) => [entry.id, entry.body.length]));
-  const length = (id: string) => bodies.get(id) ?? 0;
-  const charsBefore = sent.reduce((sum, entry) => sum + entry.body.length, 0);
-  let charsAfter = charsBefore;
-  let entriesAfter = sent.length;
-  for (const retire of answer.retire) {
-    charsAfter -= length(retire.id);
-    entriesAfter -= 1;
-  }
-  for (const merge of answer.merge) {
-    charsAfter += merge.body.length - merge.from.reduce((sum, id) => sum + length(id), 0);
-    entriesAfter -= merge.from.length - 1;
-  }
-  for (const rewrite of answer.rewrite) charsAfter += rewrite.body.length - length(rewrite.id);
-  return { entriesBefore: sent.length, entriesAfter, charsBefore, charsAfter };
-}
-
-/**
- * Whether an answer would grow the scope: leave as many entries as it
- * was given and more characters. One that removes an entry, or the same
- * entries in fewer or as many characters, does not (EO-573).
- */
-export function growsScope(change: ConsolidationChange): boolean {
-  return change.entriesAfter >= change.entriesBefore && change.charsAfter > change.charsBefore;
-}
-
 /**
  * The shape one consolidation's answer is held to (EO-573): retire, merge
  * and rewrite operations, each naming only entries it was given — never a
  * person's, which are never sent — and none of them twice, across all
- * three lists. An answer that would grow the scope is refused; one that
- * makes it smaller is accepted however far short of its target it falls,
- * and one that changes nothing is a valid no-op. Checked again when the
- * answer comes back (invariant 5); the lists reach the backend as JSON
+ * three lists, and every rewrite with the reason it is made (EO-913): one
+ * without a reason is refused with the whole answer. Whether a rewrite's
+ * reason holds is tested once the answer is in (`checkRewriteReasons`),
+ * which drops the rewrite rather than the answer. One that changes
+ * nothing is a valid no-op, and its size is no test of it either way. Checked again when the answer comes back
+ * (invariant 5); the lists and the reasons reach the backend as JSON
  * Schema, the rest is checked here.
  *
  * The same for a batch, the whole set and the cross-batch pass's merge
@@ -343,10 +235,10 @@ export function growsScope(change: ConsolidationChange): boolean {
  */
 export function consolidationAnswerSchema(sent: readonly SentEntry[]): z.ZodType<MemoryConsolidationAnswer> {
   const known = new Set(sent.map((entry) => entry.id));
-  return MemoryConsolidationAnswerSchema.superRefine((answer, ctx) => checkOperations(sent, known, answer, ctx));
+  return MemoryConsolidationAnswerSchema.superRefine((answer, ctx) => checkOperations(known, answer, ctx));
 }
 
-function checkOperations(sent: readonly SentEntry[], known: ReadonlySet<string>, answer: MemoryConsolidationOperations, ctx: z.RefinementCtx): void {
+function checkOperations(known: ReadonlySet<string>, answer: MemoryConsolidationOperations, ctx: z.RefinementCtx): void {
   const named = new Map<string, string>();
   const name = (id: string, path: (string | number)[]) => {
     const where = path.join(".");
@@ -357,14 +249,6 @@ function checkOperations(sent: readonly SentEntry[], known: ReadonlySet<string>,
   answer.retire.forEach((retire, at) => name(retire.id, ["retire", at, "id"]));
   answer.merge.forEach((merge, at) => merge.from.forEach((id, index) => name(id, ["merge", at, "from", index])));
   answer.rewrite.forEach((rewrite, at) => name(rewrite.id, ["rewrite", at, "id"]));
-  const change = consolidationChange(sent, answer);
-  if (growsScope(change)) {
-    ctx.addIssue({
-      code: "custom",
-      path: [],
-      message: `would grow the scope from ${change.charsBefore} to ${change.charsAfter} characters without removing an entry`,
-    });
-  }
 }
 
 /** What the skill proposal call's answer is checked against: the scope it is about, and the item each entry it was given came from. */
@@ -419,21 +303,153 @@ export interface RepositoryFile {
   truncated: boolean;
 }
 
+/**
+ * The relative date phrases a `relative_date` rewrite may replace
+ * (EO-913): a fixed list, matched as whole phrases and in any case. A
+ * word phrase is whole where no letter, digit or underscore touches it,
+ * so "...yesterday" is one. A number is a run of digits not itself part
+ * of a longer number either, so "000 days ago" inside "1,000 days ago",
+ * or "5 days ago" inside "1.5 days ago", is not one.
+ */
+const RELATIVE_DATE_PHRASE =
+  /(?<![\p{L}\p{N}_])(?:today|yesterday|tomorrow|(?:this|last|next)\s+(?:week|month)|in\s+\d+\s+days?)(?![\p{L}\p{N}_])|(?<![\p{L}\p{N}_])(?<!\d[.,])\d+\s+(?:days?|weeks?)\s+ago(?![\p{L}\p{N}_])/giu;
+
+const RELATIVE_DATE_PHRASES_SAID = '"today", "yesterday", "tomorrow", "this week", "last week", "next week", "this month", "last month", "next month", "N days ago", "N weeks ago", "in N days"';
+
+const ISO_DATE = /^(\d{4})-(\d{2})-(\d{2})$/;
+
+/** Whether `text` is a real calendar date written YYYY-MM-DD. */
+function isIsoDate(text: string): boolean {
+  const match = ISO_DATE.exec(text);
+  if (!match) return false;
+  const [year, month, day] = [Number(match[1]), Number(match[2]), Number(match[3])];
+  const date = new Date(0);
+  date.setUTCFullYear(year, month - 1, day);
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
+}
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * (a) Whether `rewrite` is `original` with one or more of its relative
+ * date phrases replaced by a YYYY-MM-DD date and nothing else changed.
+ * Which date it is, is not checked: that is the prompt's job.
+ */
+export function replacesRelativeDate(original: string, rewrite: string): boolean {
+  const phrases = [...original.matchAll(RELATIVE_DATE_PHRASE)];
+  if (phrases.length === 0) return false;
+  let pattern = "";
+  let at = 0;
+  for (const phrase of phrases) {
+    pattern += `${escapeRegExp(original.slice(at, phrase.index))}(?:${escapeRegExp(phrase[0])}|(\\d{4}-\\d{2}-\\d{2}))`;
+    at = phrase.index + phrase[0].length;
+  }
+  pattern += escapeRegExp(original.slice(at));
+  const match = new RegExp(`^${pattern}$`, "su").exec(rewrite);
+  if (!match) return false;
+  const dates = match.slice(1).filter((date): date is string => date !== undefined);
+  return dates.length > 0 && dates.every(isIsoDate);
+}
+
+/**
+ * (b) Whether `rewrite` names one of `files` and quotes, verbatim, a
+ * whole line of that file as it was delivered — any line that is not
+ * blank, with only the whitespace around it left out. The file's
+ * structure is not read: a line is a line, its list or quote marker
+ * included.
+ */
+export function quotesRepositoryFile(rewrite: string, files: readonly { name: string; text: string }[]): boolean {
+  return files.some(
+    (file) =>
+      rewrite.includes(file.name) &&
+      file.text.split(/\r?\n/).some((line) => {
+        const quote = line.trim();
+        return quote.length > 0 && rewrite.includes(quote);
+      }),
+  );
+}
+
+/** Whether `text` holds `id` as a whole token: not run on into further letters, digits, hyphens or underscores. */
+function namesId(text: string, id: string): boolean {
+  return new RegExp(`(?<![\\p{L}\\p{N}_-])${escapeRegExp(id)}(?![\\p{L}\\p{N}_-])`, "u").test(text);
+}
+
+/** (c) Whether `rewrite` names the id of an entry in `given`, other than `original`, written after it. */
+export function namesNewerEntry(original: { id: string; createdAt: number }, rewrite: string, given: readonly { id: string; createdAt: number }[]): boolean {
+  return given.some((entry) => entry.id !== original.id && entry.createdAt > original.createdAt && namesId(rewrite, entry.id));
+}
+
+/** What one call was given, against which each rewrite's reason is tested (`checkRewriteReasons`). */
+export interface RewriteEvidence {
+  /** Every entry the call was given, with when it was written and its flag. */
+  given: readonly { id: string; body: string; createdAt: number; contradictsRepositoryFile: boolean }[];
+  /** The repository files delivered with the call, as delivered; none for the cross-batch pass. */
+  repositoryFiles: readonly { name: string; text: string }[];
+}
+
+/**
+ * Why a rewrite's reason does not hold, or null where it does (EO-913):
+ * one mechanical test per reason, and nothing more. Whether the rewrite
+ * was a good one, once it passes, is not judged here.
+ */
+export function rewriteReasonProblem(rewrite: MemoryConsolidationAnswer["rewrite"][number], evidence: RewriteEvidence): string | null {
+  const original = evidence.given.find((entry) => entry.id === rewrite.id);
+  if (!original) return "names an entry it was not given";
+  switch (rewrite.reason) {
+    case "relative_date":
+      if (rewrite.contradictsRepositoryFile !== original.contradictsRepositoryFile) return "a relative date made absolute changes nothing else, the flag included";
+      return replacesRelativeDate(original.body, rewrite.body) ? null : "is not the entry with a relative date phrase replaced by a YYYY-MM-DD date";
+    case "repository_file":
+      return quotesRepositoryFile(rewrite.body, evidence.repositoryFiles) ? null : "does not name a repository file it was given and quote a line of it";
+    case "newer_entry":
+      return namesNewerEntry(original, rewrite.body, evidence.given) ? null : "does not name a newer entry it was given";
+  }
+}
+
+/**
+ * An answer with every rewrite whose reason does not hold taken out
+ * (EO-913), and those dropped with why: the entry a dropped rewrite named
+ * stays active and as it was, and the rest of the answer is applied.
+ */
+export function checkRewriteReasons(
+  answer: MemoryConsolidationAnswer,
+  evidence: RewriteEvidence,
+): { answer: MemoryConsolidationAnswer; dropped: { id: string; reason: string; problem: string }[] } {
+  const dropped: { id: string; reason: string; problem: string }[] = [];
+  const rewrite = answer.rewrite.filter((candidate) => {
+    const problem = rewriteReasonProblem(candidate, evidence);
+    if (problem !== null) dropped.push({ id: candidate.id, reason: candidate.reason, problem });
+    return problem === null;
+  });
+  return { answer: { ...answer, rewrite }, dropped };
+}
+
+/** Said on a consolidation's row about the rewrites `checkRewriteReasons` dropped, or null for none. */
+export function droppedRewritesNote(dropped: readonly { id: string; reason: string; problem: string }[]): string | null {
+  if (dropped.length === 0) return null;
+  const each = dropped.map((drop) => `${drop.id} (\`${drop.reason}\`: ${drop.problem})`).join("; ");
+  return `${dropped.length} ${dropped.length === 1 ? "rewrite was" : "rewrites were"} dropped because ${dropped.length === 1 ? "its reason did" : "their reasons did"} not hold, and ${dropped.length === 1 ? "its entry stays" : "their entries stay"} as written: ${each}.`;
+}
+
 /** What a consolidation may answer and how it should choose — the rules every call that answers with operations is told. */
 const OPERATION_RULES = [
   "Answer with the changes to make, not with the entries to keep. Name only what changes: an entry you do not mention stays exactly as it is, so never list an entry just to keep it. There are three operations:",
   "- `retire`: `{ id, reason }` — retire one entry, saying in a few words why.",
   "- `merge`: `{ from, body, contradictsRepositoryFile }` — fold two or more entries (`from` holds at least two ids) into one new entry whose text is `body`.",
-  "- `rewrite`: `{ id, body, contradictsRepositoryFile }` — replace one entry's text with `body`.",
-  "Every id you name must be one of the entries you are given, and each id may appear only once in the whole answer — in one retire, one merge's `from`, or one rewrite. An answer with nothing to change has all three lists empty; that is a valid answer.",
-  "What to change:",
-  "- Merge entries that say the same thing, or parts of one thing, into one.",
-  `- Keep each entry you merge or rewrite to one fact, at most ${MAX_MEMORY_NOTE_CHARS} characters: an answer with a longer one is refused whole. An entry is delivered to an agent whole, so a topic digest that bundles unrelated facts reaches agents that need only one of them. Where a topic holds more than fits, split it into separate facts rather than exceed the limit — merge only the entries that state the same fact, and leave the others as they are or merge them into entries of their own.`,
+  `- \`rewrite\`: \`{ id, body, reason, contradictsRepositoryFile }\` — replace one entry's text with \`body\`. \`reason\` is one of ${MEMORY_CONSOLIDATION_REWRITE_REASONS.map((reason) => `\`${reason}\``).join(", ")}, and there is no other reason to rewrite an entry: never rewrite one only to shorten it, reword it or tidy its style. EO checks each rewrite against its reason and drops one that fails, leaving the entry as it was:`,
+  `  - \`relative_date\`: \`body\` is the entry exactly as written, with each relative date phrase you replace (${RELATIVE_DATE_PHRASES_SAID}) replaced by the date it means as YYYY-MM-DD, counted from the day the entry was written, and nothing else changed — not a word around it, not the flag.`,
+  "  - `repository_file`: `body` names the file it agrees with (CLAUDE.md or AGENTS.md) and quotes, word for word, at least one whole line of that file exactly as you were given it, from its first character to its last — a list or quote marker at its start included.",
+  "  - `newer_entry`: `body` names the id of the entry you are given that corrects it, one written after it.",
+  "Every id you name must be one of the entries you are given, and each id may appear only once in the whole answer — in one retire, one merge's `from`, or one rewrite. An answer with nothing to change has all three lists empty; that is a valid answer, and often the right one.",
+  "What to change, and nothing else:",
+  `- Merge entries that state the same fact into one, keeping every detail any of them adds. Keep each entry you merge or rewrite to one fact, at most ${MAX_MEMORY_NOTE_CHARS} characters: an answer with a longer one is refused whole. Entries about one topic that state different facts are not duplicates; leave them as they are.`,
   "- Retire what is stale, contradicted by a newer entry, or derivable from the code itself — what an agent would see by reading the repository. Between two entries that disagree, the newer one is current.",
-  "- When you rewrite or merge, write relative dates and times (\"yesterday\", \"last week\", \"in two days\") as absolute dates, using the date each entry was written.",
-  "- When the workspace's CLAUDE.md or AGENTS.md is given — for a project, those of each of its workspaces — treat it as current: an entry that disagrees with it is rewritten to agree, or retired. The one exception is an entry that is plainly newer than the file and says it corrects it; keep it, and flag it by setting contradictsRepositoryFile to true on the merge or rewrite that carries it — a rewrite may keep its text as it is to do only that. An entry already flagged stays flagged unless you change it. Never suggest editing the file.",
+  "- Write relative dates (\"yesterday\", \"last week\", \"3 days ago\") as absolute dates, using the date each entry was written.",
+  "- When the workspace's CLAUDE.md or AGENTS.md is given — for a project, those of each of its workspaces — treat it as current: an entry that disagrees with it is rewritten to agree, or retired. The one exception is an entry that is plainly newer than the file and says it corrects it; keep it, and flag it by setting contradictsRepositoryFile to true on the merge or rewrite that carries it — such a rewrite, too, names the file and quotes the line it corrects. An entry already flagged stays flagged unless you change it. Never suggest editing the file.",
   "- Do not invent anything an entry does not say.",
-  "- Your changes must make the entries smaller, in number or in characters, and never larger. Where you are given a target, aim for it, but any real reduction is useful, and a change you are unsure of is better left out.",
+  "- How many entries there are, and how long they are, is no reason to change any of them. A distinct, current, useful entry stays exactly as it is, and a change you are unsure of is better left out.",
 ];
 
 const MEMORY_TIDY_INTRO =
@@ -466,7 +482,7 @@ export const MEMORY_PROPOSE_SKILLS_SYSTEM = [
  */
 export const MEMORY_CROSS_BATCH_MERGE_SYSTEM = [
   MEMORY_TIDY_INTRO,
-  "The scope was tidied in batches, so entries that say the same thing may have been in different batches and never seen side by side. The entries you are given were picked from across those batches, in groups, as possible duplicates of one another. Merge those that do say the same thing, or parts of one thing; leave alone those that only look alike. A group is a suggestion: you may merge part of one, or entries from two.",
+  "The scope was tidied in batches, so entries that say the same thing may have been in different batches and never seen side by side. The entries you are given were picked from across those batches, in groups, as possible duplicates of one another. Merge those that state the same fact; leave alone those that only look alike, or state different facts about one topic. A group is a suggestion: you may merge part of one, or entries from two.",
   ...OPERATION_RULES,
 ].join("\n");
 
@@ -496,68 +512,76 @@ const EXISTING_SKILL_BODY_MAX_CHARS = 6_000;
 export const EXISTING_SKILLS_MAX = 30;
 
 /**
- * Which part of a scope one call is given, when the scope is consolidated
- * in batches (EO-574): its place among them, and what the whole scope's
- * agents hold, so the model knows the rest exist and are not its to name.
+ * Which part of a scope one call is given, when it is not the whole
+ * scope's agent entries in one call: its place among the run's batches,
+ * and what the whole scope's agents hold, so the model knows the rest
+ * exist and are not its to name. `new` is a scheduled consolidation's
+ * batch (EO-913): entries written or changed since the scope's last
+ * consolidation, the ids `fresh` holds, each with the entries most like
+ * it; otherwise it is one of the batches the whole scope was cut into
+ * (EO-574).
  */
 export interface ConsolidationBatchPart {
   index: number;
   count: number;
   scopeEntries: number;
   scopeChars: number;
+  fresh?: ReadonlySet<string>;
 }
 
 /**
  * Each entry with its id, the day it was written, the item it came from
  * and its flag, oldest first — and, where `likelyDuplicates` says so, the
- * others it is likely a duplicate of (EO-576).
+ * others it is likely a duplicate of (EO-576), and where `fresh` holds it,
+ * that it is new since the last consolidation (EO-913).
  */
-function entryLines(entries: readonly MemoryEntryView[], likelyDuplicates?: ReadonlyMap<string, readonly string[]>): string[] {
+function entryLines(entries: readonly MemoryEntryView[], likelyDuplicates?: ReadonlyMap<string, readonly string[]>, fresh?: ReadonlySet<string>): string[] {
   const lines: string[] = [];
   for (const entry of [...entries].sort((a, b) => a.createdAt - b.createdAt || (a.id < b.id ? -1 : 1))) {
     const item = entry.source.type === "run" && entry.source.itemId !== null ? `; from item ${entry.source.itemId}` : "";
     const alike = likelyDuplicates?.get(entry.id) ?? [];
     const duplicate = alike.length > 0 ? `; likely a duplicate of ${alike.join(", ")}` : "";
-    lines.push("", `### ${entry.id} (written ${isoDay(entry.createdAt)}${item}${entry.contradictsRepositoryFile ? "; already flagged as correcting the repository file" : ""}${duplicate})`, entry.body);
+    const isNew = fresh?.has(entry.id) === true ? "; new since the last consolidation" : "";
+    lines.push("", `### ${entry.id} (written ${isoDay(entry.createdAt)}${item}${isNew}${entry.contradictsRepositoryFile ? "; already flagged as correcting the repository file" : ""}${duplicate})`, entry.body);
   }
   return lines;
 }
 
 /** What a call is told about the entries marked as likely duplicates, when any are. */
 const LIKELY_DUPLICATES_NOTE =
-  "Entries marked \"likely a duplicate of\" were found by EO, without reading them, to share most of their wording with the entries named. Read each such set first: merge those that say the same thing, keeping every fact any of them adds; leave apart those that only look alike.";
+  "Entries marked \"likely a duplicate of\" were found by EO, without reading them, to share most of their wording with the entries named. Read each such set first: merge those that state the same fact, keeping every fact any of them adds; leave apart those that only look alike.";
 
 const charsOf = (entries: readonly { body: string }[]) => entries.reduce((sum, entry) => sum + entry.body.length, 0);
 
-/** What a consolidation is told: today, the target, the entries with their ids and dates, and the workspace's file. */
+/** What a consolidation is told: today, the entries with their ids and dates, and the workspace's file. No target: size is not what it is for (EO-913). */
 export function consolidationInput(input: {
   scopeLabel: string;
   entries: readonly MemoryEntryView[];
-  targets: { entries: number; chars: number };
-  /** Which batch of the scope these entries are, when it is consolidated in more than one (EO-574). */
+  /** Which part of the scope these entries are, when they are not its whole set in one call (EO-574, EO-913). */
   batch?: ConsolidationBatchPart;
   repositoryFiles: readonly RepositoryFile[];
   /**
    * For each entry found to be a likely duplicate of others (EO-576,
-   * `nearDuplicateGroups`), those others — all in this call, since a set
-   * of likely duplicates always shares a batch. Marked on each entry.
+   * `nearDuplicateGroups`), those others. Marked on each entry, where
+   * those others are in this call too.
    */
   likelyDuplicates?: ReadonlyMap<string, readonly string[]>;
   now: number;
 }): string {
   const lines: string[] = [`Today is ${isoDay(input.now)}.`];
-  if (input.batch) {
-    const { batch } = input;
+  const { batch } = input;
+  if (batch?.fresh) {
+    lines.push(
+      `These are ${input.entries.length} of the agent-written memory entries of ${input.scopeLabel}, ${charsOf(input.entries)} characters${batch.count > 1 ? `: batch ${batch.index} of ${batch.count}` : ""}. Those marked "new since the last consolidation" were written or changed since the scope was last tidied; each is given with the existing entries most like it, which it may repeat, correct or be corrected by.`,
+      `The scope's agents hold ${batch.scopeEntries} entries in ${batch.scopeChars} characters; the rest were tidied before and are not part of this, so change only these.`,
+    );
+  } else if (batch) {
     lines.push(
       `These are ${input.entries.length} of the agent-written memory entries of ${input.scopeLabel}, ${charsOf(input.entries)} characters: batch ${batch.index} of ${batch.count}, chosen so that entries alike tend to share one.`,
       `The scope's agents hold ${batch.scopeEntries} entries in ${batch.scopeChars} characters; the others are consolidated in their own batches, so change only these.`,
-      `Target for this batch: about ${input.targets.entries} entries and about ${input.targets.chars} characters in total, each entry you merge or rewrite at most ${MAX_MEMORY_NOTE_CHARS} characters. Any reduction towards it is kept.`,
     );
   } else {
-    lines.push(
-      `These are the agent-written memory entries of ${input.scopeLabel}: ${input.entries.length} entries, ${charsOf(input.entries)} characters.`,
-      `Target: about ${input.targets.entries} entries and about ${input.targets.chars} characters in total, each entry you merge or rewrite at most ${MAX_MEMORY_NOTE_CHARS} characters. Any reduction towards it is kept.`,
-    );
+    lines.push(`These are the agent-written memory entries of ${input.scopeLabel}: ${input.entries.length} entries, ${charsOf(input.entries)} characters.`);
   }
   const given = new Set(input.entries.map((entry) => entry.id));
   const marks = new Map<string, string[]>();
@@ -566,7 +590,7 @@ export function consolidationInput(input: {
     if (given.has(id) && here.length > 0) marks.set(id, here);
   }
   if (marks.size > 0) lines.push(LIKELY_DUPLICATES_NOTE);
-  lines.push("", "## Entries", ...entryLines(input.entries, marks));
+  lines.push("", "## Entries", ...entryLines(input.entries, marks, batch?.fresh));
   for (const file of input.repositoryFiles) {
     const whose = file.workspace === undefined ? "The workspace's" : `The workspace ${JSON.stringify(file.workspace)}'s`;
     lines.push("", `## ${whose} ${file.name}${file.truncated ? " (cut short to fit)" : ""}`, file.text);
@@ -630,7 +654,7 @@ export function crossBatchMergeInput(input: { scopeLabel: string; groups: readon
   const entries = input.groups.flat();
   const lines: string[] = [
     `Today is ${isoDay(input.now)}.`,
-    `These are ${entries.length} of the agent-written memory entries of ${input.scopeLabel}, ${charsOf(entries)} characters, in ${input.groups.length} groups of possible duplicates. Each entry you merge or rewrite at most ${MAX_MEMORY_NOTE_CHARS} characters.`,
+    `These are ${entries.length} of the agent-written memory entries of ${input.scopeLabel}, ${charsOf(entries)} characters, in ${input.groups.length} groups of possible duplicates.`,
   ];
   input.groups.forEach((group, at) => lines.push("", `## Possible duplicates ${at + 1}`, ...entryLines(group)));
   return lines.join("\n");

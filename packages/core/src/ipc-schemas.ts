@@ -1464,20 +1464,6 @@ export const GuardConfigSchema = z.object({
    */
   memoryDeliveryChars: z.number().int().positive().max(40_000),
   /**
-   * The most active memory entries one scope — the project, or one
-   * workspace — holds (EO-480, ARCHITECTURE.md, "What an agent is given").
-   * Reaching it queues a consolidation that brings the scope back to about
-   * half. 200 by default, so a step in one workspace draws from at most
-   * 400; required for `watchRoundTripsPerItem`'s reason.
-   */
-  memoryScopeMaxEntries: z.number().int().positive().max(10_000),
-  /**
-   * The most characters of active memory entries one scope holds
-   * (EO-480). Whichever of this and `memoryScopeMaxEntries` is reached
-   * first queues the consolidation. 40,000 by default.
-   */
-  memoryScopeMaxChars: z.number().int().positive().max(1_000_000),
-  /**
    * How many runs in a row an agent-written, unlocked skill may be given
    * without one loading it before it is shown as stale (EO-720,
    * ARCHITECTURE.md §13.3). Counted in runs, not days, since its last

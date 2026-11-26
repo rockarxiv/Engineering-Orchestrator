@@ -40,7 +40,6 @@ import { answerToolCall } from "./server.js";
  * or the sentence saying why nothing changed.
  */
 
-const CAPS = { maxEntries: 200, maxChars: 40_000 };
 const WRITE_TOOLS = [
   ["memory_add", ["memory:add"]],
   ["memory_edit", ["memory:edit"]],
@@ -257,7 +256,6 @@ describe("memory_consolidation_restore", () => {
       sent: [a, b],
       answer: { retire: [], merge: [{ body: "Windows CI is flaky; rerun its shards once.", from: [a.id, b.id], contradictsRepositoryFile: false }], rewrite: [] },
       note: null,
-      caps: CAPS,
       now: 2000,
     });
     if (!applied.ok) throw new Error(applied.problem);
@@ -297,7 +295,6 @@ describe("memory_consolidation_restore", () => {
       // Evidence for a proposed skill is left out of every operation, so the consolidation neither retires nor writes it.
       answer: { retire: [], merge: [{ body: "Windows CI is flaky; rerun its shards once.", from: [a.id, b.id], contradictsRepositoryFile: false }], rewrite: [] },
       note: null,
-      caps: CAPS,
       now: 2000,
     });
     if (!applied.ok) throw new Error(applied.problem);
@@ -377,9 +374,11 @@ describe("an entry written through MCP and consolidation", () => {
             : ({ retire: [], merge: [{ body: "Merged.", from: agents.map((entry) => entry.id), contradictsRepositoryFile: false }], rewrite: [] } satisfies MemoryConsolidationAnswer),
       }),
     );
-    const consolidator = createMemoryConsolidator({ db: handle.db, sideCall: sideCall as never, caps: () => ({ maxEntries: 10, maxChars: 40_000 }) });
+    const consolidator = createMemoryConsolidator({ db: handle.db, sideCall: sideCall as never });
     try {
       consolidator.start();
+      // Asked for, since size never starts one (EO-913): the whole scope's agent entries.
+      consolidator.requestNow(workspace);
       await consolidator.idle();
     } finally {
       consolidator.stop();

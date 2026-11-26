@@ -667,7 +667,6 @@ describe("a person's memory written through MCP on a project the organisation ho
       sent: [first.entry, second.entry, evidence.entry],
       answer: { retire: [], merge: [{ body: "Shard 3 is flaky; rerun it once.", from: [first.entry.id, second.entry.id], contradictsRepositoryFile: false }], rewrite: [] },
       note: null,
-      caps: { maxEntries: 200, maxChars: 40_000 },
       now: 2000,
     });
     if (!applied.ok) throw new Error(applied.problem);
@@ -771,8 +770,7 @@ describe("consolidating a project the organisation holds", () => {
   it("never happens on a desktop holding a replica of it; it happens on the record, workspaces included", async () => {
     const { projectId } = await organisationWork();
     const workspaceScope: MemoryScope = { kind: "workspace", id: "anna-checkout" };
-    // Over the entry cap of one, in the project and in a workspace of it
-    // that only a desktop has a row for.
+    // In the project and in a workspace of it that only a desktop has a row for.
     for (const [body, scope] of [
       ["One.", projectScope(projectId)],
       ["Two.", projectScope(projectId)],
@@ -785,19 +783,33 @@ describe("consolidating a project the organisation holds", () => {
     await anna.record.sync();
     expect(listMemories(anna.handle.db, projectScope(projectId))).toHaveLength(2);
 
-    const caps = () => ({ maxEntries: 1, maxChars: 40_000 });
     const sideCall = vi.fn();
     const onDesktop = createMemoryConsolidator({
       db: anna.handle.db,
       sideCall,
-      caps,
       heldElsewhere: (id) => projectMovedToTheRecord(anna.handle.db, id as Uuid),
     });
     expect(onDesktop.check()).toEqual([]);
+    onDesktop.start();
+    try {
+      expect(onDesktop.requestNow(projectScope(projectId))).toMatchObject({ outcome: "refused", reason: "held_by_record" });
+      expect(onDesktop.requestNow(workspaceScope)).toMatchObject({ outcome: "refused" });
+    } finally {
+      onDesktop.stop();
+    }
     expect(listConsolidations(anna.handle.db, projectScope(projectId))).toEqual([]);
 
-    const onRecord = createMemoryConsolidator({ db: recordDb.db, sideCall, caps, workspacesElsewhere: true });
-    expect(onRecord.check().map((due) => due.scope)).toEqual(expect.arrayContaining([projectScope(projectId), workspaceScope]));
+    // Held behind pipeline work, so what is queued stays queued and is read here.
+    const onRecord = createMemoryConsolidator({ db: recordDb.db, sideCall, workspacesElsewhere: true, pipelineBusy: () => true });
+    onRecord.start();
+    try {
+      expect(onRecord.requestNow(projectScope(projectId))).toMatchObject({ outcome: "queued" });
+      expect(onRecord.requestNow(workspaceScope)).toMatchObject({ outcome: "queued" });
+      expect(onRecord.pending(projectScope(projectId))).toBe("queued");
+      expect(onRecord.pending(workspaceScope)).toBe("queued");
+    } finally {
+      onRecord.stop();
+    }
     expect(sideCall).not.toHaveBeenCalled();
   });
 });
@@ -814,7 +826,6 @@ describe("a moved project's consolidations, read on a desktop (EO-545)", () => {
       sent: [old.entry],
       answer: { retire: [], merge: [], rewrite: [{ id: old.entry.id, body: "Old, merged.", contradictsRepositoryFile: false }] },
       note: null,
-      caps: { maxEntries: 200, maxChars: 40_000 },
       now: 10,
     });
     if (!applied.ok) throw new Error(applied.problem);
@@ -912,11 +923,11 @@ describe("a consolidation running when its project is handed over", () => {
     const consolidator = createMemoryConsolidator({
       db: anna.handle.db,
       sideCall: sideCall as never,
-      caps: () => ({ maxEntries: 1, maxChars: 40_000 }),
       systemAgent: () => ({ backend: "fake", model: null, reasoningEffort: null }),
       heldElsewhere: (id) => projectMovedToTheRecord(anna.handle.db, id as Uuid),
     });
     consolidator.start();
+    consolidator.requestNow(scope);
     await vi.waitFor(() => expect(sideCall).toHaveBeenCalledTimes(1));
 
     // Handed over while the side call is out.

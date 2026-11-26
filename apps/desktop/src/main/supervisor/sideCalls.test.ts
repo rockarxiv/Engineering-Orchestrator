@@ -301,7 +301,6 @@ describe("side calls on the supervisor", () => {
       db: handle.db,
       provider: { ...fake, start },
       limits: LIMITS,
-      guards: { memoryScopeMaxEntries: 10 },
       tickIntervalMs: 3_600_000,
       watchdogIntervalMs: 3_600_000,
       sideCalls: { provider: () => sideCallProvider, smallModel: async () => "claude-haiku-5-5" },
@@ -311,6 +310,8 @@ describe("side calls on the supervisor", () => {
     supervisor.start();
     try {
       await vi.waitFor(() => expect(supervisor.activeRunCount()).toBe(1));
+      // Asked for while the run goes: queued behind it, since size never starts one (EO-913).
+      expect(consolidateNowCommand(supervisor, { scope })).toMatchObject({ outcome: "queued", behind: "pipeline" });
       await new Promise((resolve) => setTimeout(resolve, 100));
       expect(consolidating).not.toHaveBeenCalled();
       // Not started, and not recorded as anything: it has not begun.
@@ -363,13 +364,13 @@ describe("side calls on the supervisor", () => {
       db: handle.db,
       provider: createFakeProvider({ result: validImplementResult }),
       limits: LIMITS,
-      guards: { memoryScopeMaxEntries: 10 },
       tickIntervalMs: 3_600_000,
       watchdogIntervalMs: 3_600_000,
       sideCalls: { provider: () => held.provider, smallModel: async () => "claude-haiku-5-5" },
     });
     supervisor.start();
     try {
+      expect(consolidateNowCommand(supervisor, { scope })).toMatchObject({ outcome: "started" });
       // The consolidation is running, which is to say holding the only slot.
       await vi.waitFor(() => expect(held.state.entered).toBe(true));
       const item = createTestItem(handle.db, { type: "story", title: "Waiting its turn", stepId: "todo" });
@@ -392,10 +393,10 @@ describe("side calls on the supervisor", () => {
   /**
    * A person asking for a scope to be consolidated now (EO-589), through
    * the channel's command: the supervisor hands it to its consolidator,
-   * which runs it as `manual` though the scope is far under its caps, and
+   * which runs it as `manual` though it is not due on its schedule, and
    * says so while it is pending and when it ends.
    */
-  it("consolidates a scope under its caps when asked through memory:consolidateNow, recorded as manual, and refuses while paused", async () => {
+  it("consolidates a scope not due on its schedule when asked through memory:consolidateNow, recorded as manual, and refuses while paused", async () => {
     const repository = attachWorkspace(handle.db, { keyPrefix: "API", name: "api", repoPath: "/nonexistent/api" });
     const scope: MemoryScope = { kind: "project", id: repository.projectId! };
     const source = createTestItem(handle.db, { type: "feature", title: "Earlier work", stepId: null, projectId: repository.projectId! });

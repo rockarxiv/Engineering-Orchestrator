@@ -45,6 +45,9 @@ export interface QuotaRefusals {
    * simplification: every other outstanding window refreshes before this
    * one does, so somebody who waits for the time this names has waited
    * out the rest of them too.
+   *
+   * A refusal on an unnamed window is chosen only when its backend has no
+   * named refusal standing beside it (EO-920).
    */
   blocking(now: number): QuotaEvent | null;
 }
@@ -66,6 +69,15 @@ function allowanceKey(event: QuotaEvent): string {
   return JSON.stringify([event.provider, event.window]);
 }
 
+/**
+ * Whether a reading names no window: `unknown` is what both adapters
+ * write when the backend did not say which one (EO-920).
+ */
+export function isUnnamedWindow(window: string): boolean {
+  const named = window.trim();
+  return named === "" || named === "unknown";
+}
+
 export function createQuotaRefusals(): QuotaRefusals {
   const outstanding = new Map<string, QuotaEvent>();
   return {
@@ -77,9 +89,17 @@ export function createQuotaRefusals(): QuotaRefusals {
       else outstanding.delete(key);
     },
     blocking(now) {
+      // An unnamed refusal beside a named one from the same backend is
+      // that backend's account of the same refusal, not a second one
+      // (EO-920): Codex classifies a refused turn `usageLimitExceeded`
+      // on no window because its reading at 100% says which. Left in, its
+      // missing reset outranked the named one, and a hold the backend had
+      // said would end at a time waited for a person instead.
+      const named = new Set([...outstanding.values()].filter((event) => !isUnnamedWindow(event.window)).map((event) => event.provider));
       let worst: QuotaEvent | null = null;
       let worstAt: number | null = null;
       for (const event of outstanding.values()) {
+        if (isUnnamedWindow(event.window) && named.has(event.provider)) continue;
         const at = quotaResetAt(event.resetsAt, now);
         if (worst === null) {
           worst = event;
@@ -238,11 +258,11 @@ function carryOnWhen(event: QuotaEvent, now: number): string {
  * message (EO-798) names the window in the item's words.
  */
 export function quotaWindowPhrase(window: string): string {
-  const named = window.trim();
   // `unknown` is what the Claude adapter writes when the reading arrives
   // without a `rateLimitType`. Rendering it as "its unknown usage window"
   // would read as a window called "unknown".
-  if (named === "" || named === "unknown") return "a usage window it did not name";
+  if (isUnnamedWindow(window)) return "a usage window it did not name";
+  const named = window.trim();
   // Underscores are the backend's spelling, not a person's. Nothing here
   // maps the names — a plan that grows a seventh window must reach the
   // item as itself rather than as "other".

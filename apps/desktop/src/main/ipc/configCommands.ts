@@ -1,4 +1,4 @@
-import { backendAllowed, bindingRefusal, DEFAULT_MEMORY_DELIVERY_CHARS, DEFAULT_MEMORY_SCOPE_MAX_CHARS, DEFAULT_MEMORY_SCOPE_MAX_ENTRIES, DEFAULT_SKILL_ARCHIVE_AFTER_RUNS, DEFAULT_SKILL_MAX_BODY_CHARS, DEFAULT_SKILL_STALE_AFTER_RUNS, isBuiltinRole, isDispatchable, isPreviewAgent, settledWatch, stepAgentOf, stepAgentProblem, stepHoldsItemsMessage, stepWorkspaceChoice, timeLimitBoundProblem, withMemoryNoteGrant } from "@eo/core";
+import { backendAllowed, bindingRefusal, DEFAULT_MEMORY_DELIVERY_CHARS, DEFAULT_SKILL_ARCHIVE_AFTER_RUNS, DEFAULT_SKILL_MAX_BODY_CHARS, DEFAULT_SKILL_STALE_AFTER_RUNS, isBuiltinRole, isDispatchable, isPreviewAgent, settledWatch, stepAgentOf, stepAgentProblem, stepHoldsItemsMessage, stepWorkspaceChoice, timeLimitBoundProblem, withMemoryNoteGrant } from "@eo/core";
 import type { ActionDefinitionDraft, Agent, AgentRemovalImpact, StepNamingAgent, EntryRule, GuardConfigView, IpcPayload, IpcResponse, ItemTypeEntry, Registry, Uuid, PipelineStep, StepBrief, StepRoute, StepWatch } from "@eo/core";
 import { hasBlockingProblem, outsideReachByStep, validatePipeline, type WorkflowProblem } from "@eo/engine";
 import type { Db } from "../db/client.js";
@@ -119,10 +119,6 @@ export const DEFAULT_GUARD_CONFIG: GuardConfigView = {
   // About a page of memory given whole, with nothing asked (EO-478);
   // past it a small model picks what bears on the task.
   memoryDeliveryChars: DEFAULT_MEMORY_DELIVERY_CHARS,
-  // Each scope's caps (EO-480): reaching either queues a consolidation
-  // that brings the scope back to about half.
-  memoryScopeMaxEntries: DEFAULT_MEMORY_SCOPE_MAX_ENTRIES,
-  memoryScopeMaxChars: DEFAULT_MEMORY_SCOPE_MAX_CHARS,
   // An agent's skill nobody loads (EO-720): stale after 20 runs given it
   // in a row without a load, archived after 50.
   skillStaleAfterRuns: DEFAULT_SKILL_STALE_AFTER_RUNS,
@@ -163,8 +159,21 @@ export const DEFAULT_GUARD_CONFIG: GuardConfigView = {
  * how the second one is told apart, so it can be said out loud once.
  */
 export function readGuards(db: Db): GuardConfigView {
-  return { ...DEFAULT_GUARD_CONFIG, ...getSetting<Partial<GuardConfigView>>(db, GUARDS_KEY, {}) };
+  const saved: Record<string, unknown> = { ...getSetting<Partial<GuardConfigView>>(db, GUARDS_KEY, {}) };
+  for (const retired of RETIRED_GUARD_KEYS) delete saved[retired];
+  return { ...DEFAULT_GUARD_CONFIG, ...(saved as Partial<GuardConfigView>) };
 }
+
+/**
+ * Guardrails EO no longer has, which a configuration saved before then
+ * may still hold: ignored when it is read, and gone from it at the next
+ * write, which stores only what the screen or `guardrails_set` sends.
+ *
+ * - `memoryScopeMaxEntries`, `memoryScopeMaxChars` — the memory per scope
+ *   caps (EO-480), which started a consolidation when a scope reached
+ *   them. Size never starts one now (EO-913).
+ */
+const RETIRED_GUARD_KEYS = ["memoryScopeMaxEntries", "memoryScopeMaxChars"] as const;
 
 /**
  * Is the daily ceiling in force EO's default rather than anybody's

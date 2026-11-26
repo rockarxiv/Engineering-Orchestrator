@@ -29,7 +29,7 @@ catalog:
   "@playwright/test": 1.65.1
   playwright: 1.65.1
   better-sqlite3: 13.2.0
-  "@types/better-sqlite3": 7.6.13
+  "@types/better-sqlite3": 9.6.0
   drizzle-orm: 0.45.4
   drizzle-kit: 0.31.11
   "@electron/rebuild": 4.2.1

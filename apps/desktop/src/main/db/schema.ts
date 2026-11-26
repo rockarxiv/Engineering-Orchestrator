@@ -3416,7 +3416,10 @@ export const memoryConsolidations = sqliteTable(
     /** The side call's `SideCallFailureReason` on a failure: `budget` is waited out, the rest back off. */
     failureReason: text("failure_reason"),
     note: text("note"),
-    /** The caps in force when it settled the scope (a success, a skip or a restore); a change to them is a reason to look again. */
+    /**
+     * The caps in force when it settled the scope, on rows from before
+     * EO-913, which removed the caps: no longer written or read.
+     */
     capsEntries: integer("caps_entries"),
     capsChars: integer("caps_chars"),
     /**
@@ -3431,6 +3434,13 @@ export const memoryConsolidations = sqliteTable(
      * own note for a scope on no project. Null otherwise.
      */
     stuckNoticedAt: integer("stuck_noticed_at"),
+    /**
+     * True on the row that completed its run (EO-913, migration 0183):
+     * every batch the run planned applied, in one attempt. The scope's
+     * watermark is the `started_at` of the newest such row; null on every
+     * other row, and on every row from before it.
+     */
+    completesRun: integer("completes_run", { mode: "boolean" }),
   },
   (table) => [index("idx_memory_consolidations_scope").on(table.scopeKind, table.scopeId, table.startedAt)],
 );

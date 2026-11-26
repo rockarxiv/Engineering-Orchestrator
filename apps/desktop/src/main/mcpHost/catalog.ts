@@ -2145,7 +2145,8 @@ const READ_TOOLS: readonly ToolSpec[] = [
     channel: "memory:consolidateNow",
     description:
       "Ask EO to consolidate one memory scope now, rather than waiting for it to be due: it runs whether or not the scope " +
-      "is over a cap or due on its daily schedule, and even while it is backing off after failures. Everything else holds — " +
+      "is due on its daily schedule, and even while it is backing off after failures, and it is given every entry an agent wrote " +
+      "there, where the daily one is given only those new since the last. Everything else holds — " +
       "one consolidation per scope at a time, one scope at a time, only while no pipeline work is waiting or going, never " +
       "while EO is paused — and it is recorded with the trigger manual. Pass the scope as memories_search answers it: kind " +
       "project or workspace, and its id. Answers whether it started, was queued (and behind what), was already queued or " +

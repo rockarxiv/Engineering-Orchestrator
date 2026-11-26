@@ -402,8 +402,8 @@ export function createLocalRecord(db: Db, options: LocalRecordOptions = {}): Loc
       return listConsolidations(db, scope);
     },
 
-    async restoreMemoryConsolidation(consolidationId, caps) {
-      return restoreConsolidation(db, consolidationId, { caps });
+    async restoreMemoryConsolidation(consolidationId) {
+      return restoreConsolidation(db, consolidationId);
     },
 
     // Here, because this database holds the skill (EO-728): a solo
