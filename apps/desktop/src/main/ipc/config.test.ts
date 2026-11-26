@@ -127,7 +127,7 @@ function testerTests(): void {
 
 /** Where a `qa` step's `done` goes: every result an agent step's action declares is routed (EO-423). */
 function qaDone(): StepRouteView {
-  return { id: "qa-done", pipelineId: "default", fromStepId: "qa", resultKey: "done", label: "Done", tone: "success", target: "merge_request", position: 0 };
+  return { id: "qa-done", pipelineId: "default", fromStepId: "qa", resultKey: "done", label: "Done", tone: "success", target: "merge_request", position: 0, traversalLimit: null };
 }
 
 /**
@@ -1137,7 +1137,7 @@ describe("what a step a person decides on submits", () => {
     // declares, and this one is not among them.
     submitted.routes = [
       ...submitted.routes,
-      { id: "r_escalate", pipelineId: "default", fromStepId: "ready_to_merge", resultKey: "escalate", label: "Escalate", tone: "danger" as const, target: "todo", position: 2 },
+      { id: "r_escalate", pipelineId: "default", fromStepId: "ready_to_merge", resultKey: "escalate", label: "Escalate", tone: "danger" as const, target: "todo", position: 2, traversalLimit: null },
     ];
 
     expect(errors(validatePipelineCommand(handle.db, submitted).problems)).toContain(
@@ -1230,7 +1230,7 @@ describe("what a step a person decides on submits", () => {
     );
     submitted.routes = [
       ...submitted.routes,
-      { id: "r_escalate", pipelineId: "default", fromStepId: "ready_to_merge", resultKey: "escalate", label: "Escalate", tone: "danger" as const, target: "todo", position: 2 },
+      { id: "r_escalate", pipelineId: "default", fromStepId: "ready_to_merge", resultKey: "escalate", label: "Escalate", tone: "danger" as const, target: "todo", position: 2, traversalLimit: null },
     ];
 
     expect(savePipeline(handle.db, fakeEngine(), submitted).saved).toBe(true);
@@ -1803,7 +1803,7 @@ describe("handing work to another pipeline (EO-58, EO-69)", () => {
   function reviewRoutesTo(target: string): StepRouteView[] {
     return [
       ...currentRoutes(),
-      { id: "r_review_hands_off", pipelineId: "default", fromStepId: "review", resultKey: "escalation", label: "Handed off", tone: "info", target, position: 3 },
+      { id: "r_review_hands_off", pipelineId: "default", fromStepId: "review", resultKey: "escalation", label: "Handed off", tone: "info", target, position: 3, traversalLimit: null },
       // The watch's two comment results (EO-759), which the shipped graph
       // does not route yet, so the graph has nothing else to say.
       ...["author_commented", "others_commented"].map((resultKey, index) => ({
@@ -1815,6 +1815,7 @@ describe("handing work to another pipeline (EO-58, EO-69)", () => {
         tone: "info" as const,
         target: USER_ATTENTION_TARGET,
         position: 20 + index,
+        traversalLimit: null,
       })),
     ];
   }
@@ -1972,7 +1973,7 @@ describe("handing work to another pipeline (EO-58, EO-69)", () => {
       const { step } = mergePipeline();
       const { pipelineId, steps } = handOverPipeline();
       const routes: StepRouteView[] = [
-        { id: "r_hand_over", pipelineId, fromStepId: "hand_over", resultKey: "ready", label: "Ready", tone: "success", target: step.id, position: 0 },
+        { id: "r_hand_over", pipelineId, fromStepId: "hand_over", resultKey: "ready", label: "Ready", tone: "success", target: step.id, position: 0, traversalLimit: null },
       ];
 
       expect(validatePipelineCommand(handle.db, { pipelineId, steps, routes, entryStepId: "hand_over" }).problems).toEqual([]);
@@ -2615,8 +2616,8 @@ describe("a pipeline a webhook can enter", () => {
     const steps = ordered.map((step, index) => ({ ...step, position: index }));
     const routes = [
       ...currentRoutes().filter((route) => !(route.fromStepId === "review" && route.resultKey === "approved")),
-      { id: "r_review_approve", pipelineId: "default", fromStepId: "review", resultKey: "approved", label: "Approved", tone: "success" as const, target: "approve", position: 0 },
-      { id: "r_approve_send", pipelineId: "default", fromStepId: "approve", resultKey: "approved", label: "Approve", tone: "success" as const, target: "merge_request", position: 0 },
+      { id: "r_review_approve", pipelineId: "default", fromStepId: "review", resultKey: "approved", label: "Approved", tone: "success" as const, target: "approve", position: 0, traversalLimit: null },
+      { id: "r_approve_send", pipelineId: "default", fromStepId: "approve", resultKey: "approved", label: "Approve", tone: "success" as const, target: "merge_request", position: 0, traversalLimit: null },
     ];
     return { pipelineId: "default", steps: consistent(steps, routes), routes, entryStepId: "worktree" };
   }

@@ -93,6 +93,7 @@ describe("a board whose pipeline has moved on", () => {
     tone: result.tone,
     target: done.id,
     position,
+    traversalLimit: null,
   });
 
   beforeEach(() => {
@@ -251,7 +252,7 @@ describe("a board whose pipeline has moved on", () => {
     const agentStep: PipelineStep = { ...decide, type: "agent", agentId: implementer.id, entryAction: "implement" };
     // Routed, because an agent step has to say where each result its
     // action declares goes (EO-423), and `implement` declares `done`.
-    const implemented: StepRouteView = { id: "route-done", pipelineId, fromStepId: decide.id, resultKey: "done", label: "Done", tone: "success", target: done.id, position: 0 };
+    const implemented: StepRouteView = { id: "route-done", pipelineId, fromStepId: decide.id, resultKey: "done", label: "Done", tone: "success", target: done.id, position: 0, traversalLimit: null };
     expect(save([intake, agentStep, done], [implemented]).saved).toBe(true);
 
     const item = createTestItem(handle.db, { type: "story", title: "Being implemented", stepId: decide.id, spec: REVIEWABLE_SPEC });

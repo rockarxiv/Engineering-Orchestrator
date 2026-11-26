@@ -34,8 +34,8 @@ beforeEach(() => {
 afterEach(() => handle.close());
 
 const routes = (): StepRouteView[] => [
-  { id: "r1", pipelineId, fromStepId: draft.id, resultKey: "done", label: "Drafted", tone: "success", target: approve.id, position: 0 },
-  { id: "r2", pipelineId, fromStepId: approve.id, resultKey: "approved", label: "Approve", tone: "success", target: done.id, position: 0 },
+  { id: "r1", pipelineId, fromStepId: draft.id, resultKey: "done", label: "Drafted", tone: "success", target: approve.id, position: 0, traversalLimit: null },
+  { id: "r2", pipelineId, fromStepId: approve.id, resultKey: "approved", label: "Approve", tone: "success", target: done.id, position: 0, traversalLimit: null },
 ];
 
 /** The graph as a save sends it, with Approve's brief as given; `undefined` leaves the key out. */

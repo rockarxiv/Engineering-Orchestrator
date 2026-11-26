@@ -317,6 +317,7 @@ export function fillResults(
       tone: "info" as const,
       target: fallbackTarget,
       position,
+      traversalLimit: null,
     };
   });
 

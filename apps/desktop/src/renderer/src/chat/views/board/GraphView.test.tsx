@@ -49,7 +49,7 @@ function step(id: string, name: string, position: number, overrides: Partial<Pip
 }
 
 function route(id: string, fromStepId: string, resultKey: string, label: string, target: string, tone: StepRouteView["tone"] = "success"): StepRouteView {
-  return { id, pipelineId: "default", fromStepId, resultKey, label, tone, target, position: 0 };
+  return { id, pipelineId: "default", fromStepId, resultKey, label, tone, target, position: 0, traversalLimit: null };
 }
 
 const STEPS = [

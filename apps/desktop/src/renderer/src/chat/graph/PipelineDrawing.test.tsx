@@ -50,6 +50,7 @@ const ROUTES: StepRouteView[] = STEPS.slice(0, -1).map((from, index) => ({
   tone: "info",
   target: STEPS[index + 1]!.id,
   position: index,
+  traversalLimit: null,
 }));
 
 function draw(props: Partial<Parameters<typeof PipelineDrawing>[0]> = {}) {

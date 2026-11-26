@@ -78,6 +78,7 @@ describe("moving an item to another version of its pipeline", () => {
     tone: "success",
     target,
     position: 0,
+    traversalLimit: null,
   });
 
   const save = (steps: PipelineStep[], routes: StepRouteView[]) => {
@@ -103,6 +104,7 @@ describe("moving an item to another version of its pipeline", () => {
     tone: "success",
     target: done.id,
     position: 0,
+    traversalLimit: null,
   });
 
   const move = (itemId: string, version: number, comment = "") =>
