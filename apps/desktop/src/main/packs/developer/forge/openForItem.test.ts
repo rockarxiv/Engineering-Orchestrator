@@ -25,7 +25,7 @@ import { createBuiltinRunners } from "../builtins.js";
 import { workspaces } from "../../../db/schema.js";
 import { attachWorkspace, createTestItem, openMigratedTestDb } from "../../../db/testHelpers.js";
 import { REPOSITORY_INDEX_DIRECTORIES } from "../repositoryIntelligence/index.js";
-import { currentBranch, statusPorcelain } from "../workspace/git.js";
+import { currentBranch, destinationKey, statusPorcelain } from "../workspace/git.js";
 import type { CliResult, CliRunner } from "./cli.js";
 import { updateItemText } from "../../../ipc/domainCommands.js";
 import { openPullRequestForItem } from "./openForItem.js";
@@ -67,7 +67,7 @@ function recorder(replies: CliResult[]): { run: CliRunner; calls: string[][] } {
 const git = (args: string[], cwd: string) => execFileSync("git", args, { cwd, encoding: "utf8" });
 
 /** What EO records of a push of `eo/API-4` to `destination` — the bare remote, unless a test says otherwise (EO-910). */
-const pushedTo = (commit: string, destination: string | null = remotePath) => ({ commit, ref: "refs/heads/eo/API-4", destination });
+const pushedTo = (commit: string, destination: string | null = remotePath) => ({ commit, ref: "refs/heads/eo/API-4", destination: destination === null ? null : destinationKey(destination) });
 
 function story(overrides: Partial<Parameters<typeof createTestItem>[1]> = {}): Item {
   return createTestItem(handle.db, {
@@ -1659,7 +1659,156 @@ describe("before it opens or reuses one (EO-429)", () => {
       expect(tipAt(elsewhere)).toBe(ours);
       expect(remoteTip()).toBe(ours);
       expect(notes(item).at(-1)).toContain("did not force-push");
-      expect(progress.some((line) => line.includes(`not ${remotePath} where EO last pushed it`))).toBe(true);
+      expect(progress.some((line) => line.includes("no longer pushes to the server EO last pushed it to"))).toBe(true);
+      expect(progress.some((line) => line.includes(remotePath) || line.includes(elsewhere))).toBe(false);
+    });
+
+    /**
+     * Pushes to `ssh://<user>@host/~/<repo>` reach `<root>/<user>/<repo>`,
+     * through a stand-in for ssh: the user picks the repository, as a
+     * home directory does on a real server.
+     */
+    function sshServer(): { root: string; url: (user: string) => string; repo: (user: string) => string } {
+      const root = join(scratch, "ssh");
+      const shim = join(scratch, "ssh-shim.sh");
+      writeFileSync(
+        shim,
+        [
+          "#!/bin/sh",
+          'user="${1%@*}"',
+          'cmd="$2"',
+          'verb="${cmd%% *}"',
+          `path="\${cmd#* }"; path="\${path#\\'}"; path="\${path%\\'}"; path="\${path#\\~/}"`,
+          `exec git "\${verb#git-}" '${root}'/"$user/$path"`,
+          "",
+        ].join("\n"),
+        { mode: 0o755 },
+      );
+      // Run by a shell, and the scratch directory's name has spaces in it.
+      git(["config", "core.sshCommand", `'${shim}'`], repoPath);
+      git(["config", "ssh.variant", "simple"], repoPath);
+      const repo = (user: string): string => {
+        const path = join(root, user, "api.git");
+        if (!existsSync(path)) {
+          mkdirSync(join(root, user), { recursive: true });
+          execFileSync("git", ["init", "--bare", path], { encoding: "utf8" });
+        }
+        return path;
+      };
+      return { root, url: (user) => `ssh://${user}@host/~/api.git`, repo };
+    }
+
+    it("pushes over its own push where git sends it, though a URL handed back to git would be rewritten again (pushInsteadOf, then insteadOf)", async () => {
+      // `origin` pushes to A by pushInsteadOf; A itself, given to git as a
+      // URL, would be rewritten to B. Somebody else has put the same commit
+      // on B.
+      const a = bare("a.git");
+      const b = bare("b.git");
+      git(["config", `url.${a}.pushInsteadOf`, remotePath], repoPath);
+      git(["config", `url.${b}.insteadOf`, a], repoPath);
+      const item = story({ git: { branch: "eo/API-4", pullRequest: PULL_REQUEST } });
+      const worktree = worktreeFor(item);
+      await mergeRequestStep(item, onlyFinds(found));
+      const old = tipAt(a)!;
+      expect(tipAt(b)).toBeNull();
+      expect(gitStateOf(getItem(handle.db, item.id)!).pushedHead).toEqual(pushedTo(old, a));
+      git(["push", b, `${old}:refs/heads/eo/API-4`], repoPath);
+      rewriteIn(worktree);
+
+      const result = await mergeRequestStep(item, onlyFinds(found));
+
+      expect(result).toMatchObject({ ok: true, result: "opened" });
+      expect(tipAt(a)).toBe(localTip());
+      expect(tipAt(b)).toBe(old);
+      expect(remoteTip()).toBeNull();
+    });
+
+    it("refuses when the push now goes to another SSH user's repository on the same host, though the same commit is there", async () => {
+      const server = sshServer();
+      const alice = server.repo("alice");
+      const bob = server.repo("bob");
+      git(["config", "remote.origin.pushurl", server.url("alice")], repoPath);
+      const item = story({ git: { branch: "eo/API-4", pullRequest: PULL_REQUEST } });
+      const worktree = worktreeFor(item);
+      await mergeRequestStep(item, onlyFinds(found));
+      const ours = tipAt(alice)!;
+      expect(gitStateOf(getItem(handle.db, item.id)!).pushedHead).toEqual(pushedTo(ours, server.url("alice")));
+      // Bob has the same commit, and the remote is repointed at him.
+      execFileSync("git", ["push", bob, `${ours}:refs/heads/eo/API-4`], { cwd: repoPath, encoding: "utf8" });
+      git(["config", "remote.origin.pushurl", server.url("bob")], repoPath);
+      rewriteIn(worktree);
+
+      const result = await mergeRequestStep(item, onlyFinds(found));
+
+      expect(result).toMatchObject({ ok: true, result: "remote_diverged" });
+      expect(tipAt(bob)).toBe(ours);
+      expect(tipAt(alice)).toBe(ours);
+      expect(notes(item).at(-1)).toContain("did not force-push");
+    });
+
+    it("names no URL and repeats nothing git said while replacing or refusing, so a credential in the push URL stays out of the transcript", async () => {
+      const server = sshServer();
+      const user = "tok:SYNTHETIC-SECRET";
+      const repo = server.repo(user);
+      git(["config", "remote.origin.pushurl", server.url(user)], repoPath);
+      const item = story({ git: { branch: "eo/API-4", pullRequest: PULL_REQUEST } });
+      const worktree = worktreeFor(item);
+      await mergeRequestStep(item, onlyFinds(found));
+      expect(JSON.stringify(gitStateOf(getItem(handle.db, item.id)!))).not.toContain("SYNTHETIC");
+      const progress: string[] = [];
+      const retries = (): string[] => progress.filter((line) => line.includes("force"));
+
+      // Replaced: EO's own push is all that is there.
+      rewriteIn(worktree);
+      expect(await mergeRequestStep(item, onlyFinds(found), (text) => progress.push(text))).toMatchObject({ ok: true, result: "opened" });
+      expect(tipAt(repo)).toBe(localTip());
+      // Refused by the lease: somebody else has pushed since.
+      const ours = localTip();
+      const theirs = git(["commit-tree", `${ours}^{tree}`, "-p", ours, "-m", "somebody else's commit"], repoPath).trim();
+      git(["push", repo, `${theirs}:refs/heads/eo/API-4`], repoPath);
+      rewriteIn(worktree);
+      expect(await mergeRequestStep(item, onlyFinds(found), (text) => progress.push(text))).toMatchObject({ ok: true, result: "remote_diverged" });
+
+      expect(tipAt(repo)).toBe(theirs);
+      expect(retries().length).toBeGreaterThanOrEqual(3);
+      expect(retries().some((line) => line.includes("nothing was overwritten"))).toBe(true);
+      for (const line of retries()) expect(line).not.toContain("SYNTHETIC");
+      for (const body of notes(item).filter((note) => note.includes("--force-with-lease"))) expect(body).not.toContain("SYNTHETIC");
+    });
+
+    it("records a push that moved the branch at one of several URLs, though another refused it, and forces over neither", async () => {
+      const second = bare("second.git");
+      writeFileSync(join(second, "hooks", "pre-receive"), "#!/bin/sh\necho refused >&2\nexit 1\n", { mode: 0o755 });
+      git(["config", "--add", "remote.origin.pushurl", remotePath], repoPath);
+      git(["config", "--add", "remote.origin.pushurl", second], repoPath);
+      const item = story({ git: { branch: "eo/API-4", pullRequest: PULL_REQUEST } });
+      const worktree = worktreeFor(item);
+
+      const result = await mergeRequestStep(item, onlyFinds(found));
+
+      expect(result).not.toMatchObject({ ok: true, result: "opened" });
+      const ours = remoteTip()!;
+      expect(ours).toBe(localTip());
+      expect(gitStateOf(getItem(handle.db, item.id)!).pushedHead).toEqual(pushedTo(ours, null));
+
+      rewriteIn(worktree);
+      await mergeRequestStep(item, onlyFinds(found));
+      expect(remoteTip()).toBe(ours);
+      expect(tipAt(second)).toBeNull();
+    });
+
+    it("records a push to several URLs that moved the branch at any of them, though it was already at the first", async () => {
+      const item = story({ git: { branch: "eo/API-4", pullRequest: PULL_REQUEST } });
+      worktreeFor(item);
+      git(["push", "origin", "eo/API-4"], repoPath);
+      const second = bare("second.git");
+      git(["config", "--add", "remote.origin.pushurl", remotePath], repoPath);
+      git(["config", "--add", "remote.origin.pushurl", second], repoPath);
+
+      expect(await mergeRequestStep(item, onlyFinds(found))).toMatchObject({ ok: true, result: "opened" });
+
+      expect(tipAt(second)).toBe(localTip());
+      expect(gitStateOf(getItem(handle.db, item.id)!).pushedHead).toEqual(pushedTo(localTip(), null));
     });
 
     it("refuses a branch pushed to several URLs at once, which is no one place to check", async () => {

@@ -200,6 +200,9 @@ export async function openPullRequest(input: OpenPullRequestInput): Promise<Open
   //    call, unless the caller can show it holds only EO's own last push.
   const pushed = await pushBranch(repoPath, remote, branch, input.signal ? { signal: input.signal } : {});
   if (!pushed.ok) {
+    // Moved at some of several push URLs though it failed at another: it
+    // is published all the same, to no one place EO could force over.
+    if (pushed.published !== null) input.onPushed?.({ head: pushed.published, destination: null });
     const classified = classifyForgeError(pushed.error);
     if (!(classified.diverged && input.onDiverged && (await input.onDiverged()))) {
       return { ...fail(classified.message, classified.final), diverged: classified.diverged };

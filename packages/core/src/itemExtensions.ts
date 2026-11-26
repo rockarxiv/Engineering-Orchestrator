@@ -255,10 +255,12 @@ export const GitItemStateSchema = z.object({
   restacked: z.boolean().default(false),
   /**
    * What EO last pushed for this item (EO-910), null until EO first
-   * pushes it: the `commit`, the `ref` it went to, and the push URL it
-   * went to (`destination`, without credentials), null where the push
+   * pushes it: the `commit`, the `ref` it went to, and a fingerprint of
+   * the push URL it went to (`destination`, `sha256:<hex>` of the URL as
+   * git resolved it, so no credential in it is kept), null where the push
    * went to several or git could not name one. Written by every push of
-   * EO's that moved the remote's branch, and by nothing else.
+   * EO's that moved the remote's branch — at any of its push URLs, even
+   * one that failed at another — and by nothing else.
    *
    * What lets EO tell its own history on the remote from anybody
    * else's. When the item's agent rebases a branch EO cut, the remote
@@ -266,9 +268,9 @@ export const GitItemStateSchema = z.object({
    * diverged; if the push goes to this same destination and ref, and the
    * branch there is still exactly this commit, nothing but EO's own push
    * is there to replace, so EO pushes with `--force-with-lease=<branch>:
-   * <commit>` — a lease git refuses if anyone pushed in between. Anything
-   * else is refused as divergence: a commit that matches on a server EO
-   * never pushed it to is not EO's.
+   * <commit>` — a lease the server refuses if its branch is anything but
+   * that commit. Anything else is refused as divergence: a commit that
+   * matches on a server EO never pushed it to is not EO's.
    */
   pushedHead: z.object({ commit: z.string(), ref: z.string(), destination: z.string().nullable() }).nullable().default(null),
 });

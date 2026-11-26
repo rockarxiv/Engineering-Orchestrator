@@ -299,9 +299,9 @@ describe("pushBranch (EO-910)", () => {
     expect(await run(["tag", "--list"], barePath)).toBe("");
   });
 
-  it("says where it pushed: the push URL, and none where that is several", async () => {
+  it("says where it pushed: the push URL's fingerprint, and none where that is several", async () => {
     const pushed = await pushBranch(repoPath, "bare", "eo/APP-1");
-    expect(pushed).toMatchObject({ ok: true, destination: barePath });
+    expect(pushed).toMatchObject({ ok: true, destination: destinationKey(barePath) });
 
     await run(["config", "--add", "remote.bare.pushurl", barePath], repoPath);
     await run(["config", "--add", "remote.bare.pushurl", barePath], repoPath);
@@ -309,15 +309,39 @@ describe("pushBranch (EO-910)", () => {
     expect(await pushBranch(repoPath, "bare", "eo/APP-1")).toMatchObject({ ok: true, updated: true, destination: null });
   });
 
-  it("pushes to the URL it is given rather than the remote's", async () => {
-    const other = join(scratch, "other.git");
-    await run(["init", "--bare", other], scratch);
+  it("counts a push to several URLs as moving the branch when any of them moved it", async () => {
+    // The first URL already holds the commit; the second has never seen it.
+    const second = join(scratch, "second.git");
+    await run(["init", "--bare", second], scratch);
+    await pushBranch(repoPath, "bare", "eo/APP-1");
+    await run(["config", "--add", "remote.bare.pushurl", barePath], repoPath);
+    await run(["config", "--add", "remote.bare.pushurl", second], repoPath);
 
-    const pushed = await pushBranch(repoPath, "bare", "eo/APP-1", { to: other });
+    const pushed = await pushBranch(repoPath, "bare", "eo/APP-1");
 
-    expect(pushed).toMatchObject({ ok: true, updated: true, destination: other });
-    expect(await remoteTip("eo/APP-1")).toBeNull();
-    expect(await run(["rev-parse", "eo/APP-1"], other)).toBe(pushed.ok ? pushed.head : "");
+    expect(pushed).toMatchObject({ ok: true, updated: true, destination: null });
+    expect(await run(["rev-parse", "eo/APP-1"], second)).toBe(pushed.ok ? pushed.head : "");
+  });
+
+  it("says what a failed push published all the same, at the one of several URLs that took it", async () => {
+    const second = join(scratch, "second.git");
+    await run(["init", "--bare", second], scratch);
+    writeFileSync(join(second, "hooks", "pre-receive"), "#!/bin/sh\necho refused >&2\nexit 1\n", { mode: 0o755 });
+    await run(["config", "--add", "remote.bare.pushurl", barePath], repoPath);
+    await run(["config", "--add", "remote.bare.pushurl", second], repoPath);
+    const head = await run(["rev-parse", "eo/APP-1"], repoPath);
+
+    const pushed = await pushBranch(repoPath, "bare", "eo/APP-1");
+
+    expect(pushed).toMatchObject({ ok: false, published: head });
+    expect(await remoteTip("eo/APP-1")).toBe(head);
+  });
+
+  it("says a rejected push published nothing", async () => {
+    await pushBranch(repoPath, "bare", "eo/APP-1");
+    await run(["commit", "--amend", "-m", "rewritten"], repoPath);
+
+    expect(await pushBranch(repoPath, "bare", "eo/APP-1")).toMatchObject({ ok: false, published: null });
   });
 });
 
@@ -349,11 +373,23 @@ describe("pushDestination (EO-910)", () => {
 });
 
 describe("destinationKey", () => {
-  it("drops credentials from a URL, and leaves everything else as it is", () => {
-    expect(destinationKey("https://user:ghp_secret@github.com/acme/api.git")).toBe("https://github.com/acme/api.git");
-    expect(destinationKey("https://github.com/acme/api.git")).toBe("https://github.com/acme/api.git");
-    expect(destinationKey("git@github.com:acme/api.git")).toBe("git@github.com:acme/api.git");
-    expect(destinationKey("/srv/git/api.git")).toBe("/srv/git/api.git");
+  it("is a fingerprint of the whole URL, keeping no credential written into it", () => {
+    const key = destinationKey("https://user:ghp_secret@github.com/acme/api.git");
+    expect(key).toMatch(/^sha256:[0-9a-f]{64}$/);
+    expect(key).not.toContain("ghp_secret");
+    expect(destinationKey("https://user:ghp_secret@github.com/acme/api.git")).toBe(key);
+  });
+
+  it("tells apart URLs that differ anywhere, the SSH user who picks the repository included", () => {
+    const keys = [
+      "ssh://alice@host/~/repo.git",
+      "ssh://bob@host/~/repo.git",
+      "alice@host:repo.git",
+      "bob@host:repo.git",
+      "https://github.com/acme/api.git",
+      "https://user:other@github.com/acme/api.git",
+    ].map(destinationKey);
+    expect(new Set(keys).size).toBe(keys.length);
   });
 });
 
@@ -367,6 +403,12 @@ describe("pushUpdated", () => {
     ["!", false],
   ])("reads the %j flag as moved: %s", (flag, moved) => {
     expect(pushUpdated(`To ../bare.git\n${flag}\t${refspec}\tsummary\nDone`, refspec)).toBe(moved);
+  });
+
+  it("is true when any of several URLs' lines moved the ref, and false when none did", () => {
+    expect(pushUpdated(`To ../a.git\n=\t${refspec}\t[up to date]\nDone\nTo ../b.git\n*\t${refspec}\t[new branch]\nDone`, refspec)).toBe(true);
+    expect(pushUpdated(`To ../a.git\n \t${refspec}\tabc..def\nDone\nTo ../b.git\n!\t${refspec}\t[rejected] (fetch first)\nDone`, refspec)).toBe(true);
+    expect(pushUpdated(`To ../a.git\n=\t${refspec}\t[up to date]\nDone\nTo ../b.git\n!\t${refspec}\t[rejected]\nDone`, refspec)).toBe(false);
   });
 
   it("is false when its refspec has no line", () => {

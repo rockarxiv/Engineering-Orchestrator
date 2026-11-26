@@ -27,7 +27,6 @@ import {
   rebaseOntoBase,
   pushDestination,
   destinationKey,
-  remoteHead,
   statusPorcelain,
 } from "../workspace/git.js";
 import { resolveStackTargetWithAnswer } from "../workspace/stackAnswer.js";
@@ -639,6 +638,9 @@ async function pushAlreadyOpen(
   // the remote in between is refused rather than lost.
   onProgress?.(`The pull request is already open, so pushing "${branch}" to ${remote}.`);
   const pushed = await pushBranch(repoPath, remote, branch, signal ? { signal } : {});
+  // Moved at some of several push URLs though it failed at another:
+  // recorded, as a push to no one place EO could force over.
+  if (!pushed.ok && pushed.published !== null) recordPushed(db, item, branch, { head: pushed.published, destination: null });
   if (pushed.ok) {
     if (pushed.updated) recordPushed(db, item, branch, pushed);
     if (gitStateOf(getItem(db, item.id) ?? item).restacked) updateItem(db, item.id, { git: { restacked: false } });
@@ -750,18 +752,22 @@ function recordPushed(db: Db, item: Item, branch: string, pushed: { head: string
  * An implementer that rebases its branch onto the base leaves the remote
  * holding the commits EO pushed before the rebase, and nothing else. That
  * is no reason to send the item back for a run whose only job is the
- * push. So when the branch, on the server the push goes to, is exactly
- * the commit EO last pushed there for this item, EO pushes over it with
- * `--force-with-lease=<branch>:<that commit>`, to that same server: the
- * lease is that commit, so a push by anybody in between makes git refuse
- * rather than lose it.
+ * push. So where the push still goes to the one server EO last pushed the
+ * branch to, EO pushes over it with `--force-with-lease=<branch>:<the
+ * commit EO last pushed>`. The lease is the check: the server the push
+ * reaches compares its branch with that exact commit as it takes the
+ * push, so a push by anybody in between — a person's above all — makes
+ * git refuse rather than lose it. The push goes to the remote by name,
+ * as every push of EO's does, so it reaches exactly where the rejected
+ * one did.
  *
  * Anything else is a no, and the caller refuses as it always has: no
  * record; a record of a push to another ref, or to another server — the
  * same commit there may be anybody's — or to no single one; a remote that
- * now pushes to several URLs; a branch there that has moved to any other
- * commit, a person's push above all; or a server that cannot be asked.
- * Never reached for a branch a person named, which EO never force-pushes.
+ * now pushes to several URLs; or a lease git refuses. What it says names
+ * neither a URL nor anything git printed, either of which can carry a
+ * credential into the run's transcript. Never reached for a branch a
+ * person named, which EO never force-pushes.
  */
 async function replaceOwnPush(db: Db, workspace: GitWorkspace, item: Item, branch: string, options: OpenForItemOptions): Promise<boolean> {
   const { signal, onProgress } = options;
@@ -781,22 +787,14 @@ async function replaceOwnPush(db: Db, workspace: GitWorkspace, item: Item, branc
   // differ (`remote.<name>.pushurl`), and only the former rejected it.
   const url = await pushDestination(repoPath, remote);
   if (url === null) return refuse(`${remote} does not push to one URL EO can name`);
-  if (destinationKey(url) !== pushedHead.destination) {
-    return refuse(`it now pushes to ${destinationKey(url)}, not ${pushedHead.destination} where EO last pushed it`);
-  }
+  if (destinationKey(url) !== pushedHead.destination) return refuse(`${remote} no longer pushes to the server EO last pushed it to`);
 
-  const network = signal ? { signal } : {};
-  const theirs = await remoteHead(repoPath, url, branch, network);
-  if (!theirs.ok) return refuse(`EO could not ask where it stands there: ${theirs.error}`);
   const expect = pushedHead.commit;
-  if (theirs.head !== expect) {
-    return refuse(`it is at ${theirs.head?.slice(0, 12) ?? "nothing"} there, not ${expect.slice(0, 12)} where EO last pushed it — somebody else has pushed`);
-  }
-
-  onProgress?.(`"${branch}" on ${remote} is still exactly where EO last pushed it, ${expect.slice(0, 12)}, so pushing over it with --force-with-lease.`);
-  const pushed = await pushBranch(repoPath, remote, branch, { ...network, to: url, forceWithLease: { expect } });
+  onProgress?.(`EO last pushed "${branch}" to ${remote} at ${expect.slice(0, 12)}, so pushing over it with --force-with-lease, which git refuses if anything else is there now.`);
+  const pushed = await pushBranch(repoPath, remote, branch, { ...(signal ? { signal } : {}), forceWithLease: { expect } });
   if (!pushed.ok) {
-    onProgress?.(`The push with --force-with-lease was refused, so nothing was overwritten: ${pushed.error}`);
+    if (pushed.published !== null) recordPushed(db, item, branch, { head: pushed.published, destination: null });
+    onProgress?.(`The push with --force-with-lease did not go through — "${branch}" on ${remote} is no longer only what EO pushed, or could not be reached — so nothing was overwritten.`);
     return false;
   }
   // The local branch came back to the commit the remote holds: there was
