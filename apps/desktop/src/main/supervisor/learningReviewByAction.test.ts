@@ -426,4 +426,53 @@ describe.each<BackendName>(["claude", "codex"])("the learning review of an assis
     // B is not reviewed again on top of its skip.
     expect(eventsOf(newer)).toEqual([expect.objectContaining({ outcome: "skipped", skip: "action_off" })]);
   });
+
+  it.each([
+    ["reviews the chat on a fork", true],
+    ["records the skip", false],
+  ] as const)("%s once it is quiet, where the person's last message was refused at the attempt limit and its mention stays open", async (_, on) => {
+    updateAgent(handle.db, systemAgent().id, { provider: name });
+    if (!on) setActionLearningReview(handle.db, SYSTEM_ROLE, ASSIST_ACTION, false);
+    // The chat's turn, ended a moment ago, so the chat is not quiet yet.
+    const reviewed = endedChatRun("thread-a");
+    updateRun(handle.db, reviewed, { endedAt: clock - 2_000 });
+    // The person's last message, which has already spent its three
+    // attempts: each failed before it had a thread of its own.
+    const asked = postComment(handle.db, { itemId: chat.id, author: { type: "human" }, body: "Try the export again.", mentions: [{ type: "agent", agentId: systemAgent().id }] });
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      const failed = createRun(handle.db, { itemId: chat.id, agentId: systemAgent().id, action: ASSIST_ACTION, status: "failed", initiationId: asked.id, attempt, provider: name, cwd: folder });
+      updateRun(handle.db, failed.id, { startedAt: clock - 1_500, endedAt: clock - 1_000, error: "The backend stopped." });
+    }
+    const over = backend(name, CHAT_ANSWER);
+
+    // The tick refuses it: a placeholder run and the stop in the thread,
+    // and the mention left open — the stop says to reply. The stop wakes
+    // the system agent, which answers it on a thread of its own.
+    await quietPass(over.provider);
+    const refused = () => chatRuns().filter((run) => run.initiationId === asked.id && run.status === "awaiting_input");
+    expect(refused()).toHaveLength(1);
+    expect(refused()[0]!.error).toMatch(/^Stopped after 3 attempt\(s\)/);
+    const answered = chatRuns().filter((run) => run.status === "succeeded" && run.id !== reviewed);
+    expect(answered).toHaveLength(1);
+    expect(over.forks()).toBe(0);
+    expect(reviewEvents()).toEqual([]);
+    const turns = over.turns();
+
+    // Quiet since: the refused message is not one still to be answered,
+    // so it holds nothing back.
+    clock += CHAT_IDLE_BEFORE_REVIEW_MS + 1_000;
+    await quietPass(over.provider);
+    expect(refused()).toHaveLength(1);
+    if (on) {
+      expect(over.forks()).toBe(2);
+      expect(eventsOf(reviewed)).toEqual([expect.objectContaining({ outcome: "nothing_to_save" })]);
+      expect(eventsOf(answered[0]!.id)).toEqual([expect.objectContaining({ outcome: "nothing_to_save" })]);
+    } else {
+      expect(over.turns()).toBe(turns);
+      expect(over.forks()).toBe(0);
+      expect(listSideCalls(handle.db)).toEqual([]);
+      expect(eventsOf(reviewed)).toEqual([expect.objectContaining({ outcome: "skipped", skip: "action_off", forkThreadId: null })]);
+      expect(eventsOf(answered[0]!.id)).toEqual([expect.objectContaining({ outcome: "skipped", skip: "action_off", forkThreadId: null })]);
+    }
+  });
 });

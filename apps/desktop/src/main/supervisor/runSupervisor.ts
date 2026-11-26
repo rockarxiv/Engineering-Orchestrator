@@ -3693,8 +3693,14 @@ export function createRunSupervisor(
         // its answer: the answer's run is written a few awaits after this
         // tick offered it, and a review started meanwhile — or a skip
         // recorded for the setting now (EO-911) — would be of a chat
-        // being carried on.
-        if (findPendingResponses(db, [itemId]).length > 0) continue;
+        // being carried on. A message the dispatch has already refused —
+        // the attempt limit's stop, say — is not waiting for an answer:
+        // its mention stays open, but each later offer of it returns at
+        // `alreadyRefused`, so counting it would hold the chat unreviewed
+        // for good. Where a refusal's cause lifts (a budget raised) and the
+        // run starts after all, a review begun meanwhile is cancelled once
+        // its run is queued (`cancelCarriedOnChatReviews`).
+        if (findPendingResponses(db, [itemId]).some((pending) => !alreadyRefused(itemId, pending.commentId))) continue;
         startQuietChatReview(item, chat.threads);
         return;
       }
