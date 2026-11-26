@@ -1012,7 +1012,8 @@ export interface GuardConfig {
   /**
    * How many characters of memory a dispatch is given without a
    * selection being asked for (EO-478). Over it, a small model picks;
-   * if that fails, the newest entries up to this many are delivered.
+   * if that fails, the entries most recently given to earlier runs, then
+   * the newest, are delivered up to this many (EO-914).
    */
   memoryDeliveryChars: number;
   /**

@@ -1,6 +1,6 @@
 import { MAX_SELECTED_MEMORIES, type MemoryEntryView, type MemorySelection, type SideCallResult } from "@eo/core";
 import { describe, expect, it, vi } from "vitest";
-import { chooseMemory, describeAge, MEMORY_SELECT_SYSTEM, newestWithin, renderMemorySection, selectionInput, totalChars, type MemoryScopeInfo } from "./selection.js";
+import { chooseMemory, describeAge, fallbackWithin, MEMORY_SELECT_SYSTEM, recentlyDeliveredFirst, renderMemorySection, selectionInput, totalChars, type MemoryScopeInfo } from "./selection.js";
 
 const DAY = 24 * 60 * 60 * 1000;
 const NOW = Date.UTC(2026, 9, 19, 12, 0, 0);
@@ -31,6 +31,9 @@ describe("the selection prompt", () => {
   });
 });
 
+/** No candidate was ever delivered before. */
+const neverDelivered = () => new Map<string, number>();
+
 /** A side call that answers as scripted and counts how often it was asked. */
 function scripted(answer: SideCallResult<MemorySelection>) {
   return vi.fn(async (_candidates: readonly MemoryEntryView[]) => answer);
@@ -42,7 +45,7 @@ describe("choosing a dispatch's memory (EO-478)", () => {
     const candidates = [entry("a", "x".repeat(2_500), 1), entry("b", "y".repeat(1_500), 2)];
     expect(totalChars(candidates)).toBe(4_000);
 
-    const choice = chooseMemory({ candidates, thresholdChars: 4_000, select });
+    const choice = chooseMemory({ candidates, thresholdChars: 4_000, select, lastDelivered: neverDelivered });
 
     // Answered on the spot: no promise, so the dispatch does not yield.
     expect(choice).not.toBeInstanceOf(Promise);
@@ -53,7 +56,7 @@ describe("choosing a dispatch's memory (EO-478)", () => {
 
   it("makes no side call when there is nothing to choose from", () => {
     const select = scripted({ ok: true, value: { ids: [] } });
-    expect(chooseMemory({ candidates: [], thresholdChars: 4_000, select })).toEqual({ delivered: [], mode: "none", selectionRan: false, reason: null });
+    expect(chooseMemory({ candidates: [], thresholdChars: 4_000, select, lastDelivered: neverDelivered })).toEqual({ delivered: [], mode: "none", selectionRan: false, reason: null });
     expect(select).toHaveBeenCalledTimes(0);
   });
 
@@ -61,7 +64,7 @@ describe("choosing a dispatch's memory (EO-478)", () => {
     const candidates = Array.from({ length: 12 }, (_, index) => entry(`e${index}`, "z".repeat(500), index));
     const select = scripted({ ok: true, value: { ids: ["e3", "e7", "e1"] } });
 
-    const choice = await chooseMemory({ candidates, thresholdChars: 4_000, select });
+    const choice = await chooseMemory({ candidates, thresholdChars: 4_000, select, lastDelivered: neverDelivered });
 
     expect(select).toHaveBeenCalledTimes(1);
     expect(select.mock.calls[0]![0].map((e) => e.id)).toEqual(candidates.map((e) => e.id));
@@ -77,6 +80,7 @@ describe("choosing a dispatch's memory (EO-478)", () => {
       candidates,
       thresholdChars: 4_000,
       select: scripted({ ok: true, value: { ids: ["invented", "e0", "e0", "e1", "e2", "e3", "e4", "e5", "e6"] } }),
+      lastDelivered: neverDelivered,
     });
 
     expect(choice.delivered.map((e) => e.id)).not.toContain("invented");
@@ -84,19 +88,33 @@ describe("choosing a dispatch's memory (EO-478)", () => {
   });
 
   it.each(["timeout", "schema", "budget", "quota", "signed_out", "sign_in_unreachable", "error"] as const)(
-    "falls back to the newest entries up to the threshold when the side call fails with %s",
+    "falls back to the most recently delivered entries, then the newest, up to the threshold when the side call fails with %s (EO-914)",
     async (reason) => {
       const candidates = [entry("old", "o".repeat(1_000), 30), entry("newest", "n".repeat(2_000), 1), entry("middle", "m".repeat(1_500), 5), entry("older", "p".repeat(500), 10)];
-      const choice = await chooseMemory({ candidates, thresholdChars: 4_000, select: scripted({ ok: false, reason, message: "it did not work" }) });
+      const lastDelivered = vi.fn(() => new Map([["old", 2_000]]));
+      const choice = await chooseMemory({ candidates, thresholdChars: 4_000, select: scripted({ ok: false, reason, message: "it did not work" }), lastDelivered });
 
       expect(choice.mode).toBe("fallback");
       expect(choice.selectionRan).toBe(false);
       expect(choice.reason).toBe(`${reason}: it did not work`);
-      // 2,000 + 1,500 = 3,500 fits; the next newest (500) would make
-      // 4,000, which still fits; the oldest would not.
-      expect(choice.delivered.map((e) => e.id)).toEqual(["newest", "middle", "older"]);
+      expect(choice.ordering).toBe("recently_delivered");
+      // The one delivered before first (1,000), then the newest: 2,000
+      // makes 3,000, and the middle one's 1,500 would not fit.
+      expect(choice.delivered.map((e) => e.id)).toEqual(["old", "newest"]);
+      expect(lastDelivered).toHaveBeenCalledTimes(1);
+      expect(lastDelivered).toHaveBeenCalledWith(candidates);
     },
   );
+
+  it("asks when entries were last delivered only on a fallback", async () => {
+    const lastDelivered = vi.fn(neverDelivered);
+    const candidates = [entry("a", "a".repeat(3_000), 1), entry("b", "b".repeat(3_000), 2)];
+    void chooseMemory({ candidates: [candidates[0]!], thresholdChars: 4_000, select: scripted({ ok: true, value: { ids: [] } }), lastDelivered });
+    const choice = await chooseMemory({ candidates, thresholdChars: 4_000, select: scripted({ ok: true, value: { ids: ["b"] } }), lastDelivered });
+    expect(choice.mode).toBe("selected");
+    expect(choice.ordering).toBeUndefined();
+    expect(lastDelivered).toHaveBeenCalledTimes(0);
+  });
 
   it("falls back, rather than failing the dispatch, when the side call itself throws", async () => {
     const candidates = [entry("a", "a".repeat(3_000), 1), entry("b", "b".repeat(3_000), 2)];
@@ -106,14 +124,58 @@ describe("choosing a dispatch's memory (EO-478)", () => {
       select: async () => {
         throw new Error("boom");
       },
+      lastDelivered: neverDelivered,
     });
     expect(choice).toMatchObject({ mode: "fallback", reason: "error: boom" });
     expect(choice.delivered.map((e) => e.id)).toEqual(["a"]);
   });
 
-  it("takes the newest in order and stops at the first that does not fit", () => {
-    const entries = [entry("big-new", "x".repeat(3_000), 1), entry("small-old", "y".repeat(100), 9), entry("bigger-mid", "z".repeat(2_000), 4)];
-    expect(newestWithin(entries, 4_000).map((e) => e.id)).toEqual(["big-new"]);
+});
+
+describe("the fallback's order (EO-914)", () => {
+  const ids = (entries: readonly MemoryEntryView[]) => entries.map((e) => e.id);
+
+  it("puts the most recently delivered first, by when each was last delivered, whatever its age", () => {
+    const entries = [entry("new", "n", 1), entry("old", "o", 90), entry("mid", "m", 10)];
+    expect(ids(recentlyDeliveredFirst(entries, new Map([["old", 300], ["mid", 200], ["new", 100]])))).toEqual(["old", "mid", "new"]);
+    expect(ids(recentlyDeliveredFirst(entries, new Map([["new", 300], ["mid", 200], ["old", 100]])))).toEqual(["new", "mid", "old"]);
+  });
+
+  it("puts the never-delivered after every delivered one, newest first among themselves", () => {
+    const entries = [entry("never-new", "a", 1), entry("given-oldest", "b", 200), entry("never-old", "c", 40), entry("never-mid", "d", 7)];
+    expect(ids(recentlyDeliveredFirst(entries, new Map([["given-oldest", 1]])))).toEqual(["given-oldest", "never-new", "never-mid", "never-old"]);
+  });
+
+  it("is newest first when nothing was ever delivered", () => {
+    const entries = [entry("mid", "m", 5), entry("new", "n", 1), entry("old", "o", 30)];
+    expect(ids(recentlyDeliveredFirst(entries, new Map()))).toEqual(["new", "mid", "old"]);
+  });
+
+  it("breaks a tie in when they were last delivered newest first, and a tie in age by id", () => {
+    const entries = [entry("older", "a", 9), entry("newer", "b", 2), entry("x-same", "c", 4), entry("y-same", "d", 4), entry("latest", "e", 30)];
+    const last = new Map([["older", 500], ["newer", 500], ["x-same", 500], ["y-same", 500], ["latest", 900]]);
+    expect(ids(recentlyDeliveredFirst(entries, last))).toEqual(["latest", "newer", "y-same", "x-same", "older"]);
+    // The same answer whatever order the candidates came in.
+    expect(ids(recentlyDeliveredFirst([...entries].reverse(), last))).toEqual(["latest", "newer", "y-same", "x-same", "older"]);
+  });
+
+  it("does not reorder what it is handed", () => {
+    const entries = [entry("a", "a", 1), entry("b", "b", 2)];
+    recentlyDeliveredFirst(entries, new Map([["b", 1]]));
+    expect(ids(entries)).toEqual(["a", "b"]);
+  });
+
+  it("keeps entries in that order while they fit the threshold, and stops at the first that does not", () => {
+    const entries = [entry("big-given", "x".repeat(3_000), 30), entry("small-new", "y".repeat(100), 1), entry("bigger-given", "z".repeat(2_000), 60), entry("tiny-old", "t".repeat(10), 90)];
+    const last = new Map([["big-given", 900], ["bigger-given", 800]]);
+    // 3,000 fits; 2,000 more would not, so nothing after it is reached
+    // for, however small.
+    expect(ids(fallbackWithin(entries, last, 4_000))).toEqual(["big-given"]);
+    // Exactly the threshold fits.
+    expect(ids(fallbackWithin(entries, last, 5_000))).toEqual(["big-given", "bigger-given"]);
+    expect(ids(fallbackWithin(entries, last, 5_110))).toEqual(["big-given", "bigger-given", "small-new", "tiny-old"]);
+    // One too large for the threshold alone delivers nothing.
+    expect(ids(fallbackWithin(entries, last, 2_999))).toEqual([]);
   });
 });
 
@@ -192,11 +254,27 @@ describe("the memory section", () => {
     const section = renderMemorySection({
       scopes: [PROJECT],
       candidates,
-      choice: { delivered: [candidates[0]!], mode: "fallback", selectionRan: false, reason: "timeout: too slow" },
+      choice: { delivered: [candidates[0]!], mode: "fallback", selectionRan: false, reason: "timeout: too slow", ordering: "recently_delivered" },
       now: NOW,
     });
-    expect(section).toContain("Selection did not run for this dispatch, so these are the newest entries");
+    expect(section).toContain("Selection did not run for this dispatch, so these are the entries most recently given to earlier runs, then the newest");
     expect(section).toMatchSnapshot();
+  });
+
+  it("shows a fallback's entries in the order it chose them, not the candidates' order", () => {
+    // Newest first as candidates arrive; the fallback put the delivered-before `old` first.
+    const candidates = [entry("new", "the newest", 1), entry("mid", "the middle", 5), entry("old", "given before", 30)];
+    const section = renderMemorySection({
+      scopes: [PROJECT],
+      candidates,
+      choice: { delivered: [candidates[2]!, candidates[0]!], mode: "fallback", selectionRan: false, reason: "timeout: too slow", ordering: "recently_delivered" },
+      now: NOW,
+    })!;
+    const at = (id: string) => section.indexOf(`id \`${id}\``);
+    expect(at("old")).toBeGreaterThan(-1);
+    expect(at("new")).toBeGreaterThan(at("old"));
+    expect(at("mid")).toBe(-1);
+    expect(section).toContain("This scope holds 1 other entry.");
   });
 
   it("lists a scope nothing was delivered from, and renders nothing at all when no scope holds anything", () => {

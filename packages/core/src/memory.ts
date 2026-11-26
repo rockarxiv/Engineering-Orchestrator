@@ -218,21 +218,37 @@ export type MemorySelection = z.infer<typeof MemorySelectionSchema>;
  *   delivered; nothing was asked.
  * - `selected` — a selection side call picked them.
  * - `fallback` — selection was needed and did not run (it failed, timed
- *   out, or was refused), so the newest entries up to the threshold were
- *   delivered instead.
+ *   out, or was refused), so the candidates were delivered up to the
+ *   threshold in the order its `ordering` names instead.
  * - `none` — there were no candidates.
  */
 export const MEMORY_SELECTION_MODES = ["all", "selected", "fallback", "none"] as const;
 export const MemorySelectionModeSchema = z.enum(MEMORY_SELECTION_MODES);
 export type MemorySelectionMode = z.infer<typeof MemorySelectionModeSchema>;
 
+/**
+ * The order a fallback delivered the candidates in (EO-914).
+ *
+ * - `recently_delivered` — those most recently given to an earlier run
+ *   first, by the newest `memory_delivered` event naming each, then
+ *   those never given, newest first.
+ *
+ * A fallback recorded before EO-914 carries no ordering; it delivered
+ * the newest entries.
+ */
+export const MEMORY_FALLBACK_ORDERINGS = ["recently_delivered"] as const;
+export const MemoryFallbackOrderingSchema = z.enum(MEMORY_FALLBACK_ORDERINGS);
+export type MemoryFallbackOrdering = z.infer<typeof MemoryFallbackOrderingSchema>;
+
 /** The run event that records what a dispatch was given. */
 export const MEMORY_DELIVERED_EVENT = "memory_delivered";
 
 /**
  * Its payload: which entries, and whether selection ran. `reason` is the
- * side call's own sentence on a fallback, so "why did this run get the
- * newest entries?" has an answer in the run's log.
+ * side call's own sentence on a fallback, so "why did this run not get
+ * the entries a selection picked?" has an answer in the run's log, and
+ * `ordering` says what order the fallback delivered them in — present on
+ * a fallback, absent on every other mode.
  */
 export const MemoryDeliveredEventSchema = z.object({
   type: z.literal(MEMORY_DELIVERED_EVENT),
@@ -241,6 +257,7 @@ export const MemoryDeliveredEventSchema = z.object({
   mode: MemorySelectionModeSchema,
   selectionRan: z.boolean(),
   reason: z.string().nullable(),
+  ordering: MemoryFallbackOrderingSchema.optional(),
 });
 export type MemoryDeliveredEvent = z.infer<typeof MemoryDeliveredEventSchema>;
 

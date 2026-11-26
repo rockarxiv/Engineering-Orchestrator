@@ -1,4 +1,5 @@
 import {
+  MEMORY_DELIVERED_EVENT,
   MEMORY_SELECT_TIMEOUT_MS,
   type Agent,
   type AgentEvent,
@@ -12,7 +13,7 @@ import {
 } from "@eo/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DbHandle } from "../db/client.js";
-import { addMemory, createRun, listAgents, listSideCalls, postComment, retireMemory, updateRun } from "../db/repos/index.js";
+import { addMemory, appendRunEventAt, createRun, listAgents, listSideCalls, postComment, retireMemory, updateRun } from "../db/repos/index.js";
 import { attachWorkspace, createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import { createSideCaller, type SideCallRequest } from "../sideCalls/sideCall.js";
 import { createSideCallSlots } from "../sideCalls/slots.js";
@@ -161,7 +162,7 @@ describe("a dispatch's memory", () => {
       expect(delivered.event).toMatchObject({ entryIds: [persons], candidateCount: 1, mode: "selected" });
     });
 
-    it("stay out of a fallback's newest entries", async () => {
+    it("stay out of a fallback's entries", async () => {
       // The newest of all three, and small enough to fit the fallback.
       noted(item, "Own.");
       remember(project, "An older entry.", 1_000);
@@ -255,7 +256,69 @@ describe("a dispatch's memory", () => {
     expect(memoryTaskFor(handle.db, item, agent, "discuss", true)).toEqual({ kind: "conversation", latestMessage: "How do refunds settle?" });
   });
 
-  it("on a 20-second timeout delivers the newest entries up to the threshold, says selection did not run, and the dispatch goes on", async () => {
+  describe("a fallback's order (EO-914)", () => {
+    /** A `memory_delivered` event on a run of its own, at `ts`. */
+    function deliveredEarlier(entryIds: string[], ts: number, on: Uuid = createRun(handle.db, { itemId: item.id, agentId: agent.id, action: "implement", status: "succeeded" }).id) {
+      appendRunEventAt(handle.db, on, { seq: ts, ts }, MEMORY_DELIVERED_EVENT, { type: MEMORY_DELIVERED_EVENT, entryIds, candidateCount: entryIds.length, mode: "selected", selectionRan: true, reason: null });
+    }
+    const failing = async (): Promise<SideCallResult<MemorySelection>> => ({ ok: false, reason: "quota", message: "plan limit reached" });
+
+    it("delivers the entries most recently given to earlier runs first, then the never-given newest first, up to the threshold, and records the ordering", async () => {
+      const e = Array.from({ length: 6 }, (_, index) => remember(project, `Entry ${index}: ${"q".repeat(990)}`, 1_000 + index));
+      deliveredEarlier([e[2]!], 50);
+      deliveredEarlier([e[1]!], 100);
+      // Both last given at 200, by one event: the newer of the two first.
+      deliveredEarlier([e[0]!, e[1]!], 200);
+      // What this run was itself given is not what came before it.
+      deliveredEarlier([e[3]!], 300, runId);
+
+      const delivered = await deliver(failing);
+
+      // 1,000 characters each: four fit in 4,000. After the three given
+      // before, the newest never given (e5); e3 counts as never given.
+      expect(delivered.event).toEqual({
+        type: MEMORY_DELIVERED_EVENT,
+        entryIds: [e[1], e[0], e[2], e[5]],
+        candidateCount: 6,
+        mode: "fallback",
+        selectionRan: false,
+        reason: "quota: plan limit reached",
+        ordering: "recently_delivered",
+      });
+      expect(delivered.section).toContain("Selection did not run for this dispatch, so these are the entries most recently given to earlier runs, then the newest");
+      // And the agent reads them in that order, not the candidates'.
+      const at = (index: number) => delivered.section!.indexOf(`Entry ${index}:`);
+      expect([1, 0, 2, 5].map(at).every((position, i, all) => position > -1 && (i === 0 || position > all[i - 1]!))).toBe(true);
+      expect(delivered.section).not.toContain("Entry 4:");
+    });
+
+    it("reads the deliveries again after the selection, as it does the entries", async () => {
+      const e = Array.from({ length: 6 }, (_, index) => remember(project, `Entry ${index}: ${"q".repeat(1_990)}`, 1_000 + index));
+      deliveredEarlier([e[0]!], 100);
+
+      const delivered = await deliver(async () => {
+        // Another run was given e3 while this selection was out.
+        deliveredEarlier([e[3]!], 200);
+        return failing();
+      });
+
+      expect(delivered.event).toMatchObject({ entryIds: [e[3], e[0]], mode: "fallback", ordering: "recently_delivered" });
+    });
+
+    it("is the newest first where no candidate was ever delivered", async () => {
+      const e = Array.from({ length: 6 }, (_, index) => remember(project, `Entry ${index}: ${"q".repeat(1_400)}`, 1_000 + index));
+      const delivered = await deliver(failing);
+      expect(delivered.event).toMatchObject({ entryIds: [e[5], e[4]], mode: "fallback", ordering: "recently_delivered" });
+    });
+
+    it("records no ordering when the selection ran", async () => {
+      const e = Array.from({ length: 6 }, (_, index) => remember(project, `Entry ${index}: ${"q".repeat(1_400)}`, 1_000 + index));
+      const delivered = await deliver(async () => ({ ok: true, value: { ids: [e[0]!] } }));
+      expect(delivered.event).not.toHaveProperty("ordering");
+    });
+  });
+
+  it("on a 20-second timeout delivers, with nothing delivered before, the newest entries up to the threshold, says selection did not run, and the dispatch goes on", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
     const ids = Array.from({ length: 6 }, (_, index) => remember(project, `Entry ${index}: ${"y".repeat(1_400)}`, 1_000 + index));
     // A backend that never answers: the side call's own limit is the only thing that ends it.
@@ -290,7 +353,7 @@ describe("a dispatch's memory", () => {
     await vi.waitFor(() => expect(settled).not.toBeNull());
 
     const delivered = settled as unknown as DeliveredMemory;
-    expect(delivered.event).toMatchObject({ mode: "fallback", selectionRan: false });
+    expect(delivered.event).toMatchObject({ mode: "fallback", selectionRan: false, ordering: "recently_delivered" });
     expect(delivered.event.reason).toMatch(/^timeout:/);
     // The newest two fit in 4,000 characters; a third would not.
     expect(delivered.event.entryIds).toEqual([ids[5], ids[4]]);
