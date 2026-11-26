@@ -57,7 +57,8 @@ import { sendAgentWrite } from "../mcp/writeBridge.js";
 import { createFakeProvider, type FakeProviderScript } from "../providers/fake.js";
 import { startTestWriteBridge, type TestWriteBridge } from "../testing/agentWrites.js";
 import { getAgentAttachments } from "../db/repos/agentAttachmentsRepo.js";
-import { openAssistConversation } from "../roles/assist.js";
+import { openAssistConversation, postAssistReply } from "../roles/assist.js";
+import { ASSIST_ACTION } from "../roles/conversationSteps.js";
 import { createRunSupervisor } from "./runSupervisor.js";
 
 /** Where a succeeded implement run sends an item from To Do on the default pipeline. */
@@ -197,6 +198,12 @@ describe("the learning review after a run", () => {
       ...(now ? { now } : {}),
       agentWriteBridge: writes.agentWriteBridge,
       sideCalls: { provider: () => side, smallModel: async () => null },
+      // An assistant chat's answer is posted as the app posts it, which
+      // answers the person's message: left open, the next tick would
+      // answer it again and the chat would never be quiet.
+      onRunSucceeded: (ranOn, agent, action, parsedResult, runId) => {
+        if (action === ASSIST_ACTION) postAssistReply(handle.db, ranOn, agent.id, runId, parsedResult);
+      },
     });
     writes.serve(supervisor);
     return supervisor;
