@@ -49,7 +49,7 @@ import { NO_SKILL_CHANGES, skillChangesBetween, skillChangesSection } from "../a
 import { withSkillsSection } from "../agentAttachments/skillsPrompt.js";
 import { claudeSkillLoaded, leadingWith, skillsOffered, withoutEvents } from "./skillUsage.js";
 import { REFUSED_CALL_EVENTS, refusalHookOutput, refusedCall, type CallRule } from "./callRefusal.js";
-import { fencedCall } from "./callFence.js";
+import { fencedCall, type FenceRefusal } from "./callFence.js";
 import { openedFork } from "./threadFork.js";
 import type { SearchNudge } from "./searchNudge.js";
 import type { AdminMcpDispatch } from "../agentAttachments/adminDelivery.js";
@@ -1264,7 +1264,10 @@ function fenceRefusals(fence: CallFence | undefined, record: (event: CallRefused
   if (fence === undefined) return undefined;
   const hook = async (input: HookInput): Promise<HookJSONOutput> => {
     if (input.hook_event_name !== "PreToolUse") return {};
-    const refusal = fencedCall(input.tool_name, input.tool_input, fence, typeof input.cwd === "string" && input.cwd !== "" ? input.cwd : undefined);
+    // A fence that could not decide refuses: one that fails open is no fence.
+    const refusal = await fencedCall(input.tool_name, input.tool_input, fence, typeof input.cwd === "string" && input.cwd !== "" ? input.cwd : undefined).catch(
+      (error: unknown): FenceRefusal => ({ rule: "push_unverified", call: input.tool_name, reason: `EO refused this call: its fence could not check it (${error instanceof Error ? error.message : String(error)}).` }),
+    );
     if (refusal === null) return {};
     record({
       type: "call_refused",

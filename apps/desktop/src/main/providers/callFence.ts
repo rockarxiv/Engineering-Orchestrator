@@ -1,3 +1,5 @@
+import { execFile } from "node:child_process";
+import { homedir } from "node:os";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import type { CallFence } from "@eo/core";
 
@@ -20,7 +22,13 @@ import type { CallFence } from "@eo/core";
  * - on a turn that may push (`pushBranch` set): a `git push` without
  *   `--force-with-lease`, one with a bare `--force`, `-f` or a
  *   `+refspec`, one that names any branch but `pushBranch` or pushes
- *   more than one (`--all`, `--mirror`, `--tags`, `--delete`);
+ *   more than one (`--all`, `--mirror`, `--tags`, `--delete`), one run
+ *   from outside the worktree or pointed at another repository, and one
+ *   whose destination git would work out for itself — no refspec, or one
+ *   with no `:<dst>` — unless the checkout's own state says that
+ *   destination is `pushBranch` (`FenceGit`): git maps such a push
+ *   through `remote.<name>.push`, `push.default` and the branch's
+ *   upstream, so the words alone do not say where it goes;
  * - on a turn that may not (`pushBranch` null, the reviewer's): every
  *   `git push`;
  * - on both: `gh pr merge`, because merging is EO's;
@@ -28,16 +36,32 @@ import type { CallFence } from "@eo/core";
  *   `MultiEdit` and `NotebookEdit`, Codex's `apply_patch` — whose target
  *   is outside `root`.
  *
+ * Every command a line runs is looked at, wherever it is: after `&&`, `;`
+ * or a pipe, inside `$(…)` and backticks — in double quotes and unquoted
+ * heredocs too, where the shell still runs them — inside `<(…)`, behind
+ * `env`, `sudo`, `xargs` or `eval`, and in a `sh -c` script. The directory
+ * a command runs in starts where the hook says the call runs (Claude's
+ * session directory, Codex's `workdir`) and follows `cd`, `pushd`,
+ * `env -C` and `git -C`.
+ *
  * **A guard against accidents, not a sandbox.** A shell command is read as
- * words: quotes, `&&`, `;`, pipes, redirections, `env` and `sh -c` are
- * understood, and an alias, a variable holding `push`, a script file or a
- * second language are not. A write made through the shell (`echo > /x`,
+ * words: an alias, a variable holding `push`, a script file or a second
+ * language are not understood. A write made through the shell (`echo > /x`,
  * `cp`, `sed -i`) is not looked at for its path at all. ARCHITECTURE.md
  * says so where the fence is described.
  */
 
 /** Which of the fence's rules refused a call. Stored on the run's `call_refused` event. */
-export type FenceRule = "push_on_review" | "push_forced" | "push_without_lease" | "push_elsewhere" | "pr_merge" | "write_outside_worktree" | "unreadable_patch";
+export type FenceRule =
+  | "push_on_review"
+  | "push_forced"
+  | "push_without_lease"
+  | "push_elsewhere"
+  | "push_outside_worktree"
+  | "push_unverified"
+  | "pr_merge"
+  | "write_outside_worktree"
+  | "unreadable_patch";
 
 /** A call the fence refused: which rule, what it refused, and what the agent is told. */
 export interface FenceRefusal {
@@ -45,6 +69,20 @@ export interface FenceRefusal {
   /** The command line, or the path the write named. */
   call: string;
   reason: string;
+}
+
+/** What the fence reads of a checkout to know where a push with no explicit destination goes. */
+export interface CheckoutState {
+  /** The branch checked out there, or null where `HEAD` is detached. */
+  branch: string | null;
+  /** Its configuration as `git config --list` gives it: section and key lowercased, a subsection as written. */
+  config: ReadonlyMap<string, readonly string[]>;
+}
+
+/** How the fence asks git about a checkout. A seam for tests; `readCheckout` is the real one. */
+export interface FenceGit {
+  /** The checkout at `dir`, or null where git cannot say — not a repository, no git, too slow. */
+  state(dir: string): Promise<CheckoutState | null>;
 }
 
 /** Said at the end of every refusal, so the agent reads it as the fence and not as a fault. */
@@ -71,18 +109,18 @@ const PATCH_TOOL = "apply_patch";
  *
  * `tool` and `input` are what the hook was handed (`tool_name`,
  * `tool_input`); `cwd` is the directory the hook says the call runs in,
- * which a relative path is read against, and `fence.root` where it says
- * none.
+ * which a relative path and a shell command start from, and `fence.root`
+ * where it says none.
  */
-export function fencedCall(tool: string, input: unknown, fence: CallFence, cwd?: string): FenceRefusal | null {
+export async function fencedCall(tool: string, input: unknown, fence: CallFence, cwd?: string, git: FenceGit = readCheckout): Promise<FenceRefusal | null> {
   const fields = asRecord(input);
+  const base = cwd ?? fence.root;
   if (tool === SHELL_TOOL) {
     const command = fields?.["command"];
-    if (typeof command === "string") return shellRefusal(command, fence);
-    if (Array.isArray(command) && command.every((word) => typeof word === "string")) return commandsRefusal([command as string[]], command.join(" "), fence, 0);
+    if (typeof command === "string") return shellRefusal(command, fence, base, git);
+    if (Array.isArray(command) && command.every((word) => typeof word === "string")) return commandsRefusal([command as string[]], command.join(" "), fence, { dir: base }, git, 0);
     return null;
   }
-  const base = cwd ?? fence.root;
   const field = FILE_TOOLS[tool];
   if (field !== undefined) {
     const path = fields?.[field];
@@ -128,30 +166,41 @@ export function patchTargets(text: string): string[] {
   return targets;
 }
 
-/** The fence's answer to one command line. */
-export function shellRefusal(command: string, fence: CallFence): FenceRefusal | null {
-  return commandsRefusal(simpleCommands(command), command, fence, 0);
+/** The fence's answer to one command line, run from `cwd`. */
+export function shellRefusal(command: string, fence: CallFence, cwd: string = fence.root, git: FenceGit = readCheckout): Promise<FenceRefusal | null> {
+  return commandsRefusal(simpleCommands(command), command, fence, { dir: cwd }, git, 0);
 }
 
-/** How deep `sh -c '…'` is read into. A command nested further than this is not looked at. */
+/** How deep `sh -c '…'` and `eval` are read into. A command nested further than this is not looked at. */
 const DEEPEST_NESTING = 4;
 
-function commandsRefusal(commands: readonly string[][], line: string, fence: CallFence, depth: number): FenceRefusal | null {
+/** Where the shell is as a line runs: a directory, or null once it cannot be told (`cd -`, `cd "$X"`, `popd`). */
+interface ShellScope {
+  dir: string | null;
+}
+
+async function commandsRefusal(commands: readonly string[][], line: string, fence: CallFence, scope: ShellScope, git: FenceGit, depth: number): Promise<FenceRefusal | null> {
   const call = line.length > LONGEST_CALL ? `${line.slice(0, LONGEST_CALL)}…` : line;
   for (const words of commands) {
-    const argv = withoutPrefixes(words);
+    const { argv, assigned, chdir } = withoutPrefixes(words);
+    // `env -C <dir>` runs the one command there; the line goes on where it was.
+    const dir = chdir === undefined ? scope.dir : moved(scope.dir, chdir);
     const program = basename(argv[0] ?? "");
-    if (program === "git") {
-      const rule = gitRefusal(argv.slice(1), fence);
+    if (program === "cd" || program === "pushd") {
+      scope.dir = moved(scope.dir, argv.slice(1).find((arg) => !arg.startsWith("-") || arg === "-") ?? null);
+    } else if (program === "popd") {
+      scope.dir = null;
+    } else if (program === "git") {
+      const rule = await gitRefusal(argv.slice(1), fence, dir, assigned, git);
       if (rule !== null) return { rule, call, reason: pushReason(rule, fence) };
     } else if (program === "gh") {
       if (isPrMerge(argv.slice(1))) {
         return { rule: "pr_merge", call, reason: `EO refused this call: \`gh pr merge\` is refused on this turn, because merging a pull request is EO's to do. ${FENCE_NOTE}` };
       }
-    } else if (SHELLS.has(program) && depth < DEEPEST_NESTING) {
-      const script = shellScript(argv.slice(1));
+    } else if (depth < DEEPEST_NESTING && (SHELLS.has(program) || program === "eval")) {
+      const script = program === "eval" ? argv.slice(1).join(" ") : shellScript(argv.slice(1));
       if (script !== null) {
-        const nested = commandsRefusal(simpleCommands(script), line, fence, depth + 1);
+        const nested = await commandsRefusal(simpleCommands(script), line, fence, scope, git, depth + 1);
         if (nested !== null) return nested;
       }
     }
@@ -159,16 +208,30 @@ function commandsRefusal(commands: readonly string[][], line: string, fence: Cal
   return null;
 }
 
+/** Where `cd <to>` leaves a shell that was at `from`: null where that cannot be told without running it. */
+function moved(from: string | null, to: string | null): string | null {
+  if (from === null || to === null || to === "-" || to.includes("$") || to.includes("`")) return null;
+  if (to === "~") return homedir();
+  if (to.startsWith("~/")) return resolve(homedir(), to.slice(2));
+  if (to.startsWith("~")) return null;
+  return resolve(from, to);
+}
+
 function pushReason(rule: FenceRule, fence: CallFence): string {
+  const branch = fence.pushBranch ?? "";
   switch (rule) {
     case "push_on_review":
       return `EO refused this call: this turn may not push at all — EO pushes the item's branch itself. ${FENCE_NOTE}`;
     case "push_forced":
       return `EO refused this call: on this turn \`git push\` may only overwrite with \`--force-with-lease\`, so a bare \`--force\`, \`-f\` or a \`+refspec\` is refused. ${FENCE_NOTE}`;
     case "push_without_lease":
-      return `EO refused this call: on this turn \`git push\` is only allowed as \`git push --force-with-lease\` to the item's own branch, ${fence.pushBranch ?? ""}, and only when an engine note says the remote branch diverged — otherwise EO does the pushing. ${FENCE_NOTE}`;
+      return `EO refused this call: on this turn \`git push\` is only allowed as \`git push --force-with-lease\` to the item's own branch, ${branch}, and only when an engine note says the remote branch diverged — otherwise EO does the pushing. ${FENCE_NOTE}`;
+    case "push_outside_worktree":
+      return `EO refused this call: on this turn \`git push\` may only be run in the item's worktree, ${fence.root}, and this one runs elsewhere, in another repository, or somewhere EO cannot tell. ${FENCE_NOTE}`;
+    case "push_unverified":
+      return `EO refused this call: this push leaves its destination for git to work out, and EO could not establish from this checkout's branch and configuration that it is ${branch}. Name the destination instead: \`git push --force-with-lease <remote> HEAD:refs/heads/${branch}\`. ${FENCE_NOTE}`;
     default:
-      return `EO refused this call: on this turn \`git push\` may only update the item's own branch, ${fence.pushBranch ?? ""}, and this push names another branch or more than one. ${FENCE_NOTE}`;
+      return `EO refused this call: on this turn \`git push\` may only update the item's own branch, ${branch}, and this push names another branch or more than one. ${FENCE_NOTE}`;
   }
 }
 
@@ -185,22 +248,57 @@ function shellScript(args: readonly string[]): string | null {
   return null;
 }
 
-/** Words before the program that do not change which program runs: assignments, `env`, `sudo`, `command`, a group's brace. */
-const TRANSPARENT = new Set(["{", "}", "(", "!", "then", "do", "else", "elif", "if", "while", "until", "time", "nohup", "exec", "command", "builtin", "sudo", "env", "xargs"]);
+/** Words before the program that do not change which program runs. */
+const TRANSPARENT = new Set(["{", "}", "(", "!", "then", "do", "else", "elif", "if", "while", "until"]);
+/** Programs that run the rest of their words as a command, and those of their options that take a value. */
+const WRAPPERS: Readonly<Record<string, ReadonlySet<string>>> = {
+  env: new Set(["-u", "--unset", "-C", "--chdir", "-S", "--split-string"]),
+  sudo: new Set(["-u", "-g", "-h", "-p", "-C", "-D", "-r", "-t", "-U", "-T", "--user", "--group", "--chdir"]),
+  xargs: new Set(["-I", "-n", "-L", "-P", "-d", "-E", "-s", "-a", "--max-args", "--max-lines", "--max-procs", "--delimiter", "--arg-file"]),
+  time: new Set(["-f", "-o", "--format", "--output"]),
+  nohup: new Set(),
+  exec: new Set(["-a"]),
+  command: new Set(),
+  builtin: new Set(),
+  nice: new Set(["-n", "--adjustment"]),
+  timeout: new Set(["-s", "-k", "--signal", "--kill-after"]),
+};
 
-function withoutPrefixes(words: readonly string[]): string[] {
+/** A command's words without what comes before its program: the program and its arguments, the names assigned for it, and `env -C`'s directory. */
+function withoutPrefixes(words: readonly string[]): { argv: string[]; assigned: string[]; chdir?: string } {
+  const assigned: string[] = [];
+  let chdir: string | undefined;
   let index = 0;
-  let afterWrapper = false;
   while (index < words.length) {
     const word = words[index] ?? "";
-    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(word) || TRANSPARENT.has(word)) {
-      afterWrapper = afterWrapper || ["sudo", "env", "xargs", "command", "exec", "nohup", "time"].includes(word);
+    const assignment = /^([A-Za-z_][A-Za-z0-9_]*)=/.exec(word);
+    if (assignment?.[1] !== undefined) {
+      assigned.push(assignment[1]);
       index++;
-    } else if (afterWrapper && word.startsWith("-")) {
+      continue;
+    }
+    if (TRANSPARENT.has(word)) {
       index++;
-    } else break;
+      continue;
+    }
+    const valued = WRAPPERS[basename(word)];
+    if (valued === undefined) break;
+    const wrapper = basename(word);
+    index++;
+    // The wrapper's own options, until its command.
+    while (index < words.length) {
+      const option = words[index] ?? "";
+      if (!option.startsWith("-") || option === "-") break;
+      index++;
+      if (option === "--") break;
+      const name = option.includes("=") ? option.slice(0, option.indexOf("=")) : option;
+      const value = option.includes("=") ? option.slice(option.indexOf("=") + 1) : valued.has(option) ? (words[index++] ?? "") : undefined;
+      if (wrapper === "env" && (name === "-C" || name === "--chdir") && value !== undefined) chdir = value;
+    }
+    // `timeout`'s first word is its duration.
+    if (wrapper === "timeout" && index < words.length) index++;
   }
-  return words.slice(index);
+  return { argv: words.slice(index), assigned, ...(chdir === undefined ? {} : { chdir }) };
 }
 
 function basename(program: string): string {
@@ -212,20 +310,30 @@ function basename(program: string): string {
 /** git's own options before the subcommand that take a value as the next word. */
 const GIT_VALUE_OPTIONS = new Set(["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env", "--exec-path", "--super-prefix"]);
 /** Those that point git at another repository or checkout. */
-const GIT_RELOCATING = new Set(["-C", "--git-dir", "--work-tree"]);
+const GIT_RELOCATING = new Set(["--git-dir", "--work-tree", "--namespace"]);
+/** Those that change git's configuration for this one command. */
+const GIT_CONFIGURING = new Set(["-c", "--config-env"]);
+/** Environment variables that do either, set on the command itself. */
+const GIT_RELOCATING_ENV = new Set(["GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_NAMESPACE", "GIT_INDEX_FILE"]);
+const GIT_CONFIGURING_ENV = /^GIT_CONFIG/;
 
-/** Which rule refuses this `git …` (its words after `git`), or null. */
-function gitRefusal(args: readonly string[], fence: CallFence): FenceRule | null {
+/** Which rule refuses this `git …` (its words after `git`), run in `dir`, or null. */
+async function gitRefusal(args: readonly string[], fence: CallFence, dir: string | null, assigned: readonly string[], git: FenceGit): Promise<FenceRule | null> {
   let index = 0;
-  let relocated = false;
+  let relocated = assigned.some((name) => GIT_RELOCATING_ENV.has(name));
+  let configured = assigned.some((name) => GIT_CONFIGURING_ENV.test(name));
+  let at = dir;
   while (index < args.length && (args[index] ?? "").startsWith("-")) {
     const option = args[index] ?? "";
     const name = option.includes("=") ? option.slice(0, option.indexOf("=")) : option;
     if (GIT_RELOCATING.has(name)) relocated = true;
+    if (GIT_CONFIGURING.has(name)) configured = true;
+    if (option === "-C") at = moved(at, args[index + 1] ?? null);
     index += GIT_VALUE_OPTIONS.has(option) ? 2 : 1;
   }
   if (args[index] !== "push") return null;
-  return pushRefusal(args.slice(index + 1), fence, relocated);
+  if (fence.pushBranch === null) return "push_on_review";
+  return pushRefusal(args.slice(index + 1), fence.pushBranch, fence.root, { dir: at, relocated, configured }, git);
 }
 
 /** Push options that update refs other than the one named, or remove one. */
@@ -233,8 +341,14 @@ const WIDE_PUSH = new Set(["--all", "--branches", "--mirror", "--tags", "--follo
 /** Push options that take a value as the next word. */
 const PUSH_VALUE_OPTIONS = new Set(["-o", "--push-option", "--receive-pack", "--exec"]);
 
-function pushRefusal(args: readonly string[], fence: CallFence, relocated: boolean): FenceRule | null {
-  if (fence.pushBranch === null) return "push_on_review";
+/** Where a push runs: its directory, and whether git was pointed elsewhere or configured for it on the command line. */
+interface PushPlace {
+  dir: string | null;
+  relocated: boolean;
+  configured: boolean;
+}
+
+async function pushRefusal(args: readonly string[], branch: string, root: string, place: PushPlace, git: FenceGit): Promise<FenceRule | null> {
   let lease = false;
   let forced = false;
   let wide = false;
@@ -274,25 +388,76 @@ function pushRefusal(args: readonly string[], fence: CallFence, relocated: boole
   if (forced || refspecs.some((refspec) => refspec.startsWith("+"))) return "push_forced";
   if (wide) return "push_elsewhere";
   if (!lease) return "push_without_lease";
-  // No refspec pushes the branch checked out where git runs, which is the
-  // item's own in its worktree — unless git was pointed somewhere else.
-  if (refspecs.length === 0) return relocated ? "push_elsewhere" : null;
+  // Only from the item's worktree, and only into its repository.
+  if (place.relocated || place.dir === null || !inside(root, place.dir)) return "push_outside_worktree";
+  // An explicit destination is the one git updates, whatever is configured.
   for (const refspec of refspecs) {
     const colon = refspec.indexOf(":");
-    if (colon === -1 && refspec === "HEAD") {
-      if (relocated) return "push_elsewhere";
+    if (colon === -1) {
+      if (refspec !== "HEAD" && branchName(refspec) !== branch) return "push_elsewhere";
       continue;
     }
-    if (colon === 0) return "push_elsewhere";
-    const destination = colon === -1 ? refspec : refspec.slice(colon + 1);
-    if (branchName(destination) !== fence.pushBranch) return "push_elsewhere";
+    if (colon === 0 || branchName(refspec.slice(colon + 1)) !== branch) return "push_elsewhere";
   }
-  return null;
+  // What the checkout adds to every push: a mirroring remote pushes every
+  // ref, and `push.followTags` the tags beside the branch.
+  const state = await git.state(place.dir);
+  if (state === null) return "push_unverified";
+  for (const [key, values] of state.config) {
+    if (/^remote\..+\.mirror$/.test(key) && values.some(isTrue)) return "push_elsewhere";
+  }
+  if ((state.config.get("push.followtags") ?? []).some(isTrue)) return "push_elsewhere";
+  // A push with no `:<dst>` — none at all, a branch's name, `HEAD` — goes
+  // where git maps it: through `remote.<name>.push` (which remaps even a
+  // named branch), `push.default` and the branch's upstream. Allowed only
+  // where the checkout says that is the item's branch.
+  const implicit = refspecs.length === 0 || refspecs.some((refspec) => !refspec.includes(":"));
+  if (!implicit) return null;
+  if (place.configured) return "push_unverified";
+  for (const key of state.config.keys()) {
+    if (/^remote\..+\.push$/.test(key)) return "push_unverified";
+  }
+  if (state.branch !== branch) return refspecs.length === 0 || refspecs.includes("HEAD") ? "push_unverified" : null;
+  if (refspecs.length > 0) return null;
+  const pushDefault = (state.config.get("push.default") ?? []).at(-1) ?? "simple";
+  const upstream = (state.config.get(`branch.${branch}.merge`) ?? []).at(-1);
+  if (pushDefault === "current") return null;
+  if (pushDefault === "simple") return upstream === undefined || branchName(upstream) === branch ? null : "push_unverified";
+  if (pushDefault === "upstream" || pushDefault === "tracking") return upstream !== undefined && branchName(upstream) === branch ? null : "push_unverified";
+  return "push_unverified";
 }
 
 function branchName(ref: string): string {
   return ref.startsWith("refs/heads/") ? ref.slice("refs/heads/".length) : ref;
 }
+
+/** git's spelling of true. A key with no value at all is true as well. */
+function isTrue(value: string): boolean {
+  return ["", "true", "yes", "on", "1"].includes(value.trim().toLowerCase());
+}
+
+/** How long the fence waits for git, which is waiting on a tool call. */
+const GIT_TIMEOUT_MS = 5_000;
+
+/** The real `FenceGit`: two git commands in the checkout, neither of which writes anything. */
+export const readCheckout: FenceGit = {
+  async state(dir) {
+    const run = (args: string[]) =>
+      new Promise<{ ok: boolean; stdout: string }>((done) => {
+        execFile("git", ["-C", dir, ...args], { timeout: GIT_TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024, encoding: "utf8" }, (error, stdout) => done({ ok: error === null, stdout }));
+      });
+    const [config, head] = await Promise.all([run(["config", "--null", "--list"]), run(["symbolic-ref", "--quiet", "--short", "HEAD"])]);
+    if (!config.ok) return null;
+    const entries = new Map<string, string[]>();
+    for (const entry of config.stdout.split("\0")) {
+      if (entry === "") continue;
+      const newline = entry.indexOf("\n");
+      const key = newline === -1 ? entry : entry.slice(0, newline);
+      entries.set(key, [...(entries.get(key) ?? []), newline === -1 ? "" : entry.slice(newline + 1)]);
+    }
+    return { branch: head.ok && head.stdout.trim() !== "" ? head.stdout.trim() : null, config: entries };
+  },
+};
 
 /** gh's options before the subcommand that take a value as the next word. */
 const GH_VALUE_OPTIONS = new Set(["-R", "--repo", "--hostname"]);
@@ -308,38 +473,110 @@ function isPrMerge(args: readonly string[]): boolean {
   return words[0] === "pr" && words[1] === "merge";
 }
 
+/** The index of the `)` closing the `(` at `open`, reading quotes and escapes, or the line's end. */
+function closingParen(line: string, open: number): number {
+  let depth = 1;
+  for (let index = open + 1; index < line.length; index++) {
+    const char = line[index];
+    if (char === "\\") index++;
+    else if (char === "'") {
+      const close = line.indexOf("'", index + 1);
+      index = close === -1 ? line.length : close;
+    } else if (char === '"') {
+      index++;
+      while (index < line.length && line[index] !== '"') index += line[index] === "\\" ? 2 : 1;
+    } else if (char === "(") depth++;
+    else if (char === ")" && --depth === 0) return index;
+  }
+  return line.length;
+}
+
+/** The index of the backtick closing the one before `from`, reading escapes, or the line's end. */
+function closingBacktick(line: string, from: number): number {
+  for (let index = from; index < line.length; index++) {
+    if (line[index] === "\\") index++;
+    else if (line[index] === "`") return index;
+  }
+  return line.length;
+}
+
+/**
+ * The commands a heredoc's body runs: its `$(…)` and backticks, which the
+ * shell runs in an unquoted heredoc as in double quotes.
+ */
+function substitutionsIn(text: string): string[][] {
+  const commands: string[][] = [];
+  for (let index = 0; index < text.length; index++) {
+    const char = text[index];
+    if (char === "\\") index++;
+    else if (char === "$" && text[index + 1] === "(") {
+      const end = closingParen(text, index + 1);
+      commands.push(...simpleCommands(text.slice(index + 2, end)));
+      index = end;
+    } else if (char === "`") {
+      const end = closingBacktick(text, index + 1);
+      commands.push(...simpleCommands(text.slice(index + 1, end)));
+      index = end;
+    }
+  }
+  return commands;
+}
+
 /**
  * A command line as the simple commands in it, each as its words with
  * quoting removed (EO-926).
  *
  * Enough of a POSIX shell's grammar to find the commands a line runs:
  * single and double quotes, backslashes, comments, the separators `;`,
- * `&&`, `||`, `|`, `&` and newlines, subshells and `$(…)`, redirections
- * (dropped with their targets, so `2>&1` is not an argument) and
- * heredocs (whose body is text, not commands). Nothing is expanded.
+ * `&&`, `||`, `|`, `&` and newlines, subshells, redirections (dropped with
+ * their targets, so `2>&1` is not an argument) and heredocs (whose body is
+ * text, except for the substitutions an unquoted one still runs). A
+ * command substitution — `$(…)` or backticks, bare or inside double
+ * quotes — and a process substitution `<(…)` are commands of their own,
+ * listed before the command they are part of, which keeps their text as
+ * a word. Nothing is expanded.
  */
 export function simpleCommands(line: string): string[][] {
   const commands: string[][] = [];
   let words: string[] = [];
   let word = "";
   let inWord = false;
+  /** The word being read had quoting in it, which for a heredoc's delimiter means its body is literal. */
+  let quoted = false;
   /** The next word is a redirection's target, or a heredoc's delimiter. */
   let redirect: "target" | "heredoc" | null = null;
-  const heredocs: { delimiter: string; strip: boolean }[] = [];
+  const heredocs: { delimiter: string; strip: boolean; literal: boolean }[] = [];
   let stripNext = false;
 
   const endWord = (): void => {
     if (!inWord) return;
-    if (redirect === "heredoc") heredocs.push({ delimiter: word, strip: stripNext });
+    if (redirect === "heredoc") heredocs.push({ delimiter: word, strip: stripNext, literal: quoted });
     else if (redirect === null) words.push(word);
     redirect = null;
     word = "";
     inWord = false;
+    quoted = false;
   };
   const endCommand = (): void => {
     endWord();
+    redirect = null;
     if (words.length > 0) commands.push(words);
     words = [];
+  };
+  /** A substitution at `open` (`$(`'s or `<(`'s parenthesis): its commands listed, its text kept in the word. */
+  const substitution = (start: number, open: number): number => {
+    const end = closingParen(line, open);
+    commands.push(...simpleCommands(line.slice(open + 1, end)));
+    word += line.slice(start, end + 1);
+    inWord = true;
+    return end;
+  };
+  const backticks = (start: number): number => {
+    const end = closingBacktick(line, start + 1);
+    commands.push(...simpleCommands(line.slice(start + 1, end)));
+    word += line.slice(start, end + 1);
+    inWord = true;
+    return end;
   };
 
   for (let index = 0; index < line.length; index++) {
@@ -349,16 +586,28 @@ export function simpleCommands(line: string): string[][] {
       const end = close === -1 ? line.length : close;
       word += line.slice(index + 1, end);
       inWord = true;
+      quoted = true;
       index = end;
       continue;
     }
     if (char === '"') {
       inWord = true;
+      quoted = true;
       index++;
       while (index < line.length && line[index] !== '"') {
-        if (line[index] === "\\" && index + 1 < line.length && '"\\$`\n'.includes(line[index + 1] ?? "")) index++;
-        word += line[index] ?? "";
-        index++;
+        const inner = line[index] ?? "";
+        if (inner === "\\" && index + 1 < line.length && '"\\$`\n'.includes(line[index + 1] ?? "")) {
+          // An escaped `$` or backtick is text, and runs nothing.
+          word += line[index + 1] ?? "";
+          index += 2;
+        } else if (inner === "$" && line[index + 1] === "(") {
+          index = substitution(index, index + 1) + 1;
+        } else if (inner === "`") {
+          index = backticks(index) + 1;
+        } else {
+          word += inner;
+          index++;
+        }
       }
       continue;
     }
@@ -366,6 +615,7 @@ export function simpleCommands(line: string): string[][] {
       if (index + 1 < line.length && line[index + 1] !== "\n") {
         word += line[index + 1] ?? "";
         inWord = true;
+        quoted = true;
       }
       index++;
       continue;
@@ -379,9 +629,22 @@ export function simpleCommands(line: string): string[][] {
       endWord();
       continue;
     }
+    if (char === "$" && line[index + 1] === "(") {
+      index = substitution(index, index + 1);
+      continue;
+    }
+    if (char === "`") {
+      index = backticks(index);
+      continue;
+    }
+    if ((char === "<" || char === ">") && line[index + 1] === "(") {
+      // A process substitution is a command, not a redirection.
+      index = substitution(index, index + 1);
+      continue;
+    }
     if (char === "<" || char === ">" || (char === "&" && line[index + 1] === ">")) {
       // A file descriptor's number belongs to the redirection.
-      if (inWord && /^\d+$/.test(word)) {
+      if (inWord && !quoted && /^\d+$/.test(word)) {
         word = "";
         inWord = false;
       } else endWord();
@@ -398,25 +661,25 @@ export function simpleCommands(line: string): string[][] {
     }
     if (char === "\n") {
       endCommand();
-      // A heredoc's body runs from here to its delimiter's line.
-      for (const { delimiter, strip } of heredocs.splice(0)) {
+      // A heredoc's body runs from here to its delimiter's line. Text,
+      // except that an unquoted delimiter's body still runs substitutions.
+      for (const { delimiter, strip, literal } of heredocs.splice(0)) {
+        const body: string[] = [];
         let next = line.indexOf("\n", index + 1);
         while (true) {
           const end = next === -1 ? line.length : next;
           const text = line.slice(index + 1, end);
           index = end;
-          if ((strip ? text.replace(/^\t+/, "") : text) === delimiter || next === -1) break;
+          if ((strip ? text.replace(/^\t+/, "") : text) === delimiter) break;
+          body.push(text);
+          if (next === -1) break;
           next = line.indexOf("\n", index + 1);
         }
+        if (!literal) commands.push(...substitutionsIn(body.join("\n")));
       }
       continue;
     }
-    if (char === "$" && line[index + 1] === "(") {
-      endCommand();
-      index++;
-      continue;
-    }
-    if (";&|()`".includes(char)) {
+    if (";&|()".includes(char)) {
       endCommand();
       continue;
     }

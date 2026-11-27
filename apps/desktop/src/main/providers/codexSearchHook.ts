@@ -126,7 +126,7 @@ export interface CodexSearchHookRequest {
    * as for `refuse`, a call it answers for is denied with its reason, and
    * the refusal is recorded as a `call_refused` event.
    */
-  fence?: (tool: string, input: unknown, cwd: string) => FenceRefusal | null;
+  fence?: (tool: string, input: unknown, cwd: string) => Promise<FenceRefusal | null>;
 }
 
 /**
@@ -178,7 +178,13 @@ export async function openCodexSearchHook(request: CodexSearchHookRequest): Prom
     const refused = refuse?.(tool) ?? null;
     if (refused !== null) return JSON.stringify(refusalHookOutput(refused));
     const callCwd = payload["cwd"];
-    const fenced = fence?.(tool, payload["tool_input"], typeof callCwd === "string" && callCwd !== "" ? callCwd : cwd) ?? null;
+    // The payload's `cwd` is where the call runs: the turn's directory, or
+    // the `workdir` a shell call names (measured on 0.171.0).
+    // A fence that could not decide refuses: one that fails open is no fence.
+    const fenced =
+      (await fence?.(tool, payload["tool_input"], typeof callCwd === "string" && callCwd !== "" ? callCwd : cwd).catch(
+        (error: unknown): FenceRefusal => ({ rule: "push_unverified", call: tool, reason: `EO refused this call: its fence could not check it (${error instanceof Error ? error.message : String(error)}).` }),
+      )) ?? null;
     if (fenced !== null) {
       const callId = payload["tool_use_id"];
       pending.push({ type: "call_refused", tool, callId: typeof callId === "string" && callId !== "" ? callId : null, rule: fenced.rule, call: fenced.call, reason: fenced.reason });

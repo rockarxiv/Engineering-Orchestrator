@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
@@ -449,10 +450,10 @@ const CAPABILITIES = [
   },
   {
     name: "the work fence",
-    what: "a turn given a fence — an implementer's or a reviewer's — refuses each call as it is made: on an implementer's, a push with a bare --force, -f or a +refspec, a push naming another branch, gh pr merge and a file write or edit outside the worktree, and lets a --force-with-lease push to the item's own branch and a write inside the worktree through; on a reviewer's, every push and gh pr merge as well; each refusal says it is EO's fence and is a call_refused event naming the rule and the call; and a resumed turn is held to its fence too (EO-926)",
+    what: "a turn given a fence — an implementer's or a reviewer's — refuses each call as it is made: on an implementer's, a push with a bare --force, -f or a +refspec, a push naming another branch or run from outside the worktree, gh pr merge, either inside a command substitution, and a file write or edit outside the worktree, and lets a --force-with-lease push to the item's own branch and a write inside the worktree through; on a reviewer's, every push and gh pr merge as well; each refusal says it is EO's fence and is a call_refused event naming the rule and the call; and a resumed turn is held to its fence too (EO-926)",
     same: {
       implementer: {
-        refused: ["+refspec push", "-f push", "file edit outside", "file write outside", "forced push", "pr merge", "push to another branch"],
+        refused: ["+refspec push", "-f push", "file edit outside", "file write outside", "forced push", "merge in a substitution", "pr merge", "push from elsewhere", "push in a substitution", "push to another branch"],
         allowed: ["file write inside", "leased push to its branch"],
         reasonSaid: true,
         recorded: [
@@ -461,16 +462,19 @@ const CAPABILITIES = [
           { rule: "push_forced", call: "git push --force-with-lease origin +eo/EO-1" },
           { rule: "push_elsewhere", call: "git push --force-with-lease origin main" },
           { rule: "pr_merge", call: "gh pr merge 12 --squash" },
+          { rule: "push_outside_worktree", call: "cd /elsewhere && git push --force-with-lease" },
+          { rule: "push_forced", call: 'echo "$(git push --force origin eo/EO-1)"' },
+          { rule: "pr_merge", call: 'echo "$(gh pr merge 12 --squash)"' },
           { rule: "write_outside_worktree", call: "/tmp/outside.txt" },
           { rule: "write_outside_worktree", call: "/tmp/outside.txt" },
         ],
       },
       reviewer: {
-        refused: ["+refspec push", "-f push", "file edit outside", "file write outside", "forced push", "leased push to its branch", "pr merge", "push to another branch"],
+        refused: ["+refspec push", "-f push", "file edit outside", "file write outside", "forced push", "leased push to its branch", "merge in a substitution", "pr merge", "push from elsewhere", "push in a substitution", "push to another branch"],
         allowed: ["file write inside"],
         reasonSaid: true,
       },
-      resumed: { refused: ["+refspec push", "-f push", "file edit outside", "file write outside", "forced push", "pr merge", "push to another branch"], allowed: ["file write inside", "leased push to its branch"], reasonSaid: true },
+      resumed: { refused: ["+refspec push", "-f push", "file edit outside", "file write outside", "forced push", "merge in a substitution", "pr merge", "push from elsewhere", "push in a substitution", "push to another branch"], allowed: ["file write inside", "leased push to its branch"], reasonSaid: true },
     },
   },
   {
@@ -1593,9 +1597,18 @@ const SKILLS_ONLY_FORK_OPTIONS = (): AgentProviderResumeOptions =>
 /** What Codex is told marks EO's hook as trusted, in a test that cannot ask the CLI. */
 const HOOK_TRUST = async () => ({ key: "/<session-flags>/config.toml:pre_tool_use:0:0", hash: "sha256:abc123" });
 
-/** An implementer's fence and a reviewer's (EO-926), as the git workspace lends them for `/tmp/wt` on `eo/EO-1`. */
-const IMPLEMENTER_FENCE: CallFence = { root: "/tmp/wt", pushBranch: "eo/EO-1" };
-const REVIEWER_FENCE: CallFence = { root: "/tmp/wt", pushBranch: null };
+/**
+ * A worktree on `eo/EO-1` (EO-926): a real checkout, because the fence asks
+ * git where a push with no explicit destination would go.
+ */
+function fenceCheckout(): string {
+  const root = scratchDirectory();
+  execFileSync("git", ["init", "-q", "-b", "eo/EO-1"], { cwd: root, stdio: "pipe" });
+  return root;
+}
+/** An implementer's fence and a reviewer's, as the git workspace lends them for that worktree. */
+const implementerFence = (root: string): CallFence => ({ root, pushBranch: "eo/EO-1" });
+const reviewerFence = (root: string): CallFence => ({ root, pushBranch: null });
 
 const shellInput = (command: string) => ({ command });
 const patchInput = (header: string) => ({ command: `*** Begin Patch\n${header}\n+x\n*** End Patch\n` });
@@ -1613,7 +1626,10 @@ const FENCE_CALL_CLASSES: Record<"claude" | "codex", Record<string, [string, unk
     "+refspec push": ["Bash", shellInput("git push --force-with-lease origin +eo/EO-1")],
     "push to another branch": ["Bash", shellInput("git push --force-with-lease origin main")],
     "pr merge": ["Bash", shellInput("gh pr merge 12 --squash")],
-    "file write inside": ["Write", { file_path: "/tmp/wt/src/a.ts", content: "x" }],
+    "push from elsewhere": ["Bash", shellInput("cd /elsewhere && git push --force-with-lease")],
+    "push in a substitution": ["Bash", shellInput('echo "$(git push --force origin eo/EO-1)"')],
+    "merge in a substitution": ["Bash", shellInput('echo "$(gh pr merge 12 --squash)"')],
+    "file write inside": ["Write", { file_path: "src/a.ts", content: "x" }],
     "file write outside": ["Write", { file_path: "/tmp/outside.txt", content: "x" }],
     "file edit outside": ["Edit", { file_path: "/tmp/outside.txt", old_string: "a", new_string: "b" }],
   },
@@ -1624,7 +1640,10 @@ const FENCE_CALL_CLASSES: Record<"claude" | "codex", Record<string, [string, unk
     "+refspec push": ["Bash", shellInput("git push --force-with-lease origin +eo/EO-1")],
     "push to another branch": ["Bash", shellInput("git push --force-with-lease origin main")],
     "pr merge": ["Bash", shellInput("gh pr merge 12 --squash")],
-    "file write inside": ["apply_patch", patchInput("*** Add File: /tmp/wt/src/a.ts")],
+    "push from elsewhere": ["Bash", shellInput("cd /elsewhere && git push --force-with-lease")],
+    "push in a substitution": ["Bash", shellInput('echo "$(git push --force origin eo/EO-1)"')],
+    "merge in a substitution": ["Bash", shellInput('echo "$(gh pr merge 12 --squash)"')],
+    "file write inside": ["apply_patch", patchInput("*** Add File: src/a.ts")],
     "file write outside": ["apply_patch", patchInput("*** Add File: /tmp/outside.txt")],
     "file edit outside": ["apply_patch", patchInput("*** Update File: /tmp/outside.txt")],
   },
@@ -2945,19 +2964,20 @@ const CLAUDE: Record<CapabilityName, Proof> = {
         return (async function* () {
           yield sdk.init();
           for (const [name, [tool, input]] of Object.entries(FENCE_CALL_CLASSES.claude)) {
-            answers[name] = await entry?.hooks[0]?.({ hook_event_name: "PreToolUse", tool_name: tool, tool_input: input, tool_use_id: `call-${name}`, session_id: "sess-1", transcript_path: "/tmp/t.jsonl", cwd: "/tmp/wt" });
+            answers[name] = await entry?.hooks[0]?.({ hook_event_name: "PreToolUse", tool_name: tool, tool_input: input, tool_use_id: `call-${name}`, session_id: "sess-1", transcript_path: "/tmp/t.jsonl", cwd: fence.root });
           }
           yield sdk.says("done");
           yield sdk.result();
         })();
       }) as never;
       const provider = createClaudeProvider({ runQuery, enableCommentTool: false });
-      const events = await collect(resuming ? provider.resume("sess-1", "carry on", { cwd: "/tmp/wt", fence }) : provider.start({ ...startOpts, fence }));
+      const events = await collect(resuming ? provider.resume("sess-1", "carry on", { cwd: fence.root, fence }) : provider.start({ ...startOpts, cwd: fence.root, fence }));
       return fenceObserved(answers, events);
     };
-    const reviewer = decisionsOnly(await turn(REVIEWER_FENCE, false));
-    const resumed = decisionsOnly(await turn(IMPLEMENTER_FENCE, true));
-    return { implementer: await turn(IMPLEMENTER_FENCE, false), reviewer, resumed };
+    const root = fenceCheckout();
+    const reviewer = decisionsOnly(await turn(reviewerFence(root), false));
+    const resumed = decisionsOnly(await turn(implementerFence(root), true));
+    return { implementer: await turn(implementerFence(root), false), reviewer, resumed };
   },
 
   "non-fatal warning": async () => {
@@ -4497,7 +4517,7 @@ const CODEX: Record<CapabilityName, Proof> = {
           after: {
             "turn/start": [
               note.turnStarted(),
-              ...classes.map(([name, [tool, input]]) => ({ fireHook: { hook_event_name: "PreToolUse", tool_name: tool, tool_input: input, tool_use_id: `call-${name}`, cwd: "/tmp/wt" } })),
+              ...classes.map(([name, [tool, input]]) => ({ fireHook: { hook_event_name: "PreToolUse", tool_name: tool, tool_input: input, tool_use_id: `call-${name}`, cwd: fence.root } })),
               note.agentMessage("done"),
               note.turnCompleted(),
             ],
@@ -4505,14 +4525,15 @@ const CODEX: Record<CapabilityName, Proof> = {
         },
         { searchHookCommandPath: "/opt/eo/hook.mjs", searchHookTrust: HOOK_TRUST },
       );
-      const events = await collect(resuming ? provider.resume("thr-1", "carry on", { cwd: "/tmp/wt", fence }) : provider.start({ ...startOpts, fence }));
+      const events = await collect(resuming ? provider.resume("thr-1", "carry on", { cwd: fence.root, fence }) : provider.start({ ...startOpts, cwd: fence.root, fence }));
       const said = existsSync(answersFile) ? readFileSync(answersFile, "utf8").trim().split("\n").map((line) => JSON.parse(line) as { status: number; body: string }) : [];
       const answers = Object.fromEntries(classes.map(([name], index) => [name, said[index]?.status === 200 ? (JSON.parse(said[index].body) as unknown) : null]));
       return fenceObserved(answers, events);
     };
-    const reviewer = decisionsOnly(await turn(REVIEWER_FENCE, false));
-    const resumed = decisionsOnly(await turn(IMPLEMENTER_FENCE, true));
-    return { implementer: await turn(IMPLEMENTER_FENCE, false), reviewer, resumed };
+    const root = fenceCheckout();
+    const reviewer = decisionsOnly(await turn(reviewerFence(root), false));
+    const resumed = decisionsOnly(await turn(implementerFence(root), true));
+    return { implementer: await turn(implementerFence(root), false), reviewer, resumed };
   },
 
   "non-fatal warning": async () => {

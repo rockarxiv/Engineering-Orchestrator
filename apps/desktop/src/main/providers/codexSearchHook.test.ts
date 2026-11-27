@@ -303,15 +303,17 @@ describe("the hook on a turn that refuses calls", () => {
  */
 describe("the hook on a fenced turn", () => {
   const fence = { root: "/tmp/wt", pushBranch: "eo/EO-1" };
+  /** The worktree as git would describe it: on the item's branch, with nothing remapping its pushes. */
+  const onTheBranch = { state: async () => ({ branch: "eo/EO-1", config: new Map<string, string[]>() }) };
 
   it("is opened without a judgement or an index, offered every call, and says so to its command", async () => {
-    open = await openCodexSearchHook({ nudge: undefined, server: undefined, cwd: "/tmp/wt", commandPath: HOOK_COMMAND, fence: (tool, input, cwd) => fencedCall(tool, input, fence, cwd) });
+    open = await openCodexSearchHook({ nudge: undefined, server: undefined, cwd: "/tmp/wt", commandPath: HOOK_COMMAND, fence: (tool, input, cwd) => fencedCall(tool, input, fence, cwd, onTheBranch) });
     expect(open?.matcher).toBe(CODEX_EVERY_TOOL_MATCHER);
     expect(open?.env[SEARCH_HOOK_REFUSES_ENV]).toBe("1");
   });
 
   it("denies a forced push and a patch outside the worktree, saying why, records each, and lets a leased push and a patch inside through", async () => {
-    open = await openCodexSearchHook({ nudge: undefined, server: undefined, cwd: "/tmp/wt", commandPath: HOOK_COMMAND, fence: (tool, input, cwd) => fencedCall(tool, input, fence, cwd) });
+    open = await openCodexSearchHook({ nudge: undefined, server: undefined, cwd: "/tmp/wt", commandPath: HOOK_COMMAND, fence: (tool, input, cwd) => fencedCall(tool, input, fence, cwd, onTheBranch) });
     const hook = open as CodexSearchHook;
     const forced = await post(hook, JSON.stringify(payload("git push --force origin eo/EO-1", { tool_use_id: "call-push" })));
     expect(forced.status).toBe(200);
