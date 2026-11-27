@@ -1,7 +1,7 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { branchExists, commitsAhead, listTree, pushBranch, remoteUrl, showFile } from "../workspace/git.js";
+import { branchExists, commitsAhead, listTree, pushBranch, remoteUrl, showFile, type PushDestination } from "../workspace/git.js";
 import { buildPullRequestBody, buildPullRequestTitle, type PullRequestFacts } from "./body.js";
 import { CLI_FOR, FORGE_COMMANDS, type CliRunner } from "./cli.js";
 import { classifyForgeError, missingCli } from "./errors.js";
@@ -75,7 +75,26 @@ export interface OpenPullRequestInput {
    * is adopted rather than created is left as it is.
    */
   reviewers?: readonly string[];
+  /**
+   * Told the commit the push put on the remote branch (EO-910), before
+   * anything after it can fail: a pull request the forge then refuses to
+   * create does not unpush the branch. Not told of a push that found the
+   * branch already there, since that commit may be somebody else's.
+   */
+  onPushed?: (commit: string, destination: PushDestination | null) => Promise<void>;
+  /**
+   * Asked when the push is rejected as diverged, before that is reported
+   * (EO-910). `pushed` means the caller has pushed the branch itself, over
+   * EO's own last push, and this carries on exactly as after a push that
+   * went through; `refused` is reported as divergence, as before; and
+   * `failed` — the caller's push failed for some other reason, such as a
+   * hook — is reported as that push's failure.
+   */
+  onDiverged?: () => Promise<OwnPushLease>;
 }
+
+/** What came of pushing over EO's own last push (EO-910). */
+export type OwnPushLease = { kind: "pushed" } | { kind: "refused" } | { kind: "failed"; error: string };
 
 /** What came of asking for reviewers, on a pull request this created. */
 export interface ReviewerRequest {
@@ -180,11 +199,19 @@ export async function openPullRequest(input: OpenPullRequestInput): Promise<Open
   const cli = CLI_FOR[forge];
   const commands = FORGE_COMMANDS[forge];
 
-  // 4. Publish. Never forced: a diverged remote branch is a human's call.
+  // 4. Publish. Never forced here: a diverged remote branch is a human's
+  //    call, unless the caller can show it holds only EO's own last push.
   const pushed = await pushBranch(repoPath, remote, branch, input.signal ? { signal: input.signal } : {});
   if (!pushed.ok) {
     const classified = classifyForgeError(pushed.error);
-    return { ...fail(classified.message, classified.final), diverged: classified.diverged };
+    const lease: OwnPushLease = classified.diverged && pushed.diverged && input.onDiverged ? await input.onDiverged() : { kind: "refused" };
+    if (lease.kind === "failed") {
+      const failed = classifyForgeError(lease.error);
+      return fail(failed.message, failed.final);
+    }
+    if (lease.kind === "refused") return { ...fail(classified.message, classified.final), diverged: classified.diverged };
+  } else if (pushed.updated !== null) {
+    await input.onPushed?.(pushed.updated, pushed.destination);
   }
 
   // 5. Is one already open? Covers the crash the database cannot see.

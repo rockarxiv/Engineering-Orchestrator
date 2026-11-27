@@ -3,6 +3,7 @@
 // goes through the functions here, which keeps the argument-quoting rule
 // below enforceable in one place.
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, realpathSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -72,6 +73,12 @@ export interface GitOptions {
    * an abort check between steps instead.
    */
   signal?: AbortSignal;
+  /**
+   * Hands back stdout exactly as git wrote it. Off by default: every
+   * other caller wants it trimmed, but a value whose bytes matter — a
+   * push URL ending in a space (EO-910) — must not lose any.
+   */
+  untrimmed?: boolean;
 }
 
 /**
@@ -107,7 +114,7 @@ export async function git(args: string[], cwd: string, options: GitOptions = {})
       ...(options.timeoutMs ? { timeout: options.timeoutMs } : {}),
       ...(options.signal ? { signal: options.signal } : {}),
     });
-    return { ok: true, stdout: stdout.trim() };
+    return { ok: true, stdout: options.untrimmed ? stdout : stdout.trim() };
   } catch (error) {
     return { ok: false, error: extractGitError(error) };
   }
@@ -166,30 +173,202 @@ export async function listTree(repoPath: string, ref: string, path: string): Pro
 }
 
 /**
- * Publishes a branch.
+ * Where a push to a remote goes (EO-910): `sha256:<hex>` of the checkout
+ * the push runs from and the exact list `git remote get-url --push --all`
+ * prints, so a credential in a URL is never kept, and how many URLs that
+ * list holds. The checkout is part of it because a relative URL is
+ * resolved from it: `../target.git` from two checkouts is two remotes.
+ */
+export interface PushDestination {
+  fingerprint: string;
+  urls: number;
+}
+
+/**
+ * What came of `pushBranch`.
+ *
+ * `updated` is the commit git reported sending, where git exited 0 and
+ * said, for every push URL, that the branch is now there and moved it at
+ * one at least (EO-910). It is the commit named in git's own status line,
+ * since the push names the commit rather than the branch. Null where it
+ * was already there everywhere, or where git said nothing EO could read
+ * unambiguously: a `To` line or a status line for the branch more or
+ * fewer times than there are push URLs — which is what a hook printing
+ * one looks like. Only a push git reported as updating the branch counts
+ * as EO having put that commit there, recorded against the push URLs EO
+ * read just before it. `destination` is
+ * where the push was to go, read just before it.
+ *
+ * `diverged` is git's own status for the ref, `[rejected]
+ * (non-fast-forward)` or `(fetch first)`, where that is the only ref git
+ * reported on — a push that also sent a tag is not a plain divergence. `leaseRefused` is a leased push
+ * that did not go: the server refused the lease (`[rejected] (stale
+ * info)`), or the setup was not the ordinary case when the push was
+ * about to run. Neither is ever a guess from text that names the branch.
+ */
+export type PushOutcome =
+  | { ok: true; updated: string | null; destination: PushDestination | null }
+  | { ok: false; error: string; diverged: boolean; leaseRefused: boolean };
+
+/**
+ * A leased push (EO-910): the commit EO recorded pushing to the branch,
+ * and the fingerprint of where it pushed it.
+ */
+export interface PushLease {
+  commit: string;
+  destination: string;
+}
+
+/**
+ * Publishes a branch: one plain `git push` of it, by the remote's name,
+ * with the repository's hooks and configuration as git applies them.
+ *
+ * The push names the commit the branch is at, read just before, as
+ * `<commit>:refs/heads/<branch>`, so what git reports sending is exactly
+ * the commit EO records — however the local branch moves meanwhile. The
+ * upstream `--set-upstream` would have set is set afterwards, since git
+ * sets none for a push that names a commit.
+ *
+ * The push is recorded against where EO read it would go, just before it
+ * (EO-910): the remote's push URLs as `git remote get-url --push --all`
+ * lists them. A URL or rewrite rule changed between that read and git's
+ * is someone changing the remote underneath EO, out of scope by the
+ * person's ruling on EO-910; even then a lease can replace only the
+ * commit EO recorded pushing.
  *
  * Never `--force`: a remote branch that has diverged is a human's
  * decision, and the only thing EO could do by forcing is destroy work it
  * did not write. Re-pushing an unchanged branch is a no-op that exits 0,
  * which is what makes a retry safe.
  *
- * `forceWithLease` is the one exception, and it is EO's own rewrite it
- * replaces (EO-780): a restack carried the branch onto its dependency's
- * new tip, so the remote holds the history from before, and nothing else.
- * The lease is the remote-tracking ref — the remote as EO last saw it —
- * so a commit somebody else pushed since is refused rather than lost.
+ * `lease` is the one exception: a commit EO recorded pushing to this
+ * branch (EO-910), sent as `--force-with-lease=<branch>:<commit>`,
+ * which the server refuses unless its branch is exactly that commit — so
+ * wherever the push lands, the one thing it can replace is that commit.
+ * Only in the ordinary case, checked here, just before the push runs: the
+ * remote has exactly one push URL, it is the one recorded, from the same
+ * checkout, and the commit being pushed has no `.gitmodules`. Otherwise
+ * nothing is pushed and the lease is refused. Never the bare
+ * `--force-with-lease`, whose lease is the remote-tracking ref — which
+ * any fetch moves to whatever somebody else pushed.
  */
-export async function pushBranch(
-  repoPath: string,
-  remote: string,
-  branch: string,
-  options: NetworkGitOptions & { forceWithLease?: boolean } = {},
-): Promise<GitOutcome> {
-  return git(["push", ...(options.forceWithLease ? ["--force-with-lease"] : []), "--set-upstream", remote, branch], repoPath, {
-    env: NON_INTERACTIVE_GIT_ENV,
-    timeoutMs: options.timeoutMs ?? NETWORK_TIMEOUT_MS,
-    ...(options.signal ? { signal: options.signal } : {}),
-  });
+export async function pushBranch(repoPath: string, remote: string, branch: string, options: NetworkGitOptions & { lease?: PushLease } = {}): Promise<PushOutcome> {
+  const head = await git(["rev-parse", "--verify", "--quiet", `refs/heads/${branch}^{commit}`], repoPath);
+  if (!head.ok || !/^[0-9a-f]{40,64}$/.test(head.stdout)) {
+    return { ok: false, error: `There is no branch "${branch}" to push.`, diverged: false, leaseRefused: false };
+  }
+  const commit = head.stdout;
+  const read = await readPushDestination(repoPath, remote);
+  const destination = read === null ? null : { fingerprint: read.fingerprint, urls: read.urls.length };
+  const lease = options.lease;
+  if (lease !== undefined) {
+    const refused = { ok: false as const, error: `"${branch}" was not pushed over EO's own last push: the remote is no longer the one EO pushed it to.`, diverged: false, leaseRefused: true };
+    if (read === null || read.urls.length !== 1 || read.fingerprint !== lease.destination) return refused;
+    const submodules = await listTree(repoPath, commit, ".gitmodules");
+    if (!submodules.ok || submodules.stdout !== "") return { ...refused, error: `"${branch}" was not pushed over EO's own last push: it has submodules.` };
+  }
+  const leased = lease !== undefined ? [`--force-with-lease=${branch}:${lease.commit}`] : [];
+  const refspec = `${commit}:refs/heads/${branch}`;
+  try {
+    const { stdout } = await execFileAsync("git", composeGitArgs(["push", "--porcelain", ...leased, remote, refspec], process.platform), {
+      cwd: repoPath,
+      windowsHide: true,
+      maxBuffer: 32 * 1024 * 1024,
+      env: { ...process.env, ...NON_INTERACTIVE_GIT_ENV },
+      timeout: options.timeoutMs ?? NETWORK_TIMEOUT_MS,
+      ...(options.signal ? { signal: options.signal } : {}),
+    });
+    // What `--set-upstream` sets; best effort, as a push never failed on it.
+    await git(["config", `branch.${branch}.remote`, remote], repoPath);
+    await git(["config", `branch.${branch}.merge`, `refs/heads/${branch}`], repoPath);
+    // One `To` block and one status line for the branch per push URL EO
+    // read; anything else — a hook's output among git's — is unreadable.
+    const urls = read?.urls ?? [];
+    const to = stdout.split("\n").map((line) => line.replace(/\r$/, "")).filter((line) => line.startsWith("To "));
+    const flags = pushedRefLines(stdout, refspec).map((ref) => ref.flag);
+    const readable = urls.length > 0 && to.length === urls.length && flags.length === urls.length;
+    const moved = readable && flags.every((flag) => " +*=".includes(flag)) && flags.some((flag) => flag !== "=");
+    return { ok: true, updated: moved ? commit : null, destination };
+  } catch (error) {
+    const stdout = typeof error === "object" && error !== null && typeof (error as { stdout?: unknown }).stdout === "string" ? (error as { stdout: string }).stdout : "";
+    const refs = pushedRefLines(stdout, refspec);
+    // A plain refusal of the branch alone: one `To` block, and no status
+    // line but the branch's. A push that also moved another ref — a tag
+    // `push.followTags` sent — partly succeeded, and is never answered
+    // with a lease (EO-910); it reads as divergence, as before.
+    const lines = stdout.split("\n").map((line) => line.replace(/\r$/, ""));
+    const plain = lines.filter((line) => line.startsWith("To ")).length === 1 && lines.filter((line) => line.length > 2 && line[1] === "\t").length === 1;
+    const only = plain && refs.length === 1 && refs[0]!.flag === "!" ? refs[0]!.summary : null;
+    // Porcelain puts the ref's status on stdout, where git's plain output
+    // put it on stderr, so what is classified still says how the branch
+    // was refused — at every push URL, as before. What git wrote, never
+    // the exec error's message, which repeats the command line.
+    const stderr = typeof error === "object" && error !== null && typeof (error as { stderr?: unknown }).stderr === "string" ? (error as { stderr: string }).stderr.trim() : "";
+    const stopped = typeof error === "object" && error !== null && (error as { killed?: unknown }).killed === true;
+    const silent = stopped ? `\`git push\` to ${remote} was stopped before it finished: it timed out, or the step was cancelled.` : `\`git push\` to ${remote} failed without saying why.`;
+    const said = [stderr || silent, ...refs.map((ref) => `${ref.flag} ${ref.summary}`)].join("\n");
+    return {
+      ok: false,
+      error: said,
+      diverged: only !== null && /^\[rejected\] \((non-fast-forward|fetch first)\)$/.test(only),
+      leaseRefused: only === "[rejected] (stale info)",
+    };
+  }
+}
+
+/**
+ * The pushed ref's lines in `git push --porcelain` output, one per push
+ * URL: each one's flag and summary.
+ */
+function pushedRefLines(stdout: string, refspec: string): { flag: string; summary: string }[] {
+  return stdout
+    .split("\n")
+    .map((line) => line.replace(/\r$/, ""))
+    .filter((line) => line.length > 2 && line[1] === "\t" && line.slice(2).split("\t")[0] === refspec)
+    .map((line) => ({ flag: line[0]!, summary: line.slice(2 + refspec.length + 1) }));
+}
+
+/**
+ * The push URLs of `remote`, from git's output exactly as it wrote it,
+ * less only the newline that ends it: a URL that differs by a trailing
+ * space is a different destination. Null where git names no URL, cannot
+ * say, or prints any control character but the newlines between URLs — a
+ * URL holding one cannot be told apart from another, so it is never a
+ * destination EO forces to.
+ */
+async function pushUrls(repoPath: string, remote: string): Promise<string[] | null> {
+  const listed = await git(["remote", "get-url", "--push", "--all", remote], repoPath, { untrimmed: true });
+  if (!listed.ok || !listed.stdout.endsWith("\n")) return null;
+  const urls = listed.stdout.slice(0, -1);
+  // eslint-disable-next-line no-control-regex
+  if (/[\x00-\x09\x0b-\x1f\x7f]/.test(urls) || urls.split("\n").some((url) => url === "")) return null;
+  return urls.split("\n");
+}
+
+/**
+ * Where a push to `remote` from `repoPath` goes (EO-910): its push URLs
+ * and the fingerprint of them with the checkout they are resolved from.
+ * The checkout is read untrimmed too, and null on the same terms.
+ */
+async function readPushDestination(repoPath: string, remote: string): Promise<{ fingerprint: string; urls: string[] } | null> {
+  const urls = await pushUrls(repoPath, remote);
+  const checkout = await git(["rev-parse", "--show-toplevel"], repoPath, { untrimmed: true });
+  if (urls === null || !checkout.ok || !checkout.stdout.endsWith("\n")) return null;
+  const root = checkout.stdout.slice(0, -1);
+  // eslint-disable-next-line no-control-regex
+  if (root === "" || /[\x00-\x1f\x7f]/.test(root)) return null;
+  return { fingerprint: pushFingerprint(root, urls), urls };
+}
+
+/** `sha256:` of a checkout and the push URLs listed from it (EO-910). */
+export function pushFingerprint(checkout: string, urls: readonly string[]): string {
+  return `sha256:${createHash("sha256").update(`${checkout}\0${urls.join("\n")}`, "utf8").digest("hex")}`;
+}
+
+/** Where a push to `remote` from `repoPath` goes (EO-910). */
+export async function pushDestination(repoPath: string, remote: string): Promise<PushDestination | null> {
+  const read = await readPushDestination(repoPath, remote);
+  return read === null ? null : { fingerprint: read.fingerprint, urls: read.urls.length };
 }
 
 /**

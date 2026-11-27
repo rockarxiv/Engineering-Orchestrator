@@ -250,6 +250,22 @@ export const GitItemStateSchema = z.object({
    * push that follows.
    */
   restacked: z.boolean().default(false),
+  /**
+   * The commit EO last pushed to this item's branch, and where it pushed
+   * it (EO-910); null until a push of EO's moves the remote branch.
+   * `pushUrl` is `sha256:<hex>` of the remote's one push URL at the time
+   * (`git remote get-url --push --all`), so a credential in the URL is
+   * never kept, and null where the remote had several. Written only by a
+   * push git exited 0 for and reported as having updated the branch.
+   *
+   * What lets EO tell its own history on the remote from anybody else's:
+   * when the item's agent rebases the branch, the remote still holds what
+   * EO pushed before, and the push is rejected as diverged. Where the
+   * remote still has this one push URL, EO pushes again with
+   * `--force-with-lease=<branch>:<commit>`, which the server refuses
+   * unless its branch is exactly this commit.
+   */
+  pushedHead: z.object({ commit: z.string(), pushUrl: z.string().nullable() }).nullable().default(null),
 });
 
 export type GitItemState = z.infer<typeof GitItemStateSchema>;
@@ -307,7 +323,7 @@ export function readGitState(data: unknown): GitItemState {
  * no row already says.
  */
 export function isDefaultGitState(state: GitItemState): boolean {
-  const { branch, pullRequest, baseBranch, namedBranch, attachedAt, reference, reviewers, stackedOn, restacked } = state;
+  const { branch, pullRequest, baseBranch, namedBranch, attachedAt, reference, reviewers, stackedOn, restacked, pushedHead } = state;
   return (
     branch === null &&
     pullRequest === null &&
@@ -317,7 +333,8 @@ export function isDefaultGitState(state: GitItemState): boolean {
     reference === null &&
     reviewers === null &&
     stackedOn === null &&
-    !restacked
+    !restacked &&
+    pushedHead === null
   );
 }
 
