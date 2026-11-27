@@ -1348,13 +1348,36 @@ function uniqueById(steps: readonly PipelineStep[]): PipelineStep[] {
   return steps.filter((step) => !seen.has(step.id) && seen.add(step.id) !== undefined);
 }
 
+/**
+ * A route's traversal limit that is not a whole number of 1 or more
+ * (EO-921), refused.
+ *
+ * One rule for every door a limit comes in by: `pipeline:save`, the check
+ * `pipeline:validate` runs, and whether an assistant draft's card is
+ * offered (`validateDraft`). The IPC schemas already refuse such a value
+ * on the first two; this is the same rule where a caller reaches the
+ * function without them, and where a draft says it, so an agent is told
+ * why rather than having its whole answer fail to parse.
+ */
+export function traversalLimitProblems(routes: readonly { fromStepId: string; resultKey: string; label: string; traversalLimit?: unknown }[]): WorkflowProblem[] {
+  return routes
+    .filter((route) => typeof route.traversalLimit === "number" && !(Number.isInteger(route.traversalLimit) && route.traversalLimit >= 1))
+    .map((route) => ({
+      severity: "error" as const,
+      stateId: route.fromStepId,
+      message:
+        `**${route.label}** (\`${route.resultKey}\`) has a traversal limit of ${String(route.traversalLimit)}. ` +
+        "A route's limit is how many times it may be taken since a person last commented, a whole number of 1 or more; leave it empty for none.",
+    }));
+}
+
 export function validatePipelineCommand(db: Db, input: IpcPayload<"pipeline:validate">): IpcResponse<"pipeline:validate"> {
   const steps = toDomainSteps(db, input.pipelineId, input.steps);
   const routes = toDomainRoutes(db, input.pipelineId, input.routes);
   const proposed = registryWith(db, input.actions ?? []);
   const judged = validationInput(db, input.pipelineId, steps, routes, input.entryStepId, proposed.registry, undefined, input.entryRules);
   return {
-    problems: [...proposed.refused, ...validatePipeline(judged), ...foreignWorkspaceProblems(db, input.pipelineId, steps)],
+    problems: [...proposed.refused, ...traversalLimitProblems(routes), ...validatePipeline(judged), ...foreignWorkspaceProblems(db, input.pipelineId, steps)],
     // What each step of the graph reaches outside EO (EO-584), from the
     // very inputs the webhook refusal above was judged with.
     outsideReach: outsideReachByStep(judged),
@@ -1463,6 +1486,7 @@ export function savePipeline(
   const proposed = registryWith(db, actions);
   const problems = [
     ...proposed.refused,
+    ...traversalLimitProblems(routes),
     ...validatePipeline(validationInput(db, input.pipelineId, steps, routes, input.entryStepId, proposed.registry, undefined, entryRules)),
     // A module rule this installation could not run (EO-736): no module
     // host, or a binary its module needs that is not here. Refused when

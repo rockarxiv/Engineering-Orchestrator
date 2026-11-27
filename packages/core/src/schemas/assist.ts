@@ -30,6 +30,9 @@ export const DEFAULT_TIME_LIMIT = "default";
 /** What a draft says for keep checking when it means the step runs once (EO-520) — `watch: null` on a step. A word, for `ITEM_WORKSPACE`'s reason. */
 export const RUNS_ONCE = "off";
 
+/** What a draft says for a route's traversal limit when it means none (EO-921) — `traversalLimit: null` on a route. A word, for `ITEM_WORKSPACE`'s reason. */
+export const NO_TRAVERSAL_LIMIT = "none";
+
 /**
  * One step of a draft raised in the assistant's room (EO-381).
  *
@@ -77,14 +80,22 @@ export const AssistDraftStepSchema = DraftStepSchema.extend({
 /**
  * One route of a draft raised in the assistant's room (EO-520).
  *
- * `DraftRouteSchema`, plus "Needs a reason" for a branch out of a
- * person's step. On a human step a branch *is* the result a person is
+ * `DraftRouteSchema`, plus its traversal limit (EO-921), and "Needs a
+ * reason" for a branch out of a person's step. On a human step a branch *is* the result a person is
  * offered (EO-310), so whether taking it needs a reason typed is said on
  * the branch. Absent keeps what the result already declares, and a new
  * result gets EO's default — a reason for anything but a success.
  */
 export const AssistDraftRouteSchema = DraftRouteSchema.extend({
   requiresComment: z.boolean().optional(),
+  /**
+   * How many times the route may be taken since a person last commented
+   * on the item before EO holds the item and asks them (EO-921), or
+   * `"none"` for no limit. Absent keeps the route's own. Any whole
+   * number parses, so one below 1 is refused with a reason the agent
+   * can act on rather than failing the whole answer.
+   */
+  traversalLimit: z.union([z.number().int(), z.literal(NO_TRAVERSAL_LIMIT)]).optional(),
 });
 
 /**

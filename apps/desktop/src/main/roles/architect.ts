@@ -13,6 +13,7 @@ import {
   type PipelineDraft,
   proposedActionChange,
   resultsFromRoutes,
+  NO_TRAVERSAL_LIMIT,
   RUNS_ONCE,
   type PipelineStep,
   type StepBrief,
@@ -50,7 +51,7 @@ import {
 } from "../db/repos/index.js";
 import { sideEffectingServersByStep } from "../connectors/sideEffects.js";
 import { agentNamed } from "../stepAgents.js";
-import { itemTypesJudged, readGuards, stepAgentsForPipeline } from "../ipc/configCommands.js";
+import { itemTypesJudged, readGuards, stepAgentsForPipeline, traversalLimitProblems } from "../ipc/configCommands.js";
 import { actionUsedBy, describeActionUse } from "../ipc/roleActionCommands.js";
 import { activeProjectId } from "../ipc/repositoryCommands.js";
 
@@ -110,7 +111,7 @@ export function validateDraft(
     ? []
     : proposed.problems.map((message) => ({ severity: "error" as const, stateId: null, message: `The proposed action definition cannot be saved — ${message}` }));
 
-  return [...refusedActions, ...validatePipeline({
+  return [...refusedActions, ...traversalLimitProblems(draft.routes), ...validatePipeline({
     // With the actions roles define for themselves (EO-423), which are
     // rows rather than anything a pack contributes: a draft is held to
     // its actions' declared results exactly as a publish is. The
@@ -259,7 +260,7 @@ export interface DraftStepSettings {
  */
 export type DraftWithLimits = Omit<PipelineDraft, "steps" | "routes"> & {
   steps: (PipelineDraft["steps"][number] & DraftStepSettings)[];
-  routes: (PipelineDraft["routes"][number] & { requiresComment?: boolean | undefined })[];
+  routes: (PipelineDraft["routes"][number] & { requiresComment?: boolean | undefined; traversalLimit?: number | typeof NO_TRAVERSAL_LIMIT | undefined })[];
   icon?: string | undefined;
   restoredFrom?: number | undefined;
 };
@@ -465,10 +466,23 @@ export function toDomainRoutes(pipelineId: string, draft: Pick<PipelineDraft, "r
     ...route,
     id: `draft-route-${index}` as Uuid,
     pipelineId: pipelineId as Uuid,
-    // No draft sets a traversal limit (EO-921), and nothing a draft is
-    // judged by reads one; Publish keeps the stored route's.
+    // Nothing a draft's graph is judged by reads a traversal limit
+    // (EO-921): `traversalLimitProblems` judges the draft's own, and
+    // Publish settles each with `settledTraversalLimit`.
     traversalLimit: null,
   }));
+}
+
+/**
+ * The traversal limit Publish gives a draft's route (EO-921): the number
+ * it says, none where it says `"none"`, and where it says nothing the
+ * limit `stored` — the pipeline's route of the same step and result —
+ * has, or none for a route the pipeline does not have.
+ */
+export function settledTraversalLimit(route: { traversalLimit?: number | typeof NO_TRAVERSAL_LIMIT | undefined }, stored: number | null | undefined): number | null {
+  if (route.traversalLimit === NO_TRAVERSAL_LIMIT) return null;
+  if (route.traversalLimit !== undefined) return route.traversalLimit;
+  return stored ?? null;
 }
 
 // ── Rendering ─────────────────────────────────────────────────
@@ -1028,7 +1042,12 @@ export function holdingPhrase(counts: Record<string, number>, stepId: string): s
 }
 
 /** Added, retargeted and dropped edges, named by what a person sees rather than by id. */
-function renderRouteDiff(draft: PipelineDraft, before: StepRoute[], steps: { id: string; name: string }[]): string[] {
+/** A route's traversal limit in a card's words (EO-921). */
+function traversalLimitWords(limit: number | null): string {
+  return limit === null ? "none" : `${limit} time${limit === 1 ? "" : "s"} since a person last commented`;
+}
+
+function renderRouteDiff(draft: Pick<DraftWithLimits, "routes">, before: StepRoute[], steps: { id: string; name: string }[]): string[] {
   const nameOf = (id: string) => {
     if (id === "user_attention") return "You";
     if (id === "terminal") return "the terminal step";
@@ -1041,9 +1060,17 @@ function renderRouteDiff(draft: PipelineDraft, before: StepRoute[], steps: { id:
 
   for (const route of draft.routes) {
     const was = beforeByKey.get(key(route));
-    if (!was) lines.push(`- ${nameOf(route.fromStepId)} / ${route.resultKey} → ${nameOf(route.target)}`);
-    else if (was.target !== route.target) {
+    // What Publish would give it (EO-921), said where it is set or changes.
+    const limit = settledTraversalLimit(route, was?.traversalLimit);
+    if (!was) {
+      lines.push(`- ${nameOf(route.fromStepId)} / ${route.resultKey} → ${nameOf(route.target)}${limit === null ? "" : ` · limit: ${traversalLimitWords(limit)}`}`);
+      continue;
+    }
+    if (was.target !== route.target) {
       lines.push(`- ${nameOf(route.fromStepId)} / ${route.resultKey} → ${nameOf(was.target)} → ${nameOf(route.target)}`);
+    }
+    if (was.traversalLimit !== limit) {
+      lines.push(`- ${nameOf(route.fromStepId)} / ${route.resultKey} — limit: ${traversalLimitWords(was.traversalLimit)} → ${traversalLimitWords(limit)}`);
     }
   }
   for (const route of before) {

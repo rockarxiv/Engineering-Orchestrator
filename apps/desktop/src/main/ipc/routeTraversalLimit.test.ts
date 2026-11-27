@@ -5,7 +5,7 @@ import { openMigratedTestDb } from "../db/testHelpers.js";
 import { createPipeline, createProject, createRoute, createStep, currentVersion, listRoutesForPipeline, setEntryStep, versionSnapshot } from "../db/repos/index.js";
 import { renderPipeline } from "../mcpHost/render.js";
 import { exportPipeline, importPipeline } from "../modules/pipelineTransfer.js";
-import { savePipeline } from "./configCommands.js";
+import { savePipeline, validatePipelineCommand } from "./configCommands.js";
 import { listPipelineStepViews } from "./domainQueries.js";
 import { pipelineVersionsCommand } from "./pipelineCommands.js";
 
@@ -80,6 +80,16 @@ describe("a route's traversal limit, as part of the graph (EO-921)", () => {
       expect(PipelineSaveInputSchema.safeParse({ pipelineId, steps: steps(), routes: routes(refused), entryStepId: write.id }).success, String(refused)).toBe(false);
     }
     expect(PipelineSaveInputSchema.safeParse({ pipelineId, steps: steps(), routes: routes(1), entryStepId: write.id }).success).toBe(true);
+
+    // And the same rule where a caller reaches the save, or the editor's check, without the schema.
+    for (const refused of [0, 1.5]) {
+      const result = save(refused);
+      expect(result.saved, String(refused)).toBe(false);
+      expect(result.problems).toContainEqual(expect.objectContaining({ severity: "error", stateId: check.id, message: expect.stringContaining("a whole number of 1 or more") }));
+      const checked = validatePipelineCommand(handle.db, { pipelineId, steps: steps(), routes: routes(refused), entryStepId: write.id });
+      expect(checked.problems).toContainEqual(expect.objectContaining({ severity: "error", stateId: check.id }));
+    }
+    expect(sendBackLimit()).toBeNull();
   });
 
   it("is what pipeline_get reads and says, and only on the route that has one", () => {

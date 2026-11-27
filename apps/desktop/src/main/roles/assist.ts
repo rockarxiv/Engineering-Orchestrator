@@ -72,6 +72,7 @@ import {
   renderDraft,
   itemCounts,
   settledStepSettings,
+  settledTraversalLimit,
   validateDraft,
   withoutDraftSettings,
   draftAgentBinder,
@@ -2682,8 +2683,8 @@ function publishableGraphOf(db: Db, read: ReadAssistDraftResult): AssistPublisha
 
   const pipelineId = read.pipelineId ?? NOT_YET_CREATED;
   const before = new Map(read.pipelineId === null ? [] : listStepsForPipeline(db, read.pipelineId).map((step) => [step.id, step]));
-  // A route's traversal limit is no draft's to set (EO-921): Publish keeps
-  // the one the stored route of the same step and result has.
+  // A route's traversal limit (EO-921): the draft's where it says one,
+  // and where it says nothing the stored route's of the same step and result.
   const limits = new Map(
     read.pipelineId === null ? [] : listRoutesForPipeline(db, read.pipelineId).map((route) => [`${route.fromStepId}\u0000${route.resultKey}`, route.traversalLimit] as const),
   );
@@ -2747,7 +2748,7 @@ function publishableGraphOf(db: Db, read: ReadAssistDraftResult): AssistPublisha
       ...route,
       id: uuidv7(),
       pipelineId,
-      traversalLimit: limits.get(`${route.fromStepId}\u0000${route.resultKey}`) ?? null,
+      traversalLimit: settledTraversalLimit(route, limits.get(`${route.fromStepId}\u0000${route.resultKey}`)),
     })),
     entryStepId: read.draft.entryStepId,
     waiting: read.waiting,

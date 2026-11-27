@@ -346,6 +346,19 @@ exports[`the JSON Schema each provider receives > is unchanged for assist (undef
                       },
                       "requiresComment": {
                         "type": "boolean"
+                      },
+                      "traversalLimit": {
+                        "anyOf": [
+                          {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          {
+                            "type": "string",
+                            "const": "none"
+                          }
+                        ]
                       }
                     },
                     "required": [
@@ -711,6 +724,19 @@ exports[`the JSON Schema each provider receives > is unchanged for assist (undef
                         },
                         "requiresComment": {
                           "type": "boolean"
+                        },
+                        "traversalLimit": {
+                          "anyOf": [
+                            {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            {
+                              "type": "string",
+                              "const": "none"
+                            }
+                          ]
                         }
                       },
                       "required": [
