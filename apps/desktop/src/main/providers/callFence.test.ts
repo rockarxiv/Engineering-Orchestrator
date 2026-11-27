@@ -114,8 +114,6 @@ describe("the fence's push rules (EO-926)", () => {
       expect(await ruleOf("git push --force-with-lease", IMPLEMENTER, remapped)).toBe("push_unverified");
       expect(await ruleOf("git push --force-with-lease origin HEAD", IMPLEMENTER, remapped)).toBe("push_unverified");
       expect(await ruleOf("git push --force-with-lease origin HEAD:refs/heads/eo/EO-1", IMPLEMENTER, remapped)).toBeNull();
-      expect(await ruleOf("git -c remote.origin.push=refs/heads/eo/EO-1:refs/heads/main push --force-with-lease origin eo/EO-1")).toBe("push_unverified");
-      expect(await ruleOf("GIT_CONFIG_COUNT=1 git push --force-with-lease")).toBe("push_unverified");
     });
 
     it("refuses a push of the current branch when that is not the item's", async () => {
@@ -146,6 +144,51 @@ describe("the fence's push rules (EO-926)", () => {
 
     it("refuses where git cannot say", async () => {
       expect(await ruleOf("git push --force-with-lease origin HEAD:refs/heads/eo/EO-1", IMPLEMENTER, checkout(null))).toBe("push_unverified");
+    });
+  });
+
+  describe("with git configured on the command line", () => {
+    it.each([
+      "git -c push.followTags=true push --force-with-lease origin HEAD:refs/heads/eo/EO-1",
+      "git -c remote.origin.push=refs/heads/eo/EO-1:refs/heads/main push --force-with-lease origin eo/EO-1",
+      "git --config-env=push.followTags=FOLLOW push --force-with-lease origin HEAD:refs/heads/eo/EO-1",
+      "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=push.followTags GIT_CONFIG_VALUE_0=true git push --force-with-lease origin HEAD:refs/heads/eo/EO-1",
+      "env GIT_CONFIG_PARAMETERS=\"'push.followtags=true'\" git push --force-with-lease origin HEAD:refs/heads/eo/EO-1",
+      "export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=push.followTags GIT_CONFIG_VALUE_0=true; git push --force-with-lease origin HEAD:refs/heads/eo/EO-1",
+      "GIT_CONFIG_GLOBAL=/tmp/g; export GIT_CONFIG_GLOBAL; git push --force-with-lease origin HEAD:refs/heads/eo/EO-1",
+      "GIT_EXEC_PATH=/tmp/x git push --force-with-lease",
+    ])("refuses %s, explicit destination or not", async (command) => {
+      expect(await ruleOf(command)).toBe("push_reconfigured");
+    });
+
+    it("lets variables that cannot change a push through", async () => {
+      expect(await ruleOf("GIT_TRACE=1 GIT_TERMINAL_PROMPT=0 git push --force-with-lease origin HEAD:refs/heads/eo/EO-1")).toBeNull();
+    });
+  });
+
+  describe("in subshells", () => {
+    const ELSEWHERE = "/elsewhere";
+    it.each([
+      `(cd ${ROOT} && git status --short); git push --force-with-lease`,
+      `(cd ${ROOT}); git push --force-with-lease origin HEAD:refs/heads/eo/EO-1`,
+      `echo $(cd ${ROOT}); git push --force-with-lease`,
+      `echo "\`cd ${ROOT}\`"; git push --force-with-lease`,
+      `bash -c "cd ${ROOT}"; git push --force-with-lease`,
+      `cd ${ROOT} | true; git push --force-with-lease`,
+      `cd ${ROOT} & git push --force-with-lease`,
+    ])("refuses a push left outside the worktree when only a subshell moved: %s", async (command) => {
+      expect(await ruleOf(command, IMPLEMENTER, checkout(), ELSEWHERE)).toBe("push_outside_worktree");
+    });
+
+    it.each([
+      `cd ${ROOT} && (git push --force-with-lease)`,
+      `(cd ${ROOT} && git push --force-with-lease)`,
+      `bash -c "cd ${ROOT} && git push --force-with-lease"`,
+      `cd ${ROOT} && git push --force-with-lease 2>&1 | tee push.log`,
+      `{ cd ${ROOT}; }; git push --force-with-lease`,
+      `eval "cd ${ROOT}"; git push --force-with-lease`,
+    ])("lets a push through where the shell that runs it is in the worktree: %s", async (command) => {
+      expect(await ruleOf(command, IMPLEMENTER, checkout(), ELSEWHERE)).toBeNull();
     });
   });
 
@@ -328,5 +371,98 @@ describe("the fence over a real checkout", () => {
     git(work, "config", "--unset", "remote.origin.push");
     expect(await shellRefusal("git push --force-with-lease", fence, work, readCheckout)).toBeNull();
     expect(await shellRefusal("git push --force-with-lease", fence, other, readCheckout)).toMatchObject({ rule: "push_outside_worktree" });
+  });
+
+  /** A bare remote and a checkout of `branch` pushed to it, with signing off. */
+  function pushedCheckout(root: string, remote: string, name: string, branch: string): string {
+    const dir = join(root, name);
+    mkdirSync(dir);
+    git(dir, "init", "-b", branch);
+    git(dir, "config", "user.email", "eo@example.com");
+    git(dir, "config", "user.name", "EO Fence");
+    git(dir, "config", "commit.gpgsign", "false");
+    git(dir, "config", "tag.gpgsign", "false");
+    git(dir, "remote", "add", "origin", remote);
+    writeFileSync(join(dir, `${name}.txt`), `${name}\n`);
+    git(dir, "add", "-A");
+    git(dir, "commit", "-m", name);
+    return dir;
+  }
+
+  /** Runs, as the agent's shell would from `cwd`, every command the fence lets through, and says which it refused. */
+  async function throughTheFence(commands: readonly string[], fence: CallFence, cwd: string): Promise<Record<string, string | null>> {
+    const rules: Record<string, string | null> = {};
+    for (const command of commands) {
+      const refusal = await shellRefusal(command, fence, cwd, readCheckout);
+      rules[command] = refusal?.rule ?? null;
+      if (refusal === null) execFileSync("sh", ["-c", command], { cwd, stdio: "pipe" });
+    }
+    return rules;
+  }
+
+  it("refuses a push that configures git for itself, so no tag goes with it, and lets the same push through without the override", async () => {
+    const root = mkdtempSync(join(tmpdir(), "eo-926-fence-config-"));
+    scratch.push(root);
+    const remote = join(root, "remote.git");
+    git(root, "init", "--bare", "-b", "main", remote);
+    const work = pushedCheckout(root, remote, "work", "eo/EO-1");
+    git(work, "push", "-u", "origin", "eo/EO-1");
+    git(work, "commit", "--amend", "-m", "work, rebased");
+    git(work, "tag", "-a", "v1", "-m", "a tag push.followTags would send");
+    const fence: CallFence = { root: work, pushBranch: "eo/EO-1" };
+    const explicit = "git push --force-with-lease origin HEAD:refs/heads/eo/EO-1";
+
+    const rules = await throughTheFence(
+      [
+        `git -c push.followTags=true push --force-with-lease origin HEAD:refs/heads/eo/EO-1`,
+        `GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=push.followTags GIT_CONFIG_VALUE_0=true ${explicit}`,
+        `export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=push.followTags GIT_CONFIG_VALUE_0=true; ${explicit}`,
+        `GIT_CONFIG_PARAMETERS="'push.followtags=true'" ${explicit}`,
+      ],
+      fence,
+      work,
+    );
+    expect(Object.values(rules)).toEqual(["push_reconfigured", "push_reconfigured", "push_reconfigured", "push_reconfigured"]);
+    expect(remoteBranch(remote, "eo/EO-1")).not.toBe(git(work, "rev-parse", "HEAD"));
+    expect(git(remote, "tag", "--list")).toBe("");
+
+    // The same push without the override goes through, and sends no tag.
+    expect(await throughTheFence([explicit], fence, work)).toEqual({ [explicit]: null });
+    expect(remoteBranch(remote, "eo/EO-1")).toBe(git(work, "rev-parse", "HEAD"));
+    expect(git(remote, "tag", "--list")).toBe("");
+  });
+
+  it("refuses a push from another checkout that only a subshell moved out of, so that checkout's branch is not pushed", async () => {
+    const root = mkdtempSync(join(tmpdir(), "eo-926-fence-subshell-"));
+    scratch.push(root);
+    const remote = join(root, "remote.git");
+    git(root, "init", "--bare", "-b", "trunk", remote);
+    const work = pushedCheckout(root, remote, "work", "eo/EO-1");
+    git(work, "push", "-u", "origin", "eo/EO-1");
+    // The hook says the call runs here: another checkout, on main, whose
+    // bare push goes to main.
+    const outer = pushedCheckout(root, remote, "outer", "main");
+    git(outer, "config", "push.default", "current");
+    const fence: CallFence = { root: work, pushBranch: "eo/EO-1" };
+
+    const rules = await throughTheFence(
+      [
+        `(cd ${work} && git status --short); git push --force-with-lease`,
+        `echo "$(cd ${work})"; git push --force-with-lease`,
+        `sh -c "cd ${work}"; git push --force-with-lease`,
+        `cd ${work} | true; git push --force-with-lease`,
+      ],
+      fence,
+      outer,
+    );
+    expect(Object.values(rules)).toEqual(["push_outside_worktree", "push_outside_worktree", "push_outside_worktree", "push_outside_worktree"]);
+    expect(remoteBranch(remote, "main")).toBeNull();
+
+    // Where the shell that pushes really is in the worktree, it is let through, and pushes the item's branch alone.
+    git(work, "commit", "--amend", "-m", "work, rebased");
+    const inside = `(cd ${work} && git push --force-with-lease)`;
+    expect(await throughTheFence([inside], fence, outer)).toEqual({ [inside]: null });
+    expect(remoteBranch(remote, "eo/EO-1")).toBe(git(work, "rev-parse", "HEAD"));
+    expect(remoteBranch(remote, "main")).toBeNull();
   });
 });

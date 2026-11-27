@@ -450,11 +450,11 @@ const CAPABILITIES = [
   },
   {
     name: "the work fence",
-    what: "a turn given a fence — an implementer's or a reviewer's — refuses each call as it is made: on an implementer's, a push with a bare --force, -f or a +refspec, a push naming another branch or run from outside the worktree, gh pr merge, either inside a command substitution, and a file write or edit outside the worktree, and lets a --force-with-lease push to the item's own branch and a write inside the worktree through; on a reviewer's, every push and gh pr merge as well; each refusal says it is EO's fence and is a call_refused event naming the rule and the call; and a resumed turn is held to its fence too (EO-926)",
+    what: "a turn given a fence — an implementer's or a reviewer's — refuses each call as it is made: on an implementer's, a push with a bare --force, -f or a +refspec, a push naming another branch, run from outside the worktree or configuring git for itself, gh pr merge, either inside a command substitution, and a file write or edit outside the worktree, and lets a --force-with-lease push to the item's own branch — one after a subshell left the worktree included — and a write inside the worktree through; on a reviewer's, every push and gh pr merge as well; each refusal says it is EO's fence and is a call_refused event naming the rule and the call; and a resumed turn is held to its fence too (EO-926)",
     same: {
       implementer: {
-        refused: ["+refspec push", "-f push", "file edit outside", "file write outside", "forced push", "merge in a substitution", "pr merge", "push from elsewhere", "push in a substitution", "push to another branch"],
-        allowed: ["file write inside", "leased push to its branch"],
+        refused: ["+refspec push", "-f push", "file edit outside", "file write outside", "forced push", "merge in a substitution", "pr merge", "push from elsewhere", "push in a substitution", "push to another branch", "push with a config override"],
+        allowed: ["file write inside", "leased push to its branch", "push after a subshell moved"],
         reasonSaid: true,
         recorded: [
           { rule: "push_forced", call: "git push --force origin eo/EO-1" },
@@ -465,16 +465,21 @@ const CAPABILITIES = [
           { rule: "push_outside_worktree", call: "cd /elsewhere && git push --force-with-lease" },
           { rule: "push_forced", call: 'echo "$(git push --force origin eo/EO-1)"' },
           { rule: "pr_merge", call: 'echo "$(gh pr merge 12 --squash)"' },
+          { rule: "push_reconfigured", call: "git -c push.followTags=true push --force-with-lease origin HEAD:refs/heads/eo/EO-1" },
           { rule: "write_outside_worktree", call: "/tmp/outside.txt" },
           { rule: "write_outside_worktree", call: "/tmp/outside.txt" },
         ],
       },
       reviewer: {
-        refused: ["+refspec push", "-f push", "file edit outside", "file write outside", "forced push", "leased push to its branch", "merge in a substitution", "pr merge", "push from elsewhere", "push in a substitution", "push to another branch"],
+        refused: ["+refspec push", "-f push", "file edit outside", "file write outside", "forced push", "leased push to its branch", "merge in a substitution", "pr merge", "push after a subshell moved", "push from elsewhere", "push in a substitution", "push to another branch", "push with a config override"],
         allowed: ["file write inside"],
         reasonSaid: true,
       },
-      resumed: { refused: ["+refspec push", "-f push", "file edit outside", "file write outside", "forced push", "merge in a substitution", "pr merge", "push from elsewhere", "push in a substitution", "push to another branch"], allowed: ["file write inside", "leased push to its branch"], reasonSaid: true },
+      resumed: {
+        refused: ["+refspec push", "-f push", "file edit outside", "file write outside", "forced push", "merge in a substitution", "pr merge", "push from elsewhere", "push in a substitution", "push to another branch", "push with a config override"],
+        allowed: ["file write inside", "leased push to its branch", "push after a subshell moved"],
+        reasonSaid: true,
+      },
     },
   },
   {
@@ -1629,6 +1634,8 @@ const FENCE_CALL_CLASSES: Record<"claude" | "codex", Record<string, [string, unk
     "push from elsewhere": ["Bash", shellInput("cd /elsewhere && git push --force-with-lease")],
     "push in a substitution": ["Bash", shellInput('echo "$(git push --force origin eo/EO-1)"')],
     "merge in a substitution": ["Bash", shellInput('echo "$(gh pr merge 12 --squash)"')],
+    "push with a config override": ["Bash", shellInput("git -c push.followTags=true push --force-with-lease origin HEAD:refs/heads/eo/EO-1")],
+    "push after a subshell moved": ["Bash", shellInput("(cd /tmp); git push --force-with-lease")],
     "file write inside": ["Write", { file_path: "src/a.ts", content: "x" }],
     "file write outside": ["Write", { file_path: "/tmp/outside.txt", content: "x" }],
     "file edit outside": ["Edit", { file_path: "/tmp/outside.txt", old_string: "a", new_string: "b" }],
@@ -1643,6 +1650,8 @@ const FENCE_CALL_CLASSES: Record<"claude" | "codex", Record<string, [string, unk
     "push from elsewhere": ["Bash", shellInput("cd /elsewhere && git push --force-with-lease")],
     "push in a substitution": ["Bash", shellInput('echo "$(git push --force origin eo/EO-1)"')],
     "merge in a substitution": ["Bash", shellInput('echo "$(gh pr merge 12 --squash)"')],
+    "push with a config override": ["Bash", shellInput("git -c push.followTags=true push --force-with-lease origin HEAD:refs/heads/eo/EO-1")],
+    "push after a subshell moved": ["Bash", shellInput("(cd /tmp); git push --force-with-lease")],
     "file write inside": ["apply_patch", patchInput("*** Add File: src/a.ts")],
     "file write outside": ["apply_patch", patchInput("*** Add File: /tmp/outside.txt")],
     "file edit outside": ["apply_patch", patchInput("*** Update File: /tmp/outside.txt")],

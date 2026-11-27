@@ -59,6 +59,7 @@ export type FenceRule =
   | "push_elsewhere"
   | "push_outside_worktree"
   | "push_unverified"
+  | "push_reconfigured"
   | "pr_merge"
   | "write_outside_worktree"
   | "unreadable_patch";
@@ -118,7 +119,9 @@ export async function fencedCall(tool: string, input: unknown, fence: CallFence,
   if (tool === SHELL_TOOL) {
     const command = fields?.["command"];
     if (typeof command === "string") return shellRefusal(command, fence, base, git);
-    if (Array.isArray(command) && command.every((word) => typeof word === "string")) return commandsRefusal([command as string[]], command.join(" "), fence, { dir: base }, git, 0);
+    if (Array.isArray(command) && command.every((word) => typeof word === "string")) {
+      return commandsRefusal([{ words: command as string[], frame: [], detached: false }], command.join(" "), fence, shellScope(base), git, 0);
+    }
     return null;
   }
   const field = FILE_TOOLS[tool];
@@ -168,39 +171,87 @@ export function patchTargets(text: string): string[] {
 
 /** The fence's answer to one command line, run from `cwd`. */
 export function shellRefusal(command: string, fence: CallFence, cwd: string = fence.root, git: FenceGit = readCheckout): Promise<FenceRefusal | null> {
-  return commandsRefusal(simpleCommands(command), command, fence, { dir: cwd }, git, 0);
+  const scope = shellScope(cwd);
+  return commandsRefusal(parseCommands(command, [], scope.frames), command, fence, scope, git, 0);
 }
 
 /** How deep `sh -c '…'` and `eval` are read into. A command nested further than this is not looked at. */
 const DEEPEST_NESTING = 4;
 
-/** Where the shell is as a line runs: a directory, or null once it cannot be told (`cd -`, `cd "$X"`, `popd`). */
+/**
+ * Where each part of a shell is as a line runs (EO-926 review).
+ *
+ * A `cd` moves the shell it runs in and no other: one inside `( … )`,
+ * `$( … )`, backticks or `<( … )` moves that subshell, which is a frame of
+ * its own here, and never the line around it. A frame's directory is its
+ * own once it has `cd`'d and its parent's until then; null once it cannot
+ * be told (`cd -`, `cd "$X"`, `popd`, or a `cd` in a pipeline or in the
+ * background, which some shells run in the current shell and some do not).
+ */
 interface ShellScope {
-  dir: string | null;
+  /** Where the line starts: the directory the hook says the call runs in. */
+  base: string | null;
+  /** Each frame's own directory, keyed by its path, once it has moved. */
+  dirs: Map<string, string | null>;
+  /** Variables the line has set or exported for everything after them — conservatively, in every frame. */
+  exported: Set<string>;
+  /** Hands out frame ids, shared with every parse of this line. */
+  frames: { next: number };
 }
 
-async function commandsRefusal(commands: readonly string[][], line: string, fence: CallFence, scope: ShellScope, git: FenceGit, depth: number): Promise<FenceRefusal | null> {
+function shellScope(base: string | null): ShellScope {
+  return { base, dirs: new Map(), exported: new Set(), frames: { next: 1 } };
+}
+
+const frameKey = (frame: readonly number[]): string => frame.join(".");
+
+/** The directory a command in `frame` runs in: its own frame's, or the nearest enclosing one's. */
+function dirIn(scope: ShellScope, frame: readonly number[]): string | null {
+  for (let depth = frame.length; depth >= 0; depth--) {
+    const key = frameKey(frame.slice(0, depth));
+    if (scope.dirs.has(key)) return scope.dirs.get(key) ?? null;
+  }
+  return scope.base;
+}
+
+/** Programs that set a variable for the commands after them. */
+const EXPORTING = new Set(["export", "declare", "typeset", "readonly", "local"]);
+
+async function commandsRefusal(commands: readonly ShellCommand[], line: string, fence: CallFence, scope: ShellScope, git: FenceGit, depth: number): Promise<FenceRefusal | null> {
   const call = line.length > LONGEST_CALL ? `${line.slice(0, LONGEST_CALL)}…` : line;
-  for (const words of commands) {
+  for (const { words, frame, detached } of commands) {
     const { argv, assigned, chdir } = withoutPrefixes(words);
+    const here = dirIn(scope, frame);
     // `env -C <dir>` runs the one command there; the line goes on where it was.
-    const dir = chdir === undefined ? scope.dir : moved(scope.dir, chdir);
+    const dir = chdir === undefined ? here : moved(here, chdir);
     const program = basename(argv[0] ?? "");
-    if (program === "cd" || program === "pushd") {
-      scope.dir = moved(scope.dir, argv.slice(1).find((arg) => !arg.startsWith("-") || arg === "-") ?? null);
-    } else if (program === "popd") {
-      scope.dir = null;
+    // A bare assignment, or `export NAME=…`, reaches every command after it.
+    if (argv.length === 0) for (const name of assigned) scope.exported.add(name);
+    if (EXPORTING.has(program)) for (const arg of argv.slice(1)) if (!arg.startsWith("-")) scope.exported.add(arg.split("=")[0] ?? arg);
+    const environment = [...assigned, ...scope.exported];
+    if (program === "cd" || program === "pushd" || program === "popd") {
+      const to = program === "popd" ? null : (argv.slice(1).find((arg) => !arg.startsWith("-") || arg === "-") ?? null);
+      // In a pipeline or the background, whether the move outlives the
+      // command depends on the shell: the frame's directory is unknown.
+      scope.dirs.set(frameKey(frame), detached ? null : moved(here, to));
     } else if (program === "git") {
-      const rule = await gitRefusal(argv.slice(1), fence, dir, assigned, git);
+      const rule = await gitRefusal(argv.slice(1), fence, dir, environment, git);
       if (rule !== null) return { rule, call, reason: pushReason(rule, fence) };
     } else if (program === "gh") {
       if (isPrMerge(argv.slice(1))) {
         return { rule: "pr_merge", call, reason: `EO refused this call: \`gh pr merge\` is refused on this turn, because merging a pull request is EO's to do. ${FENCE_NOTE}` };
       }
-    } else if (depth < DEEPEST_NESTING && (SHELLS.has(program) || program === "eval")) {
-      const script = program === "eval" ? argv.slice(1).join(" ") : shellScript(argv.slice(1));
+    } else if (depth < DEEPEST_NESTING && program === "eval") {
+      // `eval` runs its words in this very shell: its `cd` moves this frame.
+      const nested = await commandsRefusal(parseCommands(argv.slice(1).join(" "), frame, scope.frames), line, fence, scope, git, depth + 1);
+      if (nested !== null) return nested;
+    } else if (depth < DEEPEST_NESTING && SHELLS.has(program)) {
+      // `sh -c` is another process: it starts where this command runs, and
+      // nothing it does to its directory comes back.
+      const script = shellScript(argv.slice(1));
       if (script !== null) {
-        const nested = await commandsRefusal(simpleCommands(script), line, fence, scope, git, depth + 1);
+        const child: ShellScope = { base: dir, dirs: new Map(), exported: scope.exported, frames: scope.frames };
+        const nested = await commandsRefusal(parseCommands(script, [], child.frames), line, fence, child, git, depth + 1);
         if (nested !== null) return nested;
       }
     }
@@ -228,6 +279,8 @@ function pushReason(rule: FenceRule, fence: CallFence): string {
       return `EO refused this call: on this turn \`git push\` is only allowed as \`git push --force-with-lease\` to the item's own branch, ${branch}, and only when an engine note says the remote branch diverged — otherwise EO does the pushing. ${FENCE_NOTE}`;
     case "push_outside_worktree":
       return `EO refused this call: on this turn \`git push\` may only be run in the item's worktree, ${fence.root}, and this one runs elsewhere, in another repository, or somewhere EO cannot tell. ${FENCE_NOTE}`;
+    case "push_reconfigured":
+      return `EO refused this call: this push changes git's configuration for itself — with \`-c\`, \`--config-env\` or a \`GIT_*\` variable set on the command or earlier in it — which can change what a push sends, and EO cannot see it. Push without the override. ${FENCE_NOTE}`;
     case "push_unverified":
       return `EO refused this call: this push leaves its destination for git to work out, and EO could not establish from this checkout's branch and configuration that it is ${branch}. Name the destination instead: \`git push --force-with-lease <remote> HEAD:refs/heads/${branch}\`. ${FENCE_NOTE}`;
     default:
@@ -314,14 +367,20 @@ const GIT_RELOCATING = new Set(["--git-dir", "--work-tree", "--namespace"]);
 /** Those that change git's configuration for this one command. */
 const GIT_CONFIGURING = new Set(["-c", "--config-env"]);
 /** Environment variables that do either, set on the command itself. */
-const GIT_RELOCATING_ENV = new Set(["GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_NAMESPACE", "GIT_INDEX_FILE"]);
-const GIT_CONFIGURING_ENV = /^GIT_CONFIG/;
+const GIT_RELOCATING_ENV = new Set(["GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_NAMESPACE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY"]);
+/**
+ * `GIT_*` variables that cannot change what a push sends or where. Any other
+ * — `GIT_CONFIG_COUNT`/`KEY_n`/`VALUE_n`, `GIT_CONFIG_PARAMETERS`,
+ * `GIT_CONFIG_GLOBAL`, `GIT_EXEC_PATH` and the rest — counts as configuring
+ * git for the push.
+ */
+const GIT_HARMLESS_ENV = /^GIT_(TRACE\w*|TERMINAL_PROMPT|PAGER|EDITOR|ASKPASS|SSH|SSH_COMMAND|AUTHOR_\w+|COMMITTER_\w+|MERGE_AUTOEDIT|PROGRESS_DELAY)$/;
 
 /** Which rule refuses this `git …` (its words after `git`), run in `dir`, or null. */
 async function gitRefusal(args: readonly string[], fence: CallFence, dir: string | null, assigned: readonly string[], git: FenceGit): Promise<FenceRule | null> {
   let index = 0;
   let relocated = assigned.some((name) => GIT_RELOCATING_ENV.has(name));
-  let configured = assigned.some((name) => GIT_CONFIGURING_ENV.test(name));
+  let configured = assigned.some((name) => name.startsWith("GIT_") && !GIT_RELOCATING_ENV.has(name) && !GIT_HARMLESS_ENV.test(name));
   let at = dir;
   while (index < args.length && (args[index] ?? "").startsWith("-")) {
     const option = args[index] ?? "";
@@ -390,6 +449,10 @@ async function pushRefusal(args: readonly string[], branch: string, root: string
   if (!lease) return "push_without_lease";
   // Only from the item's worktree, and only into its repository.
   if (place.relocated || place.dir === null || !inside(root, place.dir)) return "push_outside_worktree";
+  // Configuration set for this command alone — `push.followTags`, a push
+  // refspec, a mirror — widens even an explicit push, and the checkout
+  // EO reads does not hold it.
+  if (place.configured) return "push_reconfigured";
   // An explicit destination is the one git updates, whatever is configured.
   for (const refspec of refspecs) {
     const colon = refspec.indexOf(":");
@@ -413,7 +476,6 @@ async function pushRefusal(args: readonly string[], branch: string, root: string
   // where the checkout says that is the item's branch.
   const implicit = refspecs.length === 0 || refspecs.some((refspec) => !refspec.includes(":"));
   if (!implicit) return null;
-  if (place.configured) return "push_unverified";
   for (const key of state.config.keys()) {
     if (/^remote\..+\.push$/.test(key)) return "push_unverified";
   }
@@ -500,44 +562,63 @@ function closingBacktick(line: string, from: number): number {
   return line.length;
 }
 
+/** One simple command: its words, the shell frame it runs in, and whether it runs in a pipeline or the background. */
+export interface ShellCommand {
+  words: string[];
+  /** The subshells it is inside, outermost first: `[]` is the line's own shell. */
+  frame: readonly number[];
+  /** Part of a pipeline, or ended by `&`: whether a `cd` in it outlives it depends on the shell. */
+  detached: boolean;
+}
+
 /**
  * The commands a heredoc's body runs: its `$(…)` and backticks, which the
- * shell runs in an unquoted heredoc as in double quotes.
+ * shell runs in an unquoted heredoc as in double quotes, each in a
+ * subshell of its own.
  */
-function substitutionsIn(text: string): string[][] {
-  const commands: string[][] = [];
+function substitutionsIn(text: string, frame: readonly number[], frames: { next: number }): ShellCommand[] {
+  const commands: ShellCommand[] = [];
   for (let index = 0; index < text.length; index++) {
     const char = text[index];
     if (char === "\\") index++;
     else if (char === "$" && text[index + 1] === "(") {
       const end = closingParen(text, index + 1);
-      commands.push(...simpleCommands(text.slice(index + 2, end)));
+      commands.push(...parseCommands(text.slice(index + 2, end), [...frame, frames.next++], frames));
       index = end;
     } else if (char === "`") {
       const end = closingBacktick(text, index + 1);
-      commands.push(...simpleCommands(text.slice(index + 1, end)));
+      commands.push(...parseCommands(text.slice(index + 1, end), [...frame, frames.next++], frames));
       index = end;
     }
   }
   return commands;
 }
 
+/** A command line as the words of the simple commands in it (`parseCommands`, without where each runs). */
+export function simpleCommands(line: string): string[][] {
+  return parseCommands(line).map((command) => command.words);
+}
+
 /**
  * A command line as the simple commands in it, each as its words with
- * quoting removed (EO-926).
+ * quoting removed and the shell it runs in (EO-926).
  *
- * Enough of a POSIX shell's grammar to find the commands a line runs:
- * single and double quotes, backslashes, comments, the separators `;`,
- * `&&`, `||`, `|`, `&` and newlines, subshells, redirections (dropped with
- * their targets, so `2>&1` is not an argument) and heredocs (whose body is
- * text, except for the substitutions an unquoted one still runs). A
- * command substitution — `$(…)` or backticks, bare or inside double
- * quotes — and a process substitution `<(…)` are commands of their own,
- * listed before the command they are part of, which keeps their text as
- * a word. Nothing is expanded.
+ * Enough of a POSIX shell's grammar to find the commands a line runs and
+ * where: single and double quotes, backslashes, comments, the separators
+ * `;`, `&&`, `||`, `|`, `&` and newlines, redirections (dropped with their
+ * targets, so `2>&1` is not an argument) and heredocs (whose body is text,
+ * except for the substitutions an unquoted one still runs). A subshell
+ * `( … )`, a command substitution — `$(…)` or backticks, bare or inside
+ * double quotes — and a process substitution `<(…)` each run in a frame of
+ * their own, nested in the one around them; a substitution's commands are
+ * listed before the command they are part of, which keeps their text as a
+ * word. A command in a pipeline, or ended by `&`, is marked `detached`.
+ * Nothing is expanded.
  */
-export function simpleCommands(line: string): string[][] {
-  const commands: string[][] = [];
+export function parseCommands(line: string, frame: readonly number[] = [], frames: { next: number } = { next: 1 }): ShellCommand[] {
+  const commands: ShellCommand[] = [];
+  const stack: (readonly number[])[] = [frame];
+  const current = (): readonly number[] => stack[stack.length - 1] ?? frame;
   let words: string[] = [];
   let word = "";
   let inWord = false;
@@ -547,6 +628,8 @@ export function simpleCommands(line: string): string[][] {
   let redirect: "target" | "heredoc" | null = null;
   const heredocs: { delimiter: string; strip: boolean; literal: boolean }[] = [];
   let stripNext = false;
+  /** The command being read follows a `|`: it is a pipeline's later part. */
+  let piped = false;
 
   const endWord = (): void => {
     if (!inWord) return;
@@ -557,23 +640,24 @@ export function simpleCommands(line: string): string[][] {
     inWord = false;
     quoted = false;
   };
-  const endCommand = (): void => {
+  const endCommand = (ending: "sequence" | "pipe" | "background" = "sequence"): void => {
     endWord();
     redirect = null;
-    if (words.length > 0) commands.push(words);
+    if (words.length > 0) commands.push({ words, frame: current(), detached: piped || ending !== "sequence" });
     words = [];
+    piped = ending === "pipe";
   };
-  /** A substitution at `open` (`$(`'s or `<(`'s parenthesis): its commands listed, its text kept in the word. */
+  /** A substitution at `open` (`$(`'s or `<(`'s parenthesis): its commands listed in a frame of their own, its text kept in the word. */
   const substitution = (start: number, open: number): number => {
     const end = closingParen(line, open);
-    commands.push(...simpleCommands(line.slice(open + 1, end)));
+    commands.push(...parseCommands(line.slice(open + 1, end), [...current(), frames.next++], frames));
     word += line.slice(start, end + 1);
     inWord = true;
     return end;
   };
   const backticks = (start: number): number => {
     const end = closingBacktick(line, start + 1);
-    commands.push(...simpleCommands(line.slice(start + 1, end)));
+    commands.push(...parseCommands(line.slice(start + 1, end), [...current(), frames.next++], frames));
     word += line.slice(start, end + 1);
     inWord = true;
     return end;
@@ -675,11 +759,39 @@ export function simpleCommands(line: string): string[][] {
           if (next === -1) break;
           next = line.indexOf("\n", index + 1);
         }
-        if (!literal) commands.push(...substitutionsIn(body.join("\n")));
+        if (!literal) commands.push(...substitutionsIn(body.join("\n"), current(), frames));
       }
       continue;
     }
-    if (";&|()".includes(char)) {
+    if (char === "&") {
+      if (line[index + 1] === "&") {
+        endCommand();
+        index++;
+      } else endCommand("background");
+      continue;
+    }
+    if (char === "|") {
+      if (line[index + 1] === "|") {
+        endCommand();
+        index++;
+      } else {
+        if (line[index + 1] === "&") index++;
+        endCommand("pipe");
+      }
+      continue;
+    }
+    if (char === "(") {
+      // A subshell: a frame of its own until its `)`.
+      endCommand();
+      stack.push([...current(), frames.next++]);
+      continue;
+    }
+    if (char === ")") {
+      endCommand();
+      if (stack.length > 1) stack.pop();
+      continue;
+    }
+    if (char === ";") {
       endCommand();
       continue;
     }
