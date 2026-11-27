@@ -1,6 +1,7 @@
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import {
   ADMIN_MCP_SERVER_NAME,
@@ -1118,7 +1119,46 @@ const CAPABILITIES = [
  */
 const PENDING: { readonly [B in Backend]?: { readonly [name: string]: string } } = {};
 
-/** What a turn's suggested next messages were (EO-807): each one's text and thread, and whether it came after the turn's result. */
+/**
+ * Capabilities one backend has and the other does not, and is not to be
+ * given — the other half of invariant 12, "or names the one it does not".
+ *
+ * `PENDING` is for a gap a story is still to close; this is for one that
+ * stays, and so is held three ways instead of being left out of the list:
+ *
+ * - the backend that has it still shows it (`has`, through its adapter
+ *   against its stub, as a proof above does);
+ * - the backend without it is still without it as far as EO's adapter
+ *   goes (`lacks`) — so the day the adapter starts carrying it, this
+ *   fails, and the absence and its notices have to go;
+ * - and the absence is named where the person choosing the backend sees
+ *   it, and in ARCHITECTURE.md (`namedIn`, each sentence read out of the
+ *   file it is in).
+ *
+ * Whether the backend itself does the thing is a live test's question,
+ * named in `measuredBy`.
+ */
+const HERE = dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = join(HERE, "..", "..", "..", "..", "..");
+const ABSENT = [
+  {
+    name: "hooks committed to the repository",
+    what:
+      "a locked-down agent loads the repository's own settings, so a hook committed to the repository runs for it: Claude through the project setting source; " +
+      "Codex runs a project's hooks only in a folder it trusts and only once each is reviewed, and EO's adapter trusts no folder and reviews no hook for a locked-down agent (EO-929)",
+    has: "claude",
+    absentOn: "codex",
+    measuredBy: "apps/desktop/src/main/providers/codexRepositoryHooks.live.test.ts",
+    same: { started: { loadsTheRepositorysSettings: true }, resumed: { loadsTheRepositorysSettings: true } },
+    lacking: { started: { inItsOwnHome: true, foldersTrusted: 0, hooksReviewed: 0 }, resumed: { inItsOwnHome: true, foldersTrusted: 0, hooksReviewed: 0 } },
+    namedIn: [
+      { file: "apps/desktop/src/renderer/src/chat/views/agents/AgentEditor.tsx", words: "Hooks committed to the repository apply to Claude agents only." },
+      { file: "ARCHITECTURE.md", words: "**Hooks committed to the repository reach Claude agents only** (EO-929)" },
+    ],
+  },
+] as const;
+
+/** What a turn's suggested next messages were (EO-807)/** What a turn's suggested next messages were (EO-807): each one's text and thread, and whether it came after the turn's result. */
 function suggestionsSeen(events: readonly AgentEvent[]): { text: string; threadId: string; afterTheResult: boolean }[] {
   const result = events.findIndex((event) => event.type === "result");
   return events.flatMap((event, at) => (event.type === "prompt_suggestion" ? [{ text: event.text, threadId: event.threadId, afterTheResult: result >= 0 && at > result }] : []));
@@ -5660,6 +5700,63 @@ describe("the shared list", () => {
     // A capability still to come on a backend (`PENDING`) is on the list
     // all the same, and named there instead of among its proofs.
     for (const backend of BACKENDS) expect([...Object.keys(PROOFS[backend]), ...Object.keys((PENDING as Partial<Record<Backend, object>>)[backend] ?? {})].sort(), backend).toEqual(listed);
+  });
+});
+
+/** How each backend is driven to what `ABSENT` asks of it. */
+const ABSENCE_PROOFS: Record<(typeof ABSENT)[number]["name"], Record<Backend, Proof>> = {
+  "hooks committed to the repository": {
+    claude: async () => {
+      // The project setting source is where `.claude/settings.json`, and its hooks, come from.
+      const loads = (call: SdkCall | undefined) => ({ loadsTheRepositorysSettings: (call?.options["settingSources"] as string[] | undefined)?.includes("project") === true });
+      const { runQuery, calls } = scripted([sdk.init(), sdk.result()]);
+      await collect(createClaudeProvider({ runQuery, enableCommentTool: false }).start(startOpts));
+      await collect(createClaudeProvider({ runQuery, enableCommentTool: false }).resume("sess-1", "carry on", { cwd: "/tmp/wt" }));
+      return { started: loads(calls[0]), resumed: loads(calls[1]) };
+    },
+    codex: async () => {
+      // A locked-down turn runs in the agent's own home, and nothing on
+      // its command line trusts a folder (`projects.<path>.trust_level`)
+      // or records a hook as reviewed (`hooks.state.<key>.trusted_hash`) —
+      // the two things the live test found a committed hook needs.
+      const home = "/tmp/codex-homes/agent-929";
+      const seen = (launch: ReturnType<typeof codexOver>["fake"]["launches"][number] | undefined) => {
+        const overrides = (launch?.args ?? []).filter((_, index, args) => args[index - 1] === "-c");
+        return {
+          inItsOwnHome: launch?.options.env?.["CODEX_HOME"] === home,
+          foldersTrusted: overrides.filter((override) => override.startsWith("projects") || override.includes("trust_level")).length,
+          hooksReviewed: overrides.filter((override) => override.includes("trusted_hash")).length,
+        };
+      };
+      const turn = [note.turnStarted(), note.agentMessage("ok"), note.turnCompleted()];
+      const started = codexOver({ after: { "turn/start": turn } }, { codexHome: () => home });
+      await collect(started.provider.start(startOpts));
+      const resumed = codexOver({ after: { "turn/start": turn } }, { codexHome: () => home });
+      await collect(resumed.provider.resume("thr-persisted", "carry on", { cwd: "/tmp/wt" }));
+      return { started: seen(started.fake.launches[0]), resumed: seen(resumed.fake.launches[0]) };
+    },
+  },
+};
+
+describe.each(ABSENT)("$name, on $has only: $what", (absence) => {
+  it(`holds on ${absence.has}`, async () => {
+    expect(await ABSENCE_PROOFS[absence.name][absence.has]()).toEqual(absence.same);
+  });
+
+  it(`is still absent from ${absence.absentOn}'s adapter`, async () => {
+    expect(await ABSENCE_PROOFS[absence.name][absence.absentOn](), `${absence.absentOn} now carries "${absence.name}": take it off ABSENT and its notices away, and add it to CAPABILITIES`).toEqual(absence.lacking);
+  });
+
+  it("is named where the backend is chosen and in ARCHITECTURE.md, with the live test that measured it", () => {
+    for (const { file, words } of absence.namedIn) expect(readFileSync(join(REPO_ROOT, file), "utf8"), file).toContain(words);
+    expect(existsSync(join(REPO_ROOT, absence.measuredBy)), absence.measuredBy).toBe(true);
+    expect(CAPABILITIES.map((capability) => capability.name as string)).not.toContain(absence.name);
+  });
+});
+
+describe("the named absences", () => {
+  it("are the ones EO-929 names, each once", () => {
+    expect(ABSENT.map((absence) => absence.name)).toEqual(["hooks committed to the repository"]);
   });
 });
 
