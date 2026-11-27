@@ -89,7 +89,15 @@ function backend(name: BackendName, answer: unknown): Backend {
       after: { "turn/start": [note.turnStarted(), note.agentMessage(JSON.stringify(answer)), note.tokenUsage({ input: 10, output: 10 }), note.turnCompleted()] },
     });
     return {
-      provider: createCodexProvider({ executablePath: EXECUTABLE, createCodex: () => new CodexClient({ executablePath: EXECUTABLE, spawn: fake.spawn, shutdownGraceMs: 200 }) }),
+      provider: createCodexProvider({
+        executablePath: EXECUTABLE,
+        createCodex: () => new CodexClient({ executablePath: EXECUTABLE, spawn: fake.spawn, shutdownGraceMs: 200 }),
+        // The hook command EO ships, as the composition root always passes
+        // it: an implementer's turn on a git worktree is fenced (EO-926),
+        // and a fenced Codex turn with no hook to run is not run at all.
+        searchHookCommandPath: "/opt/eo/hook.mjs",
+        searchHookTrust: async () => ({ key: "/<session-flags>/config.toml:pre_tool_use:0:0", hash: "sha256:abc" }),
+      }),
       started: () => fake.launches.length,
     };
   }
