@@ -437,6 +437,11 @@ describe("runs from before the stamp", () => {
     writeFileSync(join(tempDir, "meta", "_journal.json"), JSON.stringify({ ...journal, entries: kept }));
     for (const entry of kept) writeFileSync(join(tempDir, `${entry.tag}.sql`), readFileSync(join(MIGRATIONS, `${entry.tag}.sql`), "utf8"));
     runMigrations(handle.db, tempDir);
+    // The three columns 0188 adds (EO-921), which today's repositories read
+    // and write, for the old-schema calls below; dropped before the upgrade.
+    handle.db.run(sql`ALTER TABLE step_routes ADD traversal_limit integer`);
+    handle.db.run(sql`ALTER TABLE transitions ADD result_key text`);
+    handle.db.run(sql`ALTER TABLE transitions ADD from_pipeline_version_id text`);
 
     const workspace = attachWorkspace(handle.db, { keyPrefix: "EO", name: "eo", repoPath: "/tmp/eo/eo" });
     repository = workspace.id;
@@ -448,6 +453,9 @@ describe("runs from before the stamp", () => {
     oldRun(holder.id, "review", "review");
     // Both entered on the version in force before the upgrade.
     ensureCurrentVersion(handle.db, "default");
+    handle.db.run(sql`ALTER TABLE step_routes DROP COLUMN traversal_limit`);
+    handle.db.run(sql`ALTER TABLE transitions DROP COLUMN result_key`);
+    handle.db.run(sql`ALTER TABLE transitions DROP COLUMN from_pipeline_version_id`);
 
     runMigrations(handle.db, MIGRATIONS);
   });

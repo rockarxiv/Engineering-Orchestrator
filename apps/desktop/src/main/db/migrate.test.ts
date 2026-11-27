@@ -3308,7 +3308,7 @@ describe("0123: the pull request is watched after Merge Request opens it", () =>
     routes: handle.db.all(sql`SELECT * FROM step_routes ORDER BY id`),
   });
 
-  /** The routes as 0187 leaves them (EO-921): each with no traversal limit. */
+  /** The routes as 0188 leaves them (EO-921): each with no traversal limit. */
   const withoutTraversalLimits = (routes: unknown[]) => routes.map((route) => ({ ...(route as Record<string, unknown>), traversal_limit: null }));
 
   function routesFrom(stepId: string): { id: string; result_key: string; label: string; tone: string; target: string; position: number }[] {
@@ -3445,7 +3445,7 @@ describe("0123: the pull request is watched after Merge Request opens it", () =>
     handle.db.run(sql`ALTER TABLE pipeline_steps ADD brief text`);
     // And the one 0181 adds (EO-875).
     handle.db.run(sql`ALTER TABLE pipeline_steps ADD agent_id text`);
-    // And the three 0187 adds (EO-921).
+    // And the three 0188 adds (EO-921).
     handle.db.run(sql`ALTER TABLE step_routes ADD traversal_limit integer`);
     handle.db.run(sql`ALTER TABLE transitions ADD result_key text`);
     handle.db.run(sql`ALTER TABLE transitions ADD from_pipeline_version_id text`);
@@ -3849,7 +3849,7 @@ describe("0154: follow-ups are gone", () => {
       handle.db.run(sql`ALTER TABLE pipeline_steps ADD brief text`);
       // And the one 0181 adds (EO-875).
       handle.db.run(sql`ALTER TABLE pipeline_steps ADD agent_id text`);
-      // And the three 0187 adds (EO-921).
+      // And the three 0188 adds (EO-921).
       handle.db.run(sql`ALTER TABLE step_routes ADD traversal_limit integer`);
       handle.db.run(sql`ALTER TABLE transitions ADD result_key text`);
       handle.db.run(sql`ALTER TABLE transitions ADD from_pipeline_version_id text`);
@@ -3968,7 +3968,7 @@ describe("0158: an attachment owned by the item (EO-702)", () => {
       handle.db.run(sql`ALTER TABLE pipeline_steps ADD brief text`);
       // And the one 0181 adds (EO-875).
       handle.db.run(sql`ALTER TABLE pipeline_steps ADD agent_id text`);
-      // And the three 0187 adds (EO-921).
+      // And the three 0188 adds (EO-921).
       handle.db.run(sql`ALTER TABLE step_routes ADD traversal_limit integer`);
       handle.db.run(sql`ALTER TABLE transitions ADD result_key text`);
       handle.db.run(sql`ALTER TABLE transitions ADD from_pipeline_version_id text`);
@@ -4064,7 +4064,7 @@ describe("0171: a dependency edge's wait rule (EO-776)", () => {
       handle.db.run(sql`ALTER TABLE pipeline_steps ADD brief text`);
       // And the one 0181 adds (EO-875).
       handle.db.run(sql`ALTER TABLE pipeline_steps ADD agent_id text`);
-      // And the three 0187 adds (EO-921).
+      // And the three 0188 adds (EO-921).
       handle.db.run(sql`ALTER TABLE step_routes ADD traversal_limit integer`);
       handle.db.run(sql`ALTER TABLE transitions ADD result_key text`);
       handle.db.run(sql`ALTER TABLE transitions ADD from_pipeline_version_id text`);
@@ -4182,12 +4182,12 @@ describe("0186: whether a message is a replica's copy of the record's (EO-918)",
   });
 });
 
-describe("0187: a route's traversal limit and a move's result (EO-921)", () => {
+describe("0188: a route's traversal limit and a move's result (EO-921)", () => {
   it("gives every route no limit and every move no result or version left, and changes nothing else about them", () => {
     const handle = openDb(":memory:");
     const tempDir = mkdtempSync(join(tmpdir(), "eo-route-limits-"));
     try {
-      writeMigrationSetBefore(tempDir, "0187_route_traversal_limit");
+      writeMigrationSetBefore(tempDir, "0188_route_traversal_limit");
       runMigrations(handle.db, tempDir);
       handle.db.run(sql`INSERT INTO items (id, key, type_id, title, pipeline_id, step_id, created_at, updated_at) SELECT 'i-1', 'EO-1', id, 'Loops', 'default', 'todo', 1, 1 FROM item_types LIMIT 1`);
       handle.db.run(sql`INSERT INTO transitions (id, item_id, from_step_id, to_step_id, actor, reason, ts) VALUES ('t-1', 'i-1', 'review', 'todo', 'engine', 'run succeeded', 5)`);

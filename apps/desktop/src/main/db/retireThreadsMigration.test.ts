@@ -103,7 +103,7 @@ function seed(db: DbHandle["db"], ids?: Partial<Seeded>): Seeded {
   db.run(sql`ALTER TABLE pipeline_steps ADD brief text`);
   // And the one 0181 adds (EO-875).
   db.run(sql`ALTER TABLE pipeline_steps ADD agent_id text`);
-  // And the three 0187 adds (EO-921).
+  // And the three 0188 adds (EO-921).
   db.run(sql`ALTER TABLE step_routes ADD traversal_limit integer`);
   db.run(sql`ALTER TABLE transitions ADD result_key text`);
   db.run(sql`ALTER TABLE transitions ADD from_pipeline_version_id text`);

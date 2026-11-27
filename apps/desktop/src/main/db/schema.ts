@@ -683,7 +683,7 @@ export const stepRoutes = sqliteTable(
     position: integer("position").notNull().default(0),
     /**
      * How many times the route may be taken since a person last commented
-     * on the item (EO-921, migration 0187); null for no limit. Counted,
+     * on the item (EO-921, migration 0188); null for no limit. Counted,
      * never stored: see `transitions.result_key`.
      */
     traversalLimit: integer("traversal_limit"),
@@ -2386,7 +2386,7 @@ export const transitions = sqliteTable("transitions", {
   reason: text("reason"),
   /**
    * The declared result the move was made on, where the mover knew it
-   * (EO-921, migration 0187): a route's key, or the result a person
+   * (EO-921, migration 0188): a route's key, or the result a person
    * pressed. What a route's traversal limit counts, by this and
    * `from_step_id`. Null on moves before it and on moves no route made.
    * Written on the machine that made the move and by the record from the
@@ -2396,7 +2396,7 @@ export const transitions = sqliteTable("transitions", {
   resultKey: text("result_key"),
   /**
    * The version of the pipeline the item was bound to when it made the
-   * move (EO-921, migration 0187): the graph whose route it took, which a
+   * move (EO-921, migration 0188): the graph whose route it took, which a
    * move into another pipeline leaves nothing else to say. Read by a
    * route's traversal limit; null on moves before it, and on an item
    * bound to no version.
