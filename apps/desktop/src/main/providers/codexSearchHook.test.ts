@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { CODEX_EVERY_TOOL_MATCHER, CODEX_SEARCH_TOOL_MATCHER, SEARCH_HOOK_REFUSES_ENV, SEARCH_HOOK_TOKEN_ENV, SEARCH_HOOK_URL_ENV, hookCommandLine, openCodexSearchHook, probeHookTrust, type CodexSearchHook } from "./codexSearchHook.js";
 import { fakeAppServer } from "../testing/fakeCodexAppServer.js";
 import type { SearchNudge, SearchNudgeRequest } from "./searchNudge.js";
+import { fencedCall } from "./callFence.js";
 
 /**
  * The delivery, with a judgement that is not the pack's (EO-379).
@@ -291,6 +292,40 @@ describe("the hook on a turn that refuses calls", () => {
     await hook.close();
     open = null;
     expect(refusal(await runCommand(hook.command, hook.env, JSON.stringify({ ...payload("x"), tool_name: "mcp__eo__memory_note" })))).toEqual(deny);
+  });
+});
+
+/**
+ * A fenced turn (EO-926): an implementer's or a reviewer's. The listener
+ * asks `fencedCall` about each call with the payload's input and its
+ * directory, denies what it refuses with the reason, records the refusal,
+ * and fails closed as on a learning review.
+ */
+describe("the hook on a fenced turn", () => {
+  const fence = { root: "/tmp/wt", pushBranch: "eo/EO-1" };
+
+  it("is opened without a judgement or an index, offered every call, and says so to its command", async () => {
+    open = await openCodexSearchHook({ nudge: undefined, server: undefined, cwd: "/tmp/wt", commandPath: HOOK_COMMAND, fence: (tool, input, cwd) => fencedCall(tool, input, fence, cwd) });
+    expect(open?.matcher).toBe(CODEX_EVERY_TOOL_MATCHER);
+    expect(open?.env[SEARCH_HOOK_REFUSES_ENV]).toBe("1");
+  });
+
+  it("denies a forced push and a patch outside the worktree, saying why, records each, and lets a leased push and a patch inside through", async () => {
+    open = await openCodexSearchHook({ nudge: undefined, server: undefined, cwd: "/tmp/wt", commandPath: HOOK_COMMAND, fence: (tool, input, cwd) => fencedCall(tool, input, fence, cwd) });
+    const hook = open as CodexSearchHook;
+    const forced = await post(hook, JSON.stringify(payload("git push --force origin eo/EO-1", { tool_use_id: "call-push" })));
+    expect(forced.status).toBe(200);
+    const said = (await forced.json()) as { hookSpecificOutput: { permissionDecision: string; permissionDecisionReason: string } };
+    expect(said.hookSpecificOutput.permissionDecision).toBe("deny");
+    expect(said.hookSpecificOutput.permissionDecisionReason).toContain("--force-with-lease");
+    expect((await post(hook, JSON.stringify(payload("git push --force-with-lease origin eo/EO-1")))).status).toBe(204);
+    const patch = (path: string) => ({ ...payload(""), tool_name: "apply_patch", tool_input: { command: `*** Begin Patch\n*** Add File: ${path}\n+x\n*** End Patch\n` }, cwd: "/tmp/wt" });
+    expect((await post(hook, JSON.stringify(patch("src/a.ts")))).status).toBe(204);
+    expect((await post(hook, JSON.stringify(patch("/etc/a.ts")))).status).toBe(200);
+    expect(hook.drain()).toEqual([
+      expect.objectContaining({ type: "call_refused", tool: "Bash", callId: "call-push", rule: "push_forced", call: "git push --force origin eo/EO-1" }),
+      expect.objectContaining({ type: "call_refused", tool: "apply_patch", rule: "write_outside_worktree", call: "/etc/a.ts" }),
+    ]);
   });
 });
 

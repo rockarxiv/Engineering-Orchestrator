@@ -22,6 +22,7 @@ import {
   type AgentForkResult,
   type AgentProviderResumeOptions,
   type AgentProvider,
+  type CallFence,
   type AgentWriteAnswer,
   type AgentWriteRequest,
   type DebugSent,
@@ -444,6 +445,32 @@ const CAPABILITIES = [
       allowed: ["memory_note", "memory_read", "repository server", "skill tools"],
       reasonSaid: true,
       skillLoaded: [],
+    },
+  },
+  {
+    name: "the work fence",
+    what: "a turn given a fence — an implementer's or a reviewer's — refuses each call as it is made: on an implementer's, a push with a bare --force, -f or a +refspec, a push naming another branch, gh pr merge and a file write or edit outside the worktree, and lets a --force-with-lease push to the item's own branch and a write inside the worktree through; on a reviewer's, every push and gh pr merge as well; each refusal says it is EO's fence and is a call_refused event naming the rule and the call; and a resumed turn is held to its fence too (EO-926)",
+    same: {
+      implementer: {
+        refused: ["+refspec push", "-f push", "file edit outside", "file write outside", "forced push", "pr merge", "push to another branch"],
+        allowed: ["file write inside", "leased push to its branch"],
+        reasonSaid: true,
+        recorded: [
+          { rule: "push_forced", call: "git push --force origin eo/EO-1" },
+          { rule: "push_forced", call: "git push -f" },
+          { rule: "push_forced", call: "git push --force-with-lease origin +eo/EO-1" },
+          { rule: "push_elsewhere", call: "git push --force-with-lease origin main" },
+          { rule: "pr_merge", call: "gh pr merge 12 --squash" },
+          { rule: "write_outside_worktree", call: "/tmp/outside.txt" },
+          { rule: "write_outside_worktree", call: "/tmp/outside.txt" },
+        ],
+      },
+      reviewer: {
+        refused: ["+refspec push", "-f push", "file edit outside", "file write outside", "forced push", "leased push to its branch", "pr merge", "push to another branch"],
+        allowed: ["file write inside"],
+        reasonSaid: true,
+      },
+      resumed: { refused: ["+refspec push", "-f push", "file edit outside", "file write outside", "forced push", "pr merge", "push to another branch"], allowed: ["file write inside", "leased push to its branch"], reasonSaid: true },
     },
   },
   {
@@ -1565,6 +1592,55 @@ const SKILLS_ONLY_FORK_OPTIONS = (): AgentProviderResumeOptions =>
   runTurnOptions({ writeBridge: SKILLS_ONLY_CREDENTIAL, refuseCallsExcept: REVIEW_CALLS.filter((tool) => tool !== MEMORY_NOTE_TOOL_NAME) });
 /** What Codex is told marks EO's hook as trusted, in a test that cannot ask the CLI. */
 const HOOK_TRUST = async () => ({ key: "/<session-flags>/config.toml:pre_tool_use:0:0", hash: "sha256:abc123" });
+
+/** An implementer's fence and a reviewer's (EO-926), as the git workspace lends them for `/tmp/wt` on `eo/EO-1`. */
+const IMPLEMENTER_FENCE: CallFence = { root: "/tmp/wt", pushBranch: "eo/EO-1" };
+const REVIEWER_FENCE: CallFence = { root: "/tmp/wt", pushBranch: null };
+
+const shellInput = (command: string) => ({ command });
+const patchInput = (header: string) => ({ command: `*** Begin Patch\n${header}\n+x\n*** End Patch\n` });
+/**
+ * One call of each class the fence decides (EO-926), in each backend's own
+ * name and input for it — what its `PreToolUse` hook is handed. The shell
+ * is `Bash` on both; a file write is Claude's Write or Edit and Codex's
+ * apply_patch.
+ */
+const FENCE_CALL_CLASSES: Record<"claude" | "codex", Record<string, [string, unknown]>> = {
+  claude: {
+    "leased push to its branch": ["Bash", shellInput("git push --force-with-lease origin eo/EO-1")],
+    "forced push": ["Bash", shellInput("git push --force origin eo/EO-1")],
+    "-f push": ["Bash", shellInput("git push -f")],
+    "+refspec push": ["Bash", shellInput("git push --force-with-lease origin +eo/EO-1")],
+    "push to another branch": ["Bash", shellInput("git push --force-with-lease origin main")],
+    "pr merge": ["Bash", shellInput("gh pr merge 12 --squash")],
+    "file write inside": ["Write", { file_path: "/tmp/wt/src/a.ts", content: "x" }],
+    "file write outside": ["Write", { file_path: "/tmp/outside.txt", content: "x" }],
+    "file edit outside": ["Edit", { file_path: "/tmp/outside.txt", old_string: "a", new_string: "b" }],
+  },
+  codex: {
+    "leased push to its branch": ["Bash", shellInput("git push --force-with-lease origin eo/EO-1")],
+    "forced push": ["Bash", shellInput("git push --force origin eo/EO-1")],
+    "-f push": ["Bash", shellInput("git push -f")],
+    "+refspec push": ["Bash", shellInput("git push --force-with-lease origin +eo/EO-1")],
+    "push to another branch": ["Bash", shellInput("git push --force-with-lease origin main")],
+    "pr merge": ["Bash", shellInput("gh pr merge 12 --squash")],
+    "file write inside": ["apply_patch", patchInput("*** Add File: /tmp/wt/src/a.ts")],
+    "file write outside": ["apply_patch", patchInput("*** Add File: /tmp/outside.txt")],
+    "file edit outside": ["apply_patch", patchInput("*** Update File: /tmp/outside.txt")],
+  },
+};
+
+/** Which classes the fence refused and let through, whether every refusal said it was the fence, and the refusals the turn recorded. */
+function fenceObserved(answers: Record<string, unknown>, events: AgentEvent[]): { refused: string[]; allowed: string[]; reasonSaid: boolean; recorded: { rule: string; call: string }[] } {
+  const decision = (answer: unknown) => (answer as { hookSpecificOutput?: { permissionDecision?: string; permissionDecisionReason?: string } } | null)?.hookSpecificOutput;
+  const refused = Object.keys(answers).filter((name) => decision(answers[name])?.permissionDecision === "deny");
+  return {
+    refused: [...refused].sort(),
+    allowed: Object.keys(answers).filter((name) => !refused.includes(name)).sort(),
+    reasonSaid: refused.length > 0 && refused.every((name) => (decision(answers[name])?.permissionDecisionReason ?? "").includes("EO's fence")),
+    recorded: events.flatMap((event) => (event.type === "call_refused" ? [{ rule: event.rule, call: event.call }] : [])),
+  };
+}
 
 /**
  * One call of each class a learning review may or may not make (EO-732),
@@ -2853,6 +2929,32 @@ const CLAUDE: Record<CapabilityName, Proof> = {
       answers[name] = await entries[0]?.hooks[0]?.({ hook_event_name: "PreToolUse", tool_name: tool, tool_input: {}, tool_use_id: `call-${name}`, session_id: "sess-fork", transcript_path: "/tmp/t.jsonl", cwd: "/tmp/wt" });
     }
     return { ...refusalsObserved(answers), skillLoaded: events.filter((event) => event.type === "skill_loaded") };
+  },
+
+  "the work fence": async () => {
+    // Claude's delivery: a `PreToolUse` callback in EO's own process,
+    // offered every call (no matcher). The CLI runs it before each tool,
+    // between the message that announced the call and the next one.
+    const turn = async (fence: CallFence, resuming: boolean) => {
+      const answers: Record<string, unknown> = {};
+      const runQuery = ((params: { options?: Record<string, unknown> }) => {
+        const entry = ((params.options?.["hooks"] as { PreToolUse?: { matcher?: string; hooks: ((input: unknown) => Promise<unknown>)[] }[] } | undefined)?.PreToolUse ?? []).find((candidate) => candidate.matcher === undefined);
+        return (async function* () {
+          yield sdk.init();
+          for (const [name, [tool, input]] of Object.entries(FENCE_CALL_CLASSES.claude)) {
+            answers[name] = await entry?.hooks[0]?.({ hook_event_name: "PreToolUse", tool_name: tool, tool_input: input, tool_use_id: `call-${name}`, session_id: "sess-1", transcript_path: "/tmp/t.jsonl", cwd: "/tmp/wt" });
+          }
+          yield sdk.says("done");
+          yield sdk.result();
+        })();
+      }) as never;
+      const provider = createClaudeProvider({ runQuery, enableCommentTool: false });
+      const events = await collect(resuming ? provider.resume("sess-1", "carry on", { cwd: "/tmp/wt", fence }) : provider.start({ ...startOpts, fence }));
+      return fenceObserved(answers, events);
+    };
+    const { recorded: _reviewerRecorded, ...reviewer } = await turn(REVIEWER_FENCE, false);
+    const { recorded: _resumedRecorded, ...resumed } = await turn(IMPLEMENTER_FENCE, true);
+    return { implementer: await turn(IMPLEMENTER_FENCE, false), reviewer, resumed };
   },
 
   "non-fatal warning": async () => {
@@ -4376,6 +4478,40 @@ const CODEX: Record<CapabilityName, Proof> = {
     return { ...refusalsObserved(answers), skillLoaded: events.filter((event) => event.type === "skill_loaded") };
   },
 
+  "the work fence": async () => {
+    // Codex's delivery: a `PreToolUse` hook Codex runs as a command,
+    // offered every call (matcher `*`) and marked trusted by the hash the
+    // CLI reports, which posts each call to the listener EO opened for the
+    // turn — the stub posts them as the CLI's command would, and keeps
+    // what the listener answered. Codex reports no item for a call its
+    // hook denied, so the turn's events are the refusals and the answer.
+    const turn = async (fence: CallFence, resuming: boolean) => {
+      const answersFile = join(scratchDirectory(), "fence-answers.jsonl");
+      const classes = Object.entries(FENCE_CALL_CLASSES.codex);
+      const { provider } = codexOver(
+        {
+          hookAnswers: answersFile,
+          after: {
+            "turn/start": [
+              note.turnStarted(),
+              ...classes.map(([name, [tool, input]]) => ({ fireHook: { hook_event_name: "PreToolUse", tool_name: tool, tool_input: input, tool_use_id: `call-${name}`, cwd: "/tmp/wt" } })),
+              note.agentMessage("done"),
+              note.turnCompleted(),
+            ],
+          },
+        },
+        { searchHookCommandPath: "/opt/eo/hook.mjs", searchHookTrust: HOOK_TRUST },
+      );
+      const events = await collect(resuming ? provider.resume("thr-1", "carry on", { cwd: "/tmp/wt", fence }) : provider.start({ ...startOpts, fence }));
+      const said = existsSync(answersFile) ? readFileSync(answersFile, "utf8").trim().split("\n").map((line) => JSON.parse(line) as { status: number; body: string }) : [];
+      const answers = Object.fromEntries(classes.map(([name], index) => [name, said[index]?.status === 200 ? (JSON.parse(said[index].body) as unknown) : null]));
+      return fenceObserved(answers, events);
+    };
+    const { recorded: _reviewerRecorded, ...reviewer } = await turn(REVIEWER_FENCE, false);
+    const { recorded: _resumedRecorded, ...resumed } = await turn(IMPLEMENTER_FENCE, true);
+    return { implementer: await turn(IMPLEMENTER_FENCE, false), reviewer, resumed };
+  },
+
   "non-fatal warning": async () => {
     // Both of the app-server's warnings (EO-369): one about the
     // configuration, said before there is a turn, and one during it.
@@ -5618,7 +5754,7 @@ describe.each(CAPABILITIES)("$name: $what", (capability) => {
 });
 
 describe("the shared list", () => {
-  it("is the twelve capabilities EO-380 names and the ones EO-385, EO-387, EO-392, EO-395, EO-412, EO-421, EO-444, EO-468, EO-470, EO-477, EO-478, EO-479, EO-487, EO-488, EO-490, EO-493, EO-494, EO-534, EO-543, EO-578, EO-587, EO-597, EO-633, EO-700, EO-703, EO-716, EO-717, EO-718, EO-732, EO-738 (two), EO-797, EO-807, EO-820, EO-906, EO-918 and the streaming chat added, each once", () => {
+  it("is the twelve capabilities EO-380 names and the ones EO-385, EO-387, EO-392, EO-395, EO-412, EO-421, EO-444, EO-468, EO-470, EO-477, EO-478, EO-479, EO-487, EO-488, EO-490, EO-493, EO-494, EO-534, EO-543, EO-578, EO-587, EO-597, EO-633, EO-700, EO-703, EO-716, EO-717, EO-718, EO-732, EO-738 (two), EO-797, EO-807, EO-820, EO-906, EO-918, EO-926 and the streaming chat added, each once", () => {
     // Pinned so that taking one off the list is a decision somebody
     // made in this file rather than a line that went missing.
     expect(CAPABILITIES.map((capability) => capability.name)).toEqual([
@@ -5629,6 +5765,7 @@ describe("the shared list", () => {
       "the learning review's tools",
       "the learning review's skill tools",
       "the learning review's refusals",
+      "the work fence",
       "non-fatal warning",
       "interrupt with usage on escalation",
       "steering",

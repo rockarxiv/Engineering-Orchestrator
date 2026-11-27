@@ -4270,6 +4270,47 @@ describe("the learning review's fork (EO-732)", () => {
 });
 
 /**
+ * A fenced turn (EO-926): an implementer's or a reviewer's. The hook is
+ * the fence, so a turn whose hook cannot be set up or trusted is not run,
+ * and what it throws is the sentence the supervisor posts on the item.
+ */
+describe("a fenced turn", () => {
+  const fence = { root: "/tmp/wt", pushBranch: "eo/EO-1" };
+  const startOptions = { instructions: "Implement.", context: "EO-1", cwd: "/tmp/wt", signal: new AbortController().signal, fence };
+
+  it("is launched with EO's hook offered every call and marked trusted by the hash the CLI reported", async () => {
+    const { codex } = stubCodex([{ type: "thread.started", thread_id: "t" }, { type: "turn.completed", usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 } }]);
+    const hooks: unknown[] = [];
+    const provider = createCodexProvider({
+      createCodex: (_repository, searchHook) => {
+        hooks.push(searchHook);
+        return codex as never;
+      },
+      searchHookCommandPath: "/opt/eo/hook.mjs",
+      searchHookTrust: async () => ({ key: "/<session-flags>/config.toml:pre_tool_use:0:0", hash: "sha256:abc" }),
+    });
+    await collect(provider.start(startOptions));
+    expect(hooks[0]).toMatchObject({ matcher: "*", trust: { key: "/<session-flags>/config.toml:pre_tool_use:0:0", hash: "sha256:abc" }, env: { EO_SEARCH_HOOK_REFUSES: "1" } });
+  });
+
+  it.each([
+    ["the CLI would not say how to trust it", { searchHookCommandPath: "/opt/eo/hook.mjs", searchHookTrust: async () => null }, "cannot be marked as trusted"],
+    ["there is no hook command on this machine", {}, "no hook command"],
+  ])("is not run when %s, on a start and on a resume", async (_case, options, why) => {
+    const { codex } = stubCodex([{ type: "thread.started", thread_id: "t" }]);
+    const provider = createCodexProvider({ createCodex: () => codex as never, ...options });
+    for (const stream of [provider.start(startOptions), provider.resume("thr-run", "carry on", { cwd: "/tmp/wt", fence })]) {
+      const failure = await captureThrow(stream).catch((error: unknown) => error);
+      const message = String((failure as { message?: unknown }).message ?? failure);
+      expect(message).toContain("could not set up the hook that fences this turn's pushes, merges and file writes on Codex, so the turn was not run");
+      expect(message).toContain(why);
+    }
+    expect(codex.startThread).not.toHaveBeenCalled();
+    expect(codex.resumeThread).not.toHaveBeenCalled();
+  });
+});
+
+/**
  * A run its sign-in stopped (EO-797), read off what the pinned app-server
  * really sent (`__fixtures__/codex-0.171.0-auth-errors.json`) and played
  * through the real client and the provider.
