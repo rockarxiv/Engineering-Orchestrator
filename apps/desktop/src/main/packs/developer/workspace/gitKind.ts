@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { GIT_WORKTREE_KIND, PLAN_COMMENT_RESPONSE_ACTION, PlanCommentResponseOutputSchema, type Agent, type Item } from "@eo/core";
+import { GIT_WORKTREE_KIND, PLAN_COMMENT_RESPONSE_ACTION, PlanCommentResponseOutputSchema, gitStateOf, type Agent, type BuiltinRole, type CallFence, type Item } from "@eo/core";
 import type { Db } from "../../../db/client.js";
 import { asGitWorkspace, getGitWorkspace, getItem, stepForItem, type Workspace } from "../../../db/repos/index.js";
 import { emitPush } from "../../../ipc/push.js";
@@ -144,6 +144,7 @@ export function gitWorkspaceKind(options: GitWorkspaceKindOptions): WorkspaceKin
         skills: [],
         notices: delivery.notice === null ? [] : [delivery.notice],
         sync: (signal) => syncRepositoryIndexAtHandover(intelligenceFor, { db, item, worktreePath: workspace.cwd, agentName: agent.name, signal }),
+        ...fenceOption(db, item, agent, workspace),
       };
     },
 
@@ -693,4 +694,24 @@ function planCoverageCheck(db: Db, item: Item, result: unknown): Check {
       `The plan was refused: it must answer once for every comment awaiting a plan, and for no other. ${problems.join(" ")}\n\n` +
       (awaiting.length === 0 ? "No comment is awaiting a plan." : `The comments awaiting a plan: ${list(awaiting)}.`),
   };
+}
+
+/** The roles whose turns are fenced (EO-926), and whether each may push. */
+const FENCED_ROLES: Readonly<Partial<Record<BuiltinRole, "own_branch" | "none">>> = { implementer: "own_branch", reviewer: "none" };
+
+/**
+ * The fence around an implementer's or a reviewer's turn (EO-926,
+ * `callFence.ts`): writes only inside this checkout, and a push only to
+ * the item's own branch for the implementer — read off the item as
+ * `prepare` recorded it, never from anything the agent says — and none
+ * for the reviewer. On by default with no switch to turn it off: the
+ * feature's decision. Any other role gets none.
+ */
+function fenceOption(db: Db, item: Item, agent: Agent, workspace: PreparedWorkspace): { fence?: CallFence } {
+  const pushes = FENCED_ROLES[agent.role as BuiltinRole];
+  if (pushes === undefined) return {};
+  // Read again: `prepare` records the branch on the row, and the item this
+  // dispatch holds may be from before its first one.
+  const branch = pushes === "own_branch" ? gitStateOf(getItem(db, item.id) ?? item).branch : null;
+  return { fence: { root: workspace.cwd, pushBranch: branch } };
 }
