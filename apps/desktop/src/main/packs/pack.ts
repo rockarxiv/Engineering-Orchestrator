@@ -22,6 +22,7 @@ import type { RunSupervisorOptions } from "../supervisor/runSupervisor.js";
 import type { WorkspaceKind } from "../supervisor/workspaceKind.js";
 import type { registerHandler } from "../ipc/registry.js";
 import type { DecisionBriefRenderer } from "../ipc/packBriefs.js";
+import type { RouteLimitNote } from "../supervisor/routeLimits.js";
 
 /**
  * What a code pack is (ARCHITECTURE.md, "The core is domain-neutral", "Where the seams are",
@@ -220,6 +221,14 @@ export interface CodePack extends PackHooks {
    */
   briefRenderers?: readonly DecisionBriefRenderer[];
   /**
+   * What this pack adds to the comment that holds an item a route's
+   * traversal limit stopped (EO-921), for routes of its own. Composed
+   * like the section renderers: each answers only for the routes it
+   * knows, and returns null for the rest. The core comment is complete
+   * without any.
+   */
+  routeLimitNotes?: readonly RouteLimitNote[];
+  /**
    * The IPC handlers this pack owns (the forge, Jira, repository and
    * worktree commands).
    *
@@ -268,6 +277,7 @@ export type FoldedPacks = PackHooks & {
   sectionRenderers: readonly SectionRenderer[];
   /** In pack order; the first to answer for a step is the one shown (EO-828). */
   briefRenderers: readonly DecisionBriefRenderer[];
+  routeLimitNotes: readonly RouteLimitNote[];
   resolveNextState: NonNullable<RunSupervisorOptions["resolveNextState"]>;
   onRunSucceeded: NonNullable<RunSupervisorOptions["onRunSucceeded"]>;
 };
@@ -433,6 +443,7 @@ export function foldPacks(packs: readonly CodePack[]): FoldedPacks {
     // and with nothing installed there are none and every brief is the
     // default or the step's own.
     briefRenderers: packs.flatMap((pack) => pack.briefRenderers ?? []),
+    routeLimitNotes: packs.flatMap((pack) => pack.routeLimitNotes ?? []),
     posters,
     // `buildRegistry` rather than the maps alone: a pack whose builtin
     // declares no `failed`, or two roles declaring one action's schema,

@@ -45,6 +45,7 @@ import {
   listPipelines,
   listRunEvents,
   listStepsForPipeline,
+  listRoutesForPipeline,
   listItemsOnStepIncludingArchived,
   listModuleTests,
   listProjects,
@@ -71,6 +72,7 @@ import {
   renderDraft,
   itemCounts,
   settledStepSettings,
+  settledTraversalLimit,
   validateDraft,
   withoutDraftSettings,
   draftAgentBinder,
@@ -2681,6 +2683,11 @@ function publishableGraphOf(db: Db, read: ReadAssistDraftResult): AssistPublisha
 
   const pipelineId = read.pipelineId ?? NOT_YET_CREATED;
   const before = new Map(read.pipelineId === null ? [] : listStepsForPipeline(db, read.pipelineId).map((step) => [step.id, step]));
+  // A route's traversal limit (EO-921): the draft's where it says one,
+  // and where it says nothing the stored route's of the same step and result.
+  const limits = new Map(
+    read.pipelineId === null ? [] : listRoutesForPipeline(db, read.pipelineId).map((route) => [`${route.fromStepId}\u0000${route.resultKey}`, route.traversalLimit] as const),
+  );
   const proposedSlugs = new Set(read.modules.map((module) => module.slug));
   // The agent each agent step names, by name, bound as the card judged it (EO-876).
   const agentFor = draftAgentBinder(db, pipelineId);
@@ -2737,7 +2744,12 @@ function publishableGraphOf(db: Db, read: ReadAssistDraftResult): AssistPublisha
       };
     }),
     // "Needs a reason" is the result's, carried above, not the route's.
-    routes: read.draft.routes.map(({ requiresComment: _requiresComment, ...route }) => ({ ...route, id: uuidv7(), pipelineId })),
+    routes: read.draft.routes.map(({ requiresComment: _requiresComment, ...route }) => ({
+      ...route,
+      id: uuidv7(),
+      pipelineId,
+      traversalLimit: settledTraversalLimit(route, limits.get(`${route.fromStepId}\u0000${route.resultKey}`)),
+    })),
     entryStepId: read.draft.entryStepId,
     waiting: read.waiting,
     actions: read.actions,

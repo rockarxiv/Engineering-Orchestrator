@@ -1088,7 +1088,9 @@ export function renderPipeline(data: IpcResponse<"pipelineSteps:list">): string 
 
   lines.push("", "## Routes", "", "A step's result key decides where its ticket goes next.", "");
   for (const route of data.routes) {
-    lines.push(`- from ${route.fromStepId} on \`${route.resultKey}\` → ${route.target}${route.label ? ` (${route.label})` : ""}`);
+    // Its traversal limit (EO-921) as pipeline_save takes it, said only where there is one.
+    const limit = route.traversalLimit == null ? "" : ` — taken at most ${String(route.traversalLimit)} times since a person last commented, then held for one: \`traversalLimit: ${String(route.traversalLimit)}\``;
+    lines.push(`- from ${route.fromStepId} on \`${route.resultKey}\` → ${route.target}${route.label ? ` (${route.label})` : ""}${limit}`);
   }
   // As pipeline_save takes them, so what is shown can be sent back
   // (EO-610). Said only where there are any.
@@ -2542,7 +2544,14 @@ export function renderUpdateConflict(data: IpcResponse<"pipeline:updateConflict"
         timeoutMs: step.timeoutMs,
         results: step.results,
       })),
-      routes: shown.routes.map((route) => ({ fromStepId: route.fromStepId, resultKey: route.resultKey, target: route.target, label: route.label, tone: route.tone })),
+      routes: shown.routes.map((route) => ({
+        fromStepId: route.fromStepId,
+        resultKey: route.resultKey,
+        target: route.target,
+        label: route.label,
+        tone: route.tone,
+        ...(route.traversalLimit == null ? {} : { traversalLimit: route.traversalLimit }),
+      })),
     });
   return [
     `"${conflict.pipelineName}" (id: ${conflict.pipelineId}) holds the ${conflict.templateTitle} template's update (${conflict.templateSlug}) from ${conflict.fromVersion}, its base, to ${conflict.toVersion}. ` +

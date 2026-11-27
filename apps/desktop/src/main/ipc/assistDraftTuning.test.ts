@@ -17,6 +17,7 @@ import {
   listModules,
   listAgents,
   listProjects,
+  listRoutesForPipeline,
   listStepsForPipeline,
   markDiverged,
   publishSection,
@@ -506,6 +507,67 @@ describe("Needs a reason on a person's result", () => {
 
     expect(refused.cardIds).toEqual([]);
     expect(refused.rejections.join(" ")).toContain("**Merge** is not a person's step");
+  });
+});
+
+/**
+ * A route's traversal limit (EO-921): how many times it may be taken
+ * since a person last commented before EO holds the item and asks. A
+ * draft sets it with a number, clears it with "none", and leaving it out
+ * keeps the route's own.
+ */
+describe("a route's traversal limit", () => {
+  const limitOf = (pipelineId: string, resultKey: string) =>
+    listRoutesForPipeline(handle.db, pipelineId).find((route) => route.fromStepId === "release_approve" && route.resultKey === resultKey)?.traversalLimit;
+
+  it("sets it, says so on the card, keeps it when a draft leaves it out, and clears it with \"none\"", async () => {
+    const { conversation, pipelineId, moduleId } = await releasePipeline();
+    expect(limitOf(pipelineId, "send_back")).toBeNull();
+
+    const limited = turn(conversation, { message: "Three rounds at most.", draft: releaseDraft({ pipelineId }, moduleId, {}, [{}, { traversalLimit: 3 }]) }, pipelineId);
+    expect(limited.rejections).toEqual([]);
+    expect(limited.body).toContain("- Approve / send_back — limit: none → 3 times since a person last commented");
+    expect(publish(conversation, limited.cardIds[0]!).saved.saved).toBe(true);
+    expect(limitOf(pipelineId, "send_back")).toBe(3);
+    expect(limitOf(pipelineId, "approve")).toBeNull();
+
+    // A draft that says nothing of it, here renaming the module step, leaves it as it is.
+    const renamed = turn(conversation, { message: "Renamed.", draft: releaseDraft({ pipelineId }, moduleId, { name: "Merge it" }) }, pipelineId);
+    expect(renamed.rejections).toEqual([]);
+    expect(renamed.body).not.toContain("limit:");
+    expect(publish(conversation, renamed.cardIds[0]!).saved.saved).toBe(true);
+    expect(limitOf(pipelineId, "send_back")).toBe(3);
+
+    const cleared = turn(conversation, { message: "No limit.", draft: releaseDraft({ pipelineId }, moduleId, { name: "Merge it" }, [{}, { traversalLimit: "none" }]) }, pipelineId);
+    expect(cleared.rejections).toEqual([]);
+    expect(cleared.body).toContain("- Approve / send_back — limit: 3 times since a person last commented → none");
+    expect(publish(conversation, cleared.cardIds[0]!).saved.saved).toBe(true);
+    expect(limitOf(pipelineId, "send_back")).toBeNull();
+  });
+
+  it("refuses a limit below 1 before it is a card, naming the route", async () => {
+    const { conversation, pipelineId, moduleId } = await releasePipeline();
+
+    const refused = turn(conversation, { message: "Never.", draft: releaseDraft({ pipelineId }, moduleId, {}, [{}, { traversalLimit: 0 }]) }, pipelineId);
+
+    expect(refused.cardIds).toEqual([]);
+    const said = refused.rejections.join(" ");
+    expect(said).toContain("**Send back** (`send_back`) has a traversal limit of 0");
+    expect(said).toContain("a whole number of 1 or more");
+    expect(limitOf(pipelineId, "send_back")).toBeNull();
+  });
+
+  it("shows the limit on a route the draft adds", async () => {
+    const { conversation, pipelineId, moduleId } = await releasePipeline();
+    const draft = releaseDraft({ pipelineId }, moduleId);
+    draft.routes.push({ fromStepId: "release_approve", resultKey: "hold", label: "Hold", tone: "info", target: "release_approve", position: 2, traversalLimit: 2 } as (typeof draft.routes)[number]);
+
+    const added = turn(conversation, { message: "A hold.", draft }, pipelineId);
+
+    expect(added.rejections).toEqual([]);
+    expect(added.body).toContain("- Approve / hold → Approve · limit: 2 times since a person last commented");
+    expect(publish(conversation, added.cardIds[0]!).saved.saved).toBe(true);
+    expect(limitOf(pipelineId, "hold")).toBe(2);
   });
 });
 

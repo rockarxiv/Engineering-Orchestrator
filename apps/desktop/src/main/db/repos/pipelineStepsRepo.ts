@@ -115,6 +115,7 @@ function toRoute(row: typeof stepRoutes.$inferSelect): StepRoute {
     tone: row.tone as StepRoute["tone"],
     target: row.target,
     position: row.position,
+    traversalLimit: row.traversalLimit,
   };
 }
 
@@ -705,6 +706,12 @@ export interface CreateRouteInput {
   tone?: StepRoute["tone"];
   target: string;
   position?: number;
+  /**
+   * How many times it may be taken since a person last commented (EO-921).
+   * In `replacePipelineGraph`, absent keeps the limit the replaced route
+   * of the same step and result had, and null clears it.
+   */
+  traversalLimit?: number | null | undefined;
 }
 
 export function createRoute(db: Db, input: CreateRouteInput): StepRoute {
@@ -719,6 +726,7 @@ export function createRoute(db: Db, input: CreateRouteInput): StepRoute {
       tone: input.tone ?? "info",
       target: input.target,
       position: input.position ?? 0,
+      traversalLimit: input.traversalLimit ?? null,
     })
     .returning()
     .get();
@@ -958,6 +966,18 @@ export function replacePipelineGraph(
     // Retired steps keep no routes: a route is part of a version's
     // document, and the version that has the step has the routes out of
     // it. The live table is the current version and nothing else.
+    //
+    // A route's traversal limit is the one field a writer may leave out
+    // (EO-921): it is read off the route being replaced, by the step it
+    // leaves and the result it is for, before the rows go.
+    const limits = new Map(
+      tx
+        .select({ fromStepId: stepRoutes.fromStepId, resultKey: stepRoutes.resultKey, traversalLimit: stepRoutes.traversalLimit })
+        .from(stepRoutes)
+        .where(eq(stepRoutes.pipelineId, pipelineId))
+        .all()
+        .map((row) => [`${row.fromStepId}\u0000${row.resultKey}`, row.traversalLimit] as const),
+    );
     tx.delete(stepRoutes).where(eq(stepRoutes.pipelineId, pipelineId)).run();
 
     if (removed.length > 0) {
@@ -1076,6 +1096,7 @@ export function replacePipelineGraph(
           tone: route.tone ?? "info",
           target: route.target,
           position: route.position ?? 0,
+          traversalLimit: route.traversalLimit === undefined ? (limits.get(`${route.fromStepId}\u0000${route.resultKey}`) ?? null) : route.traversalLimit,
         })
         .run();
     }

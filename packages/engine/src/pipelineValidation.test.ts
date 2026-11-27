@@ -53,6 +53,7 @@ function route(fromStepId: string, resultKey: string, target: string, position =
     tone: "info",
     target,
     position,
+    traversalLimit: null,
   };
 }
 

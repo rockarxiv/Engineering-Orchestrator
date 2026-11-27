@@ -158,7 +158,7 @@ describe("an agent step's declared results", () => {
     moduleVersion: null,
     brief: null,
   });
-  const route = (resultKey: string, position: number, fromStepId = "s"): StepRouteView => ({ id: `${fromStepId}:${resultKey}`, pipelineId: "default", fromStepId, resultKey, label: "Mine", tone: "danger", target: "elsewhere", position });
+  const route = (resultKey: string, position: number, fromStepId = "s"): StepRouteView => ({ id: `${fromStepId}:${resultKey}`, pipelineId: "default", fromStepId, resultKey, label: "Mine", tone: "danger", target: "elsewhere", position, traversalLimit: null });
 
   it("answers the role's own definition, then the pack's, and null only where nothing defines the action", () => {
     expect(declaredResults(facts, step("qa", "alignment"), [], "qa")).toEqual(["aligned", "gaps_found"]);

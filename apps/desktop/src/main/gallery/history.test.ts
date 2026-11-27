@@ -65,7 +65,7 @@ describe("Software feature to merge", () => {
   const versions = () => loadTemplateHistory(GALLERY_DIRECTORY).get(SOFTWARE)!;
 
   it("has the graph from before EO-461, the one that gave up after a week, and the current one", () => {
-    expect(versions().map((version) => version.version)).toEqual(["1.0", "1.1", "1.2", "1.3", "1.4"]);
+    expect(versions().map((version) => version.version)).toEqual(["1.0", "1.1", "1.2", "1.3", "1.4", "1.5"]);
   });
 
   it("1.0 opens the pull request and waits at Done, with no step watching it", () => {
@@ -181,6 +181,26 @@ describe("Software feature to merge", () => {
     expect(strip(current!.document)).toEqual(strip(before!.document));
   });
 
+  /**
+   * 1.5 (EO-921) bounds the review loop: Review → Changes requested may
+   * be taken four times since a person last commented, and no other
+   * route gets a limit.
+   */
+  it("differs between 1.4 and 1.5 only in the limit on Review → Changes requested, and says so for the person", () => {
+    const [, , , , before, current] = versions();
+    const limited = current!.document.routes.filter((route) => route.traversalLimit !== undefined);
+    expect(limited).toEqual([expect.objectContaining({ fromStepId: "review", resultKey: "changes_requested", label: "Changes requested", traversalLimit: 4 })]);
+    expect(before!.document.routes.some((route) => route.traversalLimit !== undefined)).toBe(false);
+    const strip = (document: TemplateVersion["document"]) => ({
+      ...document,
+      template: { ...document.template, version: "" },
+      routes: document.routes.map(({ traversalLimit: _limit, ...route }) => route),
+    });
+    expect(strip(current!.document)).toEqual(strip(before!.document));
+    expect(current!.notes).toContain("Review → Changes requested");
+    expect(current!.notes).toContain("four times");
+  });
+
   it("differs between 1.0 and 1.1 only in what EO-461 changed", () => {
     const [before, current] = versions();
     const strip = (document: TemplateVersion["document"]) => ({
@@ -238,7 +258,7 @@ describe("reading the history", () => {
   it("skips a damaged file and keeps the versions around it", () => {
     const directory = copyOfHistory();
     writeFileSync(join(templateHistoryDirectory(directory), SOFTWARE, "1.0.json"), "{ not json");
-    expect(loadTemplateHistory(directory).get(SOFTWARE)?.map((version) => version.version)).toEqual(["1.1", "1.2", "1.3", "1.4"]);
+    expect(loadTemplateHistory(directory).get(SOFTWARE)?.map((version) => version.version)).toEqual(["1.1", "1.2", "1.3", "1.4", "1.5"]);
   });
 
   it("skips a file whose path disagrees with the version it carries", () => {
@@ -250,7 +270,7 @@ describe("reading the history", () => {
 
     const history = loadTemplateHistory(directory);
     expect(history.has("somebody-else")).toBe(false);
-    expect(history.get(SOFTWARE)?.map((version) => version.version)).toEqual(["1.0", "1.1", "1.2", "1.3", "1.4"]);
+    expect(history.get(SOFTWARE)?.map((version) => version.version)).toEqual(["1.0", "1.1", "1.2", "1.3", "1.4", "1.5"]);
   });
 
   it("refuses a pack that asks for the admin grant, as every other door does", () => {

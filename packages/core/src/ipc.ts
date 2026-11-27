@@ -75,6 +75,7 @@ import {
   PipelineStepViewSchema,
   PipelineStepSaveSchema,
   PipelineViewSchema,
+  StepRouteSaveSchema,
   StepRouteViewSchema,
   CreateRepositoryInputSchema,
   JiraConnectionViewSchema,
@@ -979,7 +980,8 @@ export const PipelineSaveInputSchema = z.object({
   pipelineId: z.string(),
   /** Each with `watch` optional: left out, a step keeps its keep-checking settings (EO-506). */
   steps: z.array(PipelineStepSaveSchema),
-  routes: z.array(StepRouteViewSchema),
+  /** Each with `traversalLimit` optional: left out, a route keeps its limit (EO-921). */
+  routes: z.array(StepRouteSaveSchema),
   /** Where work enters (ARCHITECTURE.md, "Vocabulary"). Published with the graph, since a step and its entry are edited together. */
   entryStepId: z.string().nullable(),
   /**
@@ -3916,7 +3918,7 @@ export const recordContract = {
       pipelineId: z.string(),
       // Read as `pipeline:save` reads it, so this says what that would (EO-506).
       steps: z.array(PipelineStepSaveSchema),
-      routes: z.array(StepRouteViewSchema),
+      routes: z.array(StepRouteSaveSchema),
       entryStepId: z.string().nullable(),
       /** The rules it would be published with (EO-610), held to what `pipeline:save` holds them to. */
       entryRules: EntryRulesSchema.optional(),
@@ -6863,7 +6865,7 @@ export const recordContract = {
       chatId: z.string().nullable().default(null),
       /** The draft's graph, as `pipeline:save` takes it. Required for `published`, absent for `kept`. */
       graph: z
-        .object({ steps: z.array(PipelineStepSaveSchema), routes: z.array(StepRouteViewSchema), entryStepId: z.string().nullable(), entryRules: EntryRulesSchema.optional() })
+        .object({ steps: z.array(PipelineStepSaveSchema), routes: z.array(StepRouteSaveSchema), entryStepId: z.string().nullable(), entryRules: EntryRulesSchema.optional() })
         .nullable()
         .default(null),
       templateStepIds: TemplateStepIdsSchema.default({}),

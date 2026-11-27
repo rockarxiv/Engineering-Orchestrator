@@ -888,6 +888,13 @@ export interface StepRoute {
   tone: "success" | "warning" | "info" | "danger";
   target: string;
   position: number;
+  /**
+   * How many times this route may be taken since a person last commented
+   * on the item (EO-921, ARCHITECTURE.md, "Guardrails"), or null for no
+   * limit. The (limit + 1)th move along it still happens, and the item is
+   * then held on the step it arrived at until a person says something.
+   */
+  traversalLimit: number | null;
 }
 
 /**

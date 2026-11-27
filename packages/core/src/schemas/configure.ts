@@ -148,7 +148,12 @@ export const DraftStepSchema = PipelineStepViewSchema.omit({
  * invented would be discarded within the second. Asking for one would be
  * asking for a lie.
  */
-export const DraftRouteSchema = StepRouteViewSchema.omit({ id: true, pipelineId: true });
+/*
+ * `traversalLimit` is left out too (EO-921): no draft sets one, and a
+ * draft published over a route that has one keeps it — the publish reads
+ * it off the route the draft's route replaces, by step and result key.
+ */
+export const DraftRouteSchema = StepRouteViewSchema.omit({ id: true, pipelineId: true, traversalLimit: true });
 
 /**
  * The whole proposed graph.

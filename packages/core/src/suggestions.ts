@@ -214,6 +214,7 @@ export function documentGraph(
       target: route.target,
       tone: route.tone,
       position: route.position,
+      traversalLimit: route.traversalLimit ?? null,
     })),
     entryRules: document.pipeline.entryRules,
   };

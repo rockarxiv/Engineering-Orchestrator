@@ -1153,6 +1153,22 @@ export const StepRouteViewSchema = z.object({
    */
   target: z.string(),
   position: z.number(),
+  /**
+   * How many times the route may be taken since a person last commented on
+   * the item (EO-921), a whole number of 1 or more; null for no limit.
+   * Defaulted, so a graph written before the field reads as unlimited.
+   */
+  traversalLimit: z.number().int().min(1).nullable().default(null),
+});
+
+/**
+ * A route as a save takes it (EO-921): its traversal limit may be left
+ * out, and a route left without one keeps the limit the stored route of
+ * the same step and result has, as a step left without `watch` keeps its
+ * own. Null clears it; below 1 is refused.
+ */
+export const StepRouteSaveSchema = StepRouteViewSchema.extend({
+  traversalLimit: z.number().int().min(1).nullable().optional(),
 });
 
 /**
@@ -1216,6 +1232,7 @@ export const PipelineViewSchema = z.object({
 export type PipelineStepView = z.infer<typeof PipelineStepViewSchema>;
 export type PipelineStepSave = z.infer<typeof PipelineStepSaveSchema>;
 export type StepRouteView = z.infer<typeof StepRouteViewSchema>;
+export type StepRouteSave = z.infer<typeof StepRouteSaveSchema>;
 export type HandOffTargets = z.infer<typeof HandOffTargetsSchema>;
 export type StepHold = z.infer<typeof StepHoldSchema>;
 export type PipelineView = z.infer<typeof PipelineViewSchema>;

@@ -200,7 +200,12 @@ export function resultRows(
   const rows: ResultRow[] = outgoing.map((route) => ({
     key: route.resultKey,
     label: route.label || route.resultKey,
-    goes: targetName(route.target, steps, elsewhere),
+    // With its traversal limit where it has one (EO-921): how often the
+    // route may be taken before EO holds the work and asks.
+    goes:
+      route.traversalLimit == null
+        ? targetName(route.target, steps, elsewhere)
+        : `${targetName(route.target, steps, elsewhere)} — at most ${route.traversalLimit} time${route.traversalLimit === 1 ? "" : "s"} since a person last commented, then EO holds it and asks`,
     routed: true,
   }));
   if (step.type === "user" || step.isTerminal) return rows;

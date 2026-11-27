@@ -285,6 +285,8 @@ function toRecordPipeline(db: Db, row: typeof pipelines.$inferSelect): RecordPip
         tone: route.tone as RecordPipeline["routes"][number]["tone"],
         target: route.target,
         position: route.position,
+        // How often it may be taken (EO-921), so a replica holds a loop where the record does.
+        traversalLimit: route.traversalLimit,
       })),
     currentVersionId: row.currentVersionId,
     versions,
@@ -889,6 +891,7 @@ export function upsertReplicaPipeline(db: Db, pipeline: RecordPipeline): "writte
           tone: route.tone,
           target: route.target,
           position: route.position,
+          traversalLimit: route.traversalLimit,
         })
         .onConflictDoNothing()
         .run();
@@ -1225,6 +1228,8 @@ export function readItemTransitions(db: Db, itemIds: readonly Uuid[]): RecordAdo
       reason: row.reason,
       runId: row.runId,
       deviceId: row.deviceId,
+      resultKey: row.resultKey,
+      fromPipelineVersionId: row.fromPipelineVersionId,
       ts: row.ts,
     }));
 }
@@ -1875,10 +1880,11 @@ export function writeAdoptedPage(db: Db, project: RecordProject, page: RecordAdo
             tone: route.tone,
             target: route.target,
             position: route.position,
+            traversalLimit: route.traversalLimit,
           })
           .onConflictDoUpdate({
             target: stepRoutes.id,
-            set: { resultKey: route.resultKey, label: route.label, tone: route.tone, target: route.target, position: route.position },
+            set: { resultKey: route.resultKey, label: route.label, tone: route.tone, target: route.target, position: route.position, traversalLimit: route.traversalLimit },
           })
           .run();
       }
@@ -2184,6 +2190,8 @@ export function writeAdoptedPage(db: Db, project: RecordProject, page: RecordAdo
           actor: move.actor,
           runId: hasRun(db, move.runId),
           reason: move.reason,
+          resultKey: move.resultKey ?? null,
+          fromPipelineVersionId: move.fromPipelineVersionId ?? null,
           ts: move.ts,
         })
         .onConflictDoNothing()

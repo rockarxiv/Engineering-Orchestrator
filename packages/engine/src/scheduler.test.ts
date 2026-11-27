@@ -363,6 +363,24 @@ describe("tick — skip conditions", () => {
     expect(dispatchBlocker(input, "A")).toEqual({ kind: "retry_backoff", until: 1_700_000_030_000 });
   });
 
+  it("3c'. holds an item that arrived over a route's traversal limit, on any kind of step, and says which route (EO-921)", () => {
+    const hold = { fromStepId: "review", fromStepName: "Review", resultKey: "changes_requested", label: "Changes requested", count: 5, limit: 4, since: 1_700_000_000_000 };
+    const input = baseInput({
+      items: [makeItem("A"), makeItem("B"), makeItem("C", { stepId: "check" })],
+      steps: [makeState("todo"), makeState("check", { type: "builtin", agentId: null, entryAction: "check" })],
+      agents: [makeAgent("agent-1")],
+      routeLimitHolds: new Map([
+        ["A", hold],
+        ["C", hold],
+      ]),
+    });
+    expect(tick(input).map((dispatch) => dispatch.item.id)).toEqual(["B"]);
+    expect(dispatchBlocker(input, "A")).toEqual({ kind: "route_limit", ...hold });
+    expect(dispatchBlocker(input, "C")).toEqual({ kind: "route_limit", ...hold });
+    // The run that made the move still reports itself while it winds down.
+    expect(dispatchBlocker({ ...input, activeRuns: [makeRun("A", "agent-1")] }, "A")).toEqual({ kind: "run_active" });
+  });
+
   it("3d. holds an item on a step that keeps checking until its next check is due, and says when (EO-456)", () => {
     const input = baseInput({
       items: [makeItem("A", { stepId: "watch" }), makeItem("B", { stepId: "watch" })],

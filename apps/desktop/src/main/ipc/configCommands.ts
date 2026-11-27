@@ -34,6 +34,7 @@ import {
   projectsWithWorkOnPipeline,
   listStepsElsewhere,
   listStepsForPipeline,
+  listRoutesForPipeline,
   olderVersionsInUse,
   pipelineHasWebhookEntry,
   unreachableRetiredSteps,
@@ -1012,7 +1013,17 @@ function restoredOwners(db: Db, pipelineId: string, number: number, steps: reado
   return owners;
 }
 
-function toDomainRoutes(pipelineId: string, routes: IpcPayload<"pipeline:save">["routes"]): StepRoute[] {
+/**
+ * The routes a save submits, as the engine judges and the repo writes them.
+ *
+ * A route that leaves its traversal limit out keeps the one the stored
+ * route of the same step and result has (EO-921), as a step that leaves
+ * `watch` out keeps its own: a writer that predates the field, or an agent
+ * that did not mention it, must not clear a limit a person set. Null
+ * clears it.
+ */
+function toDomainRoutes(db: Db, pipelineId: string, routes: IpcPayload<"pipeline:save">["routes"]): StepRoute[] {
+  const stored = new Map(listRoutesForPipeline(db, pipelineId).map((route) => [`${route.fromStepId}\u0000${route.resultKey}`, route.traversalLimit] as const));
   return routes.map((route) => ({
     id: route.id as Uuid,
     pipelineId: pipelineId as Uuid,
@@ -1022,6 +1033,7 @@ function toDomainRoutes(pipelineId: string, routes: IpcPayload<"pipeline:save">[
     tone: route.tone,
     target: route.target,
     position: route.position,
+    traversalLimit: route.traversalLimit === undefined ? (stored.get(`${route.fromStepId}\u0000${route.resultKey}`) ?? null) : route.traversalLimit,
   }));
 }
 
@@ -1336,13 +1348,36 @@ function uniqueById(steps: readonly PipelineStep[]): PipelineStep[] {
   return steps.filter((step) => !seen.has(step.id) && seen.add(step.id) !== undefined);
 }
 
+/**
+ * A route's traversal limit that is not a whole number of 1 or more
+ * (EO-921), refused.
+ *
+ * One rule for every door a limit comes in by: `pipeline:save`, the check
+ * `pipeline:validate` runs, and whether an assistant draft's card is
+ * offered (`validateDraft`). The IPC schemas already refuse such a value
+ * on the first two; this is the same rule where a caller reaches the
+ * function without them, and where a draft says it, so an agent is told
+ * why rather than having its whole answer fail to parse.
+ */
+export function traversalLimitProblems(routes: readonly { fromStepId: string; resultKey: string; label: string; traversalLimit?: unknown }[]): WorkflowProblem[] {
+  return routes
+    .filter((route) => typeof route.traversalLimit === "number" && !(Number.isInteger(route.traversalLimit) && route.traversalLimit >= 1))
+    .map((route) => ({
+      severity: "error" as const,
+      stateId: route.fromStepId,
+      message:
+        `**${route.label}** (\`${route.resultKey}\`) has a traversal limit of ${String(route.traversalLimit)}. ` +
+        "A route's limit is how many times it may be taken since a person last commented, a whole number of 1 or more; leave it empty for none.",
+    }));
+}
+
 export function validatePipelineCommand(db: Db, input: IpcPayload<"pipeline:validate">): IpcResponse<"pipeline:validate"> {
   const steps = toDomainSteps(db, input.pipelineId, input.steps);
-  const routes = toDomainRoutes(input.pipelineId, input.routes);
+  const routes = toDomainRoutes(db, input.pipelineId, input.routes);
   const proposed = registryWith(db, input.actions ?? []);
   const judged = validationInput(db, input.pipelineId, steps, routes, input.entryStepId, proposed.registry, undefined, input.entryRules);
   return {
-    problems: [...proposed.refused, ...validatePipeline(judged), ...foreignWorkspaceProblems(db, input.pipelineId, steps)],
+    problems: [...proposed.refused, ...traversalLimitProblems(routes), ...validatePipeline(judged), ...foreignWorkspaceProblems(db, input.pipelineId, steps)],
     // What each step of the graph reaches outside EO (EO-584), from the
     // very inputs the webhook refusal above was judged with.
     outsideReach: outsideReachByStep(judged),
@@ -1425,7 +1460,7 @@ export function savePipeline(
   options: { createdBy?: string | null; judgeActionsOnly?: boolean } = {},
 ): IpcResponse<"pipeline:save"> {
   const steps = toDomainSteps(db, input.pipelineId, input.steps);
-  const routes = toDomainRoutes(input.pipelineId, input.routes);
+  const routes = toDomainRoutes(db, input.pipelineId, input.routes);
   // What the graph is judged with, and what is written: the same, but
   // for a trial's save, which writes none (EO-832).
   const actions = input.actions ?? [];
@@ -1451,6 +1486,7 @@ export function savePipeline(
   const proposed = registryWith(db, actions);
   const problems = [
     ...proposed.refused,
+    ...traversalLimitProblems(routes),
     ...validatePipeline(validationInput(db, input.pipelineId, steps, routes, input.entryStepId, proposed.registry, undefined, entryRules)),
     // A module rule this installation could not run (EO-736): no module
     // host, or a binary its module needs that is not here. Refused when

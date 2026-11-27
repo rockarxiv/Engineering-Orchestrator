@@ -449,7 +449,7 @@ export function pointRoutesWaitingOn(db: Db, pipelineId: string, slug: string, p
       const result = based.steps.find((each) => each.id === route.fromStepId)?.results.find((each) => each.key === route.resultKey);
       if (step === undefined || step.type !== "user" || result === undefined || step.results.some((each) => each.key === route.resultKey)) continue;
       step.results = [...step.results, result];
-      routes.push({ pipelineId: holder.pipelineId as Uuid, fromStepId: from, resultKey: route.resultKey, label: route.label, tone: route.tone, target: to, position: route.position });
+      routes.push({ pipelineId: holder.pipelineId as Uuid, fromStepId: from, resultKey: route.resultKey, label: route.label, tone: route.tone, target: to, position: route.position, traversalLimit: route.traversalLimit ?? null });
       changed = true;
     }
     if (!changed) continue;
@@ -1260,6 +1260,7 @@ function graphOfDocument(db: Db, pipelineId: string, document: PipelineExport, l
     pipelineId: pipelineId as Uuid,
     fromStepId: local(route.fromStepId),
     target: local(route.target),
+    traversalLimit: route.traversalLimit ?? null,
   }));
   return { steps, routes };
 }

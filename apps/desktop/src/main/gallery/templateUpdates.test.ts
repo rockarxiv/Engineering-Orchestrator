@@ -38,7 +38,7 @@ import { agentOfKind, createTestItem, messagesFrom, openMigratedTestDb } from ".
 import { storedGraphProblems } from "../ipc/configCommands.js";
 import { pipelineVersionsCommand } from "../ipc/pipelineCommands.js";
 import { ACTIVE_PROJECT_KEY } from "../ipc/repositoryCommands.js";
-import { loadTemplateHistory, type TemplateHistory, type TemplateVersion } from "./history.js";
+import { type TemplateHistory, type TemplateVersion } from "./history.js";
 import { templateHistoryUpTo } from "./historyTestHelpers.js";
 import { backfillPipelineOrigins } from "./origins.js";
 import { applyTemplateUpdates, compareWithTemplate } from "./templateUpdates.js";
@@ -59,7 +59,9 @@ let history: TemplateHistory;
 
 beforeEach(() => {
   handle = openMigratedTestDb();
-  history = loadTemplateHistory(GALLERY_DIRECTORY);
+  // As it stood at 1.4: these tests script updates against 1.4's graph.
+  // 1.5's own update is tested on its own (EO-921).
+  history = templateHistoryUpTo(GALLERY_DIRECTORY, SOFTWARE, "1.4");
 });
 
 afterEach(() => {
@@ -1000,5 +1002,59 @@ describe("1.3 to 1.4: the Pull request comments board", () => {
 
     const [notice] = messagesFrom(handle.db, "template_conflict");
     expect(notice?.body).toContain("EO created the **Pull request comments** board");
+  });
+});
+
+/**
+ * 1.5 (EO-921) limits Review → Changes requested to four rounds since a
+ * person last commented. An installation on 1.4 gets the limit from this
+ * update at launch; no migration edits its graph.
+ */
+describe("1.4 to 1.5: a limit on Review → Changes requested", () => {
+  const sentBack = () => listRoutesForPipeline(handle.db, "default").find((route) => route.fromStepId === "review" && route.resultKey === "changes_requested");
+
+  /** Delivery made from 1.4 and on it, as an installation that last launched before 1.5 shipped. */
+  function deliveryOn14(): void {
+    backfillPipelineOrigins(handle.db, upTo("1.4"));
+    applyTemplateUpdates(handle.db, upTo("1.4"), { isTheRecord: false });
+    expect(getPipelineOrigin(handle.db, "default")?.version).toBe("1.4");
+    expect(sentBack()?.traversalLimit).toBeNull();
+  }
+
+  it("gives a new installation's Delivery the limit on its first launch, and no other route one", () => {
+    const shippedHistory = templateHistoryUpTo(GALLERY_DIRECTORY, SOFTWARE, "1.5");
+    backfillPipelineOrigins(handle.db, shippedHistory);
+
+    expect(applyTemplateUpdates(handle.db, shippedHistory, { isTheRecord: false })).toEqual([expect.objectContaining({ pipelineId: "default", outcome: "applied", from: "1.1", to: "1.5" })]);
+    expect(sentBack()?.traversalLimit).toBe(4);
+    const limited = listPipelines(handle.db)
+      .flatMap((pipeline) => listRoutesForPipeline(handle.db, pipeline.id))
+      .filter((route) => route.traversalLimit !== null);
+    expect(limited.map((route) => [route.fromStepId, route.resultKey, route.traversalLimit])).toEqual([["review", "changes_requested", 4]]);
+  });
+
+  it("sets the limit on a Delivery with no edits of its own, and says so in the version's release notes", () => {
+    deliveryOn14();
+
+    const results = applyTemplateUpdates(handle.db, upTo("1.5"), { isTheRecord: false });
+
+    expect(results).toContainEqual(expect.objectContaining({ pipelineId: "default", outcome: "applied", from: "1.4", to: "1.5" }));
+    expect(getPipelineOrigin(handle.db, "default")?.version).toBe("1.5");
+    expect(sentBack()).toMatchObject({ target: "todo", label: "Changes requested", traversalLimit: 4 });
+    expect(currentVersion(handle.db, "default")!.releaseNotes).toContain("Review → Changes requested now has a limit");
+    expect(applyTemplateUpdates(handle.db, upTo("1.5"), { isTheRecord: false })).toEqual([]);
+  });
+
+  it("holds the update where the person set a limit of their own on that route", () => {
+    deliveryOn14();
+    handle.db.run(sql`UPDATE step_routes SET traversal_limit = 7 WHERE from_step_id = 'review' AND result_key = 'changes_requested'`);
+    handle.db.run(sql`UPDATE pipelines SET updated_at = updated_at + 1 WHERE id = 'default'`);
+
+    const results = applyTemplateUpdates(handle.db, upTo("1.5"), { isTheRecord: false });
+
+    expect(results).toContainEqual(expect.objectContaining({ pipelineId: "default", outcome: "conflict", from: "1.4", to: "1.5" }));
+    expect(sentBack()?.traversalLimit).toBe(7);
+    expect(getPipelineOrigin(handle.db, "default")?.version).toBe("1.4");
+    expect(openUpdateConflict(handle.db, "default")?.conflicts).toEqual([expect.objectContaining({ key: { kind: "route", fromStepId: "review", resultKey: "changes_requested" } })]);
   });
 });

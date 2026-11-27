@@ -348,6 +348,8 @@ function draftOfVersion(db: Db, rows: readonly { id: string; number: number }[],
       tone: route.tone,
       target: route.target,
       position: route.position,
+      // Its traversal limit (EO-921): a restore bounds the loop as that version did.
+      traversalLimit: route.traversalLimit,
     })),
     entryStepId: snapshot.entryStepId,
     entryRules: snapshot.entryRules,

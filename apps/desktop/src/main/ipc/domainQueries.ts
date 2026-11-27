@@ -2524,6 +2524,8 @@ export function listPipelineStepViews(
       tone: route.tone,
       target: route.target,
       position: route.position,
+      // How often it may be taken (EO-921): what the editor shows and `pipeline_get` reports.
+      traversalLimit: route.traversalLimit,
     })),
     // What the pipeline's steps inherit when they name no disk of their
     // own, resolved above so that the per-step answer below and this one

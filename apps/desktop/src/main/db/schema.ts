@@ -681,6 +681,12 @@ export const stepRoutes = sqliteTable(
      */
     target: text("target").notNull(),
     position: integer("position").notNull().default(0),
+    /**
+     * How many times the route may be taken since a person last commented
+     * on the item (EO-921, migration 0188); null for no limit. Counted,
+     * never stored: see `transitions.result_key`.
+     */
+    traversalLimit: integer("traversal_limit"),
   },
   // One route per declared result. Two rows for one result would make the
   // next step depend on row order, which is not something anyone chose.
@@ -2378,6 +2384,24 @@ export const transitions = sqliteTable("transitions", {
   actor: text("actor").notNull(), // "human" | agent_id
   runId: text("run_id").references(() => runs.id),
   reason: text("reason"),
+  /**
+   * The declared result the move was made on, where the mover knew it
+   * (EO-921, migration 0188): a route's key, or the result a person
+   * pressed. What a route's traversal limit counts, by this and
+   * `from_step_id`. Null on moves before it and on moves no route made.
+   * Written on the machine that made the move and by the record from the
+   * move's command; a replica's mirror of another device's move leaves it
+   * null.
+   */
+  resultKey: text("result_key"),
+  /**
+   * The version of the pipeline the item was bound to when it made the
+   * move (EO-921, migration 0188): the graph whose route it took, which a
+   * move into another pipeline leaves nothing else to say. Read by a
+   * route's traversal limit; null on moves before it, and on an item
+   * bound to no version.
+   */
+  fromPipelineVersionId: text("from_pipeline_version_id"),
   ts: integer("ts").notNull(),
 }, (table) => [
   // What one item has been through (EO-555, migration 0140).

@@ -22,7 +22,8 @@ import {
 import { createProject } from "../db/repos/projectsRepo.js";
 import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import { openUpdateConflictChat } from "../roles/updateConflictChat.js";
-import { loadTemplateHistory, type TemplateHistory } from "./history.js";
+import { type TemplateHistory } from "./history.js";
+import { templateHistoryUpTo } from "./historyTestHelpers.js";
 import { backfillPipelineOrigins } from "./origins.js";
 import { describeTemplateStatus } from "./templateStatus.js";
 import { applyTemplateUpdates } from "./templateUpdates.js";
@@ -42,7 +43,8 @@ let history: TemplateHistory;
 
 beforeEach(() => {
   handle = openMigratedTestDb();
-  history = loadTemplateHistory(GALLERY_DIRECTORY);
+  // As it stood at 1.4, the version these tests were written around.
+  history = templateHistoryUpTo(GALLERY_DIRECTORY, SOFTWARE, "1.4");
 });
 
 afterEach(() => {

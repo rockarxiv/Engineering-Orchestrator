@@ -193,7 +193,7 @@ export const ASSIST_ANSWER_WITH_MAPS = {
           // A person step's brief (EO-827): the newest approval, then the merge's output.
           { ...DONE_STEP, timeoutMs: "default", brief: [{ show: "comment", kind: "approval" }, { show: "output", step: "merge" }] },
         ],
-        routes: [{ ...DRAFT_ROUTE, requiresComment: true }],
+        routes: [{ ...DRAFT_ROUTE, requiresComment: true, traversalLimit: 4 }],
         icon: "workflow",
         restoredFrom: 3,
         entryRules: [
@@ -269,7 +269,7 @@ export const ASSIST_ANSWER_WITH_MAPS = {
             ],
           },
         ],
-        routes: [{ ...DRAFT_ROUTE, requiresComment: true }],
+        routes: [{ ...DRAFT_ROUTE, requiresComment: true, traversalLimit: 4 }],
         icon: "workflow",
         restoredFrom: 3,
         entryRules: [
@@ -486,7 +486,7 @@ export const ASSIST_ANSWER_WITH_TRIAL = {
         entryRules: null,
         templateStepIds: null,
         steps: [MERGE_STEP, DONE_STEP].map((step) => ({ ...step, timeoutMs: null, inputs: null, watch: null, workspaceId: null, workspaceMode: null })),
-        routes: [{ ...DRAFT_ROUTE, requiresComment: null }],
+        routes: [{ ...DRAFT_ROUTE, requiresComment: null, traversalLimit: null }],
       },
       modules: null,
       actions: null,

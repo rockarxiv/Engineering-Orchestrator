@@ -30,7 +30,7 @@ const step = (id: string, position: number, name: string, extra: Partial<Resolve
 
 const graph = (steps: ResolvedGraph["steps"], routes: Partial<ResolvedGraph["routes"][number]>[] = []): ResolvedGraph => ({
   steps,
-  routes: routes.map((route, index) => ({ id: `r${index}`, pipelineId: "trial", fromStepId: "fix", resultKey: "done", label: "Done", tone: "success", target: "done", position: 0, ...route })),
+  routes: routes.map((route, index) => ({ id: `r${index}`, pipelineId: "trial", fromStepId: "fix", resultKey: "done", label: "Done", tone: "success", target: "done", position: 0, traversalLimit: null, ...route })),
   entryStepId: "fix",
 });
 

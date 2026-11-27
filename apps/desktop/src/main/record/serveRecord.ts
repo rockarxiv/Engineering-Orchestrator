@@ -1024,6 +1024,8 @@ async function applyOne(context: ServeRecordContext, deviceId: string, command: 
           deviceId,
           runId: command.runId as Uuid | null,
           reason: command.reason,
+          // What a route's traversal limit counts (EO-921); none from an older device.
+          resultKey: command.resultKey ?? null,
         });
       };
       // Everything the command is judged on, against the item as the record

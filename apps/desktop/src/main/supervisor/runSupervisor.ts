@@ -358,6 +358,7 @@ import { endAllProcessTrees } from "../process/processTree.js";
 import { createMemoryConsolidator, type MemoryConsolidatorOptions } from "../memory/consolidator.js";
 import { archiveReachOf, archiveUnusedSkills } from "../skills/archival.js";
 import { currentWatch, markCheckInFlight, ownerMention, recordQuietCheck, waitingLine, watchArrival, watchHold, watchRoundTrips, WATCH_ROUTED_REASON, WATCH_VERIFICATION_FAILED_REASON } from "./watches.js";
+import { routeLimitComment, routeOverrunFor, ROUTE_LIMIT_COMMENT_PREFIX, type RouteLimitNote } from "./routeLimits.js";
 import { agentMentionChain } from "./escalation.js";
 
 function safeTurnAttachments(attachments: NonNullable<ReturnType<typeof listCommentsForItem>[number]["attachments"]>): AgentInputAttachment[] {
@@ -856,6 +857,12 @@ export interface RunSupervisorOptions {
    * and nothing else.
    */
   sectionRenderers?: readonly SectionRenderer[];
+  /**
+   * What the installed packs add to the comment that holds an item a
+   * route's traversal limit stopped (EO-921), each for its own routes.
+   * Absent, the core's comment is said alone, and it is complete.
+   */
+  routeLimitNotes?: readonly RouteLimitNote[];
   /** Defaults to buildTurnContext (E-06). Injectable so tests can assert on what an agent was actually handed. */
   /**
    * May be async: assembling a context can need the repository on disk
@@ -2101,6 +2108,7 @@ export function createRunSupervisor(
     moduleStaging: providedModuleStaging,
     dispatchGate,
     sectionRenderers = [],
+    routeLimitNotes = [],
     // Wrapped rather than passed as the bare default, so the pack's own
     // sections reach the assembly without the seam growing a parameter
     // every test that stubs it would have to ignore.
@@ -11011,6 +11019,9 @@ export function createRunSupervisor(
       // And an item held back by one in flight that changes the same
       // paths (EO-912) is told which and what path, once for each stay.
       noteTouchesHolds(tickInput);
+      // And an item a send-back loop has taken past its route's traversal
+      // limit (EO-921) is held, and its owner asked, once for each such move.
+      noteRouteLimitHolds(tickInput);
       // **The device asks; it does not decide** (EO-324, ARCHITECTURE.md, "The record"). What
       // comes back is work the record has already leased to this
       // machine. In one process that is the same sweep-pick-claim this
@@ -11198,6 +11209,72 @@ export function createRunSupervisor(
       );
       if (alreadySaid) continue;
       postComment(db, { itemId: item.id, author: { type: "engine" }, kind: "note", body });
+      onItemChanged(item.id);
+    }
+  }
+
+  /**
+   * Holds an item a route's traversal limit stopped, out loud (EO-921,
+   * invariant 8): one escalation mentioning the item's owner, as a watch
+   * that gave up does (`ownerMention`), naming the route, the count and
+   * the limit, and saying a reply lets it carry on — with whatever the
+   * installed packs add about their own routes.
+   *
+   * The hold itself is the scheduler's (`route_limit`), derived from the
+   * item's moves and comments, so nothing is written to make it and
+   * nothing has to be undone to lift it: a person's comment starts the
+   * count again, the next tick sees no hold, and the item is dispatched
+   * on its step as usual. The `!` is the open mention, derived too.
+   *
+   * Said once per move that took the route past its limit: by asking the
+   * thread whether an engine comment in these words has been posted since
+   * that move — by the move's own time, which is the real clock comments
+   * are stamped with, never this supervisor's `now()`.
+   *
+   * Asked of every overrun, not only of the items whose blocker the
+   * scheduler names as `route_limit`: an item that arrived on a person's
+   * step or a terminal one is `step_not_dispatchable` first, and one
+   * waiting on a dependency or a reply is held by that first, yet the
+   * route was still taken past its limit and its owner still has to hear
+   * so. The one wait is the run that made the move, while it winds down,
+   * so that what it said is in the thread above the hold.
+   */
+  function noteRouteLimitHolds(input: TickInput<GateRefusal>): void {
+    const running = new Set(input.activeRuns.map((run) => run.itemId as string));
+    const byId = new Map(input.items.map((item) => [item.id as string, item]));
+    for (const itemId of input.routeLimitHolds?.keys() ?? []) {
+      const item = byId.get(itemId);
+      if (item === undefined || running.has(itemId)) continue;
+      const overrun = routeOverrunFor(db, item);
+      const arrived = overrun?.traversals.at(-1);
+      if (overrun === null || arrived === undefined) continue;
+      const alreadySaid = listCommentsForItem(db, item.id, { since: arrived.ts }).some(
+        (comment) => comment.authorType === "engine" && comment.kind === "escalation" && comment.body.startsWith(ROUTE_LIMIT_COMMENT_PREFIX),
+      );
+      if (alreadySaid) continue;
+      const step = stepForItem(db, item);
+      const packLines: string[] = [];
+      for (const note of routeLimitNotes) {
+        try {
+          const line = note(db, item, overrun);
+          if (line !== null && line.trim() !== "") packLines.push(line);
+        } catch (error) {
+          // A pack's paragraph is extra: the core comment holds without it.
+          console.warn(`[eo] a pack's note on a route limit failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+      postComment(db, {
+        itemId: item.id,
+        author: { type: "engine" },
+        kind: "escalation",
+        mentions: [ownerMention(db, item)],
+        parseBodyMentions: false,
+        body: routeLimitComment(
+          { name: step?.name ?? item.stepId ?? "this step", runs: step !== undefined && step.type !== "user" && !step.isTerminal },
+          overrun,
+          packLines,
+        ),
+      });
       onItemChanged(item.id);
     }
   }

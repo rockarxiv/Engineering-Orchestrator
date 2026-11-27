@@ -4,11 +4,13 @@ import { sql } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { uuidv7, type Uuid } from "@eo/core";
 import type { DbHandle } from "../db/client.js";
-import { createPipeline, createStep, getPipelineOrigin, getSetting, listAgents, listStepsForPipeline } from "../db/repos/index.js";
+import { createPipeline, createStep, getPipelineOrigin, getSetting, listAgents, listRoutesForPipeline, listStepsForPipeline } from "../db/repos/index.js";
 import { withKind } from "../stepAgents.js";
 import { openMigratedTestDb } from "../db/testHelpers.js";
 import { loadTemplateHistory, type TemplateHistory } from "./history.js";
+import { templateHistoryUpTo } from "./historyTestHelpers.js";
 import { backfillPipelineOrigins, matchTemplateVersion, ORIGINS_BACKFILLED_KEY } from "./origins.js";
+import { applyTemplateUpdates } from "./templateUpdates.js";
 
 /**
  * Origins for pipelines that predate them (EO-531): matched once, by
@@ -66,6 +68,27 @@ describe("matching step ids against the history", () => {
 
     const neverGivesUp = steps.map((step) => (step.id === "pull_request_watch" ? { ...step, watch: { everyMinutes: 5, giveUpAfterHours: 168, neverGivesUp: true } } : step));
     expect(matchTemplateVersion(ids, history, neverGivesUp)?.version.version).toBe("1.3");
+  });
+
+  /**
+   * 1.4 and 1.5 have the same steps set the same way (EO-921): 1.5 only
+   * puts a limit of 4 on Review → Changes requested. So the routes'
+   * limits tell them apart, and a Delivery shaped as 1.4 is not taken for
+   * 1.5 and left without the update that brings the limit.
+   */
+  it("tells 1.4 from 1.5 by the limit on Review → Changes requested", () => {
+    const upTo14 = templateHistoryUpTo(GALLERY_DIRECTORY, SOFTWARE, "1.4");
+    backfillPipelineOrigins(handle.db, upTo14);
+    applyTemplateUpdates(handle.db, upTo14, { isTheRecord: false });
+    const agents = listAgents(handle.db);
+    const steps = listStepsForPipeline(handle.db, "default").map((step) => withKind(agents, step));
+    const ids = steps.map((step) => step.id);
+    const routes = listRoutesForPipeline(handle.db, "default");
+    expect(routes.some((route) => route.traversalLimit !== null)).toBe(false);
+
+    expect(matchTemplateVersion(ids, history, steps, routes)?.version.version).toBe("1.4");
+    const limited = routes.map((route) => (route.fromStepId === "review" && route.resultKey === "changes_requested" ? { ...route, traversalLimit: 4 } : route));
+    expect(matchTemplateVersion(ids, history, steps, limited)?.version.version).toBe("1.5");
   });
 
   it("still matches a pipeline the person removed a step from, and leaves that step out of the map", () => {

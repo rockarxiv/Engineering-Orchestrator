@@ -1,7 +1,7 @@
 import type { PipelineStep } from "@eo/core";
 import { sameValue } from "@eo/engine";
 import type { Db } from "../db/client.js";
-import { getSetting, listAgents, listStepsForPipeline, pipelinesWithoutOrigin, recordPipelineOrigin, setSetting } from "../db/repos/index.js";
+import { getSetting, listAgents, listRoutesForPipeline, listStepsForPipeline, pipelinesWithoutOrigin, recordPipelineOrigin, setSetting } from "../db/repos/index.js";
 import { withKind } from "../stepAgents.js";
 import { compareTemplateVersions, type TemplateHistory, type TemplateVersion } from "./history.js";
 
@@ -59,8 +59,18 @@ export interface TemplateMatch {
  * update. This is the one place a graph's content is read here, and only
  * between versions the ids could not tell apart, so a person's edits
  * still never decide whether a pipeline has a template behind it.
+ *
+ * Where the caller passes the pipeline's routes too, a route's traversal
+ * limit counts as one of those settings (EO-921): 1.4 and 1.5 have the
+ * same steps set the same way, and differ only in the limit 1.5 puts on
+ * Review → Changes requested.
  */
-export function matchTemplateVersion(stepIds: readonly string[], history: TemplateHistory, steps: readonly MatchedStep[] = []): TemplateMatch | null {
+export function matchTemplateVersion(
+  stepIds: readonly string[],
+  history: TemplateHistory,
+  steps: readonly MatchedStep[] = [],
+  routes: readonly MatchedRoute[] | null = null,
+): TemplateMatch | null {
   const held = new Set(stepIds);
   const byId = new Map(steps.map((step) => [step.id as string, step]));
   let best: Candidate | null = null;
@@ -71,7 +81,7 @@ export function matchTemplateVersion(stepIds: readonly string[], history: Templa
       const matched = ids.filter((id) => held.has(id)).length;
       const missing = ids.length - matched;
       if (ids.length === 0 || matched * 2 <= ids.length) continue;
-      const candidate = { version, matched, missing, differing: differingSettings(version, byId) };
+      const candidate = { version, matched, missing, differing: differingSettings(version, byId) + differingLimits(version, held, routes) };
       if (best === null || better(candidate, best)) best = candidate;
     }
   }
@@ -110,6 +120,25 @@ function differingSettings(version: TemplateVersion, steps: ReadonlyMap<string, 
     const held = steps.get(step.id);
     if (held === undefined) continue;
     for (const field of MATCHED_SETTINGS) if (!sameValue(step[field], held[field])) differing += 1;
+  }
+  return differing;
+}
+
+/** A pipeline's route as it is matched: where it leaves from, on which result, and how often it may be taken. */
+export type MatchedRoute = { readonly fromStepId: string; readonly resultKey: string; readonly traversalLimit?: number | null };
+
+/**
+ * How many of a version's routes out of steps the pipeline holds carry a
+ * different traversal limit there, a route the pipeline does not have
+ * counting as one without a limit. Nought where the caller gave no routes.
+ */
+function differingLimits(version: TemplateVersion, held: ReadonlySet<string>, routes: readonly MatchedRoute[] | null): number {
+  if (routes === null) return 0;
+  const limits = new Map(routes.map((route) => [`${route.fromStepId}\u0000${route.resultKey}`, route.traversalLimit ?? null]));
+  let differing = 0;
+  for (const route of version.document.routes) {
+    if (!held.has(route.fromStepId)) continue;
+    if ((route.traversalLimit ?? null) !== (limits.get(`${route.fromStepId}\u0000${route.resultKey}`) ?? null)) differing += 1;
   }
   return differing;
 }
@@ -159,6 +188,7 @@ export function backfillPipelineOrigins(db: Db, history: TemplateHistory): Backf
         steps.map((step) => step.id),
         history,
         steps,
+        listRoutesForPipeline(db, pipelineId),
       );
       if (match === null) continue;
       // Made from this base long before anybody recorded it, so no moment

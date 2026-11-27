@@ -29,7 +29,7 @@ function step(id: string, name: string, position: number, overrides: Partial<Pip
 let made = 0;
 function route(fromStepId: string, label: string, target: string, tone: StepRouteView["tone"] = "info"): StepRouteView {
   made += 1;
-  return { id: `r${made}`, pipelineId: "p", fromStepId, resultKey: label.toLowerCase().replace(/\W+/g, "_"), label, tone, target, position: made };
+  return { id: `r${made}`, pipelineId: "p", fromStepId, resultKey: label.toLowerCase().replace(/\W+/g, "_"), label, tone, target, position: made, traversalLimit: null };
 }
 
 const ELSEWHERE: HandOffTargets[] = [{ pipelineId: "delivery", pipelineName: "Delivery", steps: [step("d-todo", "To Do", 0, { pipelineId: "delivery" })] }];
