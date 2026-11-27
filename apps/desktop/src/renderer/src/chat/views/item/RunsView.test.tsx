@@ -42,6 +42,7 @@ function run(overrides: Partial<RunView> = {}): RunView {
     startedAt: Date.now() - 65_000,
     endedAt: null,
     verificationOk: null,
+    verificationNotChecked: [],
     checks: [],
     steerable: true,
     ...overrides,

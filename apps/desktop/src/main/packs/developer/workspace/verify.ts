@@ -9,7 +9,18 @@ export const DEFAULT_MAX_OUTPUT_CHARS = 20_000;
 
 export interface VerificationStep {
   name: string;
+  /**
+   * Whether the step lets the run through. True on a skipped step too:
+   * an unconfigured check does not fail the run, so `ok` alone cannot
+   * tell a check that passed from one that never ran — `skipped` does.
+   */
   ok: boolean;
+  /**
+   * The check was not run because no command is configured for it
+   * (EO-927). Nothing was proven either way, so wherever a step is shown
+   * this one reads as "not checked", never as a pass.
+   */
+  skipped?: true;
   /** One line a human can read without opening the logs. */
   detail: string;
   output?: string;
@@ -173,13 +184,15 @@ export async function verifyImplementation(
   }
   steps.push({ name: "rebase", ok: true, detail: options.noRebase ?? `Rebased cleanly onto ${rebaseTarget}.` });
 
-  // 4. The configured checks. An unconfigured command is skipped rather
-  //    than treated as passing — nothing was proven either way, and the
-  //    step list says so.
+  // 4. The configured checks. An unconfigured command does not fail the
+  //    run, and it is not a pass either: its step is `ok` so the gate lets
+  //    the run through, and `skipped` so everything that shows the step —
+  //    the check's sentence, the failure comment, the pull request, the
+  //    reviewer's dispatch — says it was not checked (EO-927).
   for (const name of ["test", "lint", "build"] as const) {
     const command = commands[name];
     if (!command) {
-      steps.push({ name, ok: true, detail: `No ${name} command configured — skipped.` });
+      steps.push({ name, ok: true, skipped: true, detail: `No ${name} command configured — not checked.` });
       continue;
     }
 
@@ -214,10 +227,30 @@ export function formatVerificationComment(itemKey: string, result: VerificationR
     lines.push("", "```", failed.output, "```");
   }
 
-  const passed = result.steps.filter((step) => step.ok).map((step) => step.name);
+  const passed = result.steps.filter((step) => step.ok && step.skipped !== true).map((step) => step.name);
   if (passed.length > 0) {
     lines.push("", `Passed before this: ${passed.join(", ")}.`);
   }
+  const notChecked = notCheckedSteps(result);
+  if (notChecked.length > 0) {
+    lines.push("", `Not checked, because no command is configured: ${notChecked.join(", ")}.`);
+  }
 
   return lines.join("\n");
+}
+
+/**
+ * The checks a verification skipped because no command is configured
+ * for them (EO-927), by name. Reads the stored JSON as well as a fresh
+ * result, so a caller holding `runs.verification` can ask it too.
+ */
+export function notCheckedSteps(verification: unknown): string[] {
+  if (typeof verification !== "object" || verification === null) return [];
+  const steps = (verification as { steps?: unknown }).steps;
+  if (!Array.isArray(steps)) return [];
+  return steps.flatMap((step: unknown) => {
+    if (typeof step !== "object" || step === null) return [];
+    const { name, skipped } = step as { name?: unknown; skipped?: unknown };
+    return skipped === true && typeof name === "string" ? [name] : [];
+  });
 }

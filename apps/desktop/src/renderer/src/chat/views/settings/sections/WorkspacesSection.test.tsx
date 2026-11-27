@@ -302,6 +302,38 @@ describe("choosing a repository folder (U-09)", () => {
   });
 });
 
+describe("a repository with no test command (EO-927)", () => {
+  const WARNING = /No test command is configured, so EO runs no tests/;
+
+  it("is marked on its row and warned of in its form, until a command is typed", async () => {
+    renderSection([workspace()]);
+    const section = await screen.findByRole("region", { name: "Workspaces" });
+    expect(await within(section).findByText("no tests")).toBeInTheDocument();
+
+    fireEvent.click(within(section).getByRole("button", { name: "Edit" }));
+    const form = screen.getByLabelText("Edit shop-web");
+    expect(within(form).getByText(WARNING)).toBeInTheDocument();
+
+    fireEvent.change(within(form).getAllByPlaceholderText(/not configured/)[0]!, { target: { value: "pnpm test" } });
+    expect(within(form).queryByText(WARNING)).toBeNull();
+  });
+
+  it("says nothing of the kind for one with a test command", async () => {
+    renderSection([workspace({ config: { name: "shop-web", repoPath: "/code/shop-web", baseBranch: "main", testCommand: "pnpm test" } })]);
+    const section = await screen.findByRole("region", { name: "Workspaces" });
+    await within(section).findByRole("button", { name: "Edit" });
+    expect(within(section).queryByText("no tests")).toBeNull();
+    fireEvent.click(within(section).getByRole("button", { name: "Edit" }));
+    expect(screen.queryByText(WARNING)).toBeNull();
+  });
+
+  it("is warned of while a new repository is being added", async () => {
+    renderSection([]);
+    fireEvent.click(await screen.findByRole("button", { name: "Add a workspace" }));
+    expect(screen.getByText(WARNING)).toBeInTheDocument();
+  });
+});
+
 describe("editing one", () => {
   it("changes the row it was opened on, and holds the pull-request settings until Save", async () => {
     const calls = renderSection([

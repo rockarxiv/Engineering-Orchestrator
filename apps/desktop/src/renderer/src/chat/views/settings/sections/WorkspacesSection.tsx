@@ -99,6 +99,11 @@ function folderFieldLabels(one: string): Record<keyof FolderDraft, string> {
   return { path: "Folder path", perItemSubfolder: `A subfolder per ${one}` };
 }
 
+/** Whether a repository has no test command, which verification then skips (EO-927). */
+function hasNoTestCommand(config: Partial<GitDraft>): boolean {
+  return (config.testCommand ?? "").trim() === "";
+}
+
 function gitDraftOf(workspace: WorkspaceView): GitDraft {
   return { ...BLANK_GIT, ...(workspace.config as Partial<GitDraft>) };
 }
@@ -210,6 +215,12 @@ export function WorkspacesSection() {
                   </span>
                   {/* What is wrong with it now — a drive not mounted this morning. */}
                   {workspace.problem !== null ? <Chip tone="paused">unavailable</Chip> : null}
+                  {/* Nothing it produces is tested by EO until a command is set (EO-927). */}
+                  {workspace.kind === GIT_WORKTREE_KIND && hasNoTestCommand(workspace.config as Partial<GitDraft>) ? (
+                    <Chip tone="paused" title="No test command is configured, so EO runs no tests on this repository's work.">
+                      no tests
+                    </Chip>
+                  ) : null}
                   <span className="shrink-0 text-[11.5px] tabular-nums text-ink-subtle">{words.count(workspace.itemCount)}</span>
                   <span className="flex shrink-0 gap-1">
                     {/* Only the kinds with something to configure: an Edit that
@@ -396,12 +407,19 @@ export function GitForm({
             <TextInput
               value={draft[key] ?? ""}
               className="font-mono"
-              placeholder="not configured — skipped, not assumed to pass"
+              placeholder="not configured — not checked, not assumed to pass"
               onChange={(event) => setDraft({ ...draft, [key]: event.target.value || null })}
             />
           </Field>
         ))}
       </FieldGrid>
+      {/* Verification skips a check it has no command for, so without this
+          a run passes having run no tests and nothing says so (EO-927). */}
+      {hasNoTestCommand(draft) ? (
+        <Note tone="paused">
+          No test command is configured, so EO runs no tests on this repository&rsquo;s work: verification passes without them, and the reviewer is told none were run.
+        </Note>
+      ) : null}
 
       {/* Off until someone turns it on: pushing to a repository other
           people share is not something an upgrade should start doing. */}

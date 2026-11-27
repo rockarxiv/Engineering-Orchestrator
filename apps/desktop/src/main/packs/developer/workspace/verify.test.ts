@@ -5,7 +5,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { git } from "./git.js";
 import { runCommand } from "../../../process/runCommand.js";
 import { createWorktree, worktreePathFor, type WorktreeConfig } from "./worktrees.js";
-import { formatVerificationComment, verifyImplementation } from "./verify.js";
+import { formatVerificationComment, notCheckedSteps, verifyImplementation } from "./verify.js";
+import { describeVerified } from "./gitKind.js";
 import { toolDirectoryPath, writeToolDirectory } from "../../../agentAttachments/pluginDirectory.js";
 import { borrowedFromSiblings } from "./borrowed.js";
 import { REPOSITORY_INDEX_DIRECTORIES } from "../repositoryIntelligence/index.js";
@@ -409,7 +410,7 @@ describe("verifyImplementation", () => {
     expect(result.steps.map((step) => step.name)).not.toContain("build");
   });
 
-  it("marks an unconfigured check as skipped rather than passed", async () => {
+  it("marks every check skipped, apart from ok, on a repository with no commands configured (EO-927)", async () => {
     const created = await createWorktree(config(), "EO-9");
     expect(created.ok).toBe(true);
     if (!created.ok) return;
@@ -418,8 +419,33 @@ describe("verifyImplementation", () => {
 
     const result = await verifyImplementation(config(), "EO-9", {});
 
+    // The gate is unchanged: nothing configured does not fail the run.
     expect(result.ok).toBe(true);
-    expect(result.steps.find((step) => step.name === "test")?.detail).toContain("skipped");
+    for (const name of ["test", "lint", "build"]) {
+      const step = result.steps.find((candidate) => candidate.name === name);
+      expect(step).toMatchObject({ ok: true, skipped: true, detail: `No ${name} command configured — not checked.` });
+    }
+    expect(result.steps.filter((step) => step.skipped === true).map((step) => step.name)).toEqual(["test", "lint", "build"]);
+    expect(notCheckedSteps(result)).toEqual(["test", "lint", "build"]);
+    expect(describeVerified(result)).toBe(
+      "Checked the branch — branch, clean, rebase — and every step passed. Not checked, because no command is configured: test, lint, build.",
+    );
+  });
+
+  it("marks nothing skipped on a repository with all three configured (EO-927)", async () => {
+    const created = await createWorktree(config(), "EO-19");
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    writeFileSync(join(created.value.path, "feature.txt"), "done\n");
+    await commitAll(created.value.path, "implement");
+
+    const result = await verifyImplementation(config(), "EO-19", { test: NODE_OK, lint: NODE_OK, build: NODE_OK }, { timeoutMs: 10_000 });
+
+    expect(result.ok).toBe(true);
+    expect(result.steps.some((step) => step.skipped === true)).toBe(false);
+    expect(result.steps.slice(3).map((step) => step.detail)).toEqual([`\`${NODE_OK}\` passed.`, `\`${NODE_OK}\` passed.`, `\`${NODE_OK}\` passed.`]);
+    expect(notCheckedSteps(result)).toEqual([]);
+    expect(describeVerified(result)).toBe("Checked the branch — branch, clean, rebase, test, lint, build — and every step passed.");
   });
 
   it("checks options.branch when given, instead of the default eo/<key> (EO-16)", async () => {
@@ -514,6 +540,21 @@ describe("formatVerificationComment", () => {
     expect(comment).toContain("**test**");
     expect(comment).toContain("expected 1 got 2");
     expect(comment).toContain("Passed before this: branch, clean, rebase.");
+  });
+
+  it("does not count a check with no command among what passed (EO-927)", async () => {
+    const created = await createWorktree(config(), "EO-41");
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    writeFileSync(join(created.value.path, "feature.txt"), "done\n");
+    await commitAll(created.value.path, "implement");
+
+    const result = await verifyImplementation(config(), "EO-41", { lint: `node -e "process.exit(1)"` }, { timeoutMs: 10_000 });
+    const comment = formatVerificationComment("EO-41", result);
+
+    expect(result.failedStep).toBe("lint");
+    expect(comment).toContain("Passed before this: branch, clean, rebase.");
+    expect(comment).toContain("Not checked, because no command is configured: test.");
   });
 });
 

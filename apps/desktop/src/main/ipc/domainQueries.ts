@@ -1837,6 +1837,21 @@ function dependsOnSection(db: Db, item: Item) {
  * from where it stopped rather than refetching the whole log.
  */
 /**
+ * The checks a run's verification skipped because no command is
+ * configured for them (EO-927): the steps it marked `skipped`, by name.
+ * Read off the stored JSON the way `verificationOk` is, so a run written
+ * before the mark answers with none.
+ */
+function notCheckedOf(verification: unknown): string[] {
+  const steps = typeof verification === "object" && verification !== null ? (verification as { steps?: unknown }).steps : undefined;
+  if (!Array.isArray(steps)) return [];
+  return steps.flatMap((step: unknown) => {
+    const { name, skipped } = typeof step === "object" && step !== null ? (step as { name?: unknown; skipped?: unknown }) : {};
+    return skipped === true && typeof name === "string" ? [name] : [];
+  });
+}
+
+/**
  * One run as a screen reads it.
  *
  * A function of its own since EO-392, when the debug window became the
@@ -1866,6 +1881,7 @@ export function runView(db: Db, run: Run, agentName: string): RunView {
     verificationOk: run.verification
       ? Boolean((run.verification as { ok?: boolean }).ok)
       : null,
+    verificationNotChecked: notCheckedOf(run.verification),
     // What the workspace kind actually looked at, for the sidebar's
     // step block (EO-312, ARCHITECTURE.md, "The item"). The verdict above says whether the
     // branch check passed; this says what was checked, which is the

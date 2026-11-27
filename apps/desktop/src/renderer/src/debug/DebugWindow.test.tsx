@@ -53,6 +53,7 @@ function run(overrides: Partial<DebugRun> = {}): DebugRun {
     startedAt: Date.UTC(2026, 9, 10, 9, 0),
     endedAt: Date.UTC(2026, 9, 10, 9, 2),
     verificationOk: null,
+    verificationNotChecked: [],
     checks: [],
     steerable: true,
     itemId: "i1",

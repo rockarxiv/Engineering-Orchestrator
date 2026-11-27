@@ -140,6 +140,7 @@ function liveRun(overrides: Partial<RunView> = {}): RunView {
     startedAt: 1,
     endedAt: null,
     verificationOk: null,
+    verificationNotChecked: [],
     checks: [],
     steerable: true,
     ...overrides,

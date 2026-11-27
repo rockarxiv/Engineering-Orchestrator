@@ -25,8 +25,12 @@ export interface PullRequestFacts {
    * Invariant #5 is the difference, and a pull request repeating a claim
    * as though it were a check is exactly the kind of thing that makes
    * the claim worth nothing.
+   *
+   * `notChecked` marks a check verification skipped because no command
+   * is configured for it (EO-927): it passed nothing, so the body says
+   * "not checked" rather than a tick.
    */
-  checks: { name: string; passed: boolean }[];
+  checks: { name: string; passed: boolean; notChecked?: boolean }[];
   jiraKey: string | null;
   jiraUrl: string | null;
   /**
@@ -135,7 +139,7 @@ function factsBlock(facts: PullRequestFacts): string {
   }
 
   if (facts.checks.length > 0) {
-    const rendered = facts.checks.map((check) => `${check.name} ${check.passed ? "✓" : "✗"}`).join(" · ");
+    const rendered = facts.checks.map((check) => `${check.name} ${check.notChecked === true ? "not checked" : check.passed ? "✓" : "✗"}`).join(" · ");
     lines.push("", `**Checks** — ${rendered}`);
   }
 
