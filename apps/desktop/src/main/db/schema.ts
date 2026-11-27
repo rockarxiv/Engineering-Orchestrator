@@ -2394,6 +2394,14 @@ export const transitions = sqliteTable("transitions", {
    * null.
    */
   resultKey: text("result_key"),
+  /**
+   * The version of the pipeline the item was bound to when it made the
+   * move (EO-921, migration 0187): the graph whose route it took, which a
+   * move into another pipeline leaves nothing else to say. Read by a
+   * route's traversal limit; null on moves before it, and on an item
+   * bound to no version.
+   */
+  fromPipelineVersionId: text("from_pipeline_version_id"),
   ts: integer("ts").notNull(),
 }, (table) => [
   // What one item has been through (EO-555, migration 0140).

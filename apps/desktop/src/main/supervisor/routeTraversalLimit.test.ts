@@ -285,4 +285,42 @@ describe("a route into another pipeline", () => {
     expect(comments[0]!.body).toContain(`Held before "Elsewhere" runs: the route "Review" → Approved has been taken 2 times since this ticket was filed, and its limit is 1`);
     expect(needsAttention(handle.db, item.id)).toBe(true);
   });
+
+  it("reads the limit from the version the move left, not the source's current one", async () => {
+    const mergeRequest = getStep(handle.db, "merge_request")!;
+    const other = createPipeline(handle.db, { name: "Elsewhere" });
+    createStep(handle.db, { id: "elsewhere", pipelineId: other.id, position: 0, name: "Elsewhere", type: mergeRequest.type, agentId: mergeRequest.agentId, entryAction: mergeRequest.entryAction });
+    createPipelineVersion(handle.db, other.id);
+    handle.db.update(stepRoutes).set({ target: "elsewhere" }).where(and(eq(stepRoutes.fromStepId, "review"), eq(stepRoutes.resultKey, "approved"))).run();
+    setLimit("review", "approved", 1);
+    const limited = createPipelineVersion(handle.db, "default");
+    const engine = supervisor();
+    const handOver = () => {
+      tick();
+      transitionItem(handle.db, { itemId: item.id, toStepId: "elsewhere", toPipelineId: other.id, actor: "engine", reason: "run succeeded", resultKey: "approved" });
+      tick();
+    };
+
+    handOver();
+    await engine.runOnce();
+    expect(openPullRequest).toHaveBeenCalledTimes(1);
+
+    // Back on Review, bound to the version that limits the route; then a
+    // new version of the source clears the limit, and the item stays where it entered.
+    tick();
+    transitionItem(handle.db, { itemId: item.id, toStepId: "review", toPipelineId: "default" as Uuid, actor: "human" });
+    expect(getItem(handle.db, item.id)?.pipelineVersionId).toBe(limited.id);
+    setLimit("review", "approved", null);
+    createPipelineVersion(handle.db, "default");
+    expect(getItem(handle.db, item.id)?.pipelineVersionId).toBe(limited.id);
+
+    handOver();
+    expect(getItem(handle.db, item.id)?.pipelineId).toBe(other.id);
+    expect(routeOverrunFor(handle.db, getItem(handle.db, item.id)!)?.hold.limit).toBe(1);
+    await engine.runOnce();
+    await engine.runOnce();
+    expect(openPullRequest).toHaveBeenCalledTimes(1);
+    expect(holdComments()).toHaveLength(1);
+    expect(holdComments()[0]!.body).toContain(`the route "Review" → Approved has been taken 2 times since this ticket was filed, and its limit is 1`);
+  });
 });

@@ -1,7 +1,7 @@
 import type { Item, PipelineStep, StepRoute, Uuid } from "@eo/core";
 import type { RouteLimitHold } from "@eo/engine";
 import type { Db } from "../db/client.js";
-import { getStep, graphForItem, lastHumanCommentAt, latestResultArrivals, listRouteTraversals } from "../db/repos/index.js";
+import { getPipelineVersion, getStep, graphForItem, lastHumanCommentAt, latestResultArrivals, listRouteTraversals } from "../db/repos/index.js";
 
 /**
  * Route traversal limits, the host's half (EO-921, ARCHITECTURE.md,
@@ -51,9 +51,12 @@ type Graph = { steps: PipelineStep[]; routes: StepRoute[] };
  * version's, as it routes by: a move within a pipeline keeps the version.
  * A move into another pipeline rebinds the item to the destination's
  * version, whose graph has no route out of the step the item left, so
- * there the route is read from the pipeline its from-step belongs to.
- * A move does not record the version it left, so that is the source
- * pipeline's current graph — the one new work on it routes by.
+ * there the route is read from the version the move left, which the move
+ * records (`transitions.from_pipeline_version_id`): a limit cleared in a
+ * later version of the source does not release an item still on an
+ * earlier one, and one set later does not hold it. A move recorded
+ * before that column, or from a version since pruned, reads the source
+ * pipeline's current graph.
  */
 export function routeOverruns(db: Db, items: readonly Item[]): Map<string, RouteOverrun> {
   const held = new Map<string, RouteOverrun>();
@@ -70,9 +73,12 @@ export function routeOverruns(db: Db, items: readonly Item[]): Map<string, Route
     if (item === undefined || item.pipelineId === null) continue;
     let graph = graphOf({ pipelineId: item.pipelineId, pipelineVersionId: item.pipelineVersionId });
     if (!graph.steps.some((step) => step.id === arrival.fromStepId)) {
-      const source = getStep(db, arrival.fromStepId)?.pipelineId;
+      // The version names its pipeline even where the step has since been
+      // retired from the live graph.
+      const left = arrival.fromPipelineVersionId === null ? undefined : getPipelineVersion(db, arrival.fromPipelineVersionId);
+      const source = left?.pipelineId ?? getStep(db, arrival.fromStepId)?.pipelineId;
       if (source === undefined || source === item.pipelineId) continue;
-      graph = graphOf({ pipelineId: source, pipelineVersionId: null });
+      graph = graphOf({ pipelineId: source, pipelineVersionId: arrival.fromPipelineVersionId });
     }
     const overrun = overrunOf(db, item, arrival, graph);
     if (overrun !== null) held.set(item.id, overrun);

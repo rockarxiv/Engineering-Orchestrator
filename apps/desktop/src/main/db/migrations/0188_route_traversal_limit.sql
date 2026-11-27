@@ -13,3 +13,10 @@ ALTER TABLE `step_routes` ADD `traversal_limit` integer;
 -- place. NULL on every move made before this, and on moves that took no
 -- route, so those count towards no limit.
 ALTER TABLE `transitions` ADD `result_key` text;
+--> statement-breakpoint
+-- The version of the pipeline the item was bound to when it made the
+-- move: the graph whose route the move took. A move into another
+-- pipeline rebinds the item, so afterwards nothing else says which
+-- version's route, and which limit, it took. NULL on every move made
+-- before this, which reads the source pipeline's current graph.
+ALTER TABLE `transitions` ADD `from_pipeline_version_id` text;

@@ -1992,6 +1992,13 @@ export type RecordAdoptedItem = z.infer<typeof RecordAdoptedItemSchema>;
 export const RecordAdoptedTransitionSchema = RecordTransitionSchema.extend({
   runId: z.string().nullable().default(null),
   deviceId: z.string().nullable().default(null),
+  /**
+   * The result the move was made on and the version it left (EO-921), so
+   * a moved project's routes keep their traversal counts. Optional: a
+   * page from a desktop that predates them is still taken.
+   */
+  resultKey: z.string().nullable().optional(),
+  fromPipelineVersionId: z.string().nullable().optional(),
 });
 export type RecordAdoptedTransition = z.infer<typeof RecordAdoptedTransitionSchema>;
 

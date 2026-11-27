@@ -271,6 +271,9 @@ export function transitionItem(db: Db, input: TransitionItemInput): Item {
         reason: input.reason ?? null,
         // What a route's traversal limit counts (EO-921).
         resultKey: input.resultKey ?? null,
+        // The version whose route it took (EO-921): a hand-off rebinds the
+        // item, and the limit is the one in the graph the move left.
+        fromPipelineVersionId: current.pipelineVersionId ?? null,
         ts: now,
       })
       .run();
@@ -448,9 +451,10 @@ export function listTransitionsForItem(db: Db, itemId: Uuid): Transition[] {
  * device's move, names no result and holds nothing. One indexed lookup
  * per item, since the scheduler asks on every tick.
  */
-export function latestResultArrivals(db: Db): { itemId: Uuid; fromStepId: string; resultKey: string; ts: number }[] {
-  return db.all<{ itemId: Uuid; fromStepId: string; resultKey: string; ts: number }>(sql`
-    select t.item_id as "itemId", t.from_step_id as "fromStepId", t.result_key as "resultKey", t.ts as "ts"
+export function latestResultArrivals(db: Db): { itemId: Uuid; fromStepId: string; resultKey: string; fromPipelineVersionId: string | null; ts: number }[] {
+  return db.all<{ itemId: Uuid; fromStepId: string; resultKey: string; fromPipelineVersionId: string | null; ts: number }>(sql`
+    select t.item_id as "itemId", t.from_step_id as "fromStepId", t.result_key as "resultKey",
+      t.from_pipeline_version_id as "fromPipelineVersionId", t.ts as "ts"
     from ${items} i
     join ${transitions} t on t.id = (
       select t2.id from ${transitions} t2 where t2.item_id = i.id order by t2.ts desc, t2.id desc limit 1

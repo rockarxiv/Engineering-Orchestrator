@@ -3445,15 +3445,17 @@ describe("0123: the pull request is watched after Merge Request opens it", () =>
     handle.db.run(sql`ALTER TABLE pipeline_steps ADD brief text`);
     // And the one 0181 adds (EO-875).
     handle.db.run(sql`ALTER TABLE pipeline_steps ADD agent_id text`);
-    // And the two 0187 adds (EO-921).
+    // And the three 0187 adds (EO-921).
     handle.db.run(sql`ALTER TABLE step_routes ADD traversal_limit integer`);
     handle.db.run(sql`ALTER TABLE transitions ADD result_key text`);
+    handle.db.run(sql`ALTER TABLE transitions ADD from_pipeline_version_id text`);
     const before = ensureCurrentVersion(handle.db, "default")!;
     handle.db.run(sql`ALTER TABLE pipeline_steps DROP COLUMN module_version`);
     handle.db.run(sql`ALTER TABLE pipeline_steps DROP COLUMN brief`);
     handle.db.run(sql`ALTER TABLE pipeline_steps DROP COLUMN agent_id`);
     handle.db.run(sql`ALTER TABLE step_routes DROP COLUMN traversal_limit`);
     handle.db.run(sql`ALTER TABLE transitions DROP COLUMN result_key`);
+    handle.db.run(sql`ALTER TABLE transitions DROP COLUMN from_pipeline_version_id`);
     handle.db.run(sql`ALTER TABLE pipeline_steps DROP COLUMN watch_never_gives_up`);
     handle.db.run(sql`ALTER TABLE pipelines DROP COLUMN entry_rules`);
     handle.db.run(sql`ALTER TABLE pipeline_versions DROP COLUMN entry_rules`);
@@ -3847,9 +3849,10 @@ describe("0154: follow-ups are gone", () => {
       handle.db.run(sql`ALTER TABLE pipeline_steps ADD brief text`);
       // And the one 0181 adds (EO-875).
       handle.db.run(sql`ALTER TABLE pipeline_steps ADD agent_id text`);
-      // And the two 0187 adds (EO-921).
+      // And the three 0187 adds (EO-921).
       handle.db.run(sql`ALTER TABLE step_routes ADD traversal_limit integer`);
       handle.db.run(sql`ALTER TABLE transitions ADD result_key text`);
+      handle.db.run(sql`ALTER TABLE transitions ADD from_pipeline_version_id text`);
       const finished = createTestItem(handle.db, { type: "story", title: "A finished story", stepId: "todo" });
       const waiting = createTestItem(handle.db, { type: "story", title: "A story with a question", stepId: "todo" });
       handle.db.run(sql`ALTER TABLE pipeline_steps DROP COLUMN module_version`);
@@ -3857,6 +3860,7 @@ describe("0154: follow-ups are gone", () => {
       handle.db.run(sql`ALTER TABLE pipeline_steps DROP COLUMN agent_id`);
       handle.db.run(sql`ALTER TABLE step_routes DROP COLUMN traversal_limit`);
       handle.db.run(sql`ALTER TABLE transitions DROP COLUMN result_key`);
+      handle.db.run(sql`ALTER TABLE transitions DROP COLUMN from_pipeline_version_id`);
       handle.db.run(sql`ALTER TABLE pipelines DROP COLUMN entry_rules`);
       handle.db.run(sql`ALTER TABLE pipeline_versions DROP COLUMN entry_rules`);
       handle.db.run(sql`ALTER TABLE pipeline_versions DROP COLUMN release_notes`);
@@ -3964,15 +3968,17 @@ describe("0158: an attachment owned by the item (EO-702)", () => {
       handle.db.run(sql`ALTER TABLE pipeline_steps ADD brief text`);
       // And the one 0181 adds (EO-875).
       handle.db.run(sql`ALTER TABLE pipeline_steps ADD agent_id text`);
-      // And the two 0187 adds (EO-921).
+      // And the three 0187 adds (EO-921).
       handle.db.run(sql`ALTER TABLE step_routes ADD traversal_limit integer`);
       handle.db.run(sql`ALTER TABLE transitions ADD result_key text`);
+      handle.db.run(sql`ALTER TABLE transitions ADD from_pipeline_version_id text`);
       const item = createTestItem(handle.db, { type: "story", title: "Has a file", stepId: "todo" });
       handle.db.run(sql`ALTER TABLE pipeline_steps DROP COLUMN module_version`);
       handle.db.run(sql`ALTER TABLE pipeline_steps DROP COLUMN brief`);
       handle.db.run(sql`ALTER TABLE pipeline_steps DROP COLUMN agent_id`);
       handle.db.run(sql`ALTER TABLE step_routes DROP COLUMN traversal_limit`);
       handle.db.run(sql`ALTER TABLE transitions DROP COLUMN result_key`);
+      handle.db.run(sql`ALTER TABLE transitions DROP COLUMN from_pipeline_version_id`);
       handle.db.run(sql`ALTER TABLE pipeline_versions DROP COLUMN release_notes`);
       handle.db.run(sql`ALTER TABLE item_types DROP COLUMN updated_at`);
       const comment = postComment(handle.db, { itemId: item.id, author: { type: "human" }, body: "Here is the mock." });
@@ -4058,15 +4064,17 @@ describe("0171: a dependency edge's wait rule (EO-776)", () => {
       handle.db.run(sql`ALTER TABLE pipeline_steps ADD brief text`);
       // And the one 0181 adds (EO-875).
       handle.db.run(sql`ALTER TABLE pipeline_steps ADD agent_id text`);
-      // And the two 0187 adds (EO-921).
+      // And the three 0187 adds (EO-921).
       handle.db.run(sql`ALTER TABLE step_routes ADD traversal_limit integer`);
       handle.db.run(sql`ALTER TABLE transitions ADD result_key text`);
+      handle.db.run(sql`ALTER TABLE transitions ADD from_pipeline_version_id text`);
       const first = createTestItem(handle.db, { type: "story", title: "Goes first", stepId: "todo" });
       const second = createTestItem(handle.db, { type: "story", title: "Waits", stepId: "todo" });
       handle.db.run(sql`ALTER TABLE pipeline_steps DROP COLUMN brief`);
       handle.db.run(sql`ALTER TABLE pipeline_steps DROP COLUMN agent_id`);
       handle.db.run(sql`ALTER TABLE step_routes DROP COLUMN traversal_limit`);
       handle.db.run(sql`ALTER TABLE transitions DROP COLUMN result_key`);
+      handle.db.run(sql`ALTER TABLE transitions DROP COLUMN from_pipeline_version_id`);
       handle.db.run(sql`INSERT INTO item_deps (item_id, depends_on_id) VALUES (${second.id}, ${first.id})`);
 
       runMigrations(handle.db, join(dirname(fileURLToPath(import.meta.url)), "migrations"));
@@ -4175,7 +4183,7 @@ describe("0186: whether a message is a replica's copy of the record's (EO-918)",
 });
 
 describe("0187: a route's traversal limit and a move's result (EO-921)", () => {
-  it("gives every route no limit and every move no result, and changes nothing else about them", () => {
+  it("gives every route no limit and every move no result or version left, and changes nothing else about them", () => {
     const handle = openDb(":memory:");
     const tempDir = mkdtempSync(join(tmpdir(), "eo-route-limits-"));
     try {
@@ -4190,13 +4198,14 @@ describe("0187: a route's traversal limit and a move's result (EO-921)", () => {
 
       expect(routes()).toEqual(before);
       expect(handle.db.all(sql`SELECT DISTINCT traversal_limit FROM step_routes`)).toEqual([{ traversal_limit: null }]);
-      expect(handle.db.get(sql`SELECT id, from_step_id, to_step_id, reason, ts, result_key FROM transitions WHERE id = 't-1'`)).toEqual({
+      expect(handle.db.get(sql`SELECT id, from_step_id, to_step_id, reason, ts, result_key, from_pipeline_version_id FROM transitions WHERE id = 't-1'`)).toEqual({
         id: "t-1",
         from_step_id: "review",
         to_step_id: "todo",
         reason: "run succeeded",
         ts: 5,
         result_key: null,
+        from_pipeline_version_id: null,
       });
     } finally {
       handle.close();

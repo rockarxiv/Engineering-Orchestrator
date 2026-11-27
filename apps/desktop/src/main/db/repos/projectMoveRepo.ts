@@ -1228,6 +1228,8 @@ export function readItemTransitions(db: Db, itemIds: readonly Uuid[]): RecordAdo
       reason: row.reason,
       runId: row.runId,
       deviceId: row.deviceId,
+      resultKey: row.resultKey,
+      fromPipelineVersionId: row.fromPipelineVersionId,
       ts: row.ts,
     }));
 }
@@ -2188,6 +2190,8 @@ export function writeAdoptedPage(db: Db, project: RecordProject, page: RecordAdo
           actor: move.actor,
           runId: hasRun(db, move.runId),
           reason: move.reason,
+          resultKey: move.resultKey ?? null,
+          fromPipelineVersionId: move.fromPipelineVersionId ?? null,
           ts: move.ts,
         })
         .onConflictDoNothing()

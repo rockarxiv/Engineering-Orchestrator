@@ -96,6 +96,10 @@ describe("a route's traversal limit on a record-held project", () => {
     await move(item, "review");
     await move(item, "merge_request", "approved");
     expect(recordDb.db.select({ resultKey: transitions.resultKey }).from(transitions).where(eq(transitions.itemId, item.id)).all().map((row) => row.resultKey)).toEqual(["approved", null, "approved"]);
+    // The record writes the version each move left from its own item, the
+    // one it routes by, so a route into another pipeline is read there.
+    const left = recordDb.db.select({ version: transitions.fromPipelineVersionId }).from(transitions).where(eq(transitions.itemId, item.id)).all();
+    expect(new Set(left.map((row) => row.version))).toEqual(new Set([getItem(recordDb.db, item.id)?.pipelineVersionId]));
     expect(await offered()).not.toContain(item.id);
   });
 

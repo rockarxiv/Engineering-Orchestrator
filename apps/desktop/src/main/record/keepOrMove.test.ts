@@ -494,6 +494,25 @@ describe("moving a project", () => {
     expect(getProject(recordDb.db, support.id)?.ownerId).toBe(annaPersonId);
   });
 
+  it("carries each move's result and the version it left, so a route's traversal count survives it (EO-921)", async () => {
+    const support = localProject("Support", "SUP");
+    const item = itemOn(support.id, "A refund");
+    createLocalRecord(annaDb.db).applyTransition({ itemId: item.id, toStepId: "merge_request", actor: "engine", resultKey: "approved" });
+    const moves = (handle: DbHandle) =>
+      handle.db.all<{ result_key: string | null; from_pipeline_version_id: string | null }>(
+        sql`SELECT result_key, from_pipeline_version_id FROM transitions WHERE item_id = ${item.id} ORDER BY ts, id`,
+      );
+    const here = moves(annaDb);
+    expect(here).toHaveLength(1);
+    expect(here[0]).toMatchObject({ result_key: "approved" });
+    expect(here[0]!.from_pipeline_version_id).not.toBeNull();
+
+    signIn(anna);
+    expect(await move(support.id)).toEqual({});
+
+    expect(moves(recordDb)).toEqual(here);
+  });
+
   it("carries the graph its items stand on, and the key counter", async () => {
     const support = localProject("Support", "SUP");
     itemOn(support.id, "A refund");
