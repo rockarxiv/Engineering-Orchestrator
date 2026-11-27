@@ -353,6 +353,10 @@ export function AgentEditor({
   // never use the person's home, ticked or not. The status is the one
   // asked for this draft's backend, and the flag only ever comes on Codex's.
   const memoryKeyringNotice = runtime?.codexSignInInKeyring === true;
+  // That the repository's own hooks never reach a Codex agent (EO-929):
+  // Codex runs a project's hooks only in a folder it trusts and only once
+  // each is reviewed, and EO does neither (`codexRepositoryHooks.live.test.ts`).
+  const repositoryHooksNotice = draft.provider === "codex";
   const chip: { tone: StatusTone; label: string } =
     draft.archivedAt !== null
       ? { tone: "idle", label: "Archived" }
@@ -481,6 +485,13 @@ export function AgentEditor({
             onChange={(model) => setDraft({ ...draft, model })}
           />
         </div>
+        {repositoryHooksNotice ? (
+          <p role="note" className="text-[11.5px] leading-snug text-ink-subtle">
+            Hooks committed to the repository apply to Claude agents only. Codex runs a repository&apos;s own hooks, in its{" "}
+            <code className="font-mono">.codex/config.toml</code> or <code className="font-mono">.codex/hooks.json</code>, only in a folder it trusts and
+            only once each one has been reviewed, and EO trusts no folder and reviews no hook for a Codex agent.
+          </p>
+        ) : null}
         {allowed ? null : (
           <p role="alert" className="text-[12.5px] text-danger">
             {`"${runtimeLabel(draft.provider)}" is ${NOT_ALLOWED_BY_YOUR_ORGANISATION}. Nothing dispatches to this agent until it is pointed at one that is.`}

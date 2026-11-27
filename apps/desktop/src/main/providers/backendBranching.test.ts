@@ -166,6 +166,11 @@ const ALLOWLIST: readonly Allowed[] = [
     ],
   },
   {
+    file: "apps/desktop/src/renderer/src/chat/views/agents/AgentEditor.tsx",
+    why: "A named absence (invariant 12, EO-929): hooks committed to the repository reach Claude agents, which load the project's settings, and no Codex agent, since Codex runs a project's hooks only in a folder it trusts and only once each is reviewed — measured in `codexRepositoryHooks.live.test.ts` — so the editor says so beside the backend choice when Codex is chosen.",
+    lines: ['const repositoryHooksNotice = draft.provider === "codex";'],
+  },
+  {
     file: "apps/desktop/src/renderer/src/shared/agents/signIn.ts",
     why: "The sign-in screen's words, kept apart from the screen (EO-519): what the first step says and who keeps a typed key, which differ because the two CLIs sign in differently. Listed by line rather than exempted as a sign-in screen, because this module is shared code and not a screen.",
     lines: ['if (runtime.id === "codex") {', 'if (runtime.id === "codex") {'],
