@@ -3524,7 +3524,7 @@ describe("the module version an export carries", () => {
     const built = exportPipeline(handle.db, pipelineId);
     if (!built.ok) throw new Error(built.reason);
 
-    expect(built.document.eoPipelineExport).toBe(16);
+    expect(built.document.eoPipelineExport).toBe(17);
     const [carried] = built.document.modules;
     expect(carried).toMatchObject({ slug: "deploy", version: 2, code: says("v2") });
     expect(carried?.manifest.description).toBe("The second.");
