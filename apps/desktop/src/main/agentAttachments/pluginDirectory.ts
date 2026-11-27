@@ -1,9 +1,10 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, relative, sep } from "node:path";
 import { ADMIN_MCP_SERVER_NAME, isDeliverableMcpServer, renderSkillMarkdown, yamlUnquoted, type McpServer, type Skill, type SkillRunScope } from "@eo/core";
 import type { Db } from "../db/client.js";
 import { resolveAgentAttachmentsForRun, type ResolvedAgentAttachments } from "../db/repos/agentAttachmentsRepo.js";
 import type { AdminMcpDelivery } from "./adminDelivery.js";
+import { skillContentHash, type DeliveredSkill } from "./skillChanges.js";
 import { skillsPromptSection, type OfferedSkill } from "./skillsPrompt.js";
 
 /**
@@ -375,6 +376,44 @@ export function toolDirectorySkillNames(path: string): string[] {
   } catch {
     return [];
   }
+}
+
+/**
+ * The skills a generated directory holds, read back off disk as a turn
+ * pointed at it is given them (EO-919): each folder's slug, the display
+ * name and description its `SKILL.md` carries, and the hash of every file
+ * in it by its path inside the folder — the files `skillFiles` wrote, so
+ * a skill hashes here as `deliveredSkillOf` hashes it for Codex.
+ *
+ * Off disk rather than from the rows, for the reason
+ * `toolDirectorySkillNames` is: this is what the turn can load, and what
+ * it is told changed must be that. A folder whose `SKILL.md` cannot be
+ * read is named by its slug, with no description.
+ */
+export function toolDirectorySkills(path: string): DeliveredSkill[] {
+  const delivered: DeliveredSkill[] = [];
+  for (const name of toolDirectorySkillNames(path)) {
+    const slug = name.slice(TOOL_PLUGIN_NAME.length + 1);
+    const folder = join(path, "skills", slug);
+    const files: { path: string; content: string }[] = [];
+    try {
+      for (const entry of readdirSync(folder, { withFileTypes: true, recursive: true })) {
+        if (!entry.isFile()) continue;
+        const full = join(entry.parentPath, entry.name);
+        files.push({ path: relative(folder, full).split(sep).join("/"), content: readFileSync(full, "utf8") });
+      }
+    } catch {
+      continue;
+    }
+    const markdown = files.find((file) => file.path === "SKILL.md")?.content ?? "";
+    const frontmatter = markdown.split("\n---\n")[0]?.split("\n") ?? [];
+    const field = (prefix: string) => {
+      const line = frontmatter.find((candidate) => candidate.startsWith(prefix));
+      return line === undefined ? null : yamlUnquoted(line.slice(prefix.length));
+    };
+    delivered.push({ slug, name: field("  display-name: ") ?? slug, description: field("description: ") ?? "", contentHash: skillContentHash(files) });
+  }
+  return delivered;
 }
 
 /**

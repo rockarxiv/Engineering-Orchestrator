@@ -2,8 +2,9 @@ import { McpServerDraftSchema, SkillDraftSchema, type Agent, type Item, type Ski
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DbHandle } from "../db/client.js";
 import type { CreateRunInput } from "../db/repos/runsRepo.js";
-import { addItemAttachments, createRun, insertAttachments, listAgents, postComment, removeItemAttachment, saveMcpServer, saveSkill, setAgentAttachment, updateAgent, updateRun } from "../db/repos/index.js";
-import { agentAttachmentsHash, EMPTY_ATTACHMENTS_HASH } from "../agentAttachments/fingerprint.js";
+import { addItemAttachments, archiveSkill, createRun, insertAttachments, listAgents, postComment, removeItemAttachment, saveMcpServer, saveSkill, setAgentAttachment, setSkillEnabled, updateAgent, updateRun } from "../db/repos/index.js";
+import { saveCliTool, setAgentCliTool } from "../db/repos/cliToolsRepo.js";
+import { agentAttachmentsHash, agentToolSurfaceHash, EMPTY_TOOL_SURFACE_HASH } from "../agentAttachments/fingerprint.js";
 import { attachWorkspace, createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import { promptHash } from "../roles/prompts.js";
 import type { ThreadReuse } from "./threadReuse.js";
@@ -64,7 +65,7 @@ describe("findReusableThread", () => {
       threadId: "session-1",
       provider: implementer.provider,
       instructionsHash: promptHash(implementer.instructions),
-      agentAttachmentsHash: agentAttachmentsHash(handle.db, implementer.id, UNSCOPED_RUN),
+      agentAttachmentsHash: agentToolSurfaceHash(handle.db, implementer.id, UNSCOPED_RUN),
       cwd: CWD,
       ...overrides,
     });
@@ -295,7 +296,7 @@ describe("findReusableThread", () => {
     it("refuses a thread born before a server was attached", () => {
       const prior = dispatched();
       // The row recorded the surface it was really born with: nothing.
-      expect(prior.agentAttachmentsHash).toBe(EMPTY_ATTACHMENTS_HASH);
+      expect(prior.agentAttachmentsHash).toBe(EMPTY_TOOL_SURFACE_HASH);
 
       const github = saveMcpServer(handle.db, McpServerDraftSchema.parse({ name: "github", transport: "stdio", command: "gh-mcp" }));
       expect(github.ok).toBe(true);
@@ -304,23 +305,19 @@ describe("findReusableThread", () => {
 
       const reason = reasonFor(ask(), "refused");
 
-      expect(reason).toContain("MCP servers or skills attached");
+      // Only what moved is named (EO-919): skills no longer refuse a thread.
+      expect(reason).toContain("MCP servers or command-line tools attached");
+      expect(reason).not.toContain("skills");
       expect(reason).toContain("keeps the tools it was started with");
     });
 
-    it("refuses a thread whose attached skill has been edited since", () => {
-      // Nothing was attached or detached — the same skill says something
-      // different now, which is why the recorded value is a fingerprint
-      // of the content rather than of the ids.
-      const playbook = saveSkill(handle.db, SkillDraftSchema.parse({ name: "House style", description: "A house playbook.", body: "Read the diff." }));
-      expect(playbook.ok).toBe(true);
-      if (!playbook.ok) return;
-      setAgentAttachment(handle.db, { agentId: implementer.id, kind: "skill", id: playbook.skill.id, attached: true });
+    it("refuses a thread born before a command-line tool was attached (EO-819)", () => {
       dispatched();
+      const gh = saveCliTool(handle.db, { name: "GitHub CLI", command: "gh", description: "GitHub from the shell." });
+      if (!gh.ok) throw new Error(gh.problems.join("\n"));
+      setAgentCliTool(handle.db, { agentId: implementer.id, cliToolId: gh.cliTool.id, attached: true });
 
-      saveSkill(handle.db, SkillDraftSchema.parse({ id: playbook.skill.id, name: "House style", description: "A house playbook.", body: "Read the diff twice." }));
-
-      expect(reasonFor(ask(), "refused")).toContain("MCP servers or skills attached");
+      expect(reasonFor(ask(), "refused")).toContain("MCP servers or command-line tools attached");
     });
 
     it("refuses a thread started before an attached server was detached", () => {
@@ -332,7 +329,7 @@ describe("findReusableThread", () => {
 
       setAgentAttachment(handle.db, { agentId: implementer.id, kind: "mcpServer", id: github.server.id, attached: false });
 
-      expect(reasonFor(ask(), "refused")).toContain("MCP servers or skills attached");
+      expect(reasonFor(ask(), "refused")).toContain("MCP servers or command-line tools attached");
     });
 
     it("refuses a thread started in a different working directory", () => {
@@ -383,18 +380,27 @@ describe("findReusableThread", () => {
       expect(ask()).toEqual({ kind: "resume", run: prior });
     });
 
-    it("refuses that same run once something is attached", () => {
+    it("refuses that same run once a server is attached", () => {
       // The other side of the rule above: read as the empty surface, a
-      // pre-column row is refused the moment the agent has one — which
-      // is the truthful answer, since the thread cannot have been given
-      // a server that did not exist when it opened.
+      // pre-column row is refused the moment the agent has a server —
+      // which is the truthful answer, since the thread cannot have been
+      // given a server that did not exist when it opened. A skill alone
+      // does not (EO-919).
       dispatched({ agentAttachmentsHash: null });
+      const github = saveMcpServer(handle.db, McpServerDraftSchema.parse({ name: "github", transport: "stdio", command: "gh-mcp" }));
+      if (!github.ok) throw new Error(github.problems.join("\n"));
+      setAgentAttachment(handle.db, { agentId: implementer.id, kind: "mcpServer", id: github.server.id, attached: true });
+
+      expect(reasonFor(ask(), "refused")).toContain("MCP servers or command-line tools attached");
+    });
+
+    it("resumes that same run once only a skill is attached (EO-919)", () => {
+      const prior = dispatched({ agentAttachmentsHash: null });
       const playbook = saveSkill(handle.db, SkillDraftSchema.parse({ name: "House style", description: "A house playbook.", body: "Read the diff." }));
-      expect(playbook.ok).toBe(true);
-      if (!playbook.ok) return;
+      if (!playbook.ok) throw new Error(playbook.problems.join("\n"));
       setAgentAttachment(handle.db, { agentId: implementer.id, kind: "skill", id: playbook.skill.id, attached: true });
 
-      expect(reasonFor(ask(), "refused")).toContain("MCP servers or skills attached");
+      expect(ask()).toEqual({ kind: "resume", run: prior });
     });
 
     it("resumes when an attached server is untouched between two dispatches", () => {
@@ -498,7 +504,7 @@ describe("findReusableThread, with the item's own files (EO-703)", () => {
       threadId: "session-1",
       provider: implementer.provider,
       instructionsHash: promptHash(implementer.instructions),
-      agentAttachmentsHash: agentAttachmentsHash(handle.db, implementer.id, UNSCOPED_RUN),
+      agentAttachmentsHash: agentToolSurfaceHash(handle.db, implementer.id, UNSCOPED_RUN),
       itemFilesHash: itemFilesHash(handle.db, item.id),
       cwd: CWD,
       ...overrides,
@@ -595,12 +601,140 @@ describe("findReusableThread, with the item's own files (EO-703)", () => {
 });
 
 /**
+ * Servers and CLIs are compared apart from skills (EO-919).
+ *
+ * A session is fixed to its MCP servers and command-line tools when it
+ * opens, and not to its skills: both backends read a skill's body when it
+ * is loaded, and EO writes the current ones before every resumed turn. So
+ * a change to skills alone carries the thread on — whichever way the
+ * skills changed — and a change to servers or CLIs still refuses it.
+ */
+describe("findReusableThread, when only skills changed (EO-919)", () => {
+  const CWD = "/tmp/eo/worktrees/EO-919";
+  let handle: DbHandle;
+  let item: Item;
+  let implementer: Agent;
+
+  beforeEach(() => {
+    handle = openMigratedTestDb();
+    item = createTestItem(handle.db, { type: "story", title: "A story", stepId: "todo" });
+    implementer = listAgents(handle.db).find((agent) => agent.role === "implementer")!;
+  });
+
+  afterEach(() => handle.close());
+
+  const skill = (name: string, body = "Read the diff.") => {
+    const saved = saveSkill(handle.db, SkillDraftSchema.parse({ name, description: `How to ${name}.`, body }));
+    if (!saved.ok) throw new Error(saved.problems.join("\n"));
+    setAgentAttachment(handle.db, { agentId: implementer.id, kind: "skill", id: saved.skill.id, attached: true });
+    return saved.skill;
+  };
+
+  const dispatched = (hash: string = agentToolSurfaceHash(handle.db, implementer.id, UNSCOPED_RUN)) =>
+    createRun(handle.db, {
+      itemId: item.id,
+      agentId: implementer.id,
+      action: "implement",
+      status: "succeeded",
+      threadId: "session-1",
+      provider: implementer.provider,
+      instructionsHash: promptHash(implementer.instructions),
+      agentAttachmentsHash: hash,
+      cwd: CWD,
+    });
+
+  const ask = () => findReusableThread(handle.db, { itemId: item.id, agent: implementer, cwd: CWD });
+
+  it("resumes after an attached skill's body is edited", () => {
+    const playbook = skill("house-style");
+    const prior = dispatched();
+    saveSkill(handle.db, SkillDraftSchema.parse({ id: playbook.id, name: playbook.name, description: playbook.description, body: "Read the diff twice." }));
+    expect(ask()).toEqual({ kind: "resume", run: prior });
+  });
+
+  it("resumes after an attached skill's description and files are edited", () => {
+    const playbook = skill("house-style");
+    const prior = dispatched();
+    saveSkill(handle.db, SkillDraftSchema.parse({ id: playbook.id, name: playbook.name, description: "Something else.", body: playbook.body, files: [{ path: "checklist.md", content: "- one" }] }));
+    expect(ask()).toEqual({ kind: "resume", run: prior });
+  });
+
+  it("resumes after a skill is created and attached", () => {
+    const prior = dispatched();
+    skill("house-style");
+    expect(ask()).toEqual({ kind: "resume", run: prior });
+  });
+
+  it("resumes after an attached skill is archived", () => {
+    const playbook = skill("house-style");
+    const prior = dispatched();
+    archiveSkill(handle.db, playbook.id);
+    expect(ask()).toEqual({ kind: "resume", run: prior });
+  });
+
+  it("resumes after an attached skill is disabled, and again once it is enabled", () => {
+    const playbook = skill("house-style");
+    const prior = dispatched();
+    setSkillEnabled(handle.db, playbook.id, false);
+    expect(ask()).toEqual({ kind: "resume", run: prior });
+    setSkillEnabled(handle.db, playbook.id, true);
+    expect(ask()).toEqual({ kind: "resume", run: prior });
+  });
+
+  it("refuses after an MCP server is attached, though a skill changed too, and names only the servers and CLIs", () => {
+    const playbook = skill("house-style");
+    dispatched();
+    archiveSkill(handle.db, playbook.id);
+    const github = saveMcpServer(handle.db, McpServerDraftSchema.parse({ name: "github", transport: "stdio", command: "gh-mcp" }));
+    if (!github.ok) throw new Error(github.problems.join("\n"));
+    setAgentAttachment(handle.db, { agentId: implementer.id, kind: "mcpServer", id: github.server.id, attached: true });
+
+    const decision = ask();
+    expect(decision.kind).toBe("refused");
+    const reason = decision.kind === "refused" ? decision.reason : "";
+    expect(reason).toContain("The MCP servers or command-line tools attached to");
+    expect(reason).not.toContain("skills");
+  });
+
+  it("refuses after an attached server's command changes", () => {
+    const github = saveMcpServer(handle.db, McpServerDraftSchema.parse({ name: "github", transport: "stdio", command: "gh-mcp" }));
+    if (!github.ok) throw new Error(github.problems.join("\n"));
+    setAgentAttachment(handle.db, { agentId: implementer.id, kind: "mcpServer", id: github.server.id, attached: true });
+    dispatched();
+    saveMcpServer(handle.db, McpServerDraftSchema.parse({ id: github.server.id, name: "github", transport: "stdio", command: "gh-mcp-2" }));
+    expect(ask().kind).toBe("refused");
+  });
+
+  /**
+   * A row written before the split holds servers, CLIs and skills as one
+   * hash. It is still resumed while nothing changed, and still refused
+   * when something did — which one cannot be told, so the words say all
+   * three.
+   */
+  describe("a run recorded before the split", () => {
+    it("resumes while nothing at all has changed", () => {
+      skill("house-style");
+      const prior = dispatched(agentAttachmentsHash(handle.db, implementer.id, UNSCOPED_RUN));
+      expect(ask()).toEqual({ kind: "resume", run: prior });
+    });
+
+    it("is refused once a skill is edited, in words that name all three", () => {
+      const playbook = skill("house-style");
+      dispatched(agentAttachmentsHash(handle.db, implementer.id, UNSCOPED_RUN));
+      saveSkill(handle.db, SkillDraftSchema.parse({ id: playbook.id, name: playbook.name, description: playbook.description, body: "Changed." }));
+      const decision = ask();
+      expect(decision.kind === "refused" ? decision.reason : "").toContain("MCP servers, command-line tools or skills attached");
+    });
+  });
+});
+
+/**
  * Thread reuse measures the skills a run is actually given (EO-470).
  *
  * A skill scoped to the item's project or its step's workspace is part
- * of that run's surface; one scoped anywhere else is not. So attaching a
- * skill for this project refuses the old thread, and attaching one for
- * another project leaves it resumable.
+ * of that run's surface; one scoped anywhere else is not. Since EO-919
+ * neither refuses the old thread — a resumed turn is told what changed —
+ * and the scope is still what decides what the run is given.
  */
 describe("findReusableThread, with scoped skills (EO-470)", () => {
   const CWD = "/tmp/eo/worktrees/P-1";
@@ -638,23 +772,24 @@ describe("findReusableThread, with scoped skills (EO-470)", () => {
       threadId: "session-1",
       provider: implementer.provider,
       instructionsHash: promptHash(implementer.instructions),
-      agentAttachmentsHash: agentAttachmentsHash(handle.db, implementer.id, skillRunScope(handle.db, item)),
+      agentAttachmentsHash: agentToolSurfaceHash(handle.db, implementer.id, skillRunScope(handle.db, item)),
       cwd: CWD,
     });
 
   const ask = () => findReusableThread(handle.db, { itemId: item.id, agent: implementer, cwd: CWD });
 
-  it("refuses the thread once a skill scoped to this item's project is attached", () => {
-    dispatched();
+  // Skills no longer end a thread (EO-919): one brought in by scope is
+  // told to the resumed turn instead.
+  it("resumes the thread once a skill scoped to this item's project is attached", () => {
+    const prior = dispatched();
     attachScoped("E2E", { kind: "project", projectId });
-    const decision = ask();
-    expect(decision.kind).toBe("refused");
+    expect(ask()).toEqual({ kind: "resume", run: prior });
   });
 
-  it("refuses the thread once a skill scoped to the workspace its step works in is attached", () => {
-    dispatched();
+  it("resumes the thread once a skill scoped to the workspace its step works in is attached", () => {
+    const prior = dispatched();
     attachScoped("Build", { kind: "workspace", workspaceId });
-    expect(ask().kind).toBe("refused");
+    expect(ask()).toEqual({ kind: "resume", run: prior });
   });
 
   it("still resumes when the skill attached is scoped to another project or workspace", () => {

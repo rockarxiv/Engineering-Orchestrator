@@ -1,7 +1,7 @@
-import { sql } from "drizzle-orm";
-import { NO_SKILL_USAGE, SKILL_LOADED_EVENT, SKILLS_DELIVERED_EVENT, SKILLS_SETTLED_EVENT, type SkillUsage, type Uuid } from "@eo/core";
+import { eq, sql } from "drizzle-orm";
+import { NO_SKILL_USAGE, SKILL_LOADED_EVENT, SKILLS_DELIVERED_EVENT, SKILLS_SETTLED_EVENT, SkillsDeliveredEventSchema, type SkillGivenBefore, type SkillUsage, type Uuid } from "@eo/core";
 import type { Db } from "../client.js";
-import { runEvents, runs, skillVersions } from "../schema.js";
+import { runEvents, runs, skills, skillVersions } from "../schema.js";
 
 /**
  * How each skill has been used (EO-715): the runs given it, the runs that
@@ -156,4 +156,31 @@ export function skillsLoadedByRun(db: Db, runId: string): string[] {
     order by seq
   `);
   return [...new Set(rows.flatMap((row) => (typeof row.id === "string" ? [row.id] : [])))];
+}
+
+/**
+ * What one run was given (EO-919), as the next turn on its thread is
+ * told to compare with: its `skills_delivered` event — each skill's slug
+ * and the hash of what it said as it was delivered — named by the skill's
+ * row as it stands, an archived or deleted one included. Empty for a run
+ * given none, or one that never reached a backend. The first event, since
+ * a run writes one. A hash is null on an event from before EO-919, which
+ * recorded none.
+ */
+export function skillsGivenBefore(db: Db, runId: string): SkillGivenBefore[] {
+  const row = db.get<{ payload: string } | undefined>(sql`
+    select payload from ${runEvents}
+    where type = ${sql.raw(`'${SKILLS_DELIVERED_EVENT}'`)} and run_id = ${runId}
+    order by seq
+    limit 1
+  `);
+  if (row === undefined) return [];
+  const parsed = SkillsDeliveredEventSchema.safeParse(typeof row.payload === "string" ? JSON.parse(row.payload) : row.payload);
+  if (!parsed.success) return [];
+  const { slugs, skillIds, contentHashes } = parsed.data;
+  return slugs.map((slug, index) => {
+    const id = skillIds[index];
+    const skill = id === undefined ? undefined : db.select({ name: skills.name, description: skills.description }).from(skills).where(eq(skills.id, id)).get();
+    return { slug, name: skill?.name ?? slug, description: skill?.description ?? "", contentHash: contentHashes?.[index] ?? null };
+  });
 }

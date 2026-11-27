@@ -1,10 +1,11 @@
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative, sep } from "node:path";
-import { ADMIN_MCP_SERVER_NAME, ModuleManifestSchema, developerRegistry, isThreadNotFound, jsonSchemaOutputSchema, outputSchemaFor, validateActionResult, type AgentEvent, type McpServer, type Skill, type ThreadNotFoundError } from "@eo/core";
+import { ADMIN_MCP_SERVER_NAME, ModuleManifestSchema, developerRegistry, isThreadNotFound, jsonSchemaOutputSchema, outputSchemaFor, validateActionResult, type AgentEvent, type McpServer, type Skill, type SkillGivenBefore, type ThreadNotFoundError } from "@eo/core";
 import type { ThreadEvent } from "./codexClient.js";
 import type { InterruptibleStream, SuggestionOutcome, SuggestionSpend } from "@eo/core";
 import { createSuggestedReplies, type SuggestedReply } from "../supervisor/suggestedReplies.js";
+import { skillChangesSection } from "../agentAttachments/skillChanges.js";
 import { PROMPT_SUGGESTION_PROMPT } from "./promptSuggestion.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -3730,7 +3731,37 @@ describe("skills on a Codex turn", () => {
     expect(handed[0]?.[8]).toEqual(["pr-review"]);
     expect(existsSync(join(worktree, ".agent", "skills", "pr-review", "SKILL.md"))).toBe(false);
     expect(existsSync(join(worktree, ".agent", "skills", "pr-review", "checklist.md"))).toBe(true);
-    expect(events).toContainEqual({ type: "skills_delivered", slugs: ["pr-review"] });
+    expect(events).toContainEqual({ type: "skills_delivered", slugs: ["pr-review"], contentHashes: [expect.any(String)] });
+  });
+
+  /**
+   * What a resumed turn is told changed in its skills (EO-919) is worked
+   * out from what `writeWorktreeSkills` actually delivered: a skill it
+   * refuses — its folder is one EO did not write — is not told as added,
+   * is served by no `skill_read`, and one the run before had is told as
+   * removed.
+   */
+  it("tells a resumed turn of the skills it was actually given, leaving out one an unowned folder stood in the way of (EO-919)", async () => {
+    mkdirSync(join(worktree, ".agent", "skills", "pr-review"), { recursive: true });
+    writeFileSync(join(worktree, ".agent", "skills", "pr-review", "notes.md"), "somebody else's\n");
+    const resumeWith = async (skillsBefore: SkillGivenBefore[]) => {
+      const { codex, thread } = stubCodex([{ type: "item.completed", item: { id: "i", type: "agent_message", text: "continued" } }]);
+      const handed: unknown[][] = [];
+      const provider = createCodexProvider({ createCodex: (...args: unknown[]) => (handed.push(args), codex as never), attachedSkills: [skill()] });
+      const events = await collect(provider.resume("thr_1", "carry on", { cwd: worktree, skillsBefore }));
+      return { events, prompt: promptOf(thread), handed };
+    };
+
+    const fresh = await resumeWith([]);
+    expect(fresh.prompt).toBe("carry on");
+    expect(fresh.events.filter((event) => event.type === "skills_delivered")).toEqual([]);
+    expect(fresh.handed[0]?.[8]).toBeUndefined();
+
+    const had = await resumeWith([{ slug: "pr-review", name: "PR review", description: "How this house reviews a pull request.", contentHash: "before" }]);
+    expect(had.prompt).toBe(`carry on\n\n${skillChangesSection({ added: [], changed: [], removed: [{ slug: "pr-review", name: "PR review", description: "How this house reviews a pull request." }] })}`);
+    expect(had.events).toContainEqual({ type: "skills_delivered", slugs: [], contentHashes: [], changes: { added: [], changed: [], removed: ["pr-review"] } });
+    // The folder that stood in the way is left as it was.
+    expect(readFileSync(join(worktree, ".agent", "skills", "pr-review", "notes.md"), "utf8")).toBe("somebody else's\n");
   });
 
   it("gives a fork its skills back, serves them and tells it how to load them, as a resume does (EO-721)", async () => {

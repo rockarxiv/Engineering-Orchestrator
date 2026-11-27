@@ -1,6 +1,6 @@
 import { McpServerDraftSchema, parsedResultOf, type Agent, type Item, UNSCOPED_RUN, uuidv7 } from "@eo/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { agentAttachmentsHash } from "../agentAttachments/fingerprint.js";
+import { agentToolSurfaceHash } from "../agentAttachments/fingerprint.js";
 import { archiveAgent, createAgent, listAgents } from "../db/repos/agentsRepo.js";
 import { setAgentAttachment } from "../db/repos/agentAttachmentsRepo.js";
 import { saveMcpServer } from "../db/repos/mcpServersRepo.js";
@@ -333,7 +333,7 @@ describe("reconcile", () => {
     expect(github.ok).toBe(true);
     if (!github.ok) return;
     setAgentAttachment(handle.db, { agentId: implementer.id, kind: "mcpServer", id: github.server.id, attached: true });
-    const bornWith = agentAttachmentsHash(handle.db, implementer.id, UNSCOPED_RUN);
+    const bornWith = agentToolSurfaceHash(handle.db, implementer.id, UNSCOPED_RUN);
 
     const interrupted = createRun(handle.db, {
       itemId: item.id,
@@ -382,7 +382,7 @@ describe("reconcile", () => {
       threadId: "thr_crashed",
       provider: implementer.provider,
       instructionsHash: promptHash(implementer.instructions),
-      agentAttachmentsHash: agentAttachmentsHash(handle.db, implementer.id, UNSCOPED_RUN),
+      agentAttachmentsHash: agentToolSurfaceHash(handle.db, implementer.id, UNSCOPED_RUN),
       cwd: CWD,
     });
     updateRun(handle.db, interrupted.id, { status: "running", startedAt: Date.now() });
@@ -400,7 +400,7 @@ describe("reconcile", () => {
 
     const decision = findReusableThread(handle.db, { itemId: item.id, agent: implementer, cwd: CWD });
     expect(decision.kind).toBe("refused");
-    expect(decision.kind === "resume" ? "" : decision.reason).toContain("MCP servers or skills attached");
+    expect(decision.kind === "resume" ? "" : decision.reason).toContain("MCP servers or command-line tools attached");
   });
 
   /**
@@ -419,7 +419,7 @@ describe("reconcile", () => {
       threadId: "thr_crashed",
       provider: implementer.provider,
       instructionsHash: promptHash(implementer.instructions),
-      agentAttachmentsHash: agentAttachmentsHash(handle.db, implementer.id, UNSCOPED_RUN),
+      agentAttachmentsHash: agentToolSurfaceHash(handle.db, implementer.id, UNSCOPED_RUN),
       itemFilesHash: itemFilesHash(handle.db, item.id),
       cwd: CWD,
     });
@@ -444,7 +444,7 @@ describe("reconcile", () => {
       threadId: "thr_crashed",
       provider: implementer.provider,
       instructionsHash: promptHash(implementer.instructions),
-      agentAttachmentsHash: agentAttachmentsHash(handle.db, implementer.id, UNSCOPED_RUN),
+      agentAttachmentsHash: agentToolSurfaceHash(handle.db, implementer.id, UNSCOPED_RUN),
       itemFilesHash: itemFilesHash(handle.db, item.id),
       cwd: CWD,
     });
@@ -509,7 +509,7 @@ describe("reconcile", () => {
       threadId: "thr_crashed",
       provider: implementer.provider,
       instructionsHash: promptHash(implementer.instructions),
-      agentAttachmentsHash: agentAttachmentsHash(handle.db, implementer.id, UNSCOPED_RUN),
+      agentAttachmentsHash: agentToolSurfaceHash(handle.db, implementer.id, UNSCOPED_RUN),
       itemFilesHash: bornWith,
       cwd: CWD,
     });

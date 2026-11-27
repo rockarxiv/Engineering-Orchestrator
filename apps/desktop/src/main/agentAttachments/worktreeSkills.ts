@@ -2,6 +2,7 @@ import { lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, rmdirSync, wri
 import { dirname, join } from "node:path";
 import { RESERVED_MCP_SERVER_NAME, SKILL_READ_TOOL_NAME, type Skill } from "@eo/core";
 import { isDeliverable, skillFiles, type PluginFile } from "./pluginDirectory.js";
+import { skillContentHash, type DeliveredSkill } from "./skillChanges.js";
 import { skillsPromptSection } from "./skillsPrompt.js";
 
 /**
@@ -544,4 +545,18 @@ export function worktreeSkillsPromptSection(delivered: readonly Skill[]): string
     offered,
     `When one of them fits what you are doing, load it by its name with the \`${SKILL_READ_TOOL_NAME}\` tool EO serves you on the MCP server it registers as \`${RESERVED_MCP_SERVER_NAME}\` (every backend spells a tool id its own way, so find it by that server name), and follow what it answers;`,
   );
+}
+
+/**
+ * A skill as a Codex turn is given it (EO-919): named as the listing of
+ * changed skills names it, with the hash of the files a delivery written
+ * from it holds — `skillFiles`, by their paths inside the skill's folder,
+ * `SKILL.md` included since `skill_read` answers with what it says. The
+ * Claude directory read back off disk hashes the same files
+ * (`toolDirectorySkills`), so one skill hashes alike on both backends.
+ */
+export function deliveredSkillOf(skill: Skill): DeliveredSkill {
+  const prefix = `skills/${skill.slug}/`;
+  const files = skillFiles(skill).map((file) => ({ path: file.path.slice(prefix.length), content: file.content }));
+  return { slug: skill.slug, name: skill.name, description: skill.description, contentHash: skillContentHash(files) };
 }

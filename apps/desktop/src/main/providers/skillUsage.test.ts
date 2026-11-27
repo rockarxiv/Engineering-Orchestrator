@@ -5,8 +5,14 @@ import { claudeSkillLoaded, codexSkillLoaded, leadingWith, skillsOffered } from 
 /** How each adapter reads a skill delivered and a skill loaded (EO-715). */
 describe("skill usage detection", () => {
   it("says nothing for a turn given no skill, and each delivered slug once, sorted", () => {
+    const given = (slug: string) => ({ slug, name: slug, description: "", contentHash: `hash-${slug}` });
     expect(skillsOffered([])).toEqual([]);
-    expect(skillsOffered(["b", "a", "b"])).toEqual([{ type: "skills_delivered", slugs: ["a", "b"] }]);
+    expect(skillsOffered([given("b"), given("a"), given("b")])).toEqual([{ type: "skills_delivered", slugs: ["a", "b"], contentHashes: ["hash-a", "hash-b"] }]);
+  });
+
+  it("says the change since the run before beside them, even on a turn left with no skill (EO-919)", () => {
+    const removed = { slug: "review", name: "Review", description: "" };
+    expect(skillsOffered([], { added: [], changed: [], removed: [removed] })).toEqual([{ type: "skills_delivered", slugs: [], contentHashes: [], changes: { added: [], changed: [], removed: ["review"] } }]);
   });
 
   it("reads a Claude load from a Skill call under EO's plugin prefix only", () => {

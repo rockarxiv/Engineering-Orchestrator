@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -10,6 +10,7 @@ import {
   type AgentProvider,
   type AgentWriteBridgeAddress,
   type Item,
+  type Skill,
   type SkillRunScope,
   type SkillScope,
   UNSCOPED_RUN,
@@ -33,9 +34,17 @@ import { fakeAppServer, note } from "../testing/fakeCodexAppServer.js";
 import { startTestWriteBridge, type TestWriteBridge } from "../testing/agentWrites.js";
 import { sendAgentWrite } from "../mcp/writeBridge.js";
 import { promptHash } from "../roles/prompts.js";
-import { agentAttachmentsHash } from "../agentAttachments/fingerprint.js";
+import { agentToolSurfaceHash } from "../agentAttachments/fingerprint.js";
+import { appendRunEvent, listRunEvents } from "../db/repos/runEventsRepo.js";
+import { archiveSkill } from "../db/repos/skillsRepo.js";
+import { addMemory, transitionItem } from "../db/repos/index.js";
+import type { SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import { skillChangesSection } from "../agentAttachments/skillChanges.js";
+import { deliveredSkillOf } from "../agentAttachments/worktreeSkills.js";
+import { createClaudeProvider } from "../providers/claude.js";
+import { NOTHING_ATTACHED } from "./workspaceKind.js";
 import { createRunSupervisor, type RunSupervisorOptions } from "./runSupervisor.js";
-import { kindsPreparing } from "./testWorkspaceKinds.js";
+import { fakeWorkspaceKind, installedKinds, kindsPreparing } from "./testWorkspaceKinds.js";
 import { skillRunScope } from "./workspaceResolution.js";
 
 /**
@@ -186,7 +195,7 @@ function priorRun(overrides: Record<string, unknown> = {}) {
     threadId: PRIOR_THREAD,
     provider: implementer.provider,
     instructionsHash: promptHash(implementer.instructions),
-    agentAttachmentsHash: agentAttachmentsHash(handle.db, implementer.id, UNSCOPED_RUN),
+    agentAttachmentsHash: agentToolSurfaceHash(handle.db, implementer.id, UNSCOPED_RUN),
     cwd: CWD,
     ...overrides,
   });
@@ -225,7 +234,7 @@ describe("the three paths that reach a backend", () => {
       // What the thread was born with, as `dispatchRun` records it. A row
       // without it reads as the empty surface and is refused — which is
       // the next test.
-      agentAttachmentsHash: agentAttachmentsHash(handle.db, implementer.id, UNSCOPED_RUN),
+      agentAttachmentsHash: agentToolSurfaceHash(handle.db, implementer.id, UNSCOPED_RUN),
       cwd: CWD,
     });
     updateRun(handle.db, interrupted.id, { status: "running", startedAt: Date.now() });
@@ -342,7 +351,7 @@ describe("a thread whose agent's attachments changed while it waited", () => {
       status: "queued",
       threadId: PRIOR_THREAD,
       provider: implementer.provider,
-      agentAttachmentsHash: agentAttachmentsHash(handle.db, implementer.id, UNSCOPED_RUN),
+      agentAttachmentsHash: agentToolSurfaceHash(handle.db, implementer.id, UNSCOPED_RUN),
       cwd: CWD,
     });
     updateRun(handle.db, interrupted.id, { status: "running", startedAt: Date.now() });
@@ -354,7 +363,7 @@ describe("a thread whose agent's attachments changed while it waited", () => {
 
     expect(summary).toEqual({ reattached: 0, resumed: 0, orphaned: 1 });
     expect(turns).toEqual([]); // no resume, so nothing was pointed at a surface that had moved
-    expect(engineNotes().join("\n")).toContain("MCP servers or skills attached to");
+    expect(engineNotes().join("\n")).toContain("MCP servers or command-line tools attached to");
     // And the refusal did not take the directory with it: regenerating
     // for a resume that is not happening would have deleted it, since
     // there is now nothing to deliver.
@@ -375,7 +384,7 @@ describe("a thread whose agent's attachments changed while it waited", () => {
     // agent now has nothing attached. The reply is not lost: the new run
     // is seeded from the thread.
     expect(turns).toEqual([{ kind: "start", toolDirectory: undefined }]);
-    expect(engineNotes().join("\n")).toContain("MCP servers or skills attached to");
+    expect(engineNotes().join("\n")).toContain("MCP servers or command-line tools attached to");
   });
 });
 
@@ -387,9 +396,12 @@ describe("an attachment edit that lands while a run is being prepared", () => {
    * exactly.
    */
   function attachingDuringContext(): NonNullable<RunSupervisorOptions["buildContext"]> {
+    // Once: a reply that falls back to a fresh dispatch builds a context again.
+    let attached = false;
     return async () => {
       await Promise.resolve();
-      attachSkill("Late arrival");
+      if (!attached) attachServer("late-arrival");
+      attached = true;
       return "the follow-up prompt";
     };
   }
@@ -406,7 +418,7 @@ describe("an attachment edit that lands while a run is being prepared", () => {
     // has — not the old thread pointed at a new one.
     expect(turns).toEqual([{ kind: "start", toolDirectory: expectedPath() }]);
     expect(engineNotes().join("\n")).toContain("changed while this run was being prepared");
-    expect(existsSync(join(expectedPath(), "skills", "late-arrival", "SKILL.md"))).toBe(true);
+    expect(engineNotes().join("\n")).toContain("MCP servers or command-line tools attached to");
   });
 
   it("records the surface the run was actually given, so the next dispatch weighs up the truth", async () => {
@@ -420,7 +432,7 @@ describe("an attachment edit that lands while a run is being prepared", () => {
     // The row must hold the fingerprint the directory was written from.
     // Holding the pre-await one would make the *next* dispatch reuse this
     // thread against a surface it never had — the same bug, one run later.
-    expect(listRunsForItem(handle.db, item.id).at(-1)?.agentAttachmentsHash).toBe(agentAttachmentsHash(handle.db, implementer.id, UNSCOPED_RUN));
+    expect(listRunsForItem(handle.db, item.id).at(-1)?.agentAttachmentsHash).toBe(agentToolSurfaceHash(handle.db, implementer.id, UNSCOPED_RUN));
   });
 
   it("does not let a person's reply resume one either", async () => {
@@ -432,7 +444,7 @@ describe("an attachment edit that lands while a run is being prepared", () => {
     await supervisorFor(recording(), { buildContext: attachingDuringContext() }).resumeItem(item.id);
 
     expect(turns).toEqual([{ kind: "start", toolDirectory: expectedPath() }]);
-    expect(engineNotes().join("\n")).toContain("MCP servers or skills attached to");
+    expect(engineNotes().join("\n")).toContain("MCP servers or command-line tools attached to");
   });
 });
 
@@ -631,9 +643,325 @@ describe("scoped skills reach the run they are scoped to", () => {
     const skills = join(expectedPath(), "skills");
     expect(["house-style", "e2e-for-p", "build-in-w"].map((slug) => existsSync(join(skills, slug, "SKILL.md")))).toEqual([true, true, true]);
     expect(["e2e-elsewhere", "build-elsewhere"].map((slug) => existsSync(join(skills, slug)))).toEqual([false, false]);
-    // And the run recorded the hash of what it was given, not of every
-    // skill attached — the hash thread reuse compares.
-    expect(listRunsForItem(handle.db, item.id)[0]?.agentAttachmentsHash).toBe(agentAttachmentsHash(handle.db, implementer.id, { projectId, workspaceId: workspace.id }));
-    expect(listRunsForItem(handle.db, item.id)[0]?.agentAttachmentsHash).not.toBe(agentAttachmentsHash(handle.db, implementer.id, UNSCOPED_RUN));
+    // And the run recorded the hash thread reuse compares: its servers
+    // and CLIs, which no skill's scope moves (EO-919).
+    expect(listRunsForItem(handle.db, item.id)[0]?.agentAttachmentsHash).toBe(agentToolSurfaceHash(handle.db, implementer.id, { projectId, workspaceId: workspace.id }));
+  });
+});
+
+/**
+ * A change to skills alone carries the conversation on (EO-919).
+ *
+ * Driven through the real Claude adapter over a query that answers at
+ * once, so what is asserted is what the backend was handed: the directory
+ * written again at the provider boundary, so a skill loaded there says
+ * what it says now and one removed is not there to load; the first
+ * message ending with what changed, worked out by the adapter from that
+ * same directory and from what the run before was recorded as given; no
+ * comment; and the run's `skills_delivered` recording the change. Codex
+ * is held to the same by `providerParity.test.ts`. A server changing
+ * still starts fresh, as the cases above hold.
+ */
+describe("a thread whose skills alone changed", () => {
+  type SdkCall = { prompt: unknown; options: Record<string, unknown> };
+  let calls: SdkCall[];
+
+  beforeEach(() => {
+    calls = [];
+  });
+
+  /** The Claude adapter, over a `query` that answers each turn with the implement result, keeping what each was sent. */
+  function claude(): AgentProvider {
+    const runQuery = ((params: { prompt: unknown; options?: Record<string, unknown> }) => {
+      calls.push({ prompt: params.prompt, options: params.options ?? {} });
+      return (async function* () {
+        yield { type: "system", subtype: "init", session_id: PRIOR_THREAD } as unknown as SDKMessage;
+        yield {
+          type: "result",
+          subtype: "success",
+          result: "done",
+          structured_output: validImplementResult,
+          total_cost_usd: 0.01,
+          usage: { input_tokens: 10, output_tokens: 2 },
+          session_id: PRIOR_THREAD,
+        } as unknown as SDKMessage;
+      })();
+    }) as never;
+    const provider = createClaudeProvider({ runQuery, enableCommentTool: false });
+    return {
+      ...provider,
+      start: (opts) => {
+        turns.push({ kind: "start", toolDirectory: opts.toolDirectory });
+        return provider.start(opts);
+      },
+      resume: (threadId, message, opts) => {
+        turns.push({ kind: "resume", toolDirectory: opts?.toolDirectory });
+        return provider.resume(threadId, message, opts);
+      },
+    };
+  }
+
+  /** The text of the first message the newest turn sent — not a learning review's fork of it. */
+  async function said(): Promise<string> {
+    const turn = calls.filter((call) => call.options["forkSession"] !== true).at(-1);
+    for await (const sent of (turn?.prompt ?? []) as AsyncIterable<SDKUserMessage>) {
+      const content = sent.message.content;
+      return typeof content === "string" ? content : content.map((block) => ("text" in block ? block.text : "")).join("");
+    }
+    return "";
+  }
+
+  /** The run before was given these skills, as they then stood — `recordSkillUsage` writes what the adapter reported. */
+  function givenTo(runId: string, skills: Skill[]) {
+    appendRunEvent(handle.db, runId as never, "skills_delivered", {
+      type: "skills_delivered",
+      skillIds: skills.map((skill) => skill.id),
+      slugs: skills.map((skill) => skill.slug),
+      contentHashes: skills.map((skill) => deliveredSkillOf(skill).contentHash),
+    });
+  }
+
+  function editBody(skill: Skill, body: string): Skill {
+    const saved = saveSkill(handle.db, SkillDraftSchema.parse({ id: skill.id, name: skill.name, description: skill.description, body }));
+    if (!saved.ok) throw new Error(saved.problems.join("\n"));
+    return saved.skill;
+  }
+
+  const newestRun = () => listRunsForItem(handle.db, item.id).at(-1)!;
+  const deliveredEvent = (runId: string) => listRunEvents(handle.db, runId as never).find((event) => event.type === "skills_delivered")?.payload;
+  const skillsDir = () => join(expectedPath(), "skills");
+  const listing = (changes: { added?: string[]; changed?: string[]; removed?: string[] }) => {
+    const named = (slugs: string[] = []) => slugs.map((slug) => ({ slug, name: NAMES[slug] ?? slug, description: "A house playbook." }));
+    return skillChangesSection({ added: named(changes.added), changed: named(changes.changed), removed: named(changes.removed) });
+  };
+  const NAMES: Record<string, string> = { "house-style": "House style", review: "Review", e2e: "E2E", "late-arrival": "Late arrival" };
+
+  /** The reply and recovery paths' last await, with something landing in it. */
+  const kindsLanding = (during: () => void) => installedKinds(fakeWorkspaceKind({ cwd: CWD, attach: async () => (await Promise.resolve(), during(), NOTHING_ATTACHED) }));
+
+  it("resumes a dispatch after an edit, a creation and an archive, and tells the turn what changed", async () => {
+    updateAgent(handle.db, implementer.id, { config: { reuseThreadPerItem: true } });
+    const style = attachSkill("House style");
+    const review = attachSkill("Review");
+    const prior = priorRun();
+    givenTo(prior.id, [style, review]);
+
+    editBody(style, "Read the diff twice.");
+    archiveSkill(handle.db, review.id);
+    attachSkill("E2E");
+    postComment(handle.db, { itemId: item.id, author: { type: "human" }, body: "Carry on." });
+
+    await supervisorFor(claude()).runOnce();
+
+    expect(turns).toEqual([{ kind: "resume", toolDirectory: expectedPath() }]);
+    // The directory holds the skills as they are now: the edited body, the new skill, and not the archived one.
+    expect(readFileSync(join(skillsDir(), "house-style", "SKILL.md"), "utf8")).toContain("Read the diff twice.");
+    expect(existsSync(join(skillsDir(), "e2e", "SKILL.md"))).toBe(true);
+    expect(existsSync(join(skillsDir(), "review"))).toBe(false);
+    expect(calls.filter((call) => call.options["forkSession"] !== true).at(-1)?.options["skills"]).toEqual(["eo-attachments:e2e", "eo-attachments:house-style"]);
+    // The first message ends with the change, each skill by slug, name and description.
+    expect((await said()).endsWith(`\n\n${listing({ added: ["e2e"], changed: ["house-style"], removed: ["review"] })}`)).toBe(true);
+    // No comment for a skills-only change; the run's skills_delivered records it.
+    expect(engineNotes().join("\n")).not.toContain("have changed");
+    expect(deliveredEvent(newestRun().id)).toMatchObject({ slugs: ["e2e", "house-style"], changes: { added: ["e2e"], changed: ["house-style"], removed: ["review"] } });
+    expect((deliveredEvent(newestRun().id) as { contentHashes?: string[] }).contentHashes).toHaveLength(2);
+  });
+
+  it("says nothing of skills when none changed", async () => {
+    updateAgent(handle.db, implementer.id, { config: { reuseThreadPerItem: true } });
+    const style = attachSkill("House style");
+    const prior = priorRun();
+    givenTo(prior.id, [style]);
+    postComment(handle.db, { itemId: item.id, author: { type: "human" }, body: "Carry on." });
+
+    await supervisorFor(claude()).runOnce();
+
+    expect(turns).toEqual([{ kind: "resume", toolDirectory: expectedPath() }]);
+    expect(await said()).not.toContain("Your skills have changed");
+    expect(deliveredEvent(newestRun().id)).not.toHaveProperty("changes");
+  });
+
+  /**
+   * What the run before is compared with is what its adapter said it
+   * delivered, not the skill as it stood when the event was recorded: an
+   * edit that landed between the two, or in the same millisecond, is
+   * still told.
+   */
+  it("tells an edit that landed after the run before was handed the skill, before its delivery was recorded", async () => {
+    updateAgent(handle.db, implementer.id, { config: { reuseThreadPerItem: true } });
+    const style = attachSkill("House style");
+    const edited = editBody(style, "Read the diff twice.");
+    // The run before reports what it was handed — the old words — and is
+    // recorded only now, with the new ones already saved.
+    const before: AgentProvider = {
+      start: () => (async function* () {})(),
+      resume: () =>
+        (async function* () {
+          yield { type: "skills_delivered", slugs: ["house-style"], contentHashes: [deliveredSkillOf(style).contentHash] } as AgentEvent;
+          yield { type: "result", data: validImplementResult } as AgentEvent;
+        })(),
+    };
+    const parked = priorRun();
+    givenTo(parked.id, [style]);
+    updateRun(handle.db, parked.id, { status: "awaiting_input", endedAt: 1_000 });
+    postComment(handle.db, { itemId: item.id, author: { type: "human" }, body: "Carry on." });
+    await supervisorFor(before).resumeItem(item.id);
+    const first = newestRun();
+    expect(deliveredEvent(first.id)).toMatchObject({ contentHashes: [deliveredSkillOf(style).contentHash] });
+    expect(deliveredSkillOf(edited).contentHash).not.toBe(deliveredSkillOf(style).contentHash);
+
+    // The next turn on the thread — another reply, the item back where
+    // it was — is told the skill changed.
+    transitionItem(handle.db, { itemId: item.id, toStepId: "todo", actor: "human" });
+    updateRun(handle.db, first.id, { status: "awaiting_input", threadId: PRIOR_THREAD, endedAt: 2_000 });
+    postComment(handle.db, { itemId: item.id, author: { type: "human" }, body: "And again." });
+    await supervisorFor(claude()).resumeItem(item.id);
+
+    expect(turns.at(-1)).toEqual({ kind: "resume", toolDirectory: expectedPath() });
+    expect((await said()).endsWith(listing({ changed: ["house-style"] }))).toBe(true);
+  });
+
+  it("records the change on a run left with no skill at all", async () => {
+    updateAgent(handle.db, implementer.id, { config: { reuseThreadPerItem: true } });
+    const style = attachSkill("House style");
+    const prior = priorRun();
+    givenTo(prior.id, [style]);
+    archiveSkill(handle.db, style.id);
+    postComment(handle.db, { itemId: item.id, author: { type: "human" }, body: "Carry on." });
+
+    await supervisorFor(claude()).runOnce();
+
+    expect(turns).toEqual([{ kind: "resume", toolDirectory: undefined }]);
+    expect((await said()).endsWith(listing({ removed: ["house-style"] }))).toBe(true);
+    expect(deliveredEvent(newestRun().id)).toEqual({ type: "skills_delivered", skillIds: [], slugs: [], changes: { added: [], changed: [], removed: ["house-style"] } });
+  });
+
+  it("resumes a parked run on a person's reply, with the same listing", async () => {
+    const style = attachSkill("House style");
+    const parked = priorRun();
+    givenTo(parked.id, [style]);
+    updateRun(handle.db, parked.id, { status: "awaiting_input", endedAt: 1_000 });
+    editBody(style, "Read the diff twice.");
+    postComment(handle.db, { itemId: item.id, author: { type: "human" }, body: "Carry on." });
+
+    await supervisorFor(claude()).resumeItem(item.id);
+
+    expect(turns).toEqual([{ kind: "resume", toolDirectory: expectedPath() }]);
+    expect((await said()).endsWith(listing({ changed: ["house-style"] }))).toBe(true);
+    expect(readFileSync(join(skillsDir(), "house-style", "SKILL.md"), "utf8")).toContain("Read the diff twice.");
+    expect(engineNotes().join("\n")).not.toContain("have changed");
+    expect(deliveredEvent(newestRun().id)).toMatchObject({ changes: { added: [], changed: ["house-style"], removed: [] } });
+  });
+
+  /**
+   * An edit, an archive and a creation landing in the reply's last await
+   * — the workspace's attachment — reach the resumed turn: the directory
+   * is written again past it, and the listing read off that directory.
+   */
+  it("delivers the skills as they are past the reply's last await, and lists what the turn was given", async () => {
+    const style = attachSkill("House style");
+    const review = attachSkill("Review");
+    const parked = priorRun();
+    givenTo(parked.id, [style, review]);
+    updateRun(handle.db, parked.id, { status: "awaiting_input", endedAt: 1_000 });
+    postComment(handle.db, { itemId: item.id, author: { type: "human" }, body: "Carry on." });
+
+    await supervisorFor(claude(), {
+      kinds: kindsLanding(() => {
+        editBody(style, "Read the diff twice.");
+        archiveSkill(handle.db, review.id);
+        attachSkill("Late arrival");
+      }),
+    }).resumeItem(item.id);
+
+    expect(turns).toEqual([{ kind: "resume", toolDirectory: expectedPath() }]);
+    expect(readFileSync(join(skillsDir(), "house-style", "SKILL.md"), "utf8")).toContain("Read the diff twice.");
+    expect(existsSync(join(skillsDir(), "review"))).toBe(false);
+    expect(existsSync(join(skillsDir(), "late-arrival", "SKILL.md"))).toBe(true);
+    expect((await said()).endsWith(listing({ added: ["late-arrival"], changed: ["house-style"], removed: ["review"] }))).toBe(true);
+    expect(deliveredEvent(newestRun().id)).toMatchObject({ slugs: ["house-style", "late-arrival"], changes: { added: ["late-arrival"], changed: ["house-style"], removed: ["review"] } });
+  });
+
+  it("delivers the skills as they are past a restart recovery's last await, and lists what the turn was given", async () => {
+    const style = attachSkill("House style");
+    const review = attachSkill("Review");
+    const interrupted = createRun(handle.db, {
+      itemId: item.id,
+      agentId: implementer.id,
+      action: "implement",
+      status: "queued",
+      threadId: PRIOR_THREAD,
+      provider: implementer.provider,
+      agentAttachmentsHash: agentToolSurfaceHash(handle.db, implementer.id, UNSCOPED_RUN),
+      cwd: CWD,
+    });
+    updateRun(handle.db, interrupted.id, { status: "running", startedAt: Date.now() });
+    givenTo(interrupted.id, [style, review]);
+
+    const supervisor = supervisorFor(claude(), {
+      kinds: kindsLanding(() => {
+        editBody(style, "Read the diff twice.");
+        archiveSkill(handle.db, review.id);
+      }),
+    });
+    expect(await supervisor.reconcile()).toEqual({ reattached: 0, resumed: 1, orphaned: 0 });
+    await supervisor.waitForIdle();
+
+    expect(turns).toEqual([{ kind: "resume", toolDirectory: expectedPath() }]);
+    expect(readFileSync(join(skillsDir(), "house-style", "SKILL.md"), "utf8")).toContain("Read the diff twice.");
+    expect(existsSync(join(skillsDir(), "review"))).toBe(false);
+    expect((await said()).endsWith(listing({ changed: ["house-style"], removed: ["review"] }))).toBe(true);
+  });
+
+  /**
+   * The dispatch's one await past its boundary is the memory being
+   * chosen, a side call: an edit and an archive landing in it reach the
+   * resumed turn as they do the reply's.
+   */
+  it("delivers the skills as they are past the memory being chosen, and lists what the turn was given", async () => {
+    const workspace = attachWorkspace(handle.db, { keyPrefix: "P", name: "app", repoPath: "/tmp/eo/app" });
+    item = createTestItem(handle.db, { type: "story", title: "A story on P", stepId: "todo", projectId: workspace.projectId!, workspaceId: workspace.id });
+    for (let index = 0; index < 10; index++) {
+      const written = addMemory(handle.db, { scope: { kind: "project", id: workspace.projectId! }, body: `Entry ${index}. ${"z".repeat(1_500)}`, source: { type: "person", personId: null }, now: 1_000 + index });
+      if (!written.ok) throw new Error(written.problem);
+    }
+    updateAgent(handle.db, implementer.id, { config: { reuseThreadPerItem: true } });
+    const style = attachSkill("House style");
+    const review = attachSkill("Review");
+    const prior = priorRun();
+    givenTo(prior.id, [style, review]);
+    postComment(handle.db, { itemId: item.id, author: { type: "human" }, body: "Carry on." });
+    // The memory's selection, a side call.
+    let chosen = false;
+    async function* choosing(): AsyncIterable<AgentEvent> {
+      await Promise.resolve();
+      editBody(style, "Read the diff twice.");
+      archiveSkill(handle.db, review.id);
+      chosen = true;
+      yield { type: "result", data: { ids: [] } } satisfies AgentEvent;
+    }
+
+    await supervisorFor(claude(), { sideCalls: { provider: () => ({ ...claude(), sideCall: choosing }), smallModel: async () => null } }).runOnce();
+
+    expect(chosen).toBe(true);
+    expect(turns.at(-1)).toEqual({ kind: "resume", toolDirectory: expectedPath() });
+    expect(readFileSync(join(skillsDir(), "house-style", "SKILL.md"), "utf8")).toContain("Read the diff twice.");
+    expect(existsSync(join(skillsDir(), "review"))).toBe(false);
+    expect((await said()).endsWith(listing({ changed: ["house-style"], removed: ["review"] }))).toBe(true);
+  });
+
+  it("still starts a parked run fresh on a reply once a server changed, naming only servers and CLIs", async () => {
+    attachSkill("House style");
+    const parked = priorRun();
+    updateRun(handle.db, parked.id, { status: "awaiting_input", endedAt: 1_000 });
+    attachServer();
+    postComment(handle.db, { itemId: item.id, author: { type: "human" }, body: "Carry on." });
+
+    await supervisorFor(recording()).resumeItem(item.id);
+
+    expect(turns).toEqual([{ kind: "start", toolDirectory: expectedPath() }]);
+    const notes = engineNotes().join("\n");
+    expect(notes).toContain("The MCP servers or command-line tools attached to");
+    expect(notes).not.toContain("or skills");
   });
 });
