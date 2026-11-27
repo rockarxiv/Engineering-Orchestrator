@@ -11230,10 +11230,21 @@ export function createRunSupervisor(
    * thread whether an engine comment in these words has been posted since
    * that move — by the move's own time, which is the real clock comments
    * are stamped with, never this supervisor's `now()`.
+   *
+   * Asked of every overrun, not only of the items whose blocker the
+   * scheduler names as `route_limit`: an item that arrived on a person's
+   * step or a terminal one is `step_not_dispatchable` first, and one
+   * waiting on a dependency or a reply is held by that first, yet the
+   * route was still taken past its limit and its owner still has to hear
+   * so. The one wait is the run that made the move, while it winds down,
+   * so that what it said is in the thread above the hold.
    */
   function noteRouteLimitHolds(input: TickInput<GateRefusal>): void {
-    for (const { item, blocker } of dispatchBlockers(input)) {
-      if (blocker.kind !== "route_limit") continue;
+    const running = new Set(input.activeRuns.map((run) => run.itemId as string));
+    const byId = new Map(input.items.map((item) => [item.id as string, item]));
+    for (const itemId of input.routeLimitHolds?.keys() ?? []) {
+      const item = byId.get(itemId);
+      if (item === undefined || running.has(itemId)) continue;
       const overrun = routeOverrunFor(db, item);
       const arrived = overrun?.traversals.at(-1);
       if (overrun === null || arrived === undefined) continue;
@@ -11258,7 +11269,11 @@ export function createRunSupervisor(
         kind: "escalation",
         mentions: [ownerMention(db, item)],
         parseBodyMentions: false,
-        body: routeLimitComment(step?.name ?? item.stepId ?? "this step", overrun, packLines),
+        body: routeLimitComment(
+          { name: step?.name ?? item.stepId ?? "this step", runs: step !== undefined && step.type !== "user" && !step.isTerminal },
+          overrun,
+          packLines,
+        ),
       });
       onItemChanged(item.id);
     }

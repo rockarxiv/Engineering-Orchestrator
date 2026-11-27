@@ -2,7 +2,20 @@ import type { Item, Uuid } from "@eo/core";
 import { and, eq } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DbHandle } from "../db/client.js";
-import { getItem, listCommentsForItem, listMentionsForComment, listRunsForItem, needsAttention, postComment, transitionItem } from "../db/repos/index.js";
+import {
+  createPipeline,
+  createPipelineVersion,
+  createStep,
+  getItem,
+  getStep,
+  listCommentsForItem,
+  listMentionsForComment,
+  listRoutesForPipeline,
+  listRunsForItem,
+  needsAttention,
+  postComment,
+  transitionItem,
+} from "../db/repos/index.js";
 import { stepRoutes } from "../db/schema.js";
 import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import { createRunSupervisor, type RunSupervisor } from "./runSupervisor.js";
@@ -207,5 +220,69 @@ describe("a pack's paragraph", () => {
     const parts = holdComments()[0]!.body.split("\n\n");
     expect(parts).toHaveLength(3);
     expect(parts[1]).toBe("Rounds counted: 2.");
+  });
+});
+
+describe("a route the scheduler would hold the item on for another reason first", () => {
+  it("asks the owner of an item that arrived on a terminal step, where nothing would run anyway", async () => {
+    setLimit("merge_request", "skipped", 1);
+    const target = listRoutesForPipeline(handle.db, "default").find((route) => route.fromStepId === "merge_request" && route.resultKey === "skipped")!.target;
+    expect(getStep(handle.db, target)?.isTerminal).toBe(true);
+    const engine = supervisor();
+    const skip = () => {
+      tick();
+      if (getItem(handle.db, item.id)?.stepId !== "merge_request") transitionItem(handle.db, { itemId: item.id, toStepId: "merge_request", actor: "human" });
+      tick();
+      transitionItem(handle.db, { itemId: item.id, toStepId: target, actor: "engine", reason: "run succeeded", resultKey: "skipped" });
+      tick();
+    };
+    skip();
+    await engine.runOnce();
+    expect(holdComments()).toEqual([]);
+
+    skip();
+    await engine.runOnce();
+    await engine.runOnce();
+    expect(getItem(handle.db, item.id)?.stepId).toBe(target);
+    const comments = holdComments();
+    expect(comments).toHaveLength(1);
+    expect(comments[0]!.body).toContain(
+      `Held before it goes on from "Done": the route "Merge Request" → No pull request has been taken 2 times since this ticket was filed, and its limit is 1.`,
+    );
+    expect(listMentionsForComment(handle.db, comments[0]!.id)).toEqual([expect.objectContaining({ status: "open" })]);
+    expect(needsAttention(handle.db, item.id)).toBe(true);
+  });
+});
+
+describe("a route into another pipeline", () => {
+  it("is counted by the pipeline the item left, and holds the item before the destination's step runs", async () => {
+    const mergeRequest = getStep(handle.db, "merge_request")!;
+    const other = createPipeline(handle.db, { name: "Elsewhere" });
+    createStep(handle.db, { id: "elsewhere", pipelineId: other.id, position: 0, name: "Elsewhere", type: mergeRequest.type, agentId: mergeRequest.agentId, entryAction: mergeRequest.entryAction });
+    createPipelineVersion(handle.db, other.id);
+    handle.db.update(stepRoutes).set({ target: "elsewhere" }).where(and(eq(stepRoutes.fromStepId, "review"), eq(stepRoutes.resultKey, "approved"))).run();
+    setLimit("review", "approved", 1);
+    const engine = supervisor();
+    const handOver = () => {
+      tick();
+      if (getItem(handle.db, item.id)?.stepId !== "review") transitionItem(handle.db, { itemId: item.id, toStepId: "review", toPipelineId: "default" as Uuid, actor: "human" });
+      tick();
+      transitionItem(handle.db, { itemId: item.id, toStepId: "elsewhere", toPipelineId: other.id, actor: "engine", reason: "run succeeded", resultKey: "approved" });
+      tick();
+    };
+
+    handOver();
+    await engine.runOnce();
+    expect(openPullRequest).toHaveBeenCalledTimes(1);
+
+    handOver();
+    expect(getItem(handle.db, item.id)?.pipelineId).toBe(other.id);
+    await engine.runOnce();
+    await engine.runOnce();
+    expect(openPullRequest).toHaveBeenCalledTimes(1);
+    const comments = holdComments();
+    expect(comments).toHaveLength(1);
+    expect(comments[0]!.body).toContain(`Held before "Elsewhere" runs: the route "Review" → Approved has been taken 2 times since this ticket was filed, and its limit is 1`);
+    expect(needsAttention(handle.db, item.id)).toBe(true);
   });
 });

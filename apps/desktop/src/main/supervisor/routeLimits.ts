@@ -1,7 +1,7 @@
 import type { Item, PipelineStep, StepRoute, Uuid } from "@eo/core";
 import type { RouteLimitHold } from "@eo/engine";
 import type { Db } from "../db/client.js";
-import { graphForItem, lastHumanCommentAt, latestResultArrivals, listRouteTraversals } from "../db/repos/index.js";
+import { getStep, graphForItem, lastHumanCommentAt, latestResultArrivals, listRouteTraversals } from "../db/repos/index.js";
 
 /**
  * Route traversal limits, the host's half (EO-921, ARCHITECTURE.md,
@@ -44,18 +44,36 @@ type Graph = { steps: PipelineStep[]; routes: StepRoute[] };
  *
  * Only items whose newest move was made on a declared result can be held,
  * so most of a board costs one lookup and nothing more. Each graph is read
- * once per tick: an item's own version's, as it routes by.
+ * once per tick.
+ *
+ * The route is the one the move took, so it is looked up in the graph of
+ * the pipeline the item left. Within one pipeline that is the item's own
+ * version's, as it routes by: a move within a pipeline keeps the version.
+ * A move into another pipeline rebinds the item to the destination's
+ * version, whose graph has no route out of the step the item left, so
+ * there the route is read from the pipeline its from-step belongs to.
+ * A move does not record the version it left, so that is the source
+ * pipeline's current graph — the one new work on it routes by.
  */
 export function routeOverruns(db: Db, items: readonly Item[]): Map<string, RouteOverrun> {
   const held = new Map<string, RouteOverrun>();
   const candidates = new Map(items.map((item) => [item.id as string, item]));
   const graphs = new Map<string, Graph>();
+  const graphOf = (bound: { pipelineId: string; pipelineVersionId: string | null }): Graph => {
+    const key = `${bound.pipelineId}\u0000${bound.pipelineVersionId ?? ""}`;
+    let graph = graphs.get(key);
+    if (graph === undefined) graphs.set(key, (graph = graphForItem(db, bound)));
+    return graph;
+  };
   for (const arrival of latestResultArrivals(db)) {
     const item = candidates.get(arrival.itemId);
     if (item === undefined || item.pipelineId === null) continue;
-    const key = `${item.pipelineId}\u0000${item.pipelineVersionId ?? ""}`;
-    let graph = graphs.get(key);
-    if (graph === undefined) graphs.set(key, (graph = graphForItem(db, item)));
+    let graph = graphOf({ pipelineId: item.pipelineId, pipelineVersionId: item.pipelineVersionId });
+    if (!graph.steps.some((step) => step.id === arrival.fromStepId)) {
+      const source = getStep(db, arrival.fromStepId)?.pipelineId;
+      if (source === undefined || source === item.pipelineId) continue;
+      graph = graphOf({ pipelineId: source, pipelineVersionId: null });
+    }
     const overrun = overrunOf(db, item, arrival, graph);
     if (overrun !== null) held.set(item.id, overrun);
   }
@@ -92,13 +110,21 @@ function overrunOf(db: Db, item: Item, arrival: { fromStepId: string; resultKey:
  * The comment that holds the item (EO-921, invariant 8): which route, how
  * many times and since when, the limit, and that a reply lets it carry
  * on. Each pack's paragraph about the route follows, where it has one.
+ *
+ * `runs` is whether anything would be dispatched on the step it arrived
+ * at. A person's step or a terminal one runs nothing by itself, so there
+ * the comment does not say a run is held — only that the route went past
+ * its limit and somebody should look.
  */
-export function routeLimitComment(stepName: string, overrun: RouteOverrun, packLines: readonly string[]): string {
+export function routeLimitComment(step: { name: string; runs: boolean }, overrun: RouteOverrun, packLines: readonly string[]): string {
   const { hold } = overrun;
   const since = hold.since === null ? "since this ticket was filed" : `since a person last commented, at ${new Date(hold.since).toLocaleString()}`;
+  const taken = `the route "${hold.fromStepName}" → ${hold.label} has been taken ${hold.count} times ${since}, and its limit is ${hold.limit}.`;
+  const said = `The move it just made has happened, so what "${hold.fromStepName}" said is above where it always is`;
   return [
-    `Held before "${stepName}" runs: the route "${hold.fromStepName}" → ${hold.label} has been taken ${hold.count} times ${since}, and its limit is ${hold.limit}. ` +
-      `The move it just made has happened, so what "${hold.fromStepName}" said is above where it always is; nothing runs here until somebody answers.`,
+    step.runs
+      ? `Held before "${step.name}" runs: ${taken} ${said}; nothing runs here until somebody answers.`
+      : `Held before it goes on from "${step.name}": ${taken} ${said}, and nothing runs on "${step.name}" by itself.`,
     ...packLines,
     "Reply here and it carries on from your reply, with the count starting again. Narrowing what the ticket asks for, or saying it should go on as it is, both count — or move it yourself.",
   ].join("\n\n");
