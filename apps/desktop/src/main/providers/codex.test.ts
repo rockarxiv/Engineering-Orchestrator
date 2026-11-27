@@ -4279,7 +4279,7 @@ describe("a fenced turn", () => {
   const startOptions = { instructions: "Implement.", context: "EO-1", cwd: "/tmp/wt", signal: new AbortController().signal, fence };
 
   it("is launched with EO's hook offered every call and marked trusted by the hash the CLI reported", async () => {
-    const { codex } = stubCodex([{ type: "thread.started", thread_id: "t" }, { type: "turn.completed", usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 } }]);
+    const { codex } = stubCodex([{ type: "thread.started", thread_id: "t" }, { type: "turn.completed", usage: { input_tokens: 1, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 1, reasoning_output_tokens: 0 } }]);
     const hooks: unknown[] = [];
     const provider = createCodexProvider({
       createCodex: (_repository, searchHook) => {
