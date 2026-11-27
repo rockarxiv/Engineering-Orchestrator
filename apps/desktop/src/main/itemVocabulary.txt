@@ -417,7 +417,9 @@ apps/desktop/src/main/supervisor/routeLimits.ts: "Reply here and it carries on f
 apps/desktop/src/main/supervisor/routeLimits.ts: const since = hold.since === null ? "since this ticket was filed" : `since a person last commented, at ${new Date(hold.since).toLocaleString()}`;
 apps/desktop/src/main/supervisor/routeResult.ts: "Ask the assistant to add a route for it, or move the ticket yourself.";
 apps/desktop/src/main/supervisor/routeResult.ts: `"${currentStep.name}" returned the result "${result}", which has no route configured, so the ticket has not moved. ` +
+apps/desktop/src/main/supervisor/routeTraversalLimit.test.ts: `Held before it goes on from "Done": the route "Merge Request" → No pull request has been taken 2 times since this ticket was filed, and its limit is 1.`,
 apps/desktop/src/main/supervisor/routeTraversalLimit.test.ts: expect(body).toContain(`the route "Review" → Approved has been taken 3 times since this ticket was filed, and its limit is 2`);
+apps/desktop/src/main/supervisor/routeTraversalLimit.test.ts: expect(comments[0]!.body).toContain(`Held before "Elsewhere" runs: the route "Review" → Approved has been taken 2 times since this ticket was filed, and its limit is 1`);
 apps/desktop/src/main/supervisor/runAttachments.test.ts: yield toolResultEvent({ name: ATTACHMENT_ADD_TOOL_NAME, callId: "call-1", ok: true, output: "EO accepted this file and is attaching it to the ticket in one comment:\n- shot.png" });
 apps/desktop/src/main/supervisor/runAttachments.ts: `EO attached ${attached.length === 1 ? "this file" : `these ${attached.length} files`} to the ticket in one comment (${comment.id}):\n` +
 apps/desktop/src/main/supervisor/runSupervisor.ts: "so this run's cost is not counted: the per-ticket and daily budgets cannot see it and will not stop it. " +
