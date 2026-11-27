@@ -1630,6 +1630,9 @@ const FENCE_CALL_CLASSES: Record<"claude" | "codex", Record<string, [string, unk
   },
 };
 
+/** What the hook decided, without what the turn recorded — for the turns whose observation names only the decisions. */
+const decisionsOnly = (observed: ReturnType<typeof fenceObserved>) => ({ refused: observed.refused, allowed: observed.allowed, reasonSaid: observed.reasonSaid });
+
 /** Which classes the fence refused and let through, whether every refusal said it was the fence, and the refusals the turn recorded. */
 function fenceObserved(answers: Record<string, unknown>, events: AgentEvent[]): { refused: string[]; allowed: string[]; reasonSaid: boolean; recorded: { rule: string; call: string }[] } {
   const decision = (answer: unknown) => (answer as { hookSpecificOutput?: { permissionDecision?: string; permissionDecisionReason?: string } } | null)?.hookSpecificOutput;
@@ -2952,8 +2955,8 @@ const CLAUDE: Record<CapabilityName, Proof> = {
       const events = await collect(resuming ? provider.resume("sess-1", "carry on", { cwd: "/tmp/wt", fence }) : provider.start({ ...startOpts, fence }));
       return fenceObserved(answers, events);
     };
-    const { recorded: _reviewerRecorded, ...reviewer } = await turn(REVIEWER_FENCE, false);
-    const { recorded: _resumedRecorded, ...resumed } = await turn(IMPLEMENTER_FENCE, true);
+    const reviewer = decisionsOnly(await turn(REVIEWER_FENCE, false));
+    const resumed = decisionsOnly(await turn(IMPLEMENTER_FENCE, true));
     return { implementer: await turn(IMPLEMENTER_FENCE, false), reviewer, resumed };
   },
 
@@ -4507,8 +4510,8 @@ const CODEX: Record<CapabilityName, Proof> = {
       const answers = Object.fromEntries(classes.map(([name], index) => [name, said[index]?.status === 200 ? (JSON.parse(said[index].body) as unknown) : null]));
       return fenceObserved(answers, events);
     };
-    const { recorded: _reviewerRecorded, ...reviewer } = await turn(REVIEWER_FENCE, false);
-    const { recorded: _resumedRecorded, ...resumed } = await turn(IMPLEMENTER_FENCE, true);
+    const reviewer = decisionsOnly(await turn(REVIEWER_FENCE, false));
+    const resumed = decisionsOnly(await turn(IMPLEMENTER_FENCE, true));
     return { implementer: await turn(IMPLEMENTER_FENCE, false), reviewer, resumed };
   },
 
