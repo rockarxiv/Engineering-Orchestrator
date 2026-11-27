@@ -148,15 +148,29 @@ export type Usage = {
 export type RateLimitWindow = { usedPercent: number; windowDurationMins: number | null; resetsAt: number | null };
 
 /**
+ * A member's monthly spend limit on a Business or Enterprise sign-in
+ * (EO-922), the app-server's `SpendControlLimitSnapshot` as 0.171.0
+ * declares it: `limit` and `used` are credits as decimal strings, and
+ * `resetsAt` is Unix seconds. Only the share and the reset are read.
+ */
+export type SpendControlLimit = { remainingPercent: number; resetsAt: number | null };
+
+/**
  * The fields of the app-server's `RateLimitSnapshot` EO reads. The rest —
- * credits, spend controls, the plan type — say nothing about whether a
- * turn will be answered, and are left where they arrived.
+ * credits, the plan type — say nothing about whether a turn will be
+ * answered, and are left where they arrived.
+ *
+ * `individualLimit` and `spendControlReached` are there only when the
+ * snapshot carried them (EO-922): a Plus or Pro sign-in sends them null,
+ * and its snapshot reads as it always has.
  */
 export type RateLimitSnapshot = {
   limitId: string | null;
   limitName: string | null;
   primary: RateLimitWindow | null;
   secondary: RateLimitWindow | null;
+  individualLimit?: SpendControlLimit;
+  spendControlReached?: boolean;
 };
 
 /** One MCP server's startup, as the app-server last reported it. `status` is its own word. */
@@ -1769,23 +1783,34 @@ function windowOf(value: unknown): RateLimitWindow | null {
   };
 }
 
+function spendControlLimitOf(value: unknown): SpendControlLimit | null {
+  if (!value || typeof value !== "object") return null;
+  const limit = value as { remainingPercent?: unknown; resetsAt?: unknown };
+  if (typeof limit.remainingPercent !== "number" || !Number.isFinite(limit.remainingPercent)) return null;
+  return { remainingPercent: limit.remainingPercent, resetsAt: typeof limit.resetsAt === "number" ? limit.resetsAt : null };
+}
+
 /**
  * The part of a `RateLimitSnapshot` EO reads, or null when it carries no
- * window at all. A rolling update is sparse by the protocol's own
- * account — a null window "does not clear a previously observed value" —
- * so a snapshot with neither window says nothing.
+ * window and no monthly spend limit (EO-922). A rolling update is sparse
+ * by the protocol's own account — a null window "does not clear a
+ * previously observed value" — so a snapshot with none of the three
+ * says nothing.
  */
 export function rateLimitSnapshotOf(value: unknown): RateLimitSnapshot | null {
   if (!value || typeof value !== "object") return null;
-  const snapshot = value as { limitId?: unknown; limitName?: unknown; primary?: unknown; secondary?: unknown };
+  const snapshot = value as { limitId?: unknown; limitName?: unknown; primary?: unknown; secondary?: unknown; individualLimit?: unknown; spendControlReached?: unknown };
   const primary = windowOf(snapshot.primary);
   const secondary = windowOf(snapshot.secondary);
-  if (!primary && !secondary) return null;
+  const individualLimit = spendControlLimitOf(snapshot.individualLimit);
+  if (!primary && !secondary && !individualLimit) return null;
   return {
     limitId: typeof snapshot.limitId === "string" ? snapshot.limitId : null,
     limitName: typeof snapshot.limitName === "string" ? snapshot.limitName : null,
     primary,
     secondary,
+    ...(individualLimit ? { individualLimit } : {}),
+    ...(typeof snapshot.spendControlReached === "boolean" ? { spendControlReached: snapshot.spendControlReached } : {}),
   };
 }
 

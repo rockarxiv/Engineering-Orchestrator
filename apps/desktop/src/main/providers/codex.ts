@@ -674,14 +674,20 @@ function codexWindowName(snapshot: RateLimitSnapshot, window: RateLimitWindow, s
         : minutes % 60 === 0
           ? `${minutes / 60}_hour`
           : `${minutes}_minute`;
+  return codexLimitPrefixed(snapshot, length);
+}
+
+/** A window's name with the limit's in front, when the limit is not the plan's own (`codexWindowName`). */
+function codexLimitPrefixed(snapshot: RateLimitSnapshot, name: string): string {
   const limit = snapshot.limitId !== null && snapshot.limitId !== "codex" ? (snapshot.limitName ?? snapshot.limitId) : null;
-  return limit ? `${limit}_${length}` : length;
+  return limit ? `${limit}_${name}` : name;
 }
 
 /**
  * One `account/rateLimits/updated` reading as EO's `quota` events, one
- * per window it carries (EO-373) — the same events Claude's
- * `rate_limit_event` becomes, recorded the same way.
+ * per window it carries (EO-373) and one for a monthly spend limit
+ * (EO-922, below) — the same events Claude's `rate_limit_event`
+ * becomes, recorded the same way.
  *
  * - **utilization** is `usedPercent`, already on `QuotaEvent`'s 0–100
  *   scale;
@@ -711,6 +717,22 @@ export function codexRateLimitReadings(snapshot: RateLimitSnapshot): QuotaEvent[
       utilization: window.usedPercent,
       status: window.usedPercent >= 100 ? "rejected" : "allowed",
       ...(window.resetsAt === null ? {} : { resetsAt: window.resetsAt }),
+    });
+  }
+  // A Business or Enterprise sign-in's monthly spend limit (EO-922),
+  // which `codex /status` draws as "Monthly credit limit": used is what
+  // is not remaining, and the workspace's own `spendControlReached`
+  // refuses it whatever the share says.
+  const monthly = snapshot.individualLimit;
+  if (monthly) {
+    const utilization = 100 - monthly.remainingPercent;
+    readings.push({
+      type: "quota",
+      provider: PROVIDER,
+      window: codexLimitPrefixed(snapshot, "monthly_credits"),
+      utilization,
+      status: utilization >= 100 || snapshot.spendControlReached === true ? "rejected" : "allowed",
+      ...(monthly.resetsAt === null ? {} : { resetsAt: monthly.resetsAt }),
     });
   }
   return readings;

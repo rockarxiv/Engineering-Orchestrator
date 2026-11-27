@@ -48,14 +48,18 @@ export type PlanUsageView = z.infer<typeof PlanUsageViewSchema>;
 export const PLAN_USAGE_WARNING_PERCENT = 80;
 
 /**
- * The two windows drawn as bars, by the names either backend gives
- * them: Claude's `five_hour` and `seven_day`, and the `5_hour` and
- * `7_day` Codex's are named from their lengths (`codexWindowName`).
- * Every other window is not drawn as a bar; a refusal on one is a note.
+ * The windows drawn as bars, by the names either backend gives them:
+ * Claude's `five_hour` and `seven_day`, the `5_hour` and `7_day` Codex's
+ * are named from their lengths (`codexWindowName`), and the
+ * `monthly_credits` a Codex Business or Enterprise sign-in's monthly
+ * spend limit becomes (EO-922). A bar is drawn only where a reading
+ * exists. Every other window is not drawn as a bar; a refusal on one is
+ * a note.
  */
 export const PLAN_USAGE_BARS = [
   { label: "5h", windows: ["five_hour", "5_hour"] },
   { label: "Week", windows: ["seven_day", "7_day"] },
+  { label: "Month", windows: ["monthly_credits"] },
 ] as const;
 
 /**

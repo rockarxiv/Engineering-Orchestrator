@@ -2643,6 +2643,35 @@ describe("createCodexProvider over a stubbed app-server", () => {
     ]);
   });
 
+  it("records a Business sign-in's monthly credit limit during a run as the read does (EO-922)", async () => {
+    const business = {
+      method: "account/rateLimits/updated",
+      params: {
+        rateLimits: {
+          limitId: "codex",
+          limitName: null,
+          normalModelSlug: null,
+          primary: null,
+          secondary: null,
+          credits: { hasCredits: true, unlimited: false, balance: null },
+          individualLimit: { limit: "60000", used: "8412.35610795021", remainingPercent: 86, resetsAt: 1_797_292_800 },
+          spendControlReached: false,
+          planType: "business",
+          rateLimitReachedType: null,
+        },
+      },
+    };
+    const { provider } = providerOver({
+      after: { "turn/start": [note.turnStarted(), business, note.agentMessage("done"), note.tokenUsage({ input: 10, output: 2 }), note.turnCompleted()] },
+    });
+
+    const events = await collect(provider.start({ ...startOpts, cwd: worktree() }));
+
+    expect(events.filter((event) => event.type === "quota")).toEqual([
+      { type: "quota", provider: "codex", window: "monthly_credits", utilization: 14, status: "allowed", resetsAt: 1_797_292_800 },
+    ]);
+  });
+
   it("reports which of its MCP servers came up, once every one it was given has settled", async () => {
     const { provider } = providerOver(
       {
