@@ -208,14 +208,14 @@ function onTheRecord(): Message[] {
     .filter((message): message is Message => message !== undefined);
 }
 
-/** 0185's own backfill, as the migration file has it — everything after the ALTER that adds the column. */
-const BACKFILL_0185 = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../db/migrations/0185_message_from_record.sql"), "utf8").split("--> statement-breakpoint")[1] as string;
+/** 0186's own backfill, as the migration file has it — everything after the ALTER that adds the column. */
+const BACKFILL_0185 = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../db/migrations/0186_message_from_record.sql"), "utf8").split("--> statement-breakpoint")[1] as string;
 
 /**
- * A desktop as a build from before 0184 left it, then upgraded (EO-918):
+ * A desktop as a build from before 0185 left it, then upgraded (EO-918):
  * its messages cursor in the shape kept then, who handled each message
  * dropped as that build's pull dropped it, and where each lives as the
- * migration decides it — the ALTER's default, then 0185's own backfill.
+ * migration decides it — the ALTER's default, then 0186's own backfill.
  */
 function upgradeFromBefore0184(machine: Desktop): void {
   const cursor = getSetting<Record<string, unknown>>(machine.handle.db, "record.messagesCursor", {});
@@ -387,7 +387,7 @@ describe("a message about a project the organisation's record holds", () => {
     await annaLaptop.record.sync();
     expect(getMessage(annaLaptop.handle.db, mine.id)?.handledBy).toEqual({ kind: "assistant", agentId: "the-assistant" });
 
-    // The laptop as it stood before 0184: the press pulled with who
+    // The laptop as it stood before 0185: the press pulled with who
     // dropped, and its cursor past it in the shape it kept then.
     const cursor = getSetting<Record<string, unknown>>(annaLaptop.handle.db, "record.messagesCursor", {});
     setSetting(annaLaptop.handle.db, "record.messagesCursor", { ts: cursor.ts, id: cursor.id, deviceId: cursor.deviceId });
@@ -879,7 +879,7 @@ describe("who handled a message pressed before EO kept who (EO-918)", () => {
   it("reads as the person on the record once it marks every message its own at launch, and so on the copy a desktop pulls", async () => {
     const pressed = insertMessage(recordDb.db, { recipientId: annaId, source: JOB_MESSAGE_SOURCE.skipped, body: "Skipped.", options: ["Leave it"] });
     markMessageHandled(recordDb.db, pressed.id, "answered", "Leave it");
-    // As 0185's backfill, which cannot tell the record's database from a desktop's, may leave it.
+    // As 0186's backfill, which cannot tell the record's database from a desktop's, may leave it.
     recordDb.db.update(messages).set({ handledBy: null, fromRecord: true }).run();
     expect(getMessage(recordDb.db, pressed.id)?.handledBy).toBeNull();
 

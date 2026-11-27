@@ -582,7 +582,7 @@ export function startMain(platform: Platform): RunningMain {
   }
 
   // EO-918: the record holds no copies of anybody's messages, whatever
-  // 0185's backfill — which cannot tell its database from a desktop's —
+  // 0186's backfill — which cannot tell its database from a desktop's —
   // took some of them for.
   if (!platform.hasMachine) markEveryMessageOwn(db);
 

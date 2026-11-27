@@ -408,7 +408,7 @@ export function forgetHandledRecordMessages(db: Db, recipientId: string): number
 
 /**
  * Marks every message here this database's own (EO-918), on the
- * organisation's record at launch: the record holds no copies, and 0185's
+ * organisation's record at launch: the record holds no copies, and 0186's
  * backfill — which cannot tell a record's database from a desktop's —
  * may have taken some of its messages for one, which would read who
  * handled a press made there before the column as not known.
