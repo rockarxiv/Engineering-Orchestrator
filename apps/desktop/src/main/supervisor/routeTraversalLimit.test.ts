@@ -14,6 +14,8 @@ import {
   listRunsForItem,
   needsAttention,
   postComment,
+  listPipelineVersions,
+  prunePipelineVersions,
   transitionItem,
 } from "../db/repos/index.js";
 import { stepRoutes } from "../db/schema.js";
@@ -322,5 +324,41 @@ describe("a route into another pipeline", () => {
     expect(openPullRequest).toHaveBeenCalledTimes(1);
     expect(holdComments()).toHaveLength(1);
     expect(holdComments()[0]!.body).toContain(`the route "Review" → Approved has been taken 2 times since this ticket was filed, and its limit is 1`);
+  });
+
+  it("keeps the version the move left through pruning, so a save elsewhere does not release the item", async () => {
+    const mergeRequest = getStep(handle.db, "merge_request")!;
+    const other = createPipeline(handle.db, { name: "Elsewhere" });
+    createStep(handle.db, { id: "elsewhere", pipelineId: other.id, position: 0, name: "Elsewhere", type: mergeRequest.type, agentId: mergeRequest.agentId, entryAction: mergeRequest.entryAction });
+    createPipelineVersion(handle.db, other.id);
+    handle.db.update(stepRoutes).set({ target: "elsewhere" }).where(and(eq(stepRoutes.fromStepId, "review"), eq(stepRoutes.resultKey, "approved"))).run();
+    setLimit("review", "approved", 1);
+    const limited = createPipelineVersion(handle.db, "default");
+    const handOver = () => {
+      tick();
+      if (getItem(handle.db, item.id)?.stepId !== "review") transitionItem(handle.db, { itemId: item.id, toStepId: "review", toPipelineId: "default" as Uuid, actor: "human" });
+      tick();
+      transitionItem(handle.db, { itemId: item.id, toStepId: "elsewhere", toPipelineId: other.id, actor: "engine", reason: "run succeeded", resultKey: "approved" });
+      tick();
+    };
+    handOver();
+    handOver();
+    setLimit("review", "approved", null);
+    createPipelineVersion(handle.db, "default");
+    expect(routeOverrunFor(handle.db, getItem(handle.db, item.id)!)?.hold.limit).toBe(1);
+
+    // A save of the source prunes down to one version; the one the move left stays.
+    prunePipelineVersions(handle.db, "default", 1);
+    expect(listPipelineVersions(handle.db, "default").map((version) => version.id)).toContain(limited.id);
+    expect(routeOverrunFor(handle.db, getItem(handle.db, item.id)!)?.hold.limit).toBe(1);
+    await supervisor().runOnce();
+    expect(openPullRequest).not.toHaveBeenCalled();
+    expect(holdComments()).toHaveLength(1);
+
+    // Once the item has moved on by hand, nothing holds that version any longer.
+    tick();
+    transitionItem(handle.db, { itemId: item.id, toStepId: "review", toPipelineId: "default" as Uuid, actor: "human" });
+    prunePipelineVersions(handle.db, "default", 1);
+    expect(listPipelineVersions(handle.db, "default").map((version) => version.id)).not.toContain(limited.id);
   });
 });

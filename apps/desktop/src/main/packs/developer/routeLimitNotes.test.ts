@@ -2,8 +2,8 @@ import { REVIEW_VERDICT_EVENT, type Item, type ReviewVerdictEvent, type Uuid } f
 import { and, eq } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DbHandle } from "../../db/client.js";
-import { appendRunEvent, createRun, getItem, listCommentsForItem, listRunsForItem, transitionItem } from "../../db/repos/index.js";
-import { stepRoutes } from "../../db/schema.js";
+import { appendRunEvent, createPipeline, createPipelineVersion, createRun, createStep, getItem, getStep, listCommentsForItem, listRunsForItem, transitionItem } from "../../db/repos/index.js";
+import { pipelineSteps, stepRoutes } from "../../db/schema.js";
 import { createTestItem, openMigratedTestDb } from "../../db/testHelpers.js";
 import { routeOverrunFor } from "../../supervisor/routeLimits.js";
 import { createRunSupervisor } from "../../supervisor/runSupervisor.js";
@@ -91,6 +91,39 @@ describe("the review rounds line", () => {
     const overrun = routeOverrunFor(handle.db, getItem(handle.db, item.id)!)!;
     expect(overrun.hold.resultKey).toBe("checks_failed");
     expect(reviewRoundsNote(handle.db, getItem(handle.db, item.id)!, overrun)).toBeNull();
+  });
+
+  it("reads the step's action from the version the move left, for a route into another pipeline", () => {
+    const todo = getStep(handle.db, "todo")!;
+    const other = createPipeline(handle.db, { name: "Elsewhere" });
+    createStep(handle.db, { id: "elsewhere", pipelineId: other.id, position: 0, name: "Elsewhere", type: todo.type, agentId: todo.agentId, entryAction: todo.entryAction });
+    createPipelineVersion(handle.db, other.id);
+    handle.db.update(stepRoutes).set({ target: "elsewhere", traversalLimit: 1 }).where(and(eq(stepRoutes.fromStepId, "review"), eq(stepRoutes.resultKey, "changes_requested"))).run();
+    createPipelineVersion(handle.db, "default");
+    const handOver = (recorded: ReviewVerdictEvent) => {
+      tick();
+      if (getItem(handle.db, item.id)?.stepId !== "review") transitionItem(handle.db, { itemId: item.id, toStepId: "review", toPipelineId: "default" as Uuid, actor: "human" });
+      tick();
+      const run = createRun(handle.db, { itemId: item.id, agentId: null, action: "review", stepId: "review", status: "succeeded", threadId: "t" });
+      appendRunEvent(handle.db, run.id, REVIEW_VERDICT_EVENT, recorded);
+      tick();
+      transitionItem(handle.db, { itemId: item.id, toStepId: "elsewhere", toPipelineId: other.id, actor: "engine", runId: run.id, reason: "run succeeded", resultKey: "changes_requested" });
+    };
+
+    handOver(verdict(2, 6));
+    tick();
+    transitionItem(handle.db, { itemId: item.id, toStepId: "review", toPipelineId: "default" as Uuid, actor: "human" });
+    // A newer version of the source no longer reviews on that step; the item is still on the one that does.
+    handle.db.update(pipelineSteps).set({ entryAction: "implement" }).where(eq(pipelineSteps.id, "review")).run();
+    createPipelineVersion(handle.db, "default");
+    handOver(verdict(4, 6));
+
+    const overrun = routeOverrunFor(handle.db, getItem(handle.db, item.id)!)!;
+    expect(overrun.hold).toMatchObject({ count: 2, limit: 1 });
+    expect(overrun.fromStep?.entryAction).toBe("review");
+    expect(reviewRoundsNote(handle.db, getItem(handle.db, item.id)!, overrun)).toBe(
+      "Acceptance criteria met in each of these 2 review rounds, oldest first: 2 of 6, 4 of 6.",
+    );
   });
 
   it("is on the comment that holds the item, through the pack the engine installs", async () => {

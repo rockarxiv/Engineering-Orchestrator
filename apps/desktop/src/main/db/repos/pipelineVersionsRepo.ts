@@ -2,7 +2,7 @@ import { and, asc, desc, eq, inArray, isNotNull, isNull, sql, type SQL } from "d
 import { DEFAULT_PIPELINE_VERSIONS_TO_KEEP, EntryRulesSchema, PipelineGraphSnapshotSchema, PipelineVersionsToKeepSchema, moduleUpdateOfAuthor, templateUpdateAuthor, templateUpdateOfAuthor, uuidv7, versionLabel } from "@eo/core";
 import type { EntryRule, PipelineGraphSnapshot, PipelineStep, StepRoute, Uuid, VersionRoute, VersionStep } from "@eo/core";
 import type { Db } from "../client.js";
-import { items, pipelineVersions, pipelines, publishedSections } from "../schema.js";
+import { items, pipelineVersions, pipelines, publishedSections, transitions } from "../schema.js";
 import { getSetting, setSetting } from "./settingsRepo.js";
 import { getStep, listPipelineSteps, listRetiredStepsForPipeline, listRoutesForPipeline, listStepsForPipeline } from "./pipelineStepsRepo.js";
 
@@ -948,6 +948,12 @@ export function setPipelineVersionsToKeep(db: Db, count: number): void {
  *   reach** — a hand-off drawn in another pipeline's older version can
  *   still deliver work onto that step, and `versionForArrival` binds the
  *   arrival to the version that has it;
+ * - **the version an item's newest move left**, where that move was made
+ *   on a declared result (EO-921): a move into another pipeline rebinds
+ *   the item, and a route traversal limit's hold reads the route it took
+ *   from the version it left (`routeOverruns`), so deleting that version
+ *   would let an unrelated save release the item without a reply. One
+ *   version per item at most, since only its newest move can hold it;
  * - **the highest number the pipeline has used**, always. `highestNumber`
  *   is the newest row, so deleting it would hand its number out again —
  *   and "finishes on v6" would become a sentence with two answers. The
@@ -996,6 +1002,20 @@ export function prunePipelineVersions(db: Db, pipelineId: string, keep: number):
     ))
     .all()) {
     if (row.versionId !== null) kept.add(row.versionId);
+  }
+
+  // The version each item's newest move left, where a route limit may
+  // still be holding it there (EO-921) — archived items too, as above.
+  for (const row of db.all<{ versionId: string }>(sql`
+    select distinct t.from_pipeline_version_id as "versionId"
+    from ${items} i
+    join ${transitions} t on t.id = (
+      select t2.id from ${transitions} t2 where t2.item_id = i.id order by t2.ts desc, t2.id desc limit 1
+    )
+    where t.result_key is not null
+      and t.from_pipeline_version_id in (${sql.join(candidates.map((version) => sql`${version.id}`), sql`, `)})
+  `)) {
+    kept.add(row.versionId);
   }
 
   // A retired step something can still deliver work onto keeps the

@@ -25,6 +25,12 @@ import { getPipelineVersion, getStep, graphForItem, lastHumanCommentAt, latestRe
 export interface RouteOverrun {
   hold: RouteLimitHold;
   route: StepRoute;
+  /**
+   * The step the route leaves, from the same graph the route was read
+   * from — for a route into another pipeline, the version the move left,
+   * not the item's current one. Null only where that graph has lost it.
+   */
+  fromStep: PipelineStep | null;
   /** The moves counted, oldest first: the last is the one that brought the item here. */
   traversals: readonly { id: Uuid; runId: Uuid | null; ts: number }[];
 }
@@ -54,9 +60,10 @@ type Graph = { steps: PipelineStep[]; routes: StepRoute[] };
  * there the route is read from the version the move left, which the move
  * records (`transitions.from_pipeline_version_id`): a limit cleared in a
  * later version of the source does not release an item still on an
- * earlier one, and one set later does not hold it. A move recorded
- * before that column, or from a version since pruned, reads the source
- * pipeline's current graph.
+ * earlier one, and one set later does not hold it; pruning keeps that
+ * version while the move is the item's newest (`prunePipelineVersions`).
+ * A move recorded before that column reads the source pipeline's current
+ * graph.
  */
 export function routeOverruns(db: Db, items: readonly Item[]): Map<string, RouteOverrun> {
   const held = new Map<string, RouteOverrun>();
@@ -97,10 +104,11 @@ function overrunOf(db: Db, item: Item, arrival: { fromStepId: string; resultKey:
   const since = lastHumanCommentAt(db, item.id);
   const traversals = listRouteTraversals(db, item.id, route.fromStepId, route.resultKey, since);
   if (traversals.length <= route.traversalLimit) return null;
+  const fromStep = graph.steps.find((step) => step.id === route.fromStepId) ?? null;
   return {
     hold: {
       fromStepId: route.fromStepId,
-      fromStepName: graph.steps.find((step) => step.id === route.fromStepId)?.name ?? route.fromStepId,
+      fromStepName: fromStep?.name ?? route.fromStepId,
       resultKey: route.resultKey,
       label: route.label,
       count: traversals.length,
@@ -108,6 +116,7 @@ function overrunOf(db: Db, item: Item, arrival: { fromStepId: string; resultKey:
       since,
     },
     route,
+    fromStep,
     traversals,
   };
 }

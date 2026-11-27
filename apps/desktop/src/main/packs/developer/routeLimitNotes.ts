@@ -1,6 +1,6 @@
 import { REVIEW_ACTION, type Item, type ReviewVerdictEvent } from "@eo/core";
 import type { Db } from "../../db/client.js";
-import { reviewVerdictsOfRuns, stepForItem } from "../../db/repos/index.js";
+import { reviewVerdictsOfRuns } from "../../db/repos/index.js";
 import type { RouteLimitNote, RouteOverrun } from "../../supervisor/routeLimits.js";
 
 /**
@@ -17,8 +17,9 @@ import type { RouteLimitNote, RouteOverrun } from "../../supervisor/routeLimits.
  * `qa` step that reviews is read the same (invariant 7).
  */
 export const reviewRoundsNote: RouteLimitNote = (db: Db, item: Item, overrun: RouteOverrun): string | null => {
-  const from = stepForItem(db, { pipelineId: item.pipelineId, pipelineVersionId: item.pipelineVersionId, stepId: overrun.route.fromStepId });
-  if (from?.entryAction !== REVIEW_ACTION) return null;
+  // The step as the graph the route was read from has it: for a route
+  // into another pipeline, the version the move left, not the item's own.
+  if (overrun.fromStep?.entryAction !== REVIEW_ACTION) return null;
   const verdicts = reviewVerdictsOfRuns(
     db,
     overrun.traversals.flatMap((traversal) => (traversal.runId === null ? [] : [traversal.runId])),
