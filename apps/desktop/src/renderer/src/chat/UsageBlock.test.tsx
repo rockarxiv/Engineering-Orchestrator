@@ -134,6 +134,21 @@ describe("the rail's Usage block", () => {
     expect((meter("Claude", "Week").querySelector('[data-testid="usage-fill"]') as HTMLElement).style.width).toBe("61%");
   });
 
+  it("draws a Month bar for a Codex Business sign-in's monthly credit limit, and none for a backend without that reading (EO-922)", async () => {
+    await rendered({
+      usage: {
+        backends: [backend("claude", { five_hour: { utilization: 34 }, seven_day: { utilization: 61 } }), backend("codex", { monthly_credits: { utilization: 14, resetsAt: NOW + 30 * 24 * 60 * MINUTE } })],
+      },
+    });
+
+    expect(meter("Codex", "Month")).toHaveTextContent("14%");
+    expect((meter("Codex", "Month").querySelector('[data-testid="usage-fill"]') as HTMLElement).style.width).toBe("14%");
+    expect(meter("Codex", "5h")).toBeNull();
+    expect(meter("Codex", "Week")).toBeNull();
+    expect(meter("Claude", "Month")).toBeNull();
+    expect(meter("Claude", "5h")).toHaveTextContent("34%");
+  });
+
   it("gives no group to a backend that is not installed, disabled or signed out, and draws nothing when none qualifies", async () => {
     await rendered({ runtimes: { claude: runtime("claude", { source: "absent", state: "needs_consent" }), codex: runtime("codex", { state: "disabled", enabled: false }) } });
     expect(screen.queryByRole("region", { name: "Usage" })).toBeNull();
