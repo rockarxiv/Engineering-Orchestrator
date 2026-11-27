@@ -2152,7 +2152,7 @@ export const runs = sqliteTable("runs", {
   // `none` workspace hands back nothing. Read on both resume paths,
   // which is why the rename is a migration rather than a fresh column.
   cwd: text("cwd"),
-  // Where the run was dispatched (EO-912, migration 0184): the bucket
+  // Where the run was dispatched (EO-912, migration 0185): the bucket
   // its item was in at the step it was dispatched from, as a one-entry
   // list, or `[]` for a dispatch on no shared disk. Written once, by the
   // supervisor, on the dispatch of a step's own entry action, and null
@@ -2161,7 +2161,7 @@ export const runs = sqliteTable("runs", {
   // is one of this machine's workspaces. What the overlap hold counts
   // an item as in flight by; read by `listDispatches`.
   dispatchedIn: text("dispatched_in", { mode: "json" }).$type<string[]>(),
-  // What `dispatched_in` rests on (EO-912, migration 0184): `stamped`,
+  // What `dispatched_in` rests on (EO-912, migration 0185): `stamped`,
   // written as the run was made; `inferred`, read once from the item's
   // own definition of the step for a run from before the stamp
   // (`freezeLegacyDispatches`), which holds others but never lets the

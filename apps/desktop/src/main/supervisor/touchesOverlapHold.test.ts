@@ -404,7 +404,7 @@ describe("in flight where it worked", () => {
 const MIGRATIONS = join(dirname(fileURLToPath(import.meta.url)), "..", "db", "migrations");
 
 /**
- * Runs from before the stamp (EO-912, migration 0184), as an upgraded
+ * Runs from before the stamp (EO-912, migration 0185), as an upgraded
  * installation has them: written by a launch that had no
  * `dispatched_in`, then migrated. Read once as the supervisor starts —
  * by the item's own definition of the step as it stands then — and kept
@@ -419,7 +419,7 @@ describe("runs from before the stamp", () => {
   const repositoryKinds = () =>
     new Map<WorkspaceKindSlug, WorkspaceKind>([[GIT_WORKTREE_KIND, fakeWorkspaceKind({ capacityKeyOf: (item) => workspaceFor(handle.db, item)?.id ?? null })]]);
 
-  /** A run as a launch before 0184 wrote it: no column for where it worked. */
+  /** A run as a launch before 0185 wrote it: no column for where it worked. */
   function oldRun(itemId: string, stepId: string, action: string): string {
     const id = uuidv7();
     handle.db.run(sql`INSERT INTO runs (id, item_id, agent_id, action, step_id, status, thread_id) VALUES (${id}, ${itemId}, NULL, ${action}, ${stepId}, 'succeeded', 'thread-old')`);
@@ -429,10 +429,10 @@ describe("runs from before the stamp", () => {
   beforeEach(() => {
     handle.close();
     handle = openDb(":memory:");
-    // Every migration before 0184, and nothing after.
+    // Every migration before 0185, and nothing after.
     tempDir = mkdtempSync(join(tmpdir(), "eo-dispatched-in-"));
     const journal = JSON.parse(readFileSync(join(MIGRATIONS, "meta", "_journal.json"), "utf8")) as { entries: { tag: string }[] };
-    const kept = journal.entries.slice(0, journal.entries.findIndex((entry) => entry.tag.startsWith("0184_")));
+    const kept = journal.entries.slice(0, journal.entries.findIndex((entry) => entry.tag.startsWith("0185_")));
     mkdirSync(join(tempDir, "meta"), { recursive: true });
     writeFileSync(join(tempDir, "meta", "_journal.json"), JSON.stringify({ ...journal, entries: kept }));
     for (const entry of kept) writeFileSync(join(tempDir, `${entry.tag}.sql`), readFileSync(join(MIGRATIONS, `${entry.tag}.sql`), "utf8"));

@@ -248,7 +248,7 @@ function placeByDefinition(db: Db, item: Item, stepId: string, action: string, c
 
 /**
  * Reads, once, every run from before the stamp (EO-912, basis `legacy`,
- * migration 0184) by the item's own definition of the step as it stands
+ * migration 0185) by the item's own definition of the step as it stands
  * now, and writes the reading down (`inferred`), so that no later move
  * to another version, edit of the step or change of workspace can read
  * it again differently — the reviewer's case was a holder moved to a
