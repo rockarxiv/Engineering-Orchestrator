@@ -31,6 +31,7 @@ import {
 import { resolveStackTargetWithAnswer } from "../workspace/stackAnswer.js";
 import { baseRefFor } from "../workspace/stackTarget.js";
 import { worktreePathFor } from "../workspace/worktrees.js";
+import { isSkippedStep } from "../workspace/verify.js";
 import { itemBranchName, workNameFor } from "../workspace/workName.js";
 import type { PullRequestFacts } from "./body.js";
 import { createCliRunner, type CliRunner } from "./cli.js";
@@ -949,7 +950,7 @@ function implementSummary(db: Db, itemId: Uuid): string | null {
  */
 function factsFor(db: Db, itemId: Uuid, baseBranch: string): PullRequestFacts {
   const item = getItem(db, itemId)!;
-  const verification = latestSucceeded(db, itemId, "implement")?.verification as { steps?: { name?: string; ok?: boolean; skipped?: boolean }[] } | null | undefined;
+  const verification = latestSucceeded(db, itemId, "implement")?.verification as { steps?: { name?: string; ok?: boolean }[] } | null | undefined;
   // The site comes from the project's Jira binding (KAN-130): the eight
   // `jira*` columns that used to sit on the repository are one binding
   // per project now, so the item's project is what the link is built
@@ -970,7 +971,7 @@ function factsFor(db: Db, itemId: Uuid, baseBranch: string): PullRequestFacts {
     acceptanceCriteria: Array.isArray(criteria) ? criteria.filter((entry): entry is string => typeof entry === "string") : [],
     checks: (verification?.steps ?? [])
       .filter((step) => typeof step.name === "string")
-      .map((step) => ({ name: step.name!, passed: step.ok === true, ...(step.skipped === true ? { notChecked: true } : {}) })),
+      .map((step) => ({ name: step.name!, passed: step.ok === true, ...(isSkippedStep(step) ? { notChecked: true } : {}) })),
     jiraKey: issueKey,
     jiraUrl: issueKey && jiraBase ? `${jiraBase}/browse/${issueKey}` : null,
     reference: name.kind === "reference" ? name.value : null,

@@ -240,6 +240,24 @@ export function formatVerificationComment(itemKey: string, result: VerificationR
 }
 
 /**
+ * Whether one step of a verification — fresh, or read back from
+ * `runs.verification` — is a check skipped because no command is
+ * configured for it (EO-927).
+ *
+ * The `skipped` mark, or, on a step recorded before the mark existed,
+ * the exact detail the verifier wrote for a missing command then:
+ * `No test command configured — skipped.`. Read from what that run
+ * recorded and never from today's repository settings, which say
+ * nothing about what ran back then.
+ */
+export function isSkippedStep(step: unknown): boolean {
+  if (typeof step !== "object" || step === null) return false;
+  const { name, ok, skipped, detail } = step as { name?: unknown; ok?: unknown; skipped?: unknown; detail?: unknown };
+  if (skipped === true) return typeof name === "string";
+  return ok === true && (name === "test" || name === "lint" || name === "build") && detail === `No ${name} command configured — skipped.`;
+}
+
+/**
  * The checks a verification skipped because no command is configured
  * for them (EO-927), by name. Reads the stored JSON as well as a fresh
  * result, so a caller holding `runs.verification` can ask it too.
@@ -248,9 +266,5 @@ export function notCheckedSteps(verification: unknown): string[] {
   if (typeof verification !== "object" || verification === null) return [];
   const steps = (verification as { steps?: unknown }).steps;
   if (!Array.isArray(steps)) return [];
-  return steps.flatMap((step: unknown) => {
-    if (typeof step !== "object" || step === null) return [];
-    const { name, skipped } = step as { name?: unknown; skipped?: unknown };
-    return skipped === true && typeof name === "string" ? [name] : [];
-  });
+  return steps.flatMap((step: unknown) => (isSkippedStep(step) ? [(step as { name: string }).name] : []));
 }

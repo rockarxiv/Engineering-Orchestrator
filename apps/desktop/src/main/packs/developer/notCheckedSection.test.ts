@@ -86,6 +86,24 @@ describe("the reviewer's dispatch", () => {
     expect(text).toContain("## No tests were run");
   });
 
+  it("says no tests were run for a branch verified before skipped checks were marked, from what that run recorded", async () => {
+    // The verifier's words for a missing command before EO-927, with no
+    // `skipped` mark: the run row is what says the tests never ran.
+    const legacy = (name: string) => ({ name, ok: true, detail: `No ${name} command configured — skipped.` });
+    const item = implemented({ ok: true, steps: [...mechanical, legacy("test"), passed("lint"), legacy("build")] });
+
+    const text = await buildSeedContext(handle.db, item, reviewer, "review", renderers());
+
+    expect(text).toContain("## No tests were run");
+    expect(text).toContain("There is no build command configured either");
+  });
+
+  it("does not take a passing step for a skipped one because its detail mentions skipping", async () => {
+    const item = implemented({ ok: true, steps: [...mechanical, { name: "test", ok: true, detail: "`pnpm test -- --skipped` passed." }, passed("lint"), passed("build")] });
+
+    expect(await buildSeedContext(handle.db, item, reviewer, "review", renderers())).not.toContain("No tests were run");
+  });
+
   it("is not the implementer's", async () => {
     const item = implemented({ ok: true, steps: [...mechanical, skipped("test"), skipped("lint"), skipped("build")] });
 

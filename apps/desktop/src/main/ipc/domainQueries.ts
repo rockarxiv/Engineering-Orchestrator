@@ -1838,16 +1838,23 @@ function dependsOnSection(db: Db, item: Item) {
  */
 /**
  * The checks a run's verification skipped because no command is
- * configured for them (EO-927): the steps it marked `skipped`, by name.
- * Read off the stored JSON the way `verificationOk` is, so a run written
- * before the mark answers with none.
+ * configured for them (EO-927), by name, read off the stored JSON the way
+ * `verificationOk` is: the steps marked `skipped`, and on a run verified
+ * before the mark existed, the steps carrying the exact detail the
+ * verifier wrote for a missing command then. From what the run recorded,
+ * never from today's repository settings.
+ *
+ * The same reading as the developer pack's `isSkippedStep`, written again
+ * here because this file may not reach into the pack (invariant 13).
  */
 function notCheckedOf(verification: unknown): string[] {
   const steps = typeof verification === "object" && verification !== null ? (verification as { steps?: unknown }).steps : undefined;
   if (!Array.isArray(steps)) return [];
   return steps.flatMap((step: unknown) => {
-    const { name, skipped } = typeof step === "object" && step !== null ? (step as { name?: unknown; skipped?: unknown }) : {};
-    return skipped === true && typeof name === "string" ? [name] : [];
+    const { name, ok, skipped, detail } = typeof step === "object" && step !== null ? (step as { name?: unknown; ok?: unknown; skipped?: unknown; detail?: unknown }) : {};
+    if (typeof name !== "string") return [];
+    const legacy = ok === true && ["test", "lint", "build"].includes(name) && detail === `No ${name} command configured — skipped.`;
+    return skipped === true || legacy ? [name] : [];
   });
 }
 

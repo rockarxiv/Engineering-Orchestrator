@@ -525,6 +525,37 @@ describe("verifyImplementation", () => {
   });
 });
 
+describe("notCheckedSteps", () => {
+  it("reads the skipped mark, and the pre-EO-927 detail for a missing command where there is no mark", () => {
+    expect(
+      notCheckedSteps({
+        ok: true,
+        steps: [
+          { name: "branch", ok: true, detail: "1 commit(s)." },
+          { name: "test", ok: true, detail: "No test command configured — skipped." },
+          { name: "lint", ok: true, skipped: true, detail: "No lint command configured — not checked." },
+          { name: "build", ok: true, detail: "`pnpm build` passed." },
+        ],
+      }),
+    ).toEqual(["test", "lint"]);
+  });
+
+  it("takes no step for skipped on a detail that only resembles the old one", () => {
+    expect(
+      notCheckedSteps({
+        ok: false,
+        steps: [
+          { name: "test", ok: false, detail: "No test command configured — skipped." },
+          { name: "clean", ok: true, detail: "No clean command configured — skipped." },
+          { name: "lint", ok: true, detail: "No test command configured — skipped." },
+        ],
+      }),
+    ).toEqual([]);
+    expect(notCheckedSteps(null)).toEqual([]);
+    expect(notCheckedSteps({ steps: "nope" })).toEqual([]);
+  });
+});
+
 describe("formatVerificationComment", () => {
   it("leads with the failing step and attaches its output", async () => {
     const created = await createWorktree(config(), "EO-40");

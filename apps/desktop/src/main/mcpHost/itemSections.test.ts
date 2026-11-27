@@ -192,4 +192,25 @@ describe("item_get with the limits", () => {
 
     expect(textOf(result)).toContain("verification passed — not checked: test)");
   });
+
+  it("says the same of a run verified before skipped checks were marked, from the detail it recorded (EO-927)", async () => {
+    const implement = listRunsForItem(handle.db, item.id).find((run) => run.action === "implement")!;
+    updateRun(handle.db, implement.id, {
+      status: "succeeded",
+      verification: {
+        ok: true,
+        steps: [
+          { name: "test", ok: true, detail: "No test command configured — skipped." },
+          { name: "lint", ok: true, detail: "`pnpm lint` passed." },
+          { name: "build", ok: true, detail: "No build command configured — skipped." },
+        ],
+      },
+    });
+
+    const result = await call("item_get", { itemId: item.id, include: ["runs"] });
+
+    expect(textOf(result)).toContain("verification passed — not checked: test, build)");
+    const runs = (result.structuredContent as { runs: { action: string; verificationNotChecked: string[] }[] }).runs;
+    expect(runs.find((run) => run.action === "implement")?.verificationNotChecked).toEqual(["test", "build"]);
+  });
 });
