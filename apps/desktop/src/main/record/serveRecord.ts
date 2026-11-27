@@ -1,4 +1,5 @@
 import {
+  HANDLED_BY_PERSON,
   PERSON_SKILL_AUTHOR,
   SKILLS_SETTLED_EVENT,
   LOCAL_PERSON_ID,
@@ -511,12 +512,16 @@ export function serveSendMessage(context: ServeRecordContext, payload: IpcPayloa
  * `openMessageOf` turns back into its person. The message is answered
  * whenever it is theirs, so the desktop's copy ends up as this one is.
  */
-export function serveHandleMessage(context: ServeRecordContext, payload: IpcPayload<"record:handleMessage">): IpcResponse<"record:handleMessage"> {
+export function serveHandleMessage(context: ServeRecordContext, payload: IpcPayload<"record:handleMessage"> | IpcPayload<"record:handleMessageFor">): IpcResponse<"record:handleMessage"> {
   const { db } = context;
   const person = personOfDevice(db, payload.deviceId);
   const held = getMessage(db, payload.messageId);
   const theirs = person !== undefined && held !== undefined && held.recipientId === person.id ? held : null;
-  const handled = handleMessageHere(db, { messageId: payload.messageId, how: payload.how, answer: payload.answer, actingDeviceId: payload.deviceId });
+  // Who pressed is the asking device's word (EO-918): its person on
+  // `record:handleMessage`, or the assistant or an outside MCP client
+  // acting for them there on `record:handleMessageFor`.
+  const by = "by" in payload ? payload.by : HANDLED_BY_PERSON;
+  const handled = handleMessageHere(db, { messageId: payload.messageId, how: payload.how, answer: payload.answer, actingDeviceId: payload.deviceId, by });
   if (handled.ok) return { message: handled.message, problem: null };
   return { message: theirs === null ? null : (getMessage(db, theirs.id) ?? null), problem: handled.problem };
 }

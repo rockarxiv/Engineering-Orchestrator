@@ -147,6 +147,7 @@ const REACHED_BY_A_DESKTOP: Partial<Record<keyof typeof ipcContract, string>> = 
   // recipients' desktops.
   "record:sendMessage": "record/remoteRecord.ts — a desktop asks the record to send EO's message about a project it holds to each admin",
   "record:handleMessage": "record/remoteRecord.ts — a desktop asks the record to mark a message it holds answered or dismissed when a person presses in the Inbox",
+  "record:handleMessageFor": "record/remoteRecord.ts — a desktop asks the record to mark a message it holds answered or dismissed when EO's assistant or an outside MCP client presses for its person",
   "record:messages": "record/drain.ts — the device pulls its person's messages the record holds",
   "record:changeDependencies": "record/remoteRecord.ts — a desktop asks the record to change what an item waits for when a person or item_update sends addDependsOn, removeDependsOn or updateDependsOn",
   "record:updateItemType": "record/remoteRecord.ts — a desktop asks the record to change an item type of a project it holds when a person saves one in settings or presses an item-type card (EO-735)",

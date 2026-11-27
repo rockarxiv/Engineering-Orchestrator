@@ -140,6 +140,20 @@ export function pending<T>(db: Db, kind: PendingKind, limit = 200): PendingRow<T
     }));
 }
 
+/**
+ * Drops every message deferred for this person (EO-918), before a pull
+ * that reads their messages from the beginning — which defers again
+ * whatever of it the record still keeps, as the record has it now. The
+ * one place a row here is let go unplaced: what replaces it is the
+ * record saying the same thing again, or saying it no longer has it.
+ */
+export function forgetPendingMessagesOf(db: Db, recipientId: string): number {
+  return db
+    .delete(recordPending)
+    .where(and(eq(recordPending.kind, "message"), sql`json_extract(${recordPending.payload}, '$.recipientId') = ${recipientId}`))
+    .run().changes;
+}
+
 /** Takes rows off, because they have been written down at last. */
 export function settled(db: Db, ids: readonly string[]): void {
   if (ids.length === 0) return;

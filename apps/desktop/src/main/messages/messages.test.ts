@@ -42,6 +42,7 @@ describe("the messages table", () => {
       handledAt: null,
       handledHow: null,
       answer: null,
+      handledBy: null,
     });
   });
 

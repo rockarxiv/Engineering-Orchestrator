@@ -24,6 +24,8 @@ export interface DeviceIdentity {
   personId: string;
   personName: string;
   isAdmin: boolean;
+  /** Whether it signed in running work and holds a secrets key: a desktop, never a browser (EO-328, EO-918). */
+  runsWork: boolean;
 }
 
 export interface IssueDeviceInput {
@@ -138,7 +140,7 @@ export function deviceByTokenHash(db: Db, tokenHash: string): DeviceIdentity | u
     .where(eq(devices.tokenHash, tokenHash))
     .get();
   if (row === undefined || row.device.revokedAt !== null) return undefined;
-  return { deviceId: row.device.id, personId: row.device.personId, personName: row.personName, isAdmin: row.isAdmin };
+  return { deviceId: row.device.id, personId: row.device.personId, personName: row.personName, isAdmin: row.isAdmin, runsWork: row.device.secretsKeyHash !== null };
 }
 
 /**

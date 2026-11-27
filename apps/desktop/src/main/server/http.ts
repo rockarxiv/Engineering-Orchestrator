@@ -8,6 +8,8 @@ import {
   isActorScopedChannel,
   isAdminOnlyChannel,
   isDeviceScopedChannel,
+  isDesktopOnlyChannel,
+  notADesktopRefusal,
   notADeviceRefusal,
   withDeviceIdentity,
   isMachineChannel,
@@ -83,6 +85,11 @@ export interface HttpCaller {
   admin: boolean;
   /** The device row to touch, so the admin's list can say when it was last seen. */
   deviceId: string | null;
+  /**
+   * Whether this token is a desktop's: a device that signed in running
+   * work, which a browser never does (EO-918). Absent reads as not.
+   */
+  runsWork?: boolean;
 }
 
 /**
@@ -470,6 +477,17 @@ async function handleIpc(
       return;
     }
     payload = withDeviceIdentity(channel, payload, caller.deviceId);
+  }
+
+  // And, on the few of those that carry a desktop's word about who
+  // pressed (EO-918), only a desktop's. The door vouches for the device
+  // and not for `by`, so it takes `by` only from a token the served
+  // renderer never holds — a device that signed in running work — and
+  // never from a request a browser made, whatever token it carries. A
+  // browser's press is the person's, on `record:handleMessage`.
+  if (isDesktopOnlyChannel(channel) && (caller?.runsWork !== true || fromABrowser(request))) {
+    sendEnvelope(response, 200, notADesktopRefusal(channel));
+    return;
   }
 
   // And who is asking, for the channels that answer on behalf of a

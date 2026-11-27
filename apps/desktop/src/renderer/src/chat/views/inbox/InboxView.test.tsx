@@ -56,6 +56,7 @@ function message(overrides: Partial<Message> = {}): Message {
     handledAt: null,
     handledHow: null,
     answer: null,
+    handledBy: null,
     ...overrides,
   };
 }
@@ -65,7 +66,7 @@ function summary(overrides: Partial<InboxSummary> = {}): InboxSummary {
 }
 
 function renderInbox(
-  data: { items: InboxItem[]; messages?: Message[]; summary: InboxSummary },
+  data: { items: InboxItem[]; messages?: Message[]; handledMessages?: Message[]; summary: InboxSummary; problem?: string },
   onCall?: (channel: string, payload: unknown) => void,
   settings = { doNotDisturb: false },
   fits?: number,
@@ -76,7 +77,7 @@ function renderInbox(
     if (channel === "settings:get") return { ok: true, data: settings };
     if (channel === "settings:set") return { ok: true, data: payload };
     if (channel === "comments:post") return { ok: true, data: { commentId: "new", resumedRun: true } };
-    if (channel === "messages:answer" || channel === "messages:dismiss") return { ok: true, data: { message: data.messages?.[0] } };
+    if (channel === "messages:answer" || channel === "messages:dismiss") return { ok: true, data: data.problem === undefined ? { message: data.messages?.[0], problem: null } : { message: null, problem: data.problem } };
     if (channel === "items:list") return { ok: true, data: { items: data.items.map((entry) => ({ id: entry.itemId, key: entry.itemKey })) } };
     if (channel === "items:listArchived") return { ok: true, data: { items: [] } };
     if (channel === "projects:list") return { ok: true, data: { projects: [], activeProjectId: null } };
@@ -509,6 +510,32 @@ describe("messages from EO in the inbox (EO-725)", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Dismiss" }));
     await waitFor(() => expect(calls.find((call) => call.channel === "messages:dismiss")?.payload).toEqual({ messageId: "m1" }));
+  });
+
+  it("says why a press was refused, in the words the channel answered with (EO-918)", async () => {
+    renderInbox({ items: [], messages: [message()], summary: summary({ blockingCount: 0 }), problem: "That message was already answered by the assistant." });
+
+    fireEvent.click(await screen.findByRole("button", { name: "Keep mine" }));
+
+    expect(await screen.findByText("That message was already answered by the assistant.")).toBeInTheDocument();
+  });
+
+  it("shows the recently handled messages, each with how it ended and who ended it (EO-918)", async () => {
+    renderInbox({
+      items: [],
+      messages: [],
+      handledMessages: [
+        message({ id: "h1", body: "Claude's plan limit was reached.", handledAt: NOW - 5_000, handledHow: "answered", answer: "Carry on now", handledBy: { kind: "assistant", agentId: "a1" } }),
+        message({ id: "h2", body: "A job was skipped.", handledAt: NOW - 9_000, handledHow: "dismissed", handledBy: { kind: "mcp_client" } }),
+        message({ id: "h3", body: "Keep it?", handledAt: NOW - 10_000, handledHow: "answered", answer: "Keep mine", handledBy: { kind: "person" } }),
+      ],
+      summary: summary({ openCount: 0, blockingCount: 0 }),
+    });
+
+    const handled = await screen.findByRole("region", { name: "Handled recently" });
+    expect(handled).toHaveTextContent("Claude's plan limit was reached.Answered Carry on now · by the assistant");
+    expect(handled).toHaveTextContent("A job was skipped.Dismissed · by an outside MCP client");
+    expect(handled).toHaveTextContent("Keep it?Answered Keep mine · by you");
   });
 
   it("publishes the message as the selection, by its id", async () => {

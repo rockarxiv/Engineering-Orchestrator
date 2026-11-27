@@ -1,4 +1,4 @@
-import { answerOptions, LOCAL_PERSON_ID, type IpcPayload, type IpcResponse, type Message, type MessageSend, type Uuid } from "@eo/core";
+import { answerOptions, HANDLED_BY_PERSON, handledByWords, LOCAL_PERSON_ID, type IpcPayload, type Message, type MessageHandledBy, type MessageSend, type Uuid } from "@eo/core";
 import type { Db } from "../db/client.js";
 import { getJob, getMessage, insertMessage, listOpenMessages, listPeople, markMessageHandled, markMessagesAboutResolved, reviseOpenMessage, sweepHandledMessages } from "../db/repos/index.js";
 import { actingCaller } from "../identity/acting.js";
@@ -13,9 +13,12 @@ import { startInterval } from "../schedule/interval.js";
  * The sender API. EO code that needs a person to answer or act on
  * something no item is about — a template update it could not apply, a
  * job guard — calls `sendMessage`, and `resolveMessage` once what it
- * asked about was settled some other way. Never an agent: agents never
- * send or read messages, so an item's thread stays the whole context the
- * next agent gets (invariant 4).
+ * asked about was settled some other way. Never an agent: no agent sends
+ * a message. Its recipient answers or dismisses it, in the Inbox or
+ * through an outside MCP client or EO's assistant acting for them
+ * (EO-918, `message_answer` / `message_dismiss`); a step-owning agent
+ * never sends, reads or handles one, so an item's thread stays the whole
+ * context the next agent gets (invariant 4).
  *
  * Every change pushes `messages:changed`, which every window's inbox and
  * the dock badge and OS notification (`createInboxNotifier`) listen on.
@@ -44,6 +47,22 @@ export interface MessageHandling {
   answer: string | null;
   /** Who is pressing, as the `messages:*` channels carry it. */
   actingDeviceId?: string | null | undefined;
+  /**
+   * Who pressed for that person (EO-918): the person themself, EO's
+   * assistant, or an outside MCP client. Absent is the person.
+   */
+  by?: MessageHandledBy | undefined;
+}
+
+/**
+ * Who is pressing, as the door stamped it on a `messages:*` payload
+ * (EO-918): the system agent the administrative MCP host named, an
+ * outside client the external host marked, or else the person.
+ */
+export function messageHandlerOf(payload: { actingAgentId?: string | undefined; actingMcpClient?: true | undefined }): MessageHandledBy {
+  if (payload.actingAgentId !== undefined) return { kind: "assistant", agentId: payload.actingAgentId };
+  if (payload.actingMcpClient === true) return { kind: "mcp_client" };
+  return HANDLED_BY_PERSON;
 }
 
 export type MessageHandlingAnswer = { ok: true; message: Message } | { ok: false; problem: string };
@@ -87,14 +106,18 @@ export function handleMessageHere(db: Db, request: MessageHandling, now: number 
     const payload = { messageId: request.messageId, ...(request.actingDeviceId === undefined ? {} : { actingDeviceId: request.actingDeviceId }) };
     const { message } =
       request.how === "answered"
-        ? answerMessageCommand(db, { ...payload, answer: request.answer ?? "" }, now)
-        : dismissMessageCommand(db, payload, now);
+        ? answerMessageCommand(db, { ...payload, answer: request.answer ?? "" }, now, request.by)
+        : dismissMessageCommand(db, payload, now, request.by);
     // What an answer sets going, where the message lives: "Run it now" on
     // a skip fires its occurrence (EO-729). Any other message, nothing.
     if (message.handledHow === "answered") actOnAnswer(db, message);
     return { ok: true, message };
   } catch (error) {
-    return { ok: false, problem: error instanceof Error ? error.message : String(error) };
+    // Only a refusal is an answer (EO-918). Anything else — a write the
+    // database failed — is a fault, and stays on the error path that
+    // keeps its text from the caller in a packaged build.
+    if (error instanceof MessageRefusal) return { ok: false, problem: error.message };
+    throw error;
   }
 }
 
@@ -198,36 +221,63 @@ export function openMessagesFor(db: Db, actingDeviceId: string | null | undefine
   return listOpenMessages(db, messageRecipientsFor(db, actingDeviceId));
 }
 
-/** The message, if it is open and the caller's to handle. Throws the sentence the person is shown otherwise. */
+/**
+ * Why a press on a message was refused, in the sentence the person — or
+ * the client acting for them — is shown (EO-918): not theirs, no longer
+ * open, an answer it does not offer. The one error `handleMessageHere`
+ * turns into an answer; any other is a fault and is thrown on.
+ */
+export class MessageRefusal extends Error {}
+
+/** The message, if it is open and the caller's to handle. Throws a `MessageRefusal` in the sentence the person is shown otherwise. */
 export function openMessageOf(db: Db, messageId: string, actingDeviceId: string | null | undefined): Message {
   const message = getMessage(db, messageId);
   if (!message || !messageRecipientsFor(db, actingDeviceId).includes(message.recipientId)) {
-    throw new Error("That message is not one of yours, or it has been deleted.");
+    throw new MessageRefusal("That message is not one of yours, or it has been deleted.");
   }
-  if (message.handledAt !== null) throw new Error(`That message was already ${message.handledHow ?? "handled"}.`);
+  if (message.handledAt !== null) {
+    // Said with who, where it was not the person (EO-918): an agent told
+    // "already answered" by the assistant knows not to ask the person.
+    const by = message.handledBy === null || message.handledBy.kind === "person" ? "" : ` by ${handledByWords(message.handledBy)}`;
+    throw new MessageRefusal(`That message was already ${message.handledHow ?? "handled"}${by}.`);
+  }
   return message;
 }
 
-/** `messages:answer`: the recipient answers with one of the message's offered answers. */
-export function answerMessageCommand(db: Db, payload: IpcPayload<"messages:answer">, now: number = Date.now()): IpcResponse<"messages:answer"> {
+/**
+ * `messages:answer`: the recipient answers with one of the message's
+ * offered answers — pressed by them, or by `by` for them (EO-918), which
+ * is read off the payload's door stamps unless given.
+ */
+export function answerMessageCommand(
+  db: Db,
+  payload: IpcPayload<"messages:answer">,
+  now: number = Date.now(),
+  by: MessageHandledBy = messageHandlerOf(payload),
+): { message: Message } {
   const message = openMessageOf(db, payload.messageId, payload.actingDeviceId);
   if (!answerOptions(message.options).includes(payload.answer)) {
-    throw new Error(`"${payload.answer}" is not one of the answers this message offers.`);
+    throw new MessageRefusal(`"${payload.answer}" is not one of the answers this message offers.`);
   }
-  return { message: handled(db, message.id, "answered", payload.answer, now) };
+  return { message: handled(db, message.id, "answered", payload.answer, now, by) };
 }
 
-/** `messages:dismiss`: the recipient closes it without answering. */
-export function dismissMessageCommand(db: Db, payload: IpcPayload<"messages:dismiss">, now: number = Date.now()): IpcResponse<"messages:dismiss"> {
+/** `messages:dismiss`: the recipient closes it without answering, as `answerMessageCommand` says who. */
+export function dismissMessageCommand(
+  db: Db,
+  payload: IpcPayload<"messages:dismiss">,
+  now: number = Date.now(),
+  by: MessageHandledBy = messageHandlerOf(payload),
+): { message: Message } {
   const message = openMessageOf(db, payload.messageId, payload.actingDeviceId);
-  return { message: handled(db, message.id, "dismissed", null, now) };
+  return { message: handled(db, message.id, "dismissed", null, now, by) };
 }
 
-function handled(db: Db, messageId: string, how: "answered" | "dismissed", answer: string | null, now: number): Message {
-  const message = markMessageHandled(db, messageId, how, answer, now);
+function handled(db: Db, messageId: string, how: "answered" | "dismissed", answer: string | null, now: number, by: MessageHandledBy): Message {
+  const message = markMessageHandled(db, messageId, how, answer, now, by);
   // Handled between the read above and this write — by EO resolving it,
   // or a second window. Said, rather than claiming this press did it.
-  if (!message) throw new Error("That message was handled in the meantime.");
+  if (!message) throw new MessageRefusal("That message was handled in the meantime.");
   emitPush("messages:changed", {});
   return message;
 }

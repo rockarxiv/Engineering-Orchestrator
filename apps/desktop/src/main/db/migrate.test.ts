@@ -4090,3 +4090,63 @@ describe("0174: a side call's cache figures and fork (EO-811)", () => {
     }
   });
 });
+
+describe("0186: whether a message is a replica's copy of the record's (EO-918)", () => {
+  /** A database at 0185 holding these messages, with a messages cursor kept or not, migrated on to today; answers each message's `from_record`. */
+  function upgraded(pulledBefore: boolean): Record<string, unknown> {
+    const handle = openDb(":memory:");
+    const tempDir = mkdtempSync(join(tmpdir(), "eo-message-from-record-"));
+    try {
+      writeMigrationSetBefore(tempDir, "0186_message_from_record");
+      runMigrations(handle.db, tempDir);
+      handle.db.run(sql`INSERT INTO projects (id, name, key_prefix, created_at, updated_at, managed_at) VALUES ('moved', 'Moved', 'MOV', 1, 1, 100)`);
+      handle.db.run(sql`INSERT INTO projects (id, name, key_prefix, created_at, updated_at) VALUES ('kept', 'Kept', 'KEP', 1, 1)`);
+      handle.db.run(sql`INSERT INTO projects (id, name, key_prefix, created_at, updated_at, adopting_at) VALUES ('moving', 'Moving', 'MVG', 1, 1, 90)`);
+      handle.db.run(
+        sql`INSERT INTO jobs (id, project_id, name, trigger, owner_id, created_at, updated_at) VALUES ('job', NULL, 'Tidy', '{"kind":"manual"}', ${LOCAL_PERSON_ID}, 1, 1)`,
+      );
+      if (pulledBefore) handle.db.run(sql`INSERT INTO app_settings (key, value, updated_at) VALUES ('record.messagesCursor', '{"ts":5,"id":"x","deviceId":"d"}', 1)`);
+      for (const [id, recipientId, projectId, jobId, subject] of [
+        ["copy-about-a-moved-project", "anna", "moved", null, null],
+        ["copy-about-a-moving-project", "anna", "moving", null, null],
+        ["copy-about-a-record-job", "anna", null, null, null],
+        ["with-a-subject", "anna", "moved", null, "conflict-1"],
+        ["to-the-local-person", LOCAL_PERSON_ID, "moved", null, null],
+        ["about-a-job-here", "anna", null, "job", null],
+        ["about-a-kept-project", "anna", "kept", null, null],
+      ] as const) {
+        handle.db.run(
+          sql`INSERT INTO messages (id, recipient_id, project_id, job_id, source, body, created_at, handled_at, handled_how, subject) VALUES (${id}, ${recipientId}, ${projectId}, ${jobId}, 'template_conflict', 'Body', 150, 200, 'answered', ${subject})`,
+        );
+      }
+
+      runMigrations(handle.db, join(dirname(fileURLToPath(import.meta.url)), "migrations"));
+
+      return Object.fromEntries(handle.db.all<{ id: string; from_record: unknown }>(sql`SELECT id, from_record FROM messages`).map((row) => [row.id, row.from_record]));
+    } finally {
+      handle.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  }
+
+  it("marks a message a copy only where its row has none of the marks every desktop sender leaves, and never by a clock", () => {
+    expect(upgraded(true)).toEqual({
+      "copy-about-a-moved-project": 1,
+      "copy-about-a-moving-project": 1,
+      // A record-held job's: the job is dropped from the copy, since the record's jobs never reach a desktop.
+      "copy-about-a-record-job": 1,
+      // A replica's copy never has a subject…
+      "with-a-subject": 0,
+      // …nor the local person as its recipient (`sendMessageHere`)…
+      "to-the-local-person": 0,
+      // …nor a job this desktop holds…
+      "about-a-job-here": 0,
+      // …nor is it ever about a project kept here.
+      "about-a-kept-project": 0,
+    });
+  });
+
+  it("marks a copy about no project a copy where the older pull that wrote it stopped before saving its cursor", () => {
+    expect(upgraded(false)).toMatchObject({ "copy-about-a-record-job": 1, "copy-about-a-moved-project": 1, "about-a-job-here": 0, "to-the-local-person": 0 });
+  });
+});

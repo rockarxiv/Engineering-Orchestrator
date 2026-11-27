@@ -57,8 +57,24 @@ export interface FakeAppServerScenario {
    * CLI runs would (EO-379), and waits for the answer before going on.
    * The answer is appended to `hookAnswers`, where the scenario names a
    * file, one JSON line per payload: `{ status, body }` (EO-732).
+   * `{ callMcp }` calls a tool on the MCP server EO configured under that
+   * name, as the real CLI would (EO-918): at the `mcp_servers.<server>.url`
+   * EO put on this process's command line, with the bearer from the
+   * variable its `bearer_token_env_var` names in this process's
+   * environment, then reports the call as a completed (or failed)
+   * `mcpToolCall` item carrying what the server answered.
    */
-  after?: Record<string, ({ method: string; params: unknown } | { exit: number; stderr?: string } | { request: string } | { wait: number } | { fireHook: Record<string, unknown> })[]>;
+  after?: Record<
+    string,
+    (
+      | { method: string; params: unknown }
+      | { exit: number; stderr?: string }
+      | { request: string }
+      | { wait: number }
+      | { fireHook: Record<string, unknown> }
+      | { callMcp: { server: string; tool: string; arguments: Record<string, unknown>; id?: string } }
+    )[]
+  >;
   /**
    * What to send after answering a method in a process that has forked a
    * thread, in place of `after`'s — so the turn on a fork can say
@@ -116,6 +132,46 @@ const defaults = (message) => {
     default: return {};
   }
 };
+// What EO put on the command line as -c <key>=<value>, read as the CLI
+// would: the launch arguments follow the scenario on this argv (EO-918).
+const launchConfig = (key) => {
+  const args = process.argv.slice(3);
+  for (let index = 0; index < args.length - 1; index++) {
+    if (args[index] !== "-c") continue;
+    const at = args[index + 1].indexOf("=");
+    if (at > 0 && args[index + 1].slice(0, at) === key) return JSON.parse(args[index + 1].slice(at + 1));
+  }
+  return undefined;
+};
+// One tool call over MCP's streamable HTTP, to the server EO configured.
+async function callMcp(call) {
+  const url = launchConfig("mcp_servers." + call.server + ".url");
+  const tokenVariable = launchConfig("mcp_servers." + call.server + ".bearer_token_env_var");
+  const headers = { "content-type": "application/json", accept: "application/json, text/event-stream" };
+  if (tokenVariable && process.env[tokenVariable]) headers.authorization = "Bearer " + process.env[tokenVariable];
+  let session;
+  const post = async (message) => {
+    const response = await fetch(url, { method: "POST", headers: session ? Object.assign({}, headers, { "mcp-session-id": session }) : headers, body: JSON.stringify(message) });
+    session = response.headers.get("mcp-session-id") || session;
+    const text = await response.text();
+    if (!response.ok) throw new Error("HTTP " + response.status + ": " + text);
+    if (message.id === undefined) return undefined;
+    const bodies = (response.headers.get("content-type") || "").includes("text/event-stream")
+      ? text.split(String.fromCharCode(10)).filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trim())
+      : [text];
+    return bodies.map((body) => JSON.parse(body)).find((answer) => answer.id === message.id);
+  };
+  try {
+    if (!url) throw new Error("EO configured no MCP server called " + call.server);
+    await post({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "fake-codex", version: "0" } } });
+    await post({ jsonrpc: "2.0", method: "notifications/initialized" });
+    const answer = await post({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: call.tool, arguments: call.arguments } });
+    if (!answer || answer.error) return { status: "failed", result: null, error: { message: answer ? answer.error.message : "no answer" } };
+    return { status: "completed", result: { content: answer.result.content, structuredContent: answer.result.structuredContent || null }, error: null };
+  } catch (error) {
+    return { status: "failed", result: null, error: { message: String((error && error.message) || error) } };
+  }
+}
 let thread = scenario.threadId || "thr-fake";
 let forked = false;
 const lines = readline.createInterface({ input: process.stdin });
@@ -152,6 +208,13 @@ lines.on("line", async (line) => {
       if (scenario.hookAnswers) require("node:fs").appendFileSync(scenario.hookAnswers, JSON.stringify(answer) + "\n");
       continue;
     }
+    if (next.callMcp !== undefined) {
+      const call = next.callMcp;
+      const outcome = await callMcp(call);
+      const item = { type: "mcpToolCall", id: call.id || "call-1", server: call.server, tool: call.tool, status: outcome.status, arguments: call.arguments, result: outcome.result, error: outcome.error, durationMs: 1 };
+      send({ method: "item/completed", params: { item, threadId: thread, turnId: scenario.turnId || "turn-1", completedAtMs: 0 } });
+      continue;
+    }
     if (next.exit !== undefined) {
       if (next.stderr) process.stderr.write(next.stderr);
       process.exit(next.exit);
@@ -185,7 +248,7 @@ export function fakeAppServer(scenario: FakeAppServerScenario = {}): FakeAppServ
     spawn: (command, args, options) => {
       // The options EO chose are kept and honoured — `env` and the rest —
       // but the program is Node running the scenario.
-      const child = spawn(process.execPath, [nodeScript(SOURCE), JSON.stringify(scenario)], { ...options, stdio: ["pipe", "pipe", "pipe"], windowsHide: true }) as ChildProcessWithoutNullStreams;
+      const child = spawn(process.execPath, [nodeScript(SOURCE), JSON.stringify(scenario), ...args], { ...options, stdio: ["pipe", "pipe", "pipe"], windowsHide: true }) as ChildProcessWithoutNullStreams;
       launches.push({ command, args, options, pid: child.pid });
       const write = child.stdin.write.bind(child.stdin) as (chunk: unknown, ...rest: unknown[]) => boolean;
       child.stdin.write = ((chunk: unknown, ...rest: unknown[]) => {

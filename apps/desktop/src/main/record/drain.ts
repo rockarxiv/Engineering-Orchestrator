@@ -29,13 +29,13 @@ import { signedInPersonId } from "../identity/viewer.js";
 import { getComment, setCommentPinned, settleMention } from "../db/repos/commentsRepo.js";
 import { getItem } from "../db/repos/itemsRepo.js";
 import { getSetting, setSetting } from "../db/repos/settingsRepo.js";
-import { forgetMessagesGoneFromTheRecord, upsertReplicaMessage } from "../db/repos/messagesRepo.js";
+import { forgetHandledRecordMessages, forgetMessagesGoneFromTheRecord, upsertReplicaMessage } from "../db/repos/messagesRepo.js";
 import { noticeMissingStepAgents, settleMissingStepAgents } from "./stepAgentsHere.js";
 import { emitPush } from "../ipc/push.js";
 import { z } from "zod";
 import { hasTransition } from "../db/repos/transitionsRepo.js";
 import { setReplicaAssignee, upsertReplicaItem } from "../db/repos/replicaRepo.js";
-import { getProject, projectMovedToTheRecord, upsertReplicaProject } from "../db/repos/projectsRepo.js";
+import { getProject, upsertReplicaProject } from "../db/repos/projectsRepo.js";
 import { getItemType, upsertReplicaItemType } from "../db/repos/itemTypesRepo.js";
 import { upsertReplicaPipeline, upsertReplicaProjectAgent } from "../db/repos/projectMoveRepo.js";
 import { heldByTheRecord, retireObsoleteHold } from "../gallery/templateUpdates.js";
@@ -52,7 +52,7 @@ import {
   noteAttachmentRemoved,
   removeItemAttachment,
 } from "../db/repos/attachmentsRepo.js";
-import { pending, pendingWithKeyPrefix, remember, rememberLatest, settled, triedAgain, type PendingKind } from "../db/repos/recordPendingRepo.js";
+import { forgetPendingMessagesOf, pending, pendingWithKeyPrefix, remember, rememberLatest, settled, triedAgain, type PendingKind } from "../db/repos/recordPendingRepo.js";
 import { backfillDone, backfillsOutstanding, rememberBackfill, wantBackfill } from "../db/repos/recordBackfillsRepo.js";
 import { getAgent, recordStampOf } from "../db/repos/agentsRepo.js";
 import { attachArrivedTools, getAgentAttachments, type UnarrivedTools } from "../db/repos/agentAttachmentsRepo.js";
@@ -1317,8 +1317,20 @@ async function applyChanges(options: DrainOptions, changes: RecordChanges): Prom
  */
 const MESSAGES_CURSOR_KEY = "record.messagesCursor";
 
+/**
+ * Marks a cursor kept by a desktop that writes down who handled each
+ * message (EO-918, migration 0185). One kept before that may have read
+ * past a message the assistant or an outside MCP client handled and
+ * dropped who, which would read as the person's press for good: such a
+ * cursor is not trusted, so the first pull after the upgrade reads the
+ * person's retained messages again from the beginning, once — and, as
+ * every pull from the beginning does, first drops the handled copies the
+ * record may have swept since, so none is left reading as the person's.
+ */
+const MESSAGES_CURSOR_KEEPS_HANDLER = 1;
+
 function readMessagesCursor(db: Db, deviceId: string): RecordCursor {
-  const parsed = RecordCursorSchema.extend({ deviceId: z.string() }).safeParse(getSetting<unknown>(db, MESSAGES_CURSOR_KEY, null));
+  const parsed = RecordCursorSchema.extend({ deviceId: z.string(), handledBy: z.literal(MESSAGES_CURSOR_KEEPS_HANDLER) }).safeParse(getSetting<unknown>(db, MESSAGES_CURSOR_KEY, null));
   return parsed.success && parsed.data.deviceId === deviceId ? { ts: parsed.data.ts, id: parsed.data.id } : EMPTY_CURSOR;
 }
 
@@ -1335,17 +1347,41 @@ function readMessagesCursor(db: Db, deviceId: string): RecordCursor {
 async function pullMessages(options: DrainOptions, pullPageSize: number, result: DrainResult): Promise<boolean> {
   const { db, deviceId } = options;
   const now = options.now?.() ?? Date.now();
+  // Whose messages the record answers with: the device's person, who is
+  // the person this desktop is signed in as. Every clean-up below is of
+  // theirs alone (EO-918) — another person who signs in here keeps their
+  // copies until their own pull reads them. And every page is asked on
+  // the sign-in read here, together with that person, so one who signs
+  // in between two pages is not answered into the first one's pass.
+  const recipientId = signedInPersonId(db);
+  const session = options.record.session();
+  if (session === null) return true;
   let pulled = 0;
   let stillOpen: readonly string[] | null = null;
   for (let page = 0; page < MAX_PULL_PAGES; page += 1) {
-    const pull = await options.record.ask("record:messages", { deviceId, cursor: readMessagesCursor(db, deviceId), limit: pullPageSize });
+    const cursor = readMessagesCursor(db, deviceId);
+    const pull = await session.ask("record:messages", { deviceId, cursor, limit: pullPageSize });
     if (!pull.ok) {
       result.offline = pull.unreachable;
       if (pull.unreachable) return false;
       break;
     }
+    // Read from the beginning — a desktop new to this person, or one
+    // whose cursor predates who handled each message (EO-918): what this
+    // replica holds handled of theirs is replaced by what the record
+    // still keeps, which this read writes back with who handled it. A
+    // copy the record has swept is not left reading as the person's press.
+    // So is what an older pass deferred of theirs (`record_pending`): a
+    // payload written before who handled it was carried, about a project
+    // that had not landed, would otherwise be placed once it does — even
+    // for a message the record has since swept. This read defers again
+    // whatever of it the record still keeps.
+    if (cursor.ts === EMPTY_CURSOR.ts && cursor.id === EMPTY_CURSOR.id) {
+      pulled += forgetHandledRecordMessages(db, recipientId);
+      forgetPendingMessagesOf(db, recipientId);
+    }
     for (const message of pull.data.messages) pulled += place(options, "message", message.id, message, now) ? 1 : 0;
-    setSetting(db, MESSAGES_CURSOR_KEY, { ...pull.data.cursor, deviceId });
+    setSetting(db, MESSAGES_CURSOR_KEY, { ...pull.data.cursor, deviceId, handledBy: MESSAGES_CURSOR_KEEPS_HANDLER });
     stillOpen = pull.data.open;
     if (!pull.data.more) break;
   }
@@ -1355,8 +1391,7 @@ async function pullMessages(options: DrainOptions, pullPageSize: number, result:
   // end: a copy handled there and not yet paged is only handled, and its
   // page writes it back as such.
   if (stillOpen !== null) {
-    const open = new Set(stillOpen);
-    pulled += forgetMessagesGoneFromTheRecord(db, open, (projectId) => projectMovedToTheRecord(db, projectId as Uuid));
+    pulled += forgetMessagesGoneFromTheRecord(db, recipientId, new Set(stillOpen));
   }
   result.pulled += pulled;
   // The inbox, the badge and the OS notification listen for this, not

@@ -1,4 +1,4 @@
-import { NO_TEMPLATE_STATUS, type Comment, type IpcChannel, type IpcPayload, type IpcResponse, type Item, type Uuid } from "@eo/core";
+import { NO_TEMPLATE_STATUS, notADesktopRefusal, type Comment, type IpcChannel, type IpcPayload, type IpcResponse, type Item, type Uuid } from "@eo/core";
 import type { Dispatch, DispatchRefusal } from "@eo/engine";
 import type { Db } from "../db/client.js";
 import { getAgent } from "../db/repos/agentsRepo.js";
@@ -10,7 +10,7 @@ import { mirrorRecordComment } from "./drain.js";
 import { recordAssistBoard } from "../roles/assist.js";
 import { upsertReplicaItem } from "../db/repos/replicaRepo.js";
 import { forgetMessage, upsertReplicaMessage } from "../db/repos/messagesRepo.js";
-import { openMessageOf } from "../messages/messages.js";
+import { MessageRefusal, openMessageOf } from "../messages/messages.js";
 import { noticeOfferedAgentMissing } from "./stepAgentsHere.js";
 import { emitPush } from "../ipc/push.js";
 import { getRun, markRunSynced, runSyncBookmark } from "../db/repos/runsRepo.js";
@@ -114,7 +114,23 @@ export interface RemoteRecord extends ItemRecord {
   ask<K extends IpcChannel>(channel: K, payload: IpcPayload<K>): Promise<RecordAnswer<IpcResponse<K>>>;
   /** Whether there is a record to reach at all — a signed-in desktop, as opposed to a solo one. */
   linked(): boolean;
+  /**
+   * Asks on one sign-in for as long as the caller holds it (EO-918):
+   * the transport is read once, here, and every request made through
+   * the answer carries the credential it had then, even if somebody else
+   * signs in meanwhile. For a pass of several requests whose answers are
+   * one person's — the messages pull pages through them and then clears
+   * that person's copies — so a sign-in between two pages cannot splice
+   * a second person's answer into the first's. Null signed out.
+   */
+  session(): { ask: RemoteRecord["ask"] } | null;
 }
+
+/** What the record's door answers for a channel it does not serve (server/http.ts): a record older than `record:handleMessageFor`. */
+const NO_DELEGATED_CHANNEL = 'EO has no channel called "record:handleMessageFor".';
+
+/** What the record's door answers a delegated press from a sign-in it does not know runs work (server/http.ts, EO-918). */
+const NOT_A_DESKTOP = notADesktopRefusal("record:handleMessageFor").error.message;
 
 /** How many transcript lines one request carries when a run is sent ahead of its note. */
 const RUN_PAGE = 500;
@@ -142,6 +158,10 @@ export function createRemoteRecord(options: RemoteRecordOptions): RemoteRecord {
   async function ask<K extends IpcChannel>(channel: K, payload: IpcPayload<K>): Promise<RecordAnswer<IpcResponse<K>>> {
     const transport = options.transport();
     if (transport === null) return { ok: false, unreachable: false, problem: "This desktop is not signed in to a record." };
+    return askOn(transport, channel, payload);
+  }
+
+  async function askOn<K extends IpcChannel>(transport: RecordTransport, channel: K, payload: IpcPayload<K>): Promise<RecordAnswer<IpcResponse<K>>> {
     let answer;
     try {
       answer = await transport.request(channel, payload);
@@ -241,6 +261,10 @@ export function createRemoteRecord(options: RemoteRecordOptions): RemoteRecord {
     ask,
 
     linked: () => options.transport() !== null,
+    session: () => {
+      const transport = options.transport();
+      return transport === null ? null : { ask: (channel, payload) => askOn(transport, channel, payload) };
+    },
 
     async offerWork<R extends DispatchRefusal>(input: OfferWorkInput<R>): Promise<WorkOffer[]> {
       // The device's own scheduler is not consulted, and `tickInput` is
@@ -463,21 +487,51 @@ export function createRemoteRecord(options: RemoteRecordOptions): RemoteRecord {
       try {
         openMessageOf(db, request.messageId, request.actingDeviceId);
       } catch (error) {
-        return { ok: false, problem: error instanceof Error ? error.message : String(error) };
+        if (error instanceof MessageRefusal) return { ok: false, problem: error.message };
+        throw error;
       }
-      const answer = await ask("record:handleMessage", {
-        deviceId: options.deviceId,
-        messageId: request.messageId,
-        how: request.how,
-        answer: request.answer,
-      });
+      const press = { deviceId: options.deviceId, messageId: request.messageId, how: request.how, answer: request.answer };
+      // A press made for this desktop's person by its assistant or an
+      // outside MCP client goes on a channel of its own, carrying who
+      // (EO-918): a record older than it refuses it and leaves the message
+      // open, where one taking `by` on the person's channel would close it
+      // and every desktop would show the press as the person's for good.
+      const delegate = request.by !== undefined && request.by.kind !== "person" ? request.by : null;
+      const answer = delegate === null ? await ask("record:handleMessage", press) : await ask("record:handleMessageFor", { ...press, by: delegate });
       if (!answer.ok) {
-        return {
-          ok: false,
-          problem: answer.unreachable
-            ? `This message is on your organisation's record, which could not be reached, so it is still open: ${answer.problem}`
-            : `Your organisation's record did not take that: ${answer.problem}`,
-        };
+        // Not reached, or no answer in time: the press may have landed
+        // before the line went, so nothing is claimed about the message.
+        // The next pull says where it stands.
+        if (answer.unreachable) {
+          return {
+            ok: false,
+            problem: `This message is on your organisation's record, which could not be reached, so EO cannot say whether that was taken. The Inbox shows where the message stands once the record answers again: ${answer.problem}`,
+          };
+        }
+        // A record older than the delegated channel: it ran nothing. That
+        // says this press changed nothing, not where the message stands —
+        // another desktop may have handled it since this one last synced.
+        if (delegate !== null && answer.problem === NO_DELEGATED_CHANNEL) {
+          return {
+            ok: false,
+            problem:
+              "Your organisation's record is older than this desktop and cannot keep who pressed for the person, so it did not take this press and nothing was changed by it. The message may already have been handled from another desktop; EO's Inbox shows where it stands, and the person can answer it there, or it can be answered here once the record is upgraded.",
+          };
+        }
+        // A record that will not take who pressed from this desktop's
+        // sign-in — one made before the record kept which devices run work
+        // (server/http.ts): a refusal with a way out, not a fault. It ran
+        // nothing, so again nothing is claimed about the message.
+        if (delegate !== null && answer.problem === NOT_A_DESKTOP) {
+          return {
+            ok: false,
+            problem:
+              "Your organisation's record does not take a press made for the person from this desktop's sign-in, which is older than that, so it did not take this press and nothing was changed by it. Sign this desktop in to the organisation again, then answer it here; or the person can answer it in EO's Inbox.",
+          };
+        }
+        // Anything else the record answered is a fault on its side, not a
+        // refusal (EO-918): on the ordinary error path, as one here is.
+        throw new Error(`Your organisation's record did not take that: ${answer.problem}`);
       }
       const { message, problem } = answer.data;
       if (message !== null) {

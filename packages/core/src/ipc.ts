@@ -22,7 +22,7 @@ import { PlanUsageViewSchema } from "./planUsage.js";
 import { DebugAgentSchema } from "./debug.js";
 import { ModuleReadinessCheckSchema } from "./moduleReadiness.js";
 import { RuntimeIdSchema } from "./schemas/commentOptions.js";
-import { MessageSchema, MessageSendSchema } from "./messages.js";
+import { MessageHandledBySchema, MessageSchema, MessageSendSchema } from "./messages.js";
 import {
   RecordAdoptCountsSchema,
   RecordAdoptPageSchema,
@@ -256,6 +256,15 @@ const ACTING_DEVICE = { actingDeviceId: z.string().max(100).nullable().optional(
  * always meant: the person.
  */
 const ACTING_AGENT = { actingAgentId: z.string().max(100).optional() };
+
+/**
+ * That an outside client of EO's MCP server pressed this, where one did
+ * (EO-918) — the outside listener's counterpart of `ACTING_AGENT`, and
+ * never a caller's word for the same reason. Stamped only by EO's
+ * external MCP host (`withMcpClient`); every door takes it off what a
+ * client sent (`withActingAgent`), so absent means the person.
+ */
+const ACTING_MCP_CLIENT = { actingMcpClient: z.literal(true).optional() };
 
 /**
  * Where the files a comment names by path may be read from (EO-700).
@@ -1213,6 +1222,14 @@ export const recordContract = {
        * project and the ones about none.
        */
       messages: z.array(MessageSchema),
+      /**
+       * The person's most recently handled messages (EO-918), newest
+       * handled first and at most `INBOX_HANDLED_MESSAGES_SHOWN`: what was
+       * answered, dismissed or resolved, and by whom — the person, the
+       * assistant or an outside MCP client — so a press made for them is
+       * seen. Scoped like `messages`; never counted.
+       */
+      handledMessages: z.array(MessageSchema).default([]),
       summary: InboxSummarySchema,
     }),
   ),
@@ -1221,17 +1238,31 @@ export const recordContract = {
    *
    * Only the message's recipient may, and only while it is open: a
    * message already answered, dismissed or resolved is refused, as is an
-   * answer the message did not offer. The message drops out of the open
-   * list and is kept, handled, until the retention sweep removes it.
+   * answer the message did not offer. The recipient presses in the Inbox,
+   * or EO's assistant or an outside MCP client presses for them (EO-918):
+   * the door that knows which stamps `actingAgentId` or `actingMcpClient`,
+   * and the handled message records it as `handledBy`. The message drops
+   * out of the open list and is kept, handled, until the retention sweep
+   * removes it.
+   *
+   * A refusal is an answer, not a throw (EO-918): `message` null and
+   * `problem` the sentence the person — or the client acting for them —
+   * is shown, which a thrown error would reach a packaged build's callers
+   * as "Internal error".
    */
   "messages:answer": channel(
-    z.object({ messageId: z.string(), answer: z.string().min(1), ...ACTING_DEVICE }),
-    z.object({ message: MessageSchema }),
+    z.object({ messageId: z.string(), answer: z.string().min(1), ...ACTING_DEVICE, ...ACTING_AGENT, ...ACTING_MCP_CLIENT }),
+    z.object({ message: MessageSchema.nullable(), problem: z.string().nullable() }),
   ),
-  /** Dismisses an open message without answering it (EO-725). Its recipient's only, like `messages:answer`. */
+  /**
+   * Dismisses an open message without answering it (EO-725). Its
+   * recipient's only, like `messages:answer` — pressed in the Inbox, or by
+   * EO's assistant or an outside MCP client acting for them (EO-918),
+   * which the door stamps and the handled message records.
+   */
   "messages:dismiss": channel(
-    z.object({ messageId: z.string(), ...ACTING_DEVICE }),
-    z.object({ message: MessageSchema }),
+    z.object({ messageId: z.string(), ...ACTING_DEVICE, ...ACTING_AGENT, ...ACTING_MCP_CLIENT }),
+    z.object({ message: MessageSchema.nullable(), problem: z.string().nullable() }),
   ),
   /**
    * Every unaddressed mention the caller may see, across projects
@@ -6618,6 +6649,28 @@ export const recordContract = {
     z.object({ message: MessageSchema.nullable(), problem: z.string().nullable() }),
   ),
   /**
+   * `record:handleMessage` pressed for the device's person rather than by
+   * them (EO-918): by EO's assistant or an outside MCP client on that
+   * device, which `by` names and the record's copy keeps.
+   *
+   * Its own channel, never a field on `record:handleMessage`, so a record
+   * older than it refuses the press and leaves the message open: one that
+   * took the field it did not know would strip it, close the message, and
+   * every desktop would show the press as the person's for good. The
+   * person's own press stays on `record:handleMessage`, which every record
+   * takes.
+   */
+  "record:handleMessageFor": channel(
+    z.object({
+      deviceId: z.string().min(1),
+      messageId: z.string().min(1),
+      how: z.enum(["answered", "dismissed"]),
+      answer: z.string().nullable().default(null),
+      by: MessageHandledBySchema,
+    }),
+    z.object({ message: MessageSchema.nullable(), problem: z.string().nullable() }),
+  ),
+  /**
    * The asking device's person's messages changed on the record since
    * the cursor — sent, answered, dismissed or resolved (EO-726) — paged
    * on when each last changed: when it was handled, or sent while open.
@@ -8111,8 +8164,38 @@ export const DEVICE_SCOPED_CHANNELS = [
   // pull is only ever the asking device's person's (EO-726).
   "record:sendMessage",
   "record:handleMessage",
+  "record:handleMessageFor",
   "record:messages",
 ] as const satisfies readonly RecordChannel[];
+
+/**
+ * The device-scoped channels only a desktop may ask (EO-918): a press a
+ * desktop makes for its person on behalf of its assistant or an outside
+ * MCP client, carrying who in `by`. The door can vouch for the device
+ * and not for that word, so it takes the word only from a credential
+ * the served renderer never holds — a device that signed in running work
+ * (`SignInRequest.runsWork`, which a browser is never granted) — and
+ * never from a request a browser made. A browser's press goes on
+ * `record:handleMessage`, as the person's.
+ */
+export const DESKTOP_ONLY_CHANNELS = ["record:handleMessageFor"] as const satisfies readonly (typeof DEVICE_SCOPED_CHANNELS)[number][];
+
+/** Whether only a desktop that runs work may ask this channel. */
+export function isDesktopOnlyChannel(channel: string): channel is (typeof DESKTOP_ONLY_CHANNELS)[number] {
+  return (DESKTOP_ONLY_CHANNELS as readonly string[]).includes(channel);
+}
+
+/** What a caller that is not a desktop running work is told on those channels. */
+export function notADesktopRefusal(channel: string): IpcErr {
+  return {
+    ok: false,
+    error: {
+      message:
+        `"${channel}" is something only a desktop signed in to this organisation asks, and this request did not come from one. ` +
+        `Answer the message in EO's Inbox, or sign the desktop in to this organisation again.`,
+    },
+  };
+}
 
 /** Whether this channel's payload names the device that is asking. */
 export function isDeviceScopedChannel(channel: string): channel is (typeof DEVICE_SCOPED_CHANNELS)[number] {
@@ -8282,10 +8365,34 @@ export const AGENT_ACTED_CHANNELS = [
   "skills:setEnabled",
   "skills:archive",
   "skills:restoreVersion",
+  // Who answered or dismissed a message is recorded on it (EO-918).
+  "messages:answer",
+  "messages:dismiss",
 ] as const satisfies readonly IpcChannel[];
 
 /** The field EO's administrative MCP host stamps, spelled once. */
 export const ACTING_AGENT_KEY = "actingAgentId";
+
+/**
+ * The channels on which EO's external MCP host says an outside client is
+ * the one pressing (EO-918): handling a message, which records who did.
+ * Each declares `actingMcpClient`, and `ipc.test.ts` holds that true.
+ */
+export const MCP_CLIENT_MARKED_CHANNELS = ["messages:answer", "messages:dismiss"] as const satisfies readonly IpcChannel[];
+
+/** The field EO's external MCP host stamps, spelled once. */
+export const ACTING_MCP_CLIENT_KEY = "actingMcpClient";
+
+/**
+ * The payload with the external MCP host's word that an outside client is
+ * pressing, where the channel records that (`MCP_CLIENT_MARKED_CHANNELS`).
+ * Stamped below every tool and after `withActingAgent` has taken off
+ * whatever a client sent under the same name.
+ */
+export function withMcpClient(channel: string, payload: unknown): unknown {
+  if (!(MCP_CLIENT_MARKED_CHANNELS as readonly string[]).includes(channel) || payload === null || typeof payload !== "object" || Array.isArray(payload)) return payload;
+  return { ...(payload as Record<string, unknown>), [ACTING_MCP_CLIENT_KEY]: true };
+}
 
 /** Whether a system agent can be the one acting on this channel. */
 export function isAgentActedChannel(channel: string): channel is (typeof AGENT_ACTED_CHANNELS)[number] {
@@ -8310,6 +8417,9 @@ export function withActingAgent(channel: string, payload: unknown, agentId: stri
   // the same kind of fact — the door's, never the caller's — so every
   // door that strips the one strips the other without being told twice.
   delete rest[PATHS_FROM_KEY];
+  // And any claim to be an outside MCP client (EO-918): the external
+  // host's to say, after this, never a caller's.
+  delete rest[ACTING_MCP_CLIENT_KEY];
   if (agentId !== undefined && isAgentActedChannel(channel)) rest[ACTING_AGENT_KEY] = agentId;
   return rest;
 }

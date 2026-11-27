@@ -4,6 +4,7 @@ import { delimiter, join } from "node:path";
 import type { SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import {
   ADMIN_MCP_SERVER_NAME,
+  LOCAL_PERSON_ID,
   actionDefinitionOutputSchema,
   ATTACHMENT_ADD_TOOL_NAME,
   developerRegistry,
@@ -37,13 +38,16 @@ import {
 } from "@eo/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { assembleSeedContext, type ContextRepositoryInput } from "@eo/engine";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { adminDeliveryFor, adminDispatchFor, type AdminMcpDelivery, type AdminMcpDispatch } from "../agentAttachments/adminDelivery.js";
 import { agentSpawnEnvironment, resolveCliToolPath } from "../agentAttachments/cliTools.js";
 import { readToolDirectoryServers, TOOL_PLUGIN_NAME, writeToolDirectory } from "../agentAttachments/pluginDirectory.js";
 import { attachmentEnvironment } from "../agentAttachments/serverEnvironment.js";
 import { skillChangesSection } from "../agentAttachments/skillChanges.js";
 import { skillReadAnswer } from "../agentAttachments/worktreeSkills.js";
 import { attachmentsForRun } from "../db/repos/agentAttachmentsRepo.js";
-import { insertAttachments, listAgents, saveMcpServer, setAgentAttachment } from "../db/repos/index.js";
+import { getMessage, insertAttachments, insertMessage, listAgents, saveMcpServer, setAgentAttachment } from "../db/repos/index.js";
 import { createTestItem, openMigratedTestDb, openMigratedTestDbAt } from "../db/testHelpers.js";
 import { codexServerSecretReader } from "../engine.js";
 import { storeMcpServerSecret } from "../mcp/serverSecrets.js";
@@ -59,7 +63,11 @@ import type { SecretStore } from "../secrets/store.js";
 import { createEoMcpService, parseMemoryScopes } from "../mcp/eoServer.mjs";
 import { renderMemorySection } from "../memory/selection.js";
 import { renderMemoryWritingSection } from "../memory/writing.js";
+import { clearHandlerRegistry } from "../ipc/registry.js";
 import { TOOLS } from "../mcpHost/catalog.js";
+import { toolsFor } from "../mcpHost/gate.js";
+import { createAdminMcpHost } from "../mcpHost/admin.js";
+import { fakePlatform } from "../testing/platform.js";
 import { adminToolOf } from "../roles/pipelineRead.js";
 import { answerActions, ASSIST_ANSWER_WITH_MAPS, ASSIST_ANSWER_WITH_TRIAL, ASSIST_ANSWERS_WITH_CARDS, claudeViolations, openAiStrictViolations } from "../testing/answerSchemas.js";
 import { allGone, descendantPids, DESCENDANTS_SNIPPET, owed, sweepUp } from "../testing/escapingDescendants.js";
@@ -671,6 +679,23 @@ const CAPABILITIES = [
       readAs: "pipeline_update_conflict",
       args: { pipelineId: "default" },
       answers: [{ joinedToTheCall: true, toldWhatEoSaid: true }],
+      outcome: { kind: "result", data: "done" },
+    },
+  },
+  {
+    name: "answering EO's messages",
+    what:
+      "a system agent's turn calling message_answer and message_dismiss on EO's administrative server (EO-918) — `mcp__eo_admin__message_*` on Claude, " +
+      "`eo_admin/message_*` on Codex — reaches that server with the endpoint and the bearer its backend was handed for the turn, is read by EO as those tools, " +
+      "which both of EO's MCP servers offer, and reaches `messages:answer` and `messages:dismiss` as the agent the bearer was leased for",
+    same: {
+      offered: { answer: { kind: "write", external: true, admin: true }, dismiss: { kind: "write", external: true, admin: true } },
+      readAs: ["message_answer", "message_dismiss"],
+      told: [true, true],
+      reached: {
+        answered: { handledHow: "answered", answer: "Carry on now", handledBy: { kind: "assistant", agentId: "system-agent-918" } },
+        dismissed: { handledHow: "dismissed", answer: null, handledBy: { kind: "assistant", agentId: "system-agent-918" } },
+      },
       outcome: { kind: "result", data: "done" },
     },
   },
@@ -1970,6 +1995,90 @@ function updateConflictCalls(events: readonly AgentEvent[]): unknown {
     answers: answers.map((answer) => ({ joinedToTheCall: answer.callId !== undefined && ids.has(answer.callId), toldWhatEoSaid: answer.output.includes(UPDATE_CONFLICT_ANSWER) })),
     outcome: outcomeOf(events),
   };
+}
+
+/** The usage-limit messages a system agent answers and dismisses (EO-918), by ids the turn's calls name. */
+const LIMIT_MESSAGE_ID = "019a0000-0000-7000-8000-000000000918";
+const OTHER_LIMIT_MESSAGE_ID = "019a0000-0000-7000-8000-000000000919";
+const MESSAGE_ANSWER_ARGS = { messageId: LIMIT_MESSAGE_ID, answer: "Carry on now" };
+const MESSAGE_DISMISS_ARGS = { messageId: OTHER_LIMIT_MESSAGE_ID };
+/** The system agent whose turn it is: what its credential is leased for, and what the message must record. */
+const ANSWERING_AGENT = { id: "system-agent-918" as Uuid, config: { allowedTools: [`mcp__${ADMIN_MCP_SERVER_NAME}`] } };
+
+/** What one backend's system-agent turn needs to reach EO's administrative server, as the engine hands it. */
+interface AdminTurnSetup {
+  /** The per-turn credential, as `engine.ts` gives both adapters. */
+  admin: (directory?: string) => AdminMcpDispatch | null;
+  /** Where the host is and its bearer's variable name, as the engine writes into Claude's `.mcp.json`. */
+  delivery: AdminMcpDelivery | null;
+}
+
+/**
+ * A system agent's turn calling `message_answer` and `message_dismiss`
+ * on EO's administrative server (EO-918), against the real thing: an
+ * in-memory database holding two usage-limit messages, the IPC handlers
+ * the app registers, and the administrative listener up on its own
+ * socket. Each backend's turn is handed that listener the way the engine
+ * hands it (`adminDeliveryFor` / `adminDispatchFor`, leased for the turn's
+ * agent), and its stubbed CLI makes the calls with what its adapter
+ * delivered — so an adapter that drops the endpoint or the bearer leaves
+ * both messages open. What reached the commands is read off the rows,
+ * whose handler must be the agent the credential was leased for.
+ */
+async function messageToolsReached(turn: (setup: AdminTurnSetup) => Promise<AgentEvent[]>): Promise<unknown> {
+  const handle = openMigratedTestDb();
+  const host = createAdminMcpHost({ db: handle.db, version: "0.0.0-test" });
+  try {
+    const { registerAllHandlers } = await import("../ipc/handlers.js");
+    registerAllHandlers(handle.db, undefined, { platform: fakePlatform() });
+    for (const id of [LIMIT_MESSAGE_ID, OTHER_LIMIT_MESSAGE_ID]) {
+      insertMessage(handle.db, { recipientId: LOCAL_PERSON_ID, source: "runtime_limit", body: "Claude's plan limit was reached.", options: ["Carry on now"] }, Date.now(), id);
+    }
+    const status = await host.start();
+    if (status.problem !== null) throw new Error(status.problem);
+    const lookup = () => host.endpoint();
+    const events = await turn({ admin: (directory) => adminDispatchFor(ANSWERING_AGENT, lookup, directory), delivery: adminDeliveryFor(ANSWERING_AGENT, lookup) });
+    const offeredAs = (name: string) => {
+      const tool = TOOLS.find((entry) => entry.name === name);
+      return tool === undefined ? null : { kind: tool.kind, external: toolsFor(false, "external").includes(tool), admin: toolsFor(false, "admin").includes(tool) };
+    };
+    const reached = (id: string) => {
+      const message = getMessage(handle.db, id);
+      return message === undefined ? null : { handledHow: message.handledHow, answer: message.answer, handledBy: message.handledBy };
+    };
+    return {
+      offered: { answer: offeredAs("message_answer"), dismiss: offeredAs("message_dismiss") },
+      readAs: events.flatMap((event) => (event.type === "tool_call" ? [adminToolOf(event.name)] : [])),
+      // What the host answered, as the backend reported it back.
+      told: events.flatMap((event) => (event.type === "tool_result" ? [event.output.includes("by the assistant")] : [])),
+      reached: { answered: reached(LIMIT_MESSAGE_ID), dismissed: reached(OTHER_LIMIT_MESSAGE_ID) },
+      outcome: outcomeOf(events),
+    };
+  } finally {
+    await host.stop();
+    clearHandlerRegistry();
+    handle.close();
+  }
+}
+
+/**
+ * One MCP tool call, made as a CLI makes it: to the URL its configuration
+ * names, with the `Authorization` header it declares, `${VAR}`s expanded
+ * out of the environment the CLI was spawned with. Answers the text the
+ * server sent back.
+ */
+async function callAsTheCli(server: { url: string; headers?: Record<string, string> }, env: Record<string, string>, name: string, args: Record<string, unknown>): Promise<string> {
+  const headers = Object.fromEntries(Object.entries(server.headers ?? {}).map(([key, value]) => [key, value.replace(/\$\{(\w+)\}/g, (_, variable: string) => env[variable] ?? "")]));
+  const client = new Client({ name: "stub-cli", version: "0" });
+  try {
+    await client.connect(new StreamableHTTPClientTransport(new URL(server.url), { requestInit: { headers } }));
+    const answer = await client.callTool({ name, arguments: args });
+    return (answer.content as { type: string; text?: string }[]).map((part) => part.text ?? "").join("");
+  } catch (error) {
+    return `failed: ${error instanceof Error ? error.message : String(error)}`;
+  } finally {
+    await client.close().catch(() => undefined);
+  }
 }
 
 function cost(events: readonly AgentEvent[]): unknown {
@@ -3372,6 +3481,38 @@ const CLAUDE: Record<CapabilityName, Proof> = {
     ]);
     return updateConflictCalls(events);
   },
+
+  "answering EO's messages": async () =>
+    messageToolsReached(async ({ admin, delivery }) => {
+      // Claude's delivery: the administrative server's URL in the
+      // generated `.mcp.json` the engine writes, which the adapter points
+      // `--mcp-config` at, and the bearer in the CLI's environment. The
+      // stubbed CLI reads both off what the SDK was handed and calls the
+      // host with them, as the real one would mid-turn.
+      const toolDirectory = mkdtempSync(join(tmpdir(), "eo-parity-admin-"));
+      try {
+        writeToolDirectory(toolDirectory, { servers: [], skills: [] }, delivery);
+        const runQuery = ((params: { options?: Record<string, unknown> }) =>
+          (async function* () {
+            const options = params.options ?? {};
+            const configPath = (options["extraArgs"] as Record<string, string> | undefined)?.["mcp-config"];
+            const servers = configPath === undefined ? {} : (JSON.parse(readFileSync(configPath, "utf8")) as { mcpServers: Record<string, { url: string; headers?: Record<string, string> }> }).mcpServers;
+            const server = servers[ADMIN_MCP_SERVER_NAME];
+            const env = (options["env"] as Record<string, string> | undefined) ?? {};
+            const call = (name: string, args: Record<string, unknown>) => (server === undefined ? Promise.resolve("no eo_admin server") : callAsTheCli(server, env, name, args));
+            yield sdk.init();
+            yield sdk.calls("call-1", `mcp__${ADMIN_MCP_SERVER_NAME}__message_answer`, MESSAGE_ANSWER_ARGS);
+            yield sdk.answers("call-1", await call("message_answer", MESSAGE_ANSWER_ARGS));
+            yield sdk.calls("call-2", `mcp__${ADMIN_MCP_SERVER_NAME}__message_dismiss`, MESSAGE_DISMISS_ARGS);
+            yield sdk.answers("call-2", await call("message_dismiss", MESSAGE_DISMISS_ARGS));
+            yield sdk.result();
+          })()) as never;
+        const provider = createClaudeProvider({ runQuery, enableCommentTool: false, admin });
+        return await collect(provider.start({ ...startOpts, toolDirectory }));
+      } finally {
+        rmSync(toolDirectory, { recursive: true, force: true });
+      }
+    }),
 
   "memory_note": async () => {
     // Claude's delivery: the grant and the scopes go in the inline `eo`
@@ -4861,6 +5002,30 @@ const CODEX: Record<CapabilityName, Proof> = {
     return updateConflictCalls(await collect(started.provider.start(startOpts)));
   },
 
+  "answering EO's messages": async () =>
+    messageToolsReached(async ({ admin }) => {
+      // Codex's delivery: `mcp_servers.eo_admin.url` and its
+      // `bearer_token_env_var` on the app-server's command line, the
+      // bearer in its environment. The fake app-server reads both off its
+      // own launch and calls the host with them mid-turn, as the real CLI
+      // would, reporting each call as the `mcpToolCall` item it makes.
+      const { provider } = codexOver(
+        {
+          after: {
+            "turn/start": [
+              note.turnStarted(),
+              { callMcp: { server: ADMIN_MCP_SERVER_NAME, tool: "message_answer", arguments: MESSAGE_ANSWER_ARGS, id: "call-1" } },
+              { callMcp: { server: ADMIN_MCP_SERVER_NAME, tool: "message_dismiss", arguments: MESSAGE_DISMISS_ARGS, id: "call-2" } },
+              note.agentMessage("done"),
+              note.turnCompleted(),
+            ],
+          },
+        },
+        { admin },
+      );
+      return collect(provider.start(startOpts));
+    }),
+
   "memory_note": async () => {
     // Codex's delivery: the grant and the scopes are `mcp_servers.eo.env.<NAME>`
     // overrides on the app-server's command line, read back off the
@@ -5413,7 +5578,7 @@ describe.each(CAPABILITIES)("$name: $what", (capability) => {
 });
 
 describe("the shared list", () => {
-  it("is the twelve capabilities EO-380 names and the ones EO-385, EO-387, EO-392, EO-395, EO-412, EO-421, EO-444, EO-468, EO-470, EO-477, EO-478, EO-479, EO-487, EO-488, EO-490, EO-493, EO-494, EO-534, EO-543, EO-578, EO-587, EO-597, EO-633, EO-700, EO-703, EO-716, EO-717, EO-718, EO-732, EO-738 (two), EO-797, EO-807, EO-820, EO-906 and the streaming chat added, each once", () => {
+  it("is the twelve capabilities EO-380 names and the ones EO-385, EO-387, EO-392, EO-395, EO-412, EO-421, EO-444, EO-468, EO-470, EO-477, EO-478, EO-479, EO-487, EO-488, EO-490, EO-493, EO-494, EO-534, EO-543, EO-578, EO-587, EO-597, EO-633, EO-700, EO-703, EO-716, EO-717, EO-718, EO-732, EO-738 (two), EO-797, EO-807, EO-820, EO-906, EO-918 and the streaming chat added, each once", () => {
     // Pinned so that taking one off the list is a decision somebody
     // made in this file rather than a line that went missing.
     expect(CAPABILITIES.map((capability) => capability.name)).toEqual([
@@ -5437,6 +5602,7 @@ describe("the shared list", () => {
       "assistant cards",
       "a trial plan beside a draft",
       "reading a held template update",
+      "answering EO's messages",
       "cost reported",
       "instructions outside the user turn",
       "debug capture",

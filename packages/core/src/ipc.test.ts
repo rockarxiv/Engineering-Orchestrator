@@ -2,6 +2,8 @@ import { describe, expect, expectTypeOf, it } from "vitest";
 import {
   AGENT_ACTED_CHANNELS,
   isAgentActedChannel,
+  MCP_CLIENT_MARKED_CHANNELS,
+  withMcpClient,
   withActingAgent,
   withPathsFrom,
   ACTOR_SCOPED_CHANNELS,
@@ -791,6 +793,15 @@ describe("the channels a system agent acts on as itself", () => {
     expect(withActingAgent("comments:post", claimed, undefined)).toEqual({ itemId: "an-item", paths: ["/etc/passwd"] });
     expect(withPathsFrom("comments:post", { itemId: "an-item" }, { kind: "directory", directory: "/turn" })).toEqual({ itemId: "an-item", pathsFrom: { kind: "directory", directory: "/turn" } });
     expect(withPathsFrom("items:move", { itemId: "an-item" }, { kind: "anywhere" })).toEqual({ itemId: "an-item" });
+  });
+
+  it("takes off a claim to be an outside MCP client at every door, and only the external host puts it back, on the message channels alone (EO-918)", () => {
+    expect(withActingAgent("messages:answer", { messageId: "m", answer: "Yes", actingMcpClient: true }, undefined)).toEqual({ messageId: "m", answer: "Yes" });
+    expect(withMcpClient("messages:dismiss", { messageId: "m" })).toEqual({ messageId: "m", actingMcpClient: true });
+    expect(withMcpClient("items:move", { itemId: "an-item" })).toEqual({ itemId: "an-item" });
+    const marks = (channel: keyof typeof ipcContract): boolean =>
+      ipcContract[channel].request.safeParse({ actingMcpClient: 7 }).error?.issues.some((issue) => issue.path[0] === "actingMcpClient") === true;
+    expect((Object.keys(ipcContract) as IpcChannel[]).filter(marks).sort()).toEqual([...MCP_CLIENT_MARKED_CHANNELS].sort());
   });
 
   it("stamps no agent on a channel no agent acts on", () => {

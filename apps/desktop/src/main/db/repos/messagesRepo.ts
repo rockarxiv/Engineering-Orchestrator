@@ -1,12 +1,15 @@
-import { and, asc, desc, eq, inArray, isNotNull, isNull, lte, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
 import {
   HANDLED_MESSAGE_RETENTION_MS,
+  HANDLED_BY_PERSON,
   HANDLED_MESSAGES_KEPT_PER_PERSON,
+  MessageHandledBySchema,
   MessageHandledHowSchema,
   MessageSendSchema,
   parseStoredCommentOptions,
   uuidv7,
   type Message,
+  type MessageHandledBy,
   type MessageHandledHow,
   type MessageSend,
 } from "@eo/core";
@@ -23,8 +26,27 @@ import { jobs, messages, projects, queuedMessageReceipts } from "../schema.js";
 
 type Row = typeof messages.$inferSelect;
 
+/**
+ * Who handled it (EO-918). A message answered or dismissed here before
+ * the column existed was the person's: nobody else could. One EO
+ * resolved, or still open, has nobody.
+ *
+ * Except a replica's copy of the record's message with nobody written:
+ * only one pulled before the upgrade has none (`upsertReplicaMessage`
+ * always writes one), and that build dropped who — which may have been
+ * the assistant or an outside client by then — so it is not known until
+ * the next pull reads it again from the record, which knows.
+ */
+function handledByOf(row: Row, handledHow: MessageHandledHow | null): MessageHandledBy | null {
+  if (handledHow !== "answered" && handledHow !== "dismissed") return null;
+  const recorded = MessageHandledBySchema.safeParse(row.handledBy);
+  if (recorded.success) return recorded.data;
+  return row.fromRecord ? null : HANDLED_BY_PERSON;
+}
+
 function toDomain(row: Row): Message {
-  const handledHow = MessageHandledHowSchema.safeParse(row.handledHow);
+  const parsedHow = MessageHandledHowSchema.safeParse(row.handledHow);
+  const handledHow = parsedHow.success ? parsedHow.data : null;
   return {
     id: row.id,
     recipientId: row.recipientId,
@@ -37,8 +59,9 @@ function toDomain(row: Row): Message {
     options: parseStoredCommentOptions(row.options),
     createdAt: row.createdAt,
     handledAt: row.handledAt,
-    handledHow: handledHow.success ? handledHow.data : null,
+    handledHow,
     answer: row.answer,
+    handledBy: handledByOf(row, handledHow),
   };
 }
 
@@ -58,7 +81,9 @@ export function insertMessage(db: Db, input: MessageSend, now: number = Date.now
     handledAt: null,
     handledHow: null,
     answer: null,
+    handledBy: null,
     subject: parsed.subject ?? null,
+    fromRecord: false,
   };
   db.insert(messages).values(row).run();
   return toDomain(row);
@@ -82,8 +107,28 @@ export function listOpenMessages(db: Db, recipientIds: readonly string[]): Messa
 }
 
 /**
+ * The most recently handled messages addressed to any of these people,
+ * newest handled first (EO-918). Given a project, only those about it and
+ * those about none, as the inbox scopes its open ones.
+ */
+export function listRecentlyHandledMessages(db: Db, recipientIds: readonly string[], limit: number, projectId?: string | null): Message[] {
+  if (recipientIds.length === 0) return [];
+  const inProject = projectId === undefined ? undefined : projectId === null ? isNull(messages.projectId) : or(isNull(messages.projectId), eq(messages.projectId, projectId));
+  return db
+    .select()
+    .from(messages)
+    .where(and(inArray(messages.recipientId, [...recipientIds]), isNotNull(messages.handledAt), inProject))
+    .orderBy(desc(messages.handledAt), desc(messages.id))
+    .limit(limit)
+    .all()
+    .map(toDomain);
+}
+
+/**
  * Closes an open message: `answered` with the option chosen, `dismissed`,
- * or `resolved` by EO.
+ * or `resolved` by EO. `by` is who answered or dismissed it (EO-918) —
+ * the person unless said otherwise; a resolution is EO's and records
+ * nobody.
  *
  * Only an open one. Answers undefined when the message is gone or was
  * already handled, so a second press — or EO resolving what a person has
@@ -95,10 +140,11 @@ export function markMessageHandled(
   how: MessageHandledHow,
   answer: string | null = null,
   now: number = Date.now(),
+  by: MessageHandledBy = HANDLED_BY_PERSON,
 ): Message | undefined {
   const row = db
     .update(messages)
-    .set({ handledAt: now, handledHow: how, answer: how === "answered" ? answer : null })
+    .set({ handledAt: now, handledHow: how, answer: how === "answered" ? answer : null, handledBy: how === "resolved" ? null : by })
     .where(and(eq(messages.id, id), isNull(messages.handledAt)))
     .returning()
     .get();
@@ -181,7 +227,7 @@ export function openSubjectsOf(db: Db, source: string): string[] {
 export function markMessagesAboutResolved(db: Db, source: string, subject: string, now: number = Date.now()): Message[] {
   return db
     .update(messages)
-    .set({ handledAt: now, handledHow: "resolved", answer: null })
+    .set({ handledAt: now, handledHow: "resolved", answer: null, handledBy: null })
     .where(and(eq(messages.source, source), eq(messages.subject, subject), isNull(messages.handledAt)))
     .returning()
     .all()
@@ -267,8 +313,14 @@ export function upsertReplicaMessage(db: Db, message: Message): "written" | "wai
     handledAt: message.handledAt,
     handledHow: message.handledHow,
     answer: message.answer,
+    // Always someone on a press: a record built before who was kept sends
+    // nobody, and nobody but the person could press there — a delegated
+    // press is a channel it does not have (EO-918).
+    handledBy: message.handledBy ?? (message.handledHow === "answered" || message.handledHow === "dismissed" ? HANDLED_BY_PERSON : null),
     // The record's to resolve, never a replica's.
     subject: null,
+    // And the record's to answer: a press on it goes there (EO-918).
+    fromRecord: true,
   };
   db.insert(messages)
     .values(row)
@@ -285,6 +337,8 @@ export function upsertReplicaMessage(db: Db, message: Message): "written" | "wai
         handledAt: row.handledAt,
         handledHow: row.handledHow,
         answer: row.answer,
+        handledBy: row.handledBy,
+        fromRecord: true,
       },
     })
     .run();
@@ -302,22 +356,65 @@ export function listOpenMessageIds(db: Db, recipientId: string): string[] {
 }
 
 /**
- * Removes the open copies on a replica of messages the organisation's
- * record no longer holds open (EO-726): those about a project it holds
- * (`onTheRecord`) and not among `stillOpen`. A message handled elsewhere
- * and then swept by the record's retention never pages again, so this is
- * the only way such a copy stops being open here. Answers how many went.
+ * Whether a message is a replica's copy of one the organisation's record
+ * holds (EO-918) — a press on it goes there — rather than one this
+ * database wrote. Asked of the row, not its project: a message about a
+ * record-held job has none. Undefined for no such message.
  */
-export function forgetMessagesGoneFromTheRecord(db: Db, stillOpen: ReadonlySet<string>, onTheRecord: (projectId: string) => boolean): number {
+export function isRecordCopy(db: Db, id: string): boolean | undefined {
+  return db.select({ fromRecord: messages.fromRecord }).from(messages).where(eq(messages.id, id)).get()?.fromRecord;
+}
+
+/**
+ * Removes a replica's open copies of this person's messages the
+ * organisation's record no longer holds open (EO-726): those copied from
+ * it and not among `stillOpen`, which is the record's list for this
+ * person and says nothing of anybody else's. A message handled elsewhere
+ * and then swept by the record's retention never pages again, so this is
+ * the only way such a copy stops being open here. Never one this desktop
+ * wrote (EO-918): it is not among `stillOpen` either. Answers how many
+ * went.
+ */
+export function forgetMessagesGoneFromTheRecord(db: Db, recipientId: string, stillOpen: ReadonlySet<string>): number {
   const gone = db
-    .select({ id: messages.id, projectId: messages.projectId })
+    .select({ id: messages.id })
     .from(messages)
-    .where(isNull(messages.handledAt))
+    .where(and(eq(messages.recipientId, recipientId), isNull(messages.handledAt), eq(messages.fromRecord, true)))
     .all()
-    .filter((row) => row.projectId !== null && onTheRecord(row.projectId) && !stillOpen.has(row.id))
+    .filter((row) => !stillOpen.has(row.id))
     .map((row) => row.id);
   if (gone.length === 0) return 0;
   return db.delete(messages).where(inArray(messages.id, gone)).run().changes;
+}
+
+/**
+ * Removes a replica's handled copies of this person's messages the
+ * organisation's record holds (EO-918), before a pull that reads their
+ * messages from the beginning writes back every one the record still
+ * keeps. One the record has swept never pages again, and a copy pulled
+ * by a build that dropped who handled it would otherwise go on reading as
+ * the person's press when the assistant or an outside MCP client made it.
+ * Only this person's — the pull reads nobody else's back — and only
+ * copies: a message this desktop sent and handled itself is its own
+ * history, which no pull brings back. Open copies are left to
+ * `forgetMessagesGoneFromTheRecord`. Answers how many went.
+ */
+export function forgetHandledRecordMessages(db: Db, recipientId: string): number {
+  return db
+    .delete(messages)
+    .where(and(eq(messages.recipientId, recipientId), isNotNull(messages.handledAt), eq(messages.fromRecord, true)))
+    .run().changes;
+}
+
+/**
+ * Marks every message here this database's own (EO-918), on the
+ * organisation's record at launch: the record holds no copies, and 0186's
+ * backfill — which cannot tell a record's database from a desktop's —
+ * may have taken some of its messages for one, which would read who
+ * handled a press made there before the column as not known.
+ */
+export function markEveryMessageOwn(db: Db): number {
+  return db.update(messages).set({ fromRecord: false }).where(eq(messages.fromRecord, true)).run().changes;
 }
 
 /** Deletes one message's row, where the record answered that it no longer has it (EO-726). */

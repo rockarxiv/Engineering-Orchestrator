@@ -143,11 +143,6 @@ const NOT_CATALOGUED: Partial<Record<RecordChannel, string>> = {
   // not be handed to a client whose transcript leaves the machine.
   "people:me": "answers about the caller, and an agent reached through this host is not one",
   "mentions:open": "every open question on the record, with the person each waits on — reconnaissance rather than work",
-  // EO's messages to a person (EO-725, ARCHITECTURE.md §7.1). inbox_list
-  // shows them; answering or dismissing one is the person's, in the Inbox —
-  // agents never send or handle a message (invariant 4).
-  "messages:answer": "a message from EO is answered by the person it was sent to, never by an agent (invariant 4)",
-  "messages:dismiss": "a message from EO is dismissed by the person it was sent to, never by an agent (invariant 4)",
   "people:invite": "adding somebody to the organisation is the person's authority, delegated to eo_admin if to anything (invariant 11)",
   "people:setAdmin": "granting the flag that grants everything else",
   "devices:list": "which machines hold a key, and when each was last seen, is reconnaissance rather than work",
@@ -202,10 +197,11 @@ const NOT_CATALOGUED: Partial<Record<RecordChannel, string>> = {
   "record:attachment": "hands out a file by id to whoever asks; an agent reads what is attached to the item it is working on",
   // EO-600: a desktop asking the record to make the change items:update
   // was asked for, on an item the organisation holds.
-  // EO-726: EO's messages to a person, which agents never send or read (invariant 4).
+  // EO-726: EO's messages to a person. A client reads and handles them through inbox_list and the message tools (EO-918); these are machines talking.
   "record:sendMessage": "EO's own message to the people who must act on a project, sent by a desktop's EO code; agents never send messages",
-  "record:handleMessage": "a person's answer or dismissal of a message EO sent them; agents never read or answer messages",
-  "record:messages": "a replica pulling its person's messages; agents never read messages",
+  "record:handleMessage": "a desktop carrying its person's answer or dismissal of a message to the record that holds it; a client answers one with message_answer, which goes through messages:answer",
+  "record:handleMessageFor": "a desktop carrying an answer or dismissal its assistant or an outside MCP client made for its person to the record that holds the message; a client presses with message_answer or message_dismiss, which go through messages:answer / messages:dismiss",
+  "record:messages": "a replica pulling its person's messages from the record; a client reads them with inbox_list",
   "record:changeDependencies": "a replica's request for the record to make a change items:update was asked for; an agent changes what an item waits for with item_update",
   "record:updateItemType": "a replica's request for the record to make a change itemTypes:update was asked for; an item type is changed by a person, in settings or on the assistant's card, never by a tool (EO-735)",
   // EO-533: a desktop asking the record for the chat about a conflict it

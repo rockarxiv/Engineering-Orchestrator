@@ -39,6 +39,7 @@ import {
   type WorkspaceKindSlug,
   type Job,
   SCRATCH_KIND,
+  INBOX_HANDLED_MESSAGES_SHOWN,
   entryRefusalSentence,
   entryRuleWords,
   shownEntryRule,
@@ -124,7 +125,7 @@ import {
 } from "../db/repos/index.js";
 import { actingCaller, visibleProjectIds } from "../identity/acting.js";
 import { viewerFor, viewerIds } from "../identity/viewer.js";
-import { listOpenMessages } from "../db/repos/messagesRepo.js";
+import { listOpenMessages, listRecentlyHandledMessages } from "../db/repos/messagesRepo.js";
 import { decisionsFor } from "./decisions.js";
 import { outputFor } from "./outputCommands.js";
 import { originIndex, originOfItem } from "../jobs/origin.js";
@@ -2089,6 +2090,9 @@ export function listInbox(
   const messages = listOpenMessages(db, recipients).filter(
     (message) => projectId === undefined || message.projectId === null || message.projectId === projectId,
   );
+  // And the last few handled (EO-918), so whoever answered for the person
+  // — the assistant, an outside MCP client — is seen to have.
+  const handledMessages = listRecentlyHandledMessages(db, recipients, INBOX_HANDLED_MESSAGES_SHOWN, projectId);
 
   // "Everything is blocked" means every item the engine could still
   // move is waiting on a human. Items already finished don't count —
@@ -2137,6 +2141,7 @@ export function listInbox(
   return {
     items,
     messages,
+    handledMessages,
     summary: {
       // A message is waiting on you as much as a question is, and counts.
       openCount: real.length + messages.length,

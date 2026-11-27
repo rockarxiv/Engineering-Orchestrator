@@ -2,6 +2,8 @@ import {
   FROM_ENVIRONMENT_VARIABLES,
   actionOptions,
   answerOptions,
+  messageHandledWords,
+  type Message,
   type CommentOption,
   UNREADABLE_SERVER_SECRET_LINE,
   describeMachineSpecificWarning,
@@ -649,14 +651,20 @@ export function renderInbox(data: IpcResponse<"inbox:list">): string {
     ? "**Every ticket that could be moving is waiting on a person.** The pipeline is idle."
     : `${data.summary.openCount} open, ${data.summary.blockingCount} blocking.`;
 
-  if (data.items.length === 0 && data.messages.length === 0) return `${header}\n\nNothing is waiting on anyone.`;
+  // What was handled lately, and by whom (EO-918): the person, the
+  // assistant, or an outside MCP client acting for them.
+  const handled = data.handledMessages.map((message) => `- ${message.body.split("\n")[0] ?? ""} — ${messageHandledWords(message) ?? "open"} (${stamp(message.handledAt ?? message.createdAt)}). Message id ${message.id}.`);
+  const recently = handled.length === 0 ? "" : `\n\n## Recently handled messages\n\n${handled.join("\n")}`;
+
+  if (data.items.length === 0 && data.messages.length === 0) return `${header}\n\nNothing is waiting on anyone.${recently}`;
 
   // EO's own messages to the person (EO-725): about no item, so there is
-  // no thread to reply on. They are answered or dismissed in EO's Inbox.
+  // no thread to reply on. Answered or dismissed for them with the two
+  // message tools (EO-918), or by the person in EO's Inbox.
   const messages = data.messages.map((message) => {
     const options = offeredLines(message.options, "  ").map((line) => (line.trim() === "" ? "" : `\n${line}`)).join("");
     const first = message.body.split("\n")[0] ?? "";
-    return `- MESSAGE from EO (no ticket; ${message.source}, ${stamp(message.createdAt)}): ${first}${options}\n  Answered or dismissed by the person in EO's Inbox, not with comment_post. Message id ${message.id}.`;
+    return `- MESSAGE from EO (no ticket; ${message.source}, ${stamp(message.createdAt)}): ${first}${options}\n  ${messageHandling(message)}`;
   });
 
   const items = data.items.map((item) => {
@@ -665,7 +673,28 @@ export function renderInbox(data: IpcResponse<"inbox:list">): string {
     return `- ${item.blocking ? "**BLOCKING** " : ""}${item.itemKey} — ${item.itemTitle}\n  ${item.authorName} (${item.kind}, ${stamp(item.createdAt)}): ${first}${options}\n  Reply with comment_post using itemId ${item.itemId} and parentId ${item.commentId}.`;
   });
 
-  return `${header}\n\n${[...messages, ...items].join("\n")}`;
+  return `${header}\n\n${[...messages, ...items].join("\n")}${recently}`;
+}
+
+/** How an open message is answered or dismissed over MCP (EO-918): never with comment_post, which needs an item. */
+function messageHandling(message: Message): string {
+  const answers = answerOptions(message.options);
+  const answer =
+    answers.length === 0
+      ? ""
+      : `Answer it with message_answer (messageId ${message.id}, answer one of: ${answers.map((option) => JSON.stringify(option)).join(", ")}), or `;
+  const dismiss = `${answers.length === 0 ? "Close it" : "close it"} without answering with message_dismiss (messageId ${message.id})`;
+  return `${answer}${dismiss}. Not with comment_post. Message id ${message.id}.`;
+}
+
+/**
+ * A message answered or dismissed by `message_answer` / `message_dismiss`
+ * (EO-918): what it now says it was, and by whom.
+ */
+export function renderMessageHandled(data: IpcResponse<"messages:answer">): string {
+  if (data.message === null) return data.problem ?? "That message was not handled.";
+  const first = data.message.body.split("\n")[0] ?? "";
+  return `${messageHandledWords(data.message) ?? "Still open"}: the message ${data.message.id} ("${first}").`;
 }
 
 export function renderRunEvents(data: IpcResponse<"runs:listEvents">): string {
