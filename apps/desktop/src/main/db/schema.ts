@@ -683,7 +683,7 @@ export const stepRoutes = sqliteTable(
     position: integer("position").notNull().default(0),
     /**
      * How many times the route may be taken since a person last commented
-     * on the item (EO-921, migration 0185); null for no limit. Counted,
+     * on the item (EO-921, migration 0187); null for no limit. Counted,
      * never stored: see `transitions.result_key`.
      */
     traversalLimit: integer("traversal_limit"),
@@ -2386,7 +2386,7 @@ export const transitions = sqliteTable("transitions", {
   reason: text("reason"),
   /**
    * The declared result the move was made on, where the mover knew it
-   * (EO-921, migration 0185): a route's key, or the result a person
+   * (EO-921, migration 0187): a route's key, or the result a person
    * pressed. What a route's traversal limit counts, by this and
    * `from_step_id`. Null on moves before it and on moves no route made.
    * Written on the machine that made the move and by the record from the
