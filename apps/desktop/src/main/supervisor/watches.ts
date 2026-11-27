@@ -88,11 +88,33 @@ export function waitingLine(detail: string): string {
  */
 export function recordQuietCheck(
   db: Db,
-  check: { itemId: Uuid; stepId: string; action: string; provider: "builtin" | "module"; stay: string; detail: string; at: number; leasedAt: number },
+  check: {
+    itemId: Uuid;
+    stepId: string;
+    action: string;
+    /** Where the check was dispatched (EO-912, `runs.dispatched_in`), as the supervisor stamps a run it makes. */
+    dispatchedIn?: string[];
+    provider: "builtin" | "module";
+    stay: string;
+    detail: string;
+    at: number;
+    leasedAt: number;
+  },
 ): { run: Run; created: boolean } {
   const id = quietRunId(check.itemId, check.stay);
   const existing = getRun(db, id);
-  const run = existing ?? createRun(db, { id, itemId: check.itemId, agentId: null, action: check.action, stepId: check.stepId, status: "succeeded", provider: check.provider });
+  const run =
+    existing ??
+    createRun(db, {
+      id,
+      itemId: check.itemId,
+      agentId: null,
+      action: check.action,
+      stepId: check.stepId,
+      ...(check.dispatchedIn ? { dispatchedIn: check.dispatchedIn } : {}),
+      status: "succeeded",
+      provider: check.provider,
+    });
   appendRunEventAt(db, run.id, { seq: check.leasedAt, ts: check.at }, "output", { type: "output", text: waitingLine(check.detail) });
   return { run: updateRun(db, run.id, { endedAt: check.at }), created: existing === undefined };
 }

@@ -1,5 +1,8 @@
 import { type AnySQLiteColumn, index, integer, primaryKey, real, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
+/** What a run's `dispatched_in` rests on (EO-912): see `runs.dispatchBasis`. */
+export type DispatchBasis = "stamped" | "inferred" | "legacy";
+
 // ── Configuration ─────────────────────────────────────────────
 
 export const agents = sqliteTable("agents", {
@@ -2149,6 +2152,21 @@ export const runs = sqliteTable("runs", {
   // `none` workspace hands back nothing. Read on both resume paths,
   // which is why the rename is a migration rather than a fresh column.
   cwd: text("cwd"),
+  // Where the run was dispatched (EO-912, migration 0187): the bucket
+  // its item was in at the step it was dispatched from, as a one-entry
+  // list, or `[]` for a dispatch on no shared disk. Written once, by the
+  // supervisor, on the dispatch of a step's own entry action, and null
+  // on every other run, on rows from before the column and on rows from
+  // another machine — which, like `cwd`, it never travels to: a bucket
+  // is one of this machine's workspaces. What the overlap hold counts
+  // an item as in flight by; read by `listDispatches`.
+  dispatchedIn: text("dispatched_in", { mode: "json" }).$type<string[]>(),
+  // What `dispatched_in` rests on (EO-912, migration 0187): `stamped`,
+  // written as the run was made; `inferred`, read once from the item's
+  // own definition of the step for a run from before the stamp
+  // (`freezeLegacyDispatches`), which holds others but never lets the
+  // item past; `legacy`, such a run not read yet; null, none given.
+  dispatchBasis: text("dispatch_basis").$type<DispatchBasis>(),
   pid: integer("pid"),
   // One workflow-state entry, direct mention, or explicit human
   // re-authorization. Retries share it; a new initiation gets a new id.

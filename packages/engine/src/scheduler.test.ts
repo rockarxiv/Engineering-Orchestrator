@@ -1536,3 +1536,308 @@ describe("dependency wait rules", () => {
     });
   });
 });
+
+/**
+ * Items filed apart that change the same files (EO-912).
+ *
+ * `deriveDepsFromTouches` serialises the stories of one plan; nothing
+ * compared the `touches` of two items filed separately, so both could be
+ * under way at once and one of them hit a conflict rebasing at
+ * verification. The hold extends the rule to everything in flight —
+ * dispatched at least once, on a step that is not terminal — derived on
+ * every ask and never written as an edge.
+ */
+describe("tick — overlapping touches hold an item back while another is in flight (EO-912)", () => {
+  const touching = (...paths: string[]) => ({ spec: { touches: paths } });
+  /** Each id dispatched at least once, in the one place a board with no workspaces has. */
+  const startedHere = (...ids: string[]) => new Map(ids.map((id) => [id, new Set([""])]));
+  const board = (overrides: Partial<TickInput> = {}) =>
+    baseInput({
+      items: [
+        makeItem("856", { stepId: "build", createdAt: 1, ...touching("packages/core/src/ipc.ts", "packages/core/src/schemas/assistCard.ts") }),
+        makeItem("859", { stepId: "todo", createdAt: 2, ...touching("packages/core/src/schemas/assistCard.ts") }),
+      ],
+      steps: [makeState("todo"), makeState("build"), makeState("done", { isTerminal: true, agentId: null })],
+      agents: [makeAgent("agent-1")],
+      dispatchedIn: startedHere("856"),
+      ...overrides,
+    });
+
+  it("does not dispatch an item whose touches overlap an item in flight, and names that item and the path", () => {
+    const input = board({ activeRuns: [makeRun("856", "agent-1")] });
+    expect(tick(input)).toEqual([]);
+    expect(dispatchBlocker(input, "859")).toEqual({
+      kind: "touches_overlap",
+      holderId: "856",
+      path: "packages/core/src/schemas/assistCard.ts",
+      holderPath: "packages/core/src/schemas/assistCard.ts",
+    });
+    expect(dispatchBlockers(input).map(({ item, blocker }) => [item.id, blocker.kind])).toContainEqual(["859", "touches_overlap"]);
+    expect(hasDispatchableItem(input)).toBe(false);
+  });
+
+  it("holds while the holder sits between runs, on a step nobody is running", () => {
+    // In flight is "started and not finished", not "running right now":
+    // its changes are unmerged whether or not an agent is on it.
+    const input = board({
+      items: [makeItem("856", { stepId: "approve", ...touching("src") }), makeItem("859", touching("src/router.ts"))],
+      steps: [makeState("todo"), makeState("approve", { type: "user", agentId: null })],
+    });
+    expect(tick(input)).toEqual([]);
+    expect(dispatchBlocker(input, "859")).toEqual({ kind: "touches_overlap", holderId: "856", path: "src/router.ts", holderPath: "src" });
+  });
+
+  it("releases the held item once the holder stands on a terminal step", () => {
+    const input = board({ items: [makeItem("856", { stepId: "done", ...touching("packages/core/src/ipc.ts") }), makeItem("859", touching("packages/core/src/ipc.ts"))] });
+    expect(dispatchBlocker(input, "859")).toBeNull();
+    expect(tick(input).map((d) => d.item.id)).toEqual(["859"]);
+  });
+
+  it("releases the held item once the holder leaves flight altogether", () => {
+    // Archived or moved off this machine: the host leaves it out of `items`.
+    const input = board({ items: [makeItem("859", touching("packages/core/src/ipc.ts"))] });
+    expect(tick(input).map((d) => d.item.id)).toEqual(["859"]);
+  });
+
+  it("dispatches an item with no touches exactly as before, beside an item in flight", () => {
+    const input = board({ items: [makeItem("856", { stepId: "build", ...touching("packages/core/src/ipc.ts") }), makeItem("859")] });
+    expect(dispatchBlocker(input, "859")).toBeNull();
+    expect(tick(input).map((d) => d.item.id).sort()).toEqual(["856", "859"]);
+    // And an empty list is no touches either.
+    const empty = board({ items: [makeItem("856", { stepId: "build", ...touching("packages/core/src/ipc.ts") }), makeItem("859", touching())] });
+    expect(dispatchBlocker(empty, "859")).toBeNull();
+  });
+
+  it("dispatches an item whose touches overlap nothing in flight", () => {
+    // `src/a` is not `src/abc`: a prefix counts only at a separator.
+    const input = board({ items: [makeItem("856", { stepId: "build", ...touching("src/a") }), makeItem("859", touching("src/abc", "docs"))] });
+    expect(dispatchBlocker(input, "859")).toBeNull();
+    expect(tick(input).map((d) => d.item.id).sort()).toEqual(["856", "859"]);
+  });
+
+  it("is not held by an item that has never been dispatched, however its touches overlap", () => {
+    const input = board({ dispatchedIn: new Map(), items: [makeItem("856", touching("src")), makeItem("859", touching("src"))] });
+    expect(dispatchBlocker(input, "859")).toBeNull();
+    expect(dispatchBlocker(input, "856")).toBeNull();
+  });
+
+  it("never holds an item in a place it is already under way in, so two that both started there carry on rather than wait for each other", () => {
+    const input = board({
+      items: [makeItem("856", { stepId: "build", ...touching("src") }), makeItem("859", { stepId: "build", ...touching("src") })],
+      dispatchedIn: startedHere("856", "859"),
+    });
+    expect(tick(input).map((d) => d.item.id).sort()).toEqual(["856", "859"]);
+  });
+
+  it("keeps apart two items that would both start on the same tick: the first in line goes, the other is held", () => {
+    const input = board({
+      items: [makeItem("856", { createdAt: 1, ...touching("src") }), makeItem("859", { createdAt: 2, ...touching("src/router.ts") })],
+      dispatchedIn: new Map(),
+    });
+    expect(tick(input).map((d) => d.item.id)).toEqual(["856"]);
+  });
+
+  it("compares touches only within one place: the same path in another bucket is another file", () => {
+    const input = board({
+      items: [
+        makeItem("856", { stepId: "build", workspaceId: "api" as Uuid, ...touching("src/index.ts") }),
+        makeItem("859", { workspaceId: "web" as Uuid, ...touching("src/index.ts") }),
+      ],
+      dispatchedIn: new Map([["856", new Set(["api"])]]),
+    });
+    expect(dispatchBlocker(input, "859")).toBeNull();
+    // An item whose bucket is null works in nothing shared, and is held by nothing.
+    const unshared = board({ capacityKeyOf: () => null });
+    expect(dispatchBlocker(unshared, "859")).toBeNull();
+  });
+
+  it("leaves the order to a dependency edge between the two, whichever way it points", () => {
+    // A `none` edge releases at once; the touches must not re-impose what the plan chose not to.
+    const forward = board({ deps: [{ itemId: "859" as Uuid, dependsOnId: "856" as Uuid, wait: "none" }] });
+    expect(dispatchBlocker(forward, "859")).toBeNull();
+    const backward = board({ deps: [{ itemId: "856" as Uuid, dependsOnId: "859" as Uuid, wait: "none" }] });
+    expect(dispatchBlocker(backward, "859")).toBeNull();
+  });
+
+  it("names the oldest holder where several overlap, whatever order the items arrive in", () => {
+    const items = [
+      makeItem("new", { stepId: "build", createdAt: 5, ...touching("src") }),
+      makeItem("old", { stepId: "build", createdAt: 1, ...touching("src") }),
+      makeItem("859", { createdAt: 9, ...touching("src") }),
+    ];
+    const input = board({ items, dispatchedIn: startedHere("new", "old") });
+    expect(dispatchBlocker(input, "859")).toMatchObject({ kind: "touches_overlap", holderId: "old" });
+    expect(dispatchBlocker({ ...input, items: [...items].reverse() }, "859")).toMatchObject({ kind: "touches_overlap", holderId: "old" });
+  });
+
+  it("holds nothing when the host says nothing about what has been dispatched", () => {
+    const input: TickInput = board();
+    delete input.dispatchedIn;
+    expect(dispatchBlocker(input, "859")).toBeNull();
+  });
+
+  it("keeps holding while the holder stands on a step that works on no disk: its changes are still where it made them", () => {
+    // Its bucket where it stands now is null; where it was dispatched is not.
+    const input = board({
+      items: [
+        makeItem("856", { stepId: "notes", workspaceId: "api" as Uuid, ...touching("src/index.ts") }),
+        makeItem("859", { stepId: "todo", workspaceId: "api" as Uuid, ...touching("src/index.ts") }),
+      ],
+      steps: [makeState("todo"), makeState("notes")],
+      capacityKeyOf: (item) => (item.stepId === "notes" ? null : item.workspaceId),
+      dispatchedIn: new Map([["856", new Set(["api"])]]),
+    });
+    expect(dispatchBlocker(input, "859")).toEqual({ kind: "touches_overlap", holderId: "856", path: "src/index.ts", holderPath: "src/index.ts" });
+    expect(tick(input).map((d) => d.item.id)).toEqual(["856"]);
+  });
+
+  it("does not let work on no disk count as started: such an item holds nothing and is held where it would change files", () => {
+    // 859 drafted on no disk, so `dispatchedIn` lists no place for it.
+    const input = board({
+      items: [
+        makeItem("856", { stepId: "build", workspaceId: "api" as Uuid, ...touching("src/index.ts") }),
+        makeItem("859", { stepId: "todo", workspaceId: "api" as Uuid, ...touching("src/index.ts") }),
+      ],
+      dispatchedIn: new Map([["856", new Set(["api"])], ["859", new Set<string>()]]),
+    });
+    expect(dispatchBlocker(input, "859")).toMatchObject({ kind: "touches_overlap", holderId: "856" });
+    // And the other way round: one that has only drafted holds back nobody.
+    const drafted = board({
+      items: [
+        makeItem("856", { stepId: "build", workspaceId: "api" as Uuid, ...touching("src/index.ts") }),
+        makeItem("859", { stepId: "todo", workspaceId: "api" as Uuid, ...touching("src/index.ts") }),
+      ],
+      dispatchedIn: new Map(),
+    });
+    expect(dispatchBlocker(drafted, "859")).toBeNull();
+  });
+
+  it("holds by every place the holder worked in, not only the one it stands in", () => {
+    const input = board({
+      items: [
+        makeItem("856", { stepId: "build", workspaceId: "web" as Uuid, ...touching("src/index.ts") }),
+        makeItem("859", { workspaceId: "api" as Uuid, ...touching("src/index.ts") }),
+      ],
+      dispatchedIn: new Map([["856", new Set(["api", "web"])]]),
+    });
+    expect(dispatchBlocker(input, "859")).toMatchObject({ kind: "touches_overlap", holderId: "856" });
+  });
+
+  it("holds an item under way in one place as it enters another where an overlapping item is in flight, until that one finishes", () => {
+    // 859 worked in `a` and now stands on a step working in `b`, where 856 is under way.
+    const items = (holderStep: string) => [
+      makeItem("856", { stepId: holderStep, workspaceId: "b" as Uuid, ...touching("src/index.ts") }),
+      makeItem("859", { stepId: "todo", workspaceId: "b" as Uuid, ...touching("src/index.ts") }),
+    ];
+    const dispatchedIn = new Map([["856", new Set(["b"])], ["859", new Set(["a"])]]);
+    const input = board({ items: items("build"), dispatchedIn, activeRuns: [makeRun("856", "agent-1")] });
+    expect(dispatchBlocker(input, "859")).toEqual({ kind: "touches_overlap", holderId: "856", path: "src/index.ts", holderPath: "src/index.ts" });
+    expect(tick(input)).toEqual([]);
+    const finished = board({ items: items("done"), dispatchedIn });
+    expect(dispatchBlocker(finished, "859")).toBeNull();
+    expect(tick(finished).map((d) => d.item.id)).toEqual(["859"]);
+  });
+
+  it("lets the oldest of two items waiting on each other across places go first, and holds the other behind it", () => {
+    // 856 is under way in `a` and wants `b`; 859 is under way in `b` and wants `a`. Neither finishes while it waits.
+    const input = board({
+      items: [
+        makeItem("856", { stepId: "todo", createdAt: 1, workspaceId: "b" as Uuid, ...touching("src/index.ts") }),
+        makeItem("859", { stepId: "todo", createdAt: 2, workspaceId: "a" as Uuid, ...touching("src/index.ts") }),
+      ],
+      dispatchedIn: new Map([["856", new Set(["a"])], ["859", new Set(["b"])]]),
+    });
+    expect(dispatchBlocker(input, "856")).toBeNull();
+    expect(dispatchBlocker(input, "859")).toMatchObject({ kind: "touches_overlap", holderId: "856" });
+    expect(tick(input).map((d) => d.item.id)).toEqual(["856"]);
+    // Next tick 856 is under way in both, the ring is gone, and 859 still waits for it.
+    const after = { ...input, dispatchedIn: new Map([["856", new Set(["a", "b"])], ["859", new Set(["b"])]]) };
+    expect(dispatchBlocker(after, "859")).toMatchObject({ kind: "touches_overlap", holderId: "856" });
+  });
+
+  it("breaks a ring that runs through dependency edges as well as overlaps, without bypassing an edge", () => {
+    // A is under way in `a` and wants `b`, where B is under way; B waits on C by an edge;
+    // C is under way in `c` and wants `d`, where D is under way; D waits on A by an edge.
+    // The edges are acyclic, but A → B → C → D → A is a ring no finish ends.
+    const input = board({
+      items: [
+        makeItem("A", { stepId: "todo", createdAt: 1, workspaceId: "b" as Uuid, ...touching("src") }),
+        makeItem("B", { stepId: "todo", createdAt: 2, workspaceId: "b" as Uuid, ...touching("src") }),
+        makeItem("C", { stepId: "todo", createdAt: 3, workspaceId: "d" as Uuid, ...touching("src") }),
+        makeItem("D", { stepId: "todo", createdAt: 4, workspaceId: "d" as Uuid, ...touching("src") }),
+      ],
+      dispatchedIn: new Map([
+        ["A", new Set(["a"])],
+        ["B", new Set(["b"])],
+        ["C", new Set(["c"])],
+        ["D", new Set(["d"])],
+      ]),
+      deps: [
+        { itemId: "B" as Uuid, dependsOnId: "C" as Uuid },
+        { itemId: "D" as Uuid, dependsOnId: "A" as Uuid },
+      ],
+    });
+    // A, the oldest that no edge in the ring holds, goes past it; C still waits for D's place.
+    expect(dispatchBlocker(input, "A")).toBeNull();
+    expect(dispatchBlocker(input, "B")).toMatchObject({ kind: "open_dependency", dependsOnId: "C" });
+    expect(dispatchBlocker(input, "C")).toMatchObject({ kind: "touches_overlap", holderId: "D" });
+    expect(dispatchBlocker(input, "D")).toMatchObject({ kind: "open_dependency", dependsOnId: "A" });
+    expect(tick(input).map((d) => d.item.id)).toEqual(["A"]);
+    // Next tick A is under way in `b` too: the ring is gone and nobody goes past anything.
+    const after = { ...input, dispatchedIn: new Map([...input.dispatchedIn!, ["A", new Set(["a", "b"])]]) };
+    expect(dispatchBlocker(after, "C")).toMatchObject({ kind: "touches_overlap", holderId: "D" });
+    expect(tick(after).map((d) => d.item.id)).toEqual(["A"]);
+  });
+
+  it("does not let an item past an overlap wait when the only ring it is in runs through an edge holding it", () => {
+    // 859 waits on 856's place, and an edge holds 856 on 859 — but a pair a dependency path joins is
+    // left to its edges, so there is no overlap wait at all and the edge alone decides.
+    const input = board({
+      items: [
+        makeItem("856", { stepId: "todo", createdAt: 1, workspaceId: "b" as Uuid, ...touching("src") }),
+        makeItem("859", { stepId: "todo", createdAt: 2, workspaceId: "b" as Uuid, ...touching("src") }),
+      ],
+      dispatchedIn: new Map([["856", new Set(["b"])], ["859", new Set(["a"])]]),
+      deps: [{ itemId: "856" as Uuid, dependsOnId: "859" as Uuid }],
+    });
+    expect(dispatchBlocker(input, "856")).toMatchObject({ kind: "open_dependency", dependsOnId: "859" });
+    expect(dispatchBlocker(input, "859")).toBeNull();
+  });
+
+  it("holds others back where a place is only claimed for an item, but never lets that item past there", () => {
+    // 856's place is a reconstruction: it holds 859 there, as a proven one would.
+    const claimed = board({ dispatchedIn: new Map(), claimedIn: startedHere("856") });
+    expect(dispatchBlocker(claimed, "859")).toMatchObject({ kind: "touches_overlap", holderId: "856" });
+    // And 859, claimed there itself, is still held beside 856, which is proven there.
+    const both = board({
+      items: [makeItem("856", { stepId: "build", createdAt: 1, ...touching("src") }), makeItem("859", { stepId: "build", createdAt: 2, ...touching("src") })],
+      dispatchedIn: startedHere("856"),
+      claimedIn: startedHere("859"),
+    });
+    expect(dispatchBlocker(both, "856")).toBeNull();
+    expect(dispatchBlocker(both, "859")).toMatchObject({ kind: "touches_overlap", holderId: "856" });
+    expect(tick(both).map((d) => d.item.id)).toEqual(["856"]);
+  });
+
+  it("lets the oldest of two items only claimed in one place go first, rather than both wait for ever", () => {
+    const input = board({
+      items: [makeItem("856", { stepId: "build", createdAt: 1, ...touching("src") }), makeItem("859", { stepId: "build", createdAt: 2, ...touching("src") })],
+      dispatchedIn: new Map(),
+      claimedIn: startedHere("856", "859"),
+    });
+    expect(dispatchBlocker(input, "856")).toBeNull();
+    expect(dispatchBlocker(input, "859")).toMatchObject({ kind: "touches_overlap", holderId: "856" });
+    expect(tick(input).map((d) => d.item.id)).toEqual(["856"]);
+  });
+
+  it("leaves the order to a chain of dependencies between the two, not only a direct edge", () => {
+    const input = board({
+      items: [...board().items, makeItem("mid", { stepId: "todo" })],
+      deps: [
+        { itemId: "859" as Uuid, dependsOnId: "mid" as Uuid, wait: "none" },
+        { itemId: "mid" as Uuid, dependsOnId: "856" as Uuid, wait: "none" },
+      ],
+    });
+    expect(dispatchBlocker(input, "859")).toBeNull();
+  });
+});

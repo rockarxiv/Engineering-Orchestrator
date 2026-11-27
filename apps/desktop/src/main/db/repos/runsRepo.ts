@@ -13,7 +13,7 @@ import {
   type Uuid,
 } from "@eo/core";
 import type { Db } from "../client.js";
-import { runs, runEvents, items, projects } from "../schema.js";
+import { runs, runEvents, items, projects, type DispatchBasis } from "../schema.js";
 import {
   personSideCallCentsSince,
   sideCallCentsBetween,
@@ -118,6 +118,20 @@ export interface CreateRunInput {
   /** Hash of the item's own files this run's thread was told about (EO-703) — carried over on a resume, like the two above. */
   itemFilesHash?: string | null;
   cwd?: string | null;
+  /**
+   * Where this run was dispatched (EO-912): the bucket its item was in
+   * at the step, `[]` for no shared disk. Given only by the supervisor's
+   * dispatch of a step's own entry action (`dispatchPlace`), or carried
+   * over by a continuation from the run it continues; absent on every
+   * other run, which stores null.
+   */
+  dispatchedIn?: string[] | null;
+  /**
+   * What `dispatchedIn` rests on (`runs.dispatch_basis`). Defaults to
+   * `stamped` where `dispatchedIn` is given and to null where it is not;
+   * a continuation gives its prior run's, whatever that was.
+   */
+  dispatchBasis?: DispatchBasis | null;
   pid?: number | null;
   initiationId?: string | null;
   attempt?: number;
@@ -163,6 +177,8 @@ export function createRun(db: Db, input: CreateRunInput): Run {
       agentAttachmentsHash: input.agentAttachmentsHash ?? null,
       itemFilesHash: input.itemFilesHash ?? null,
       cwd: input.cwd ?? null,
+      dispatchedIn: input.dispatchedIn ?? null,
+      dispatchBasis: input.dispatchBasis !== undefined ? input.dispatchBasis : input.dispatchedIn !== undefined && input.dispatchedIn !== null ? "stamped" : null,
       pid: input.pid ?? null,
       initiationId: input.initiationId ?? null,
       attempt: input.attempt ?? 1,
@@ -714,6 +730,118 @@ export function sumCostCentsBetween(db: Db, startMs: number, endMs: number): num
     sql`select sum(${runs.costCents}) as total from ${runs} join ${items} on ${items.id} = ${runs.itemId} where ${items.previewAt} is null and ${runs.startedAt} >= ${startMs} and ${runs.startedAt} < ${endMs}`,
   );
   return (row?.total ?? 0) + sideCallCentsBetween(db, startMs, endMs);
+}
+
+/**
+ * A run that may be an item's dispatch at a step (EO-912), as
+ * `listDispatches` finds it: the step and action it names, and where it
+ * says it was dispatched — the bucket list the supervisor wrote when it
+ * made the row (`runs.dispatched_in`), or null where it wrote none.
+ */
+export interface DispatchRow {
+  stepId: string;
+  action: string;
+  dispatchedIn: string[] | null;
+  /** What `dispatchedIn` rests on: only a `stamped` row is proof the item worked there. */
+  basis: DispatchBasis | null;
+}
+
+/**
+ * Where a run says it was dispatched, and on what (EO-912): what a
+ * continuation carries over from the run it continues, since it works
+ * where that one did rather than where the item's step points now.
+ */
+export function dispatchOf(db: Db, runId: Uuid): { dispatchedIn: string[] | null; dispatchBasis: DispatchBasis | null } {
+  const row = db.select({ dispatchedIn: runs.dispatchedIn, dispatchBasis: runs.dispatchBasis }).from(runs).where(eq(runs.id, runId)).get();
+  return { dispatchedIn: row?.dispatchedIn ?? null, dispatchBasis: row?.dispatchBasis ?? null };
+}
+
+/** A run from before the stamp not read yet (`dispatch_basis = 'legacy'`), as `freezeLegacyDispatches` reads it. */
+export interface LegacyDispatchRow {
+  id: Uuid;
+  itemId: Uuid;
+  stepId: string;
+  action: string;
+}
+
+/** Every run from before the stamp that has not been read yet (EO-912). */
+export function listLegacyDispatches(db: Db): LegacyDispatchRow[] {
+  return db.all<LegacyDispatchRow>(sql`
+    select r.id as "id", r.item_id as "itemId", r.step_id as "stepId", r.action as "action"
+    from ${runs} r
+    where r.dispatch_basis = 'legacy' and r.step_id is not null
+  `);
+}
+
+/**
+ * Writes down what a run from before the stamp was read as (EO-912):
+ * the place, `[]` for no shared disk, or null for a run that was not
+ * the dispatch of its step's action. `inferred` from then on, so that
+ * nothing reads it again differently.
+ */
+export function setInferredDispatch(db: Db, runId: Uuid, dispatchedIn: string[] | null): void {
+  db.update(runs).set({ dispatchedIn, dispatchBasis: "inferred" }).where(eq(runs.id, runId)).run();
+}
+
+/**
+ * The runs that may be each item's dispatches (EO-912): what the
+ * scheduler's overlap hold turns into the places an item is *in flight*
+ * in (`dispatchedPlaces`), together with a step that is not terminal.
+ *
+ * A row the supervisor stamped (`dispatched_in`) is a dispatch, in the
+ * bucket it names: written when the run was made, from the step as the
+ * item's own version defined it then, so neither a later edit of the
+ * step, a move to another version, nor the pruning of one changes it.
+ * A row from before the column was read once, at the first start after
+ * it, by the item's own definition of the step as it stood then, and
+ * keeps that reading (`inferred`, `freezeLegacyDispatches`): a claim,
+ * never proof. A row with no stamp and no basis is a reply to a mention,
+ * a discussion, an interpretation — or a run from another machine; the
+ * caller tells those apart by the item's own definition of the step,
+ * which is all EO has for them, and takes that as a claim too.
+ *
+ * A dry run borrows an item and is not its work. A guard's placeholder
+ * (`awaiting_input` with no session) is a refusal rather than a
+ * dispatch, and so is an agent run that ended without ever getting a
+ * session — nothing reached the disk — though an agent run still queued
+ * or starting counts from the moment it exists, or the next tick would
+ * start a second item over the first.
+ *
+ * Only for `itemIds`: the caller asks about unfinished items, and the
+ * runs of finished ones are most of the table. One row per distinct
+ * step, action, stamp and basis.
+ */
+export function listDispatches(db: Db, itemIds: readonly string[]): Map<Uuid, DispatchRow[]> {
+  const found = new Map<Uuid, DispatchRow[]>();
+  if (itemIds.length === 0) return found;
+  const rows = db.all<{ itemId: string; stepId: string; action: string; dispatchedIn: string | null; basis: DispatchBasis | null }>(sql`
+    select distinct r.item_id as "itemId", r.step_id as "stepId", r.action as "action", r.dispatched_in as "dispatchedIn", r.dispatch_basis as "basis"
+    from ${runs} r
+    where r.item_id in (select value from json_each(${JSON.stringify(itemIds)}))
+      and r.step_id is not null
+      and r.dry_run = 0
+      and not (r.status = 'awaiting_input' and r.thread_id is null)
+      and (r.agent_id is null or r.thread_id is not null or r.status in ('queued', 'running'))
+  `);
+  for (const row of rows) {
+    const dispatch = { stepId: row.stepId, action: row.action, dispatchedIn: placesFrom(row.dispatchedIn), basis: row.basis };
+    const at = found.get(row.itemId as Uuid);
+    if (at) at.push(dispatch);
+    else found.set(row.itemId as Uuid, [dispatch]);
+  }
+  return found;
+}
+
+/** `runs.dispatched_in` read back: a list of bucket names, or null for a column that holds none or anything else. */
+function placesFrom(stored: string | null): string[] | null {
+  if (stored === null) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stored);
+  } catch {
+    return null;
+  }
+  return Array.isArray(parsed) && parsed.every((place): place is string => typeof place === "string") ? parsed : null;
 }
 
 /**

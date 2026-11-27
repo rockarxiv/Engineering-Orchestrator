@@ -135,8 +135,9 @@ import { activeProjectId } from "./repositoryCommands.js";
 import { workspaceView } from "./workspaceCommands.js";
 import { providerSteersLiveTurns } from "../providers/capabilities.js";
 import { currentWatch, currentWatchViews, itemWatchView } from "../supervisor/watches.js";
-import { gateRefusalLine, gateWords } from "../supervisor/dispatchBlockers.js";
-import { installedGateRefusal } from "../installedGate.js";
+import { gateRefusalLine, gateWords, touchesHoldLine, type WaitingOnOverlap } from "../supervisor/dispatchBlockers.js";
+import { installedCapacityKeyOf, installedGateRefusal } from "../installedGate.js";
+import { touchesHoldsOf } from "../supervisor/buildTickInput.js";
 import { watchIntervalMs } from "@eo/engine";
 import { runActionName } from "../modules/runName.js";
 import { registry, registryForProject } from "../registry.js";
@@ -636,6 +637,9 @@ function summarise(db: Db, rows: Item[], stories: Item[] = rows, reads: SummaryR
   // The watch on each card's step (EO-699), for the whole listing at
   // once: the card says when it checks next rather than "Done".
   const watches = currentWatchViews(db, all, stepOf);
+  // Which of these the overlap hold keeps back (EO-912), for the whole
+  // listing at once, so a card can say whom it waits for and which path.
+  const overlapHolds = touchesHoldsOf(db, all, installedCapacityKeyOf(db));
 
   /**
    * What a dependency edge resolves against, which is *not* this board
@@ -804,7 +808,7 @@ function summarise(db: Db, rows: Item[], stories: Item[] = rows, reads: SummaryR
       // What the installed pack turns this step away with (EO-781), asked
       // of the gate the scheduler is given, so the card and the tick
       // cannot disagree about whether it is held.
-      dispatchHold: dispatchHoldOf(db, item, stepOf(item)),
+      dispatchHold: dispatchHoldOf(db, item, stepOf(item), overlapHolds),
       latestRunStatus: latest?.status ?? null,
       watch: watches.get(item.id) ?? null,
       // Who is actually on it (ARCHITECTURE.md, "Vocabulary"): the agent that ran most recently,
@@ -824,11 +828,17 @@ function summarise(db: Db, rows: Item[], stories: Item[] = rows, reads: SummaryR
   return { items };
 }
 
-/** The installed gate's refusal of the step an item stands on, as its card says it; null on none, or on a terminal step. */
-function dispatchHoldOf(db: Db, item: Item, step: PipelineStep | undefined): string | null {
+/**
+ * The installed gate's refusal of the step an item stands on, as its card
+ * says it, or else the overlap hold keeping it back (EO-912); null on
+ * neither, or on a terminal step.
+ */
+function dispatchHoldOf(db: Db, item: Item, step: PipelineStep | undefined, overlapHolds: ReadonlyMap<string, WaitingOnOverlap>): string | null {
   if (step === undefined || step.isTerminal) return null;
   const refusal = installedGateRefusal(db, item, step);
-  return refusal === null ? null : gateRefusalLine(refusal);
+  if (refusal !== null) return gateRefusalLine(refusal);
+  const overlap = overlapHolds.get(item.id);
+  return overlap === undefined ? null : touchesHoldLine(overlap);
 }
 
 /** Which comments still have an open mention waiting on the human — drives the `!` in a thread. */

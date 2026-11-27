@@ -1,6 +1,6 @@
 import { stepAgentKind, stepAgentOf, stepAgentRefusal } from "@eo/core";
 import type { Agent, DependencyWait, Run, Item, PipelineStep, StepAgentRefusal } from "@eo/core";
-import type { Edge } from "./dag.js";
+import { touchesOf, touchesOverlap, type Edge } from "./dag.js";
 
 /**
  * A dependency edge as the scheduler reads it: the pair, and the rule
@@ -210,6 +210,58 @@ export interface EligibilityInput<R extends DispatchRefusal = DispatchRefusal> {
   /** itemIds a person manually parked without changing their pipeline step (EO-45) */
   heldItemIds: Set<string>;
   /**
+   * Where each item has been dispatched (EO-912): for an item dispatched
+   * at least once at a step of its own, the places — buckets, as
+   * `capacityKeyOf` answers them — that it worked in, worked out by the
+   * host from evidence of each dispatch rather than from the step the
+   * item stands on now, since this package reads no table. A dispatch
+   * that worked on no shared disk has no place and is not listed.
+   *
+   * With a step that is not terminal, that is what *in flight in a
+   * place* means: work has started there, and whatever it changed is
+   * not finished with yet — whichever step the item has gone on to,
+   * a step that works on no disk included, since its changes are still
+   * where it made them. Such an item holds back, by `touches_overlap`,
+   * an item about to work in one of these places for the first time
+   * whose `touches` overlap its own (`touchesHolds`). An item is never
+   * held in a place it is listed in, whatever it overlaps there, so two
+   * that both started there before the rule existed both carry on
+   * rather than wait for each other for ever; and an item whose only
+   * dispatches worked on no disk has changed nothing anywhere, so it
+   * holds nothing and is held at the first place it would work in.
+   * Absent is nobody dispatched anywhere, which holds nothing.
+   *
+   * Only places the host has proof of: where its evidence of a dispatch
+   * is a reconstruction, the place is in `claimedIn` instead.
+   */
+  dispatchedIn?: ReadonlyMap<string, ReadonlySet<string>>;
+  /**
+   * Places each item is believed to be in flight in without proof
+   * (EO-912): where the host could only work out, after the fact, where
+   * a dispatch worked. Such a place holds others back exactly as one in
+   * `dispatchedIn` does, since the item may well have changed files
+   * there; but it never lets the item itself past the hold there, since
+   * it may not have. Absent is none.
+   */
+  claimedIn?: ReadonlyMap<string, ReadonlySet<string>>;
+  /**
+   * Which bucket each item's run consumes (KAN-161).
+   *
+   * Absent means nothing is bucketed and the global cap alone applies,
+   * which is what a core with no pack installed does.
+   *
+   * Here rather than on `TickInput` alone because it is also *where an
+   * item's `touches` are paths in* (EO-912): two items in one bucket
+   * share the place their runs work in, so a path in one names the same
+   * file as that path in the other, and two in different buckets do
+   * not, however alike their paths read. Absent is one place for
+   * everything; an item whose bucket is null stands where nothing is
+   * shared, so it is not held there for what it touches. Where an item
+   * in flight holds others is `dispatchedIn`'s, not this: the places it
+   * worked in, not the one it stands on now.
+   */
+  capacityKeyOf?: CapacityKeyOf;
+  /**
    * The global pause (ARCHITECTURE.md, "Guardrails"): true means no new
    * dispatches, but for an agent step whose agent's kind is in
    * `pauseExemptRoles`.
@@ -247,13 +299,6 @@ export interface TickInput<R extends DispatchRefusal = DispatchRefusal> extends 
    * an item is in is `capacityKeyOf`, and the engine does not ask.
    */
   limits: { globalConcurrency: number; perAgentConcurrency: number; perRepositoryConcurrency: number };
-  /**
-   * Which bucket each item's run consumes (KAN-161).
-   *
-   * Absent means nothing is bucketed and the global cap alone applies,
-   * which is what a core with no pack installed does.
-   */
-  capacityKeyOf?: CapacityKeyOf;
   /**
    * Global slots held by work that is not a run (EO-477): a side call
    * made on its own — consolidation — holds one while it runs, and one
@@ -323,6 +368,21 @@ export type DispatchBlocker<R extends DispatchRefusal = DispatchRefusal> =
    * here: it never holds.
    */
   | { kind: "open_dependency"; dependsOnId: string; wait: Exclude<DependencyWait, "none">; waitStepId: string | null }
+  /**
+   * It has not been dispatched in the place it would work in now, and
+   * the paths it declares overlap, by `touchesOverlap`, those of
+   * `holderId` — an item in flight in that place (EO-912,
+   * `dispatchedIn`, `touchesHolds`). `path` is this item's entry and
+   * `holderPath` the holder's it overlaps, which are the same string
+   * where both name one file.
+   *
+   * Lifts by itself once the holder finishes or leaves flight. Derived
+   * on every ask from the items themselves, never stored and never an
+   * edge: the plan's own dependencies are the only rows there are, and
+   * a dependency path between the two either way exempts the pair,
+   * because then the edges say how they are ordered.
+   */
+  | ({ kind: "touches_overlap" } & TouchesHold)
   /** Its most recent run parked waiting for a reply. */
   | { kind: "awaiting_input" }
   /** Somebody parked it by hand. */
@@ -382,6 +442,268 @@ export type DispatchBlocker<R extends DispatchRefusal = DispatchRefusal> =
  */
 export type WatchHold = { reason: "offline" } | { reason: "waking"; until: number };
 
+/** Which in-flight item holds another back for what both touch, and by which paths (`touches_overlap`). */
+export interface TouchesHold {
+  holderId: string;
+  /** The held item's own entry. */
+  path: string;
+  /** The holder's entry it overlaps. */
+  holderPath: string;
+}
+
+/** An item in flight, with the paths it declared (`touchesOf`). */
+export interface TouchesClaim {
+  item: Item;
+  touches: readonly string[];
+}
+
+/**
+ * The in-flight item whose declared paths overlap this one's, if any
+ * (EO-912): the rule behind `touches_overlap`, exported so that a host
+ * explaining a card asks the very function the scheduler decides with.
+ *
+ * `inFlight` is the claims in this item's place only — the caller
+ * knows what a place is, and this does not. `related` answers whether
+ * dependency edges join the two ids either way, which exempts the pair.
+ * The oldest holder is named where several overlap, so the answer does
+ * not depend on the order the claims arrive in.
+ */
+export function touchesHold(item: Item, inFlight: readonly TouchesClaim[], related: (a: string, b: string) => boolean): TouchesHold | null {
+  const own = touchesOf(item);
+  if (own.length === 0) return null;
+  const ordered = [...inFlight].sort((a, b) => a.item.createdAt - b.item.createdAt || a.item.id.localeCompare(b.item.id));
+  for (const claim of ordered) {
+    if (claim.item.id === item.id || related(item.id, claim.item.id)) continue;
+    for (const path of own) {
+      const holderPath = claim.touches.find((other) => touchesOverlap(path, other));
+      if (holderPath !== undefined) return { holderId: claim.item.id, path, holderPath };
+    }
+  }
+  return null;
+}
+
+/** What `touchesHolds` reads: `EligibilityInput`'s own facts, with the step and place lookups the scheduler has built. */
+export interface TouchesHoldsInput {
+  /** Every item the scheduler is considering — holders and held alike. */
+  items: readonly Item[];
+  stepFor: (item: Item) => PipelineStep | undefined;
+  /** `EligibilityInput.dispatchedIn`. */
+  dispatchedIn: ReadonlyMap<string, ReadonlySet<string>>;
+  /** `EligibilityInput.claimedIn`: places that hold others but exempt nobody. Absent is none. */
+  claimedIn?: ReadonlyMap<string, ReadonlySet<string>>;
+  /** The place an item works in at the step it stands on now; null for none shared. */
+  placeOf: (item: Item) => string | null;
+  /** Every dependency edge, whatever its rule. */
+  deps: readonly Edge[];
+  /**
+   * The items each one is held back by on an edge that holds it now
+   * (`open_dependency`). Waits the overlap hold must see to find a ring
+   * that runs through edges as well as through overlaps. Absent is none.
+   */
+  waitsOnDependencies?: (item: Item) => readonly string[];
+}
+
+/** The overlap hold over one input (`touchesHolds`). */
+export interface TouchesHolds {
+  /** What holds this item back for what it touches, or null. */
+  holdOf(item: Item): TouchesHold | null;
+  /** Counts an item as in flight where it works now: `tick()` calls it for each item it dispatches. */
+  claim(item: Item): void;
+}
+
+/**
+ * The overlap hold (EO-912, `touches_overlap`) over everything the
+ * scheduler is asked about at once, exported so that a host explaining
+ * a card asks the very rule the tick decides with.
+ *
+ * An item is in flight in each place `dispatchedIn` or `claimedIn`
+ * lists for it while its step is not terminal, and holds there what it
+ * declared it touches. An item is asked about at the place it would work
+ * in now, unless `dispatchedIn` proves it was dispatched there before (a
+ * place only claimed for it is no such proof): an item already under way in a
+ * place carries on there, so two that started together both go on, but
+ * one under way elsewhere entering a place for the first time waits
+ * like any other.
+ *
+ * Those that wait can wait on each other in a ring — one under way in A
+ * wanting B, another under way in B wanting A — which no finish would
+ * ever end; and a ring can run through dependency edges as well, where
+ * an item one of them waits for by an edge is itself waiting on the
+ * other's place (`waitsOnDependencies`). In each such ring the oldest
+ * member that no edge inside the ring holds, and that waits there for
+ * a place, goes first: it is held by nothing in the ring, so no edge is
+ * ever bypassed. The next tick it is under way where it went, the ring
+ * is broken, and the rest wait for it as for anyone.
+ *
+ * Two items a dependency path joins, either way and however long, are
+ * left to their edges: the plan has already said how they go, and an
+ * overlap hold across a chain of edges could close a ring of its own.
+ */
+export function touchesHolds(input: TouchesHoldsInput): TouchesHolds {
+  const { items, stepFor, dispatchedIn, placeOf } = input;
+  const related = dependencyLinked(input.deps);
+
+  const claimsByPlace = new Map<string, TouchesClaim[]>();
+  const addClaim = (item: Item, place: string): void => {
+    const touches = touchesOf(item);
+    if (touches.length === 0) return;
+    const claims = claimsByPlace.get(place);
+    if (claims === undefined) claimsByPlace.set(place, [{ item, touches }]);
+    else if (!claims.some((claim) => claim.item.id === item.id)) claims.push({ item, touches });
+  };
+  for (const item of items) {
+    const places = [...(dispatchedIn.get(item.id) ?? []), ...(input.claimedIn?.get(item.id) ?? [])];
+    if (places.length === 0) continue;
+    const step = stepFor(item);
+    if (step === undefined || step.isTerminal) continue;
+    for (const place of places) addClaim(item, place);
+  }
+
+  /** The place this item is asked about, or null where the hold does not apply to it. */
+  const askedAt = (item: Item): string | null => {
+    if (touchesOf(item).length === 0) return null;
+    const step = stepFor(item);
+    if (step === undefined || step.isTerminal || step.type === "user") return null;
+    const place = placeOf(item);
+    if (place === null || dispatchedIn.get(item.id)?.has(place) === true) return null;
+    return place;
+  };
+  const overlapsWith = (item: Item, claims: readonly TouchesClaim[]): TouchesClaim[] => {
+    const own = touchesOf(item);
+    return claims.filter(
+      (claim) =>
+        claim.item.id !== item.id &&
+        !related(item.id, claim.item.id) &&
+        own.some((path) => claim.touches.some((other) => touchesOverlap(path, other))),
+    );
+  };
+
+  // Who waits on whom, and the rings in it. An overlap wait is an item
+  // wanting a place where an overlapping item is in flight; a dependency
+  // wait is an edge that holds it. Either may close a ring — A wants B's
+  // place, B's edge waits on C, C wants D's place, D's edge waits on A —
+  // and only an overlap wait can be broken, since edges are the plan's.
+  const overlapWaits = new Map<string, Set<string>>();
+  const byId = new Map<string, Item>();
+  for (const item of items) {
+    const place = askedAt(item);
+    if (place === null) continue;
+    const holders = overlapsWith(item, claimsByPlace.get(place) ?? []).map((claim) => claim.item.id);
+    if (holders.length === 0) continue;
+    overlapWaits.set(item.id, new Set(holders));
+  }
+  const goesFirstPast = new Map<string, ReadonlySet<string>>();
+  if (overlapWaits.size > 0) {
+    const dependencyWaits = new Map<string, Set<string>>();
+    for (const item of items) {
+      byId.set(item.id, item);
+      const step = stepFor(item);
+      if (step === undefined || step.isTerminal || step.type === "user") continue;
+      const on = input.waitsOnDependencies?.(item) ?? [];
+      if (on.length > 0) dependencyWaits.set(item.id, new Set(on));
+    }
+    const waitsOn = new Map<string, string[]>();
+    for (const id of new Set([...overlapWaits.keys(), ...dependencyWaits.keys()])) {
+      waitsOn.set(id, [...(overlapWaits.get(id) ?? []), ...(dependencyWaits.get(id) ?? [])]);
+    }
+    for (const ring of rings(waitsOn)) {
+      const inRing = new Set(ring);
+      // Who may go past the ring: one whose overlap wait is inside it and
+      // whom no edge inside it holds. There is always one — the edges are
+      // acyclic, so some member waits on no other by an edge, and it is
+      // in the ring by an overlap wait — though an edge out of the ring
+      // may still hold it, which is waiting on something that can finish.
+      const free = ring.flatMap((id) => {
+        const item = byId.get(id);
+        if (item === undefined) return [];
+        const byOverlap = [...(overlapWaits.get(id) ?? [])].some((other) => inRing.has(other));
+        const byEdge = [...(dependencyWaits.get(id) ?? [])].some((other) => inRing.has(other));
+        return byOverlap && !byEdge ? [item] : [];
+      });
+      const oldest = [...free].sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id))[0];
+      if (oldest !== undefined) goesFirstPast.set(oldest.id, inRing);
+    }
+  }
+
+  return {
+    holdOf(item) {
+      const place = askedAt(item);
+      if (place === null) return null;
+      const past = goesFirstPast.get(item.id);
+      const claims = claimsByPlace.get(place) ?? [];
+      return touchesHold(item, past === undefined ? claims : claims.filter((claim) => !past.has(claim.item.id)), related);
+    },
+    claim(item) {
+      const place = placeOf(item);
+      if (place !== null) addClaim(item, place);
+    },
+  };
+}
+
+/** Whether a path of dependency edges joins two items, either way (`touchesHolds`). */
+function dependencyLinked(deps: readonly Edge[]): (a: string, b: string) => boolean {
+  const out = new Map<string, string[]>();
+  for (const edge of deps) {
+    const list = out.get(edge.itemId);
+    if (list) list.push(edge.dependsOnId);
+    else out.set(edge.itemId, [edge.dependsOnId]);
+  }
+  const reached = new Map<string, Set<string>>();
+  const reachable = (from: string): Set<string> => {
+    const known = reached.get(from);
+    if (known) return known;
+    const seen = new Set<string>();
+    const stack = [...(out.get(from) ?? [])];
+    while (stack.length > 0) {
+      const next = stack.pop() as string;
+      if (seen.has(next)) continue;
+      seen.add(next);
+      stack.push(...(out.get(next) ?? []));
+    }
+    reached.set(from, seen);
+    return seen;
+  };
+  return (a, b) => reachable(a).has(b) || reachable(b).has(a);
+}
+
+/** The strongly connected sets of more than one member in a waits-on graph (Tarjan's). */
+function rings(graph: ReadonlyMap<string, readonly string[]>): string[][] {
+  let counter = 0;
+  const index = new Map<string, number>();
+  const low = new Map<string, number>();
+  const onStack = new Set<string>();
+  const stack: string[] = [];
+  const found: string[][] = [];
+  const visit = (node: string): void => {
+    index.set(node, counter);
+    low.set(node, counter);
+    counter += 1;
+    stack.push(node);
+    onStack.add(node);
+    for (const next of graph.get(node) ?? []) {
+      if (!graph.has(next)) continue; // waits on nobody, so in no ring
+      if (!index.has(next)) {
+        visit(next);
+        low.set(node, Math.min(low.get(node) as number, low.get(next) as number));
+      } else if (onStack.has(next)) {
+        low.set(node, Math.min(low.get(node) as number, index.get(next) as number));
+      }
+    }
+    if (low.get(node) !== index.get(node)) return;
+    const ring: string[] = [];
+    let member: string | undefined;
+    do {
+      member = stack.pop();
+      if (member === undefined) break;
+      onStack.delete(member);
+      ring.push(member);
+    } while (member !== node);
+    if (ring.length > 1) found.push(ring);
+  };
+  for (const node of graph.keys()) if (!index.has(node)) visit(node);
+  return found;
+}
+
 /**
  * The rule an edge holds under, as `open_dependency` reports it: absent,
  * and a `reached` edge naming no step, are both `finished` (see
@@ -392,15 +714,21 @@ function gateOf(edge: DependencyEdge): { wait: "finished" | "reached"; waitStepI
 }
 
 /**
- * The lookups every eligibility question needs, built once.
- *
- * `tick()` builds this for the whole board and asks it per item;
- * `dispatchBlocker` builds it to ask about exactly one. Sharing the
- * construction is the point — see `DispatchBlocker` above.
+ * What a scheduling question reads an item's step and its dependencies
+ * by, built once from the input (`eligibility`, `touchesHoldsOver`).
  */
-function eligibility<R extends DispatchRefusal>(input: EligibilityInput<R>) {
-  const { items, deps, steps, agents, activeRuns, awaitingInput, heldItemIds } = input;
+interface Lookups {
+  stepFor: (item: Item) => PipelineStep | undefined;
+  itemById: Map<string, Item>;
+  depsByItem: Map<string, DependencyEdge[]>;
+  hasOpenDep: (edge: DependencyEdge) => boolean;
+}
 
+/** What `lookupsOf` reads: the items, their steps and their edges. */
+type LookupInput = Pick<EligibilityInput, "items" | "deps" | "steps" | "stepsByItem" | "dependencyItems" | "arrivals">;
+
+function lookupsOf(input: LookupInput): Lookups {
+  const { items, deps, steps } = input;
   // Step lookup is scoped by pipeline, not global. Two pipelines may use
   // the same step id only if one was copied from the other, but they will
   // routinely share positions, roles and names — so the pipeline is part
@@ -440,8 +768,6 @@ function eligibility<R extends DispatchRefusal>(input: EligibilityInput<R>) {
     else depsByItem.set(edge.itemId, [edge]);
   }
 
-  const activeRunItemIds = new Set(activeRuns.map((run) => run.itemId));
-
   /**
    * Whether this edge still holds the item waiting on it (EO-776).
    *
@@ -471,6 +797,59 @@ function eligibility<R extends DispatchRefusal>(input: EligibilityInput<R>) {
     if (gate === "reached" && edge.waitStepId) return !input.arrivals?.get(edge.dependsOnId)?.has(edge.waitStepId);
     return true;
   };
+
+  return { stepFor, itemById, depsByItem, hasOpenDep };
+}
+
+/**
+ * The overlap hold over a scheduling input (EO-912), with the lookups
+ * already built: the place an item works in is `capacityKeyOf`'s answer,
+ * and an item waits by dependency on each edge that still holds it.
+ */
+function overlapOver(
+  input: Pick<EligibilityInput, "items" | "deps" | "dispatchedIn" | "claimedIn" | "capacityKeyOf">,
+  lookups: Pick<Lookups, "stepFor" | "depsByItem" | "hasOpenDep">,
+): TouchesHolds {
+  const { stepFor, depsByItem, hasOpenDep } = lookups;
+  return touchesHolds({
+    items: input.items,
+    stepFor,
+    dispatchedIn: input.dispatchedIn ?? new Map(),
+    ...(input.claimedIn ? { claimedIn: input.claimedIn } : {}),
+    placeOf: (item) => (input.capacityKeyOf ? input.capacityKeyOf(item) : ""),
+    deps: input.deps,
+    waitsOnDependencies: (item) => (depsByItem.get(item.id) ?? []).filter(hasOpenDep).map((edge) => edge.dependsOnId),
+  });
+}
+
+/** What `touchesHoldsOver` reads: `EligibilityInput`'s own facts about items, steps, edges and where work was dispatched. */
+export type OverlapInput = LookupInput & Pick<EligibilityInput, "dispatchedIn" | "claimedIn" | "capacityKeyOf">;
+
+/**
+ * The overlap hold exactly as `tick()` applies it, over the part of its
+ * input it reads (EO-912): what a host explaining a card asks, so the
+ * card and the tick decide by one rule over the same facts.
+ */
+export function touchesHoldsOver(input: OverlapInput): TouchesHolds {
+  return overlapOver(input, lookupsOf(input));
+}
+
+/**
+ * The lookups every eligibility question needs, built once.
+ *
+ * `tick()` builds this for the whole board and asks it per item;
+ * `dispatchBlocker` builds it to ask about exactly one. Sharing the
+ * construction is the point — see `DispatchBlocker` above.
+ */
+function eligibility<R extends DispatchRefusal>(input: EligibilityInput<R>) {
+  const { agents, activeRuns, awaitingInput, heldItemIds } = input;
+  const { stepFor, itemById, depsByItem, hasOpenDep } = lookupsOf(input);
+
+  const activeRunItemIds = new Set(activeRuns.map((run) => run.itemId));
+
+  // The overlap hold (EO-912, `dispatchedIn`), over every item at once:
+  // who is in flight where, and who waits on whom.
+  const overlap = overlapOver(input, { stepFor, depsByItem, hasOpenDep });
 
   /**
    * Why the agent this step names cannot run this item, capacity aside,
@@ -532,6 +911,13 @@ function eligibility<R extends DispatchRefusal>(input: EligibilityInput<R>) {
       return { kind: "open_dependency", dependsOnId: holding.dependsOnId, wait: gate.wait, waitStepId: gate.waitStepId };
     }
 
+    // 2b. Held back by an item in flight that changes the same paths
+    // (EO-912) — `open_dependency` extended from one plan to everything
+    // in flight, with no edge written. Not in a place it is already
+    // under way in: there it carries on.
+    const overlapping = overlap.holdOf(item);
+    if (overlapping) return { kind: "touches_overlap", ...overlapping };
+
     if (awaitingInput.has(item.id)) return { kind: "awaiting_input" }; // 3. blocked on a reply
 
     if (heldItemIds.has(item.id)) return { kind: "held" }; // manually parked; not awaiting an answer and still on this step
@@ -592,7 +978,7 @@ function eligibility<R extends DispatchRefusal>(input: EligibilityInput<R>) {
     return agentBlocker(step, item);
   }
 
-  return { stepFor, itemById, blockerFor, heldByPause };
+  return { stepFor, itemById, blockerFor, heldByPause, claimTouches: overlap.claim };
 }
 
 /**
@@ -666,7 +1052,7 @@ export function tick<R extends DispatchRefusal>(input: TickInput<R>): Dispatch[]
   // question, not this one's (EO-135). What is left here is the half
   // that depends on the moment rather than on the item: who has a slot
   // free, and in what order the slots are handed out.
-  const { stepFor, itemById, blockerFor, heldByPause } = eligibility(input);
+  const { stepFor, itemById, blockerFor, heldByPause, claimTouches } = eligibility(input);
 
   // No pack, or a pack with nothing to share: every item is in a
   // bucket of its own, so only the global cap and the per-agent cap
@@ -731,6 +1117,14 @@ export function tick<R extends DispatchRefusal>(input: TickInput<R>): Dispatch[]
     remainingCapacityByBucket.set(key, remaining - 1);
   }
 
+  // An item dispatched on this tick is in flight where it works from
+  // here on (EO-912), so a later item in the same tick that overlaps it
+  // is held, rather than both starting together because neither had run
+  // there before.
+  function startedNow(item: Item): void {
+    claimTouches(item);
+  }
+
   const dispatches: Dispatch[] = [];
   let globalRemaining = Math.max(0, limits.globalConcurrency - activeRuns.length - (input.reservedSlots ?? 0));
 
@@ -767,6 +1161,7 @@ export function tick<R extends DispatchRefusal>(input: TickInput<R>): Dispatch[]
       if (step.entryAction === null) continue;
       consumeBucketCapacity(item);
       dispatches.push({ item, agent: null, action: step.entryAction, stepId: step.id });
+      startedNow(item);
       globalRemaining -= 1;
       continue;
     }
@@ -783,6 +1178,7 @@ export function tick<R extends DispatchRefusal>(input: TickInput<R>): Dispatch[]
     consumeAgentCapacity(agent);
     consumeBucketCapacity(item);
     dispatches.push({ item, agent, action: step.entryAction ?? "", stepId: step.id });
+    startedNow(item);
     globalRemaining -= 1;
   }
 

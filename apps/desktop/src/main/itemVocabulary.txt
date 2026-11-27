@@ -387,6 +387,7 @@ apps/desktop/src/main/supervisor/dispatchBlockers.ts: fix: "Add at least one —
 apps/desktop/src/main/supervisor/dispatchBlockers.ts: fix: "Choose an agent of this ticket's project, or a global one, on the step.",
 apps/desktop/src/main/supervisor/dispatchBlockers.ts: fix: "Finish that ticket, or remove the dependency.",
 apps/desktop/src/main/supervisor/dispatchBlockers.ts: fix: "Say something on this ticket and they can carry on from there.",
+apps/desktop/src/main/supervisor/dispatchBlockers.ts: fix: `Nothing to do: it starts by itself once ${blocker.holderKey} finishes. If it will not change that path after all, take it out of this ticket's touches.`,
 apps/desktop/src/main/supervisor/dispatchBlockers.ts: if (names.length === 0) return "agents on this ticket";
 apps/desktop/src/main/supervisor/dispatchBlockers.ts: return `Nothing will run "${stepName}" for this ticket: ${condition}. ${fix} It is not handed to another agent of the same kind.`;
 apps/desktop/src/main/supervisor/dispatchBlockers.ts: return { condition: "this ticket is on hold", fix: "Resume it." };
@@ -488,6 +489,7 @@ apps/desktop/src/main/supervisor/threadReuse.ts: `The conversation behind ${agen
 apps/desktop/src/main/supervisor/threadReuse.ts: `instructions it was started with, so the conversation couldn't be carried over — this ticket is starting ` +
 apps/desktop/src/main/supervisor/threadReuse.ts: `keeps the tools it was started with, so the conversation couldn't be carried over — this ticket is starting ` +
 apps/desktop/src/main/supervisor/threadReuse.ts: `over; this ticket starts fresh, on the instructions the agent has now.`
+apps/desktop/src/main/supervisor/touchesOverlapHold.test.ts: `Nothing to do: it starts by itself once ${holder.key} finishes. If it will not change that path after all, take it out of this ticket's touches.`,
 apps/desktop/src/main/supervisor/watchSteps.test.ts: expect(parked?.body).toContain("sent this ticket to another step 2 times since anybody commented on it, and the limit is 2");
 apps/desktop/src/main/supervisor/workspaceKind.ts: * say a ticket has produced something on work its own workspace has
 apps/desktop/src/main/supervisor/workspaceKinds.test.ts: // A second attempt on the same ticket: the item is back where a

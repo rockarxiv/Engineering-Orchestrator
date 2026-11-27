@@ -1,4 +1,5 @@
 import type { Item, Uuid } from "@eo/core";
+import { touchesHoldsOver, touchesOf } from "@eo/engine";
 import type { CapacityKeyOf, DispatchBlocker, DispatchGate, EligibilityInput, TickInput, WatchHold } from "@eo/engine";
 import type { Db } from "../db/client.js";
 import {
@@ -9,19 +10,22 @@ import {
   listAgents,
   listAllDependencies,
   listAwaitingInputItemIds,
+  listDispatches,
   listHeldItemIds,
+  listLegacyDispatches,
   listItemsIncludingArchived,
   listPipelineSteps,
   listRunsFailedSince,
   listRunsForItem,
   listTransitionsForItem,
+  setInferredDispatch,
   stepForItem,
   stepsByItemVersion,
   trialItemsInRunningLoops,
 } from "../db/repos/index.js";
 import { archivedProjectOf, itemsMidAdoption, itemsOnArchivedProjects } from "../db/repos/projectsRepo.js";
 import { parkedForMissingCriteria } from "./reviewCriteria.js";
-import type { GateRefusal, ItemBlocker, ProjectArchived } from "./dispatchBlockers.js";
+import type { GateRefusal, ItemBlocker, ProjectArchived, WaitingOnOverlap } from "./dispatchBlockers.js";
 import { watchesHeld, watchingUntil } from "./watches.js";
 import { isSignInStop } from "./runtimeBlocks.js";
 
@@ -137,6 +141,17 @@ export function buildEligibilityInput(
     activeRuns: listActiveRuns(db),
     awaitingInput: schedulingParks(db),
     heldItemIds: listHeldItemIds(db),
+    // Where each item has worked (EO-912): an item in flight there holds
+    // back one about to work there for the first time whose `touches`
+    // overlap its own.
+    // Finished items are left out: they hold nothing and wait for nothing.
+    // Proven places and places only believed (`claimedIn`) apart: the
+    // second hold others back but let nobody past.
+    ...dispatchedPlaces(
+      db,
+      items.filter((item) => stepFor(item)?.isTerminal !== true),
+      scheduling.capacityKeyOf,
+    ),
     retryAfter: retryBackoffs(db, items, now, attemptLimit),
     // Between one check of a step that keeps checking and the next
     // (EO-456). A check that came back waiting left no active run, so
@@ -147,7 +162,172 @@ export function buildEligibilityInput(
     paused,
     pauseExemptRoles,
     ...(scheduling.dispatchGate ? { dispatchGate: scheduling.dispatchGate } : {}),
+    // The bucket is also where an item's `touches` are paths in (EO-912),
+    // so the explanation of a hold needs it as much as the tick does.
+    ...(scheduling.capacityKeyOf ? { capacityKeyOf: scheduling.capacityKeyOf } : {}),
   };
+}
+
+/**
+ * Where each of `items` declaring `touches` is in flight (EO-912), as the
+ * scheduler's `dispatchedIn` and `claimedIn` take them, derived from the
+ * item's runs on every ask and never stored.
+ *
+ * `dispatchedIn` is what is proven: a run the supervisor stamped as it
+ * was made (`runs.dispatched_in`, basis `stamped`, `dispatchPlace`) says
+ * the bucket the item was in at that step as its own version then
+ * defined it. Not the bucket of the step it stands on now, nor of the
+ * version it is bound to now: an item whose work moved on to a step
+ * that picks no disk, or that was moved to a version whose step works
+ * somewhere else, still has its changes where it made them, and an item
+ * that only drafted on no disk has made none anywhere.
+ *
+ * `claimedIn` is what is believed without proof, which holds others
+ * back but never lets the item past: a run from before the stamp, read
+ * once by the item's own definition of the step as it stood at the first
+ * start after the stamp came in (`freezeLegacyDispatches`, basis
+ * `inferred`) and kept as read; one of those not read yet (`legacy`);
+ * and a run with no basis at all — a run from another machine, say —
+ * read here, by the item's own definition of the step, as a dispatch
+ * where its action is that step's entry action and in the bucket that
+ * definition picks. Every other unstamped run (a reply to a mention, a
+ * discussion) is not a dispatch.
+ *
+ * A dispatch with no bucket adds nothing, and an item with no bucket at
+ * all is left out of both. Without a bucket function every place is the
+ * one place, the engine's own reading of an absent `capacityKeyOf`.
+ */
+export function dispatchedPlaces(db: Db, items: readonly Item[], capacityKeyOf: CapacityKeyOf | undefined): DispatchedPlaces {
+  const dispatchedIn = new Map<string, Set<string>>();
+  const claimedIn = new Map<string, Set<string>>();
+  const touching = items.filter((item) => touchesOf(item).length > 0);
+  if (touching.length === 0) return { dispatchedIn, claimedIn };
+  const dispatches = listDispatches(db, touching.map((item) => item.id));
+  for (const item of touching) {
+    const runs = dispatches.get(item.id);
+    if (runs === undefined) continue;
+    const proven = new Set<string>();
+    const claimed = new Set<string>();
+    for (const run of runs) {
+      const places =
+        run.basis === "stamped" || run.basis === "inferred"
+          ? (run.dispatchedIn ?? [])
+          : placesByDefinition(db, item, run.stepId, run.action, capacityKeyOf);
+      for (const place of places) (run.basis === "stamped" ? proven : claimed).add(capacityKeyOf ? place : "");
+    }
+    for (const place of proven) claimed.delete(place);
+    if (proven.size > 0) dispatchedIn.set(item.id, proven);
+    if (claimed.size > 0) claimedIn.set(item.id, claimed);
+  }
+  return { dispatchedIn, claimedIn };
+}
+
+/** `dispatchedPlaces`' answer: places proven, and places only believed. */
+export interface DispatchedPlaces {
+  dispatchedIn: Map<string, Set<string>>;
+  claimedIn: Map<string, Set<string>>;
+}
+
+/**
+ * Where a run at `stepId` of `action` was dispatched, as the item's own
+ * definition of that step reads now (EO-912): `[]` where it was not the
+ * step's entry action or picks no shared disk. A reconstruction, so only
+ * ever a claim — see `dispatchedPlaces`.
+ */
+function placesByDefinition(db: Db, item: Item, stepId: string, action: string, capacityKeyOf: CapacityKeyOf | undefined): string[] {
+  const place = placeByDefinition(db, item, stepId, action, capacityKeyOf);
+  return place === null || place === undefined ? [] : [place];
+}
+
+/** The bucket, null for no shared disk, or undefined where the run was not the step's own entry action. */
+function placeByDefinition(db: Db, item: Item, stepId: string, action: string, capacityKeyOf: CapacityKeyOf | undefined): string | null | undefined {
+  const asDispatched = { ...item, stepId: stepId as Item["stepId"] };
+  if (stepForItem(db, asDispatched)?.entryAction !== action) return undefined;
+  return capacityKeyOf ? capacityKeyOf(asDispatched) : "";
+}
+
+/**
+ * Reads, once, every run from before the stamp (EO-912, basis `legacy`,
+ * migration 0187) by the item's own definition of the step as it stands
+ * now, and writes the reading down (`inferred`), so that no later move
+ * to another version, edit of the step or change of workspace can read
+ * it again differently — the reviewer's case was a holder moved to a
+ * version whose step picks no disk, which read now would have stopped
+ * holding anything.
+ *
+ * Called as the supervisor starts, before anything can move an item:
+ * the first start after the migration is the moment the definition
+ * that went with these runs is likeliest to still be the one in force.
+ * Still a reconstruction — an item moved before the upgrade is read by
+ * where it stands — and so a claim, never proof (`dispatchedPlaces`).
+ * A run of an item that is gone is left as it is. Returns how many runs
+ * it read.
+ */
+export function freezeLegacyDispatches(db: Db, capacityKeyOf: CapacityKeyOf | undefined): number {
+  const legacy = listLegacyDispatches(db);
+  if (legacy.length === 0) return 0;
+  const itemsById = new Map<string, Item | undefined>();
+  let read = 0;
+  db.transaction(() => {
+    for (const run of legacy) {
+      if (!itemsById.has(run.itemId)) itemsById.set(run.itemId, getItem(db, run.itemId));
+      const item = itemsById.get(run.itemId);
+      if (item === undefined) continue;
+      const place = placeByDefinition(db, item, run.stepId, run.action, capacityKeyOf);
+      setInferredDispatch(db, run.id, place === undefined ? null : place === null ? [] : [place]);
+      read += 1;
+    }
+  });
+  return read;
+}
+
+/**
+ * Each of `listed` that the overlap hold keeps back (EO-912), with its
+ * holder named — what a card says in place of a pack's refusal.
+ *
+ * The engine's own `touchesHoldsOver`, over the facts the scheduler's
+ * input reads them from: the same candidates, steps, edges and arrivals,
+ * the same in-flight rule (`dispatchedPlaces`, on a step of its own
+ * version that is not terminal) and the same bucket, so the rings it
+ * breaks and the pairs dependencies exempt are the tick's. Reads nothing
+ * more than an item list when no listed item declares `touches`.
+ */
+export function touchesHoldsOf(db: Db, listed: readonly Item[], capacityKeyOf: CapacityKeyOf | undefined): Map<string, WaitingOnOverlap> {
+  const holds = new Map<string, WaitingOnOverlap>();
+  if (!listed.some((item) => touchesOf(item).length > 0)) return holds;
+
+  const moving = itemsMidAdoption(db);
+  const shelved = itemsOnArchivedProjects(db);
+  const everyItem = listItemsIncludingArchived(db);
+  const candidates = everyItem.filter((item) => item.archivedAt === null && !moving.has(item.id) && !shelved.has(item.id));
+  const candidateIds = new Set(candidates.map((item) => item.id));
+  const steps = listPipelineSteps(db);
+  const liveSteps = new Map(steps.map((step) => [step.id, step]));
+  const stepsByItem = stepsByItemVersion(db, everyItem);
+  const stepFor = (item: Item) => stepsByItem.get(item.id) ?? (item.stepId === null ? undefined : liveSteps.get(item.stepId));
+  const deps = listAllDependencies(db);
+  const overlap = touchesHoldsOver({
+    items: candidates,
+    deps,
+    arrivals: gateArrivals(db, deps),
+    dependencyItems: everyItem,
+    steps,
+    stepsByItem,
+    // Unfinished only, as the tick's: a finished item holds nothing and waits for nothing.
+    ...dispatchedPlaces(
+      db,
+      candidates.filter((item) => stepFor(item)?.isTerminal !== true),
+      capacityKeyOf,
+    ),
+    ...(capacityKeyOf ? { capacityKeyOf } : {}),
+  });
+  const keys = new Map(candidates.map((item) => [item.id as string, item.key]));
+  for (const item of listed) {
+    if (!candidateIds.has(item.id)) continue;
+    const hold = overlap.holdOf(item);
+    if (hold) holds.set(item.id, { kind: "touches_overlap", ...hold, holderKey: keys.get(hold.holderId) ?? hold.holderId });
+  }
+  return holds;
 }
 
 /**
@@ -267,7 +447,8 @@ export function archivedProjectBlocker(db: Db, itemId: Uuid): ProjectArchived | 
 
 /**
  * The scheduler's answer about an item, with an open dependency's ids
- * resolved to the names a person reads (EO-776, `WaitingOnDependency`).
+ * resolved to the names a person reads (EO-776, `WaitingOnDependency`),
+ * and an overlap hold's holder to its key (EO-912, `WaitingOnOverlap`).
  * Every other reason passes through as it is.
  *
  * Wherever EO turns the engine's `dispatchBlocker` into words, it goes
@@ -276,6 +457,9 @@ export function archivedProjectBlocker(db: Db, itemId: Uuid): ProjectArchived | 
 export function namedBlocker(db: Db, blocker: DispatchBlocker<GateRefusal>): ItemBlocker;
 export function namedBlocker(db: Db, blocker: DispatchBlocker<GateRefusal> | null): ItemBlocker | null;
 export function namedBlocker(db: Db, blocker: DispatchBlocker<GateRefusal> | null): ItemBlocker | null {
+  if (blocker?.kind === "touches_overlap") {
+    return { ...blocker, holderKey: getItem(db, blocker.holderId as Uuid)?.key ?? blocker.holderId };
+  }
   if (blocker?.kind !== "open_dependency") return blocker;
   const dependency = getItem(db, blocker.dependsOnId as Uuid);
   return {
@@ -309,7 +493,6 @@ export function buildTickInput(
     ...buildEligibilityInput(db, paused, scheduling, now, attemptLimit, watchHold, pauseExemptRoles),
     limits,
     uncappedRoles,
-    ...(scheduling.capacityKeyOf ? { capacityKeyOf: scheduling.capacityKeyOf } : {}),
     ...(trialsFirst ? { firstInLine: trialItemsInRunningLoops(db) } : {}),
   };
 }

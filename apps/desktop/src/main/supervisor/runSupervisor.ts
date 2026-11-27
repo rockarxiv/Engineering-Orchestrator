@@ -152,6 +152,7 @@ import {
   watchGiveUpWords,
 } from "@eo/core";
 import { agentAttachmentsHash, agentToolSurfaceHash, agentToolSurfaceVerdict, type ToolSurfaceVerdict } from "../agentAttachments/fingerprint.js";
+import { useCapacityKey } from "../installedGate.js";
 import { qualifiedServerName } from "../agentAttachments/pluginDirectory.js";
 import { deliverableSkills, skillReadAnswer } from "../agentAttachments/worktreeSkills.js";
 import { resolveAgentAttachmentsForRun } from "../db/repos/agentAttachmentsRepo.js";
@@ -205,6 +206,8 @@ import { effectiveRunMemoryMaxMb, machineMemoryMb, runScopes, type RunOutOfMemor
 import { createUsageTally, sessionTotalBefore, type ThreadUsage } from "./usageTally.js";
 import {
   createRun,
+  dispatchOf,
+  type CreateRunInput,
   itemsOnArchivedProjects,
   getRun,
   createRunEventBuffer,
@@ -298,7 +301,7 @@ import { readPolicy } from "../policy/policy.js";
 import { ownerOfItem, parkForPersonBudget } from "../policy/personBudget.js";
 import { postClarificationQuestions, unansweredQuestions } from "../roles/clarificationQuestions.js";
 import { buildTurnContext, followUpComments } from "./buildDispatchContext.js";
-import { archivedProjectBlocker, buildEligibilityInput, buildTickInput, namedBlocker, type PackScheduling } from "./buildTickInput.js";
+import { archivedProjectBlocker, buildEligibilityInput, buildTickInput, freezeLegacyDispatches, namedBlocker, type PackScheduling } from "./buildTickInput.js";
 import { createLocalRecord } from "../record/localRecord.js";
 import type { ItemRecord, WorkOffer } from "../record/record.js";
 import { LOCAL_DEVICE_ID, type Device, type DispatchAttempt, type DispatchSubject, type PreflightOutcome } from "../record/device.js";
@@ -323,7 +326,7 @@ import { ASSIST_ACTION, ASSIST_STEP, conversationTurnOptions, CONVERSATION_SETTI
 import { changeReferenceProblem, createModuleChangeStaging, type ModuleChangeStaging } from "../roles/moduleChangeProposals.js";
 import { attachRunFiles } from "./runAttachments.js";
 import { blockedByActiveRunRefusal, createItemLock, type ItemHold, type ItemLock } from "./itemLock.js";
-import { archivedAgentRefusal, mentionDepthRefusal, outOfProjectDispatchRefusal, outOfProjectMentionRefusal, outOfProjectRecoveryNote, pullRequestHoldNote, rerunRefusal, stoppedByHandNote, unrunnableStepNote, type GateRefusal, type ItemBlocker, type OutOfProject, type RerunBlocker } from "./dispatchBlockers.js";
+import { archivedAgentRefusal, mentionDepthRefusal, outOfProjectDispatchRefusal, outOfProjectMentionRefusal, outOfProjectRecoveryNote, pullRequestHoldNote, rerunRefusal, stoppedByHandNote, touchesHoldNote, unrunnableStepNote, type GateRefusal, type ItemBlocker, type OutOfProject, type RerunBlocker } from "./dispatchBlockers.js";
 import { watchDependencyRegressions } from "./dependencyGates.js";
 import { declaresNoCriteria, isMissingCriteriaAsk, missingCriteriaRefusal } from "./reviewCriteria.js";
 import { recordStop, stopStands } from "./stoppedByHand.js";
@@ -2426,6 +2429,49 @@ export function createRunSupervisor(
     capacityKeyOf: (item: Item) => kindFor(item).capacityKeyOf(item),
     ...(dispatchGate ? { dispatchGate } : {}),
   };
+  // And where a card asks whose bucket an item is in, to say what holds
+  // it back for the paths it touches (EO-912).
+  useCapacityKey(db, scheduling.capacityKeyOf);
+  // Where each run from before the stamp was dispatched (EO-912), read
+  // once now — before anything can move an item to another version or
+  // change where its step works — and kept as read.
+  freezeLegacyDispatches(db, scheduling.capacityKeyOf);
+
+  /**
+   * Where a run about to be made is dispatched (EO-912), as its row
+   * keeps it (`runs.dispatched_in`): the bucket the item is in at that
+   * step as its own version defines it now, `[]` where that is no shared
+   * disk. Undefined — nothing stamped — unless the run is the dispatch
+   * of the step's own entry action: a reply to a mention or a discussion
+   * at the same step is not its work there, and a dry run borrows the
+   * item.
+   *
+   * Asked as the row is made, because this moment is the only one at
+   * which the answer is certain: no run records the version it went
+   * under, a later move to another version can change what the step
+   * picks, and a version nothing uses any more can be pruned. What the
+   * overlap hold counts an item as in flight by (`dispatchedPlaces`).
+   */
+  function dispatchPlace(item: Item, stepId: string | null | undefined, action: string): { dispatchedIn?: string[] } {
+    if (stepId === null || stepId === undefined) return {};
+    const atStep = { ...item, stepId: stepId as Item["stepId"] };
+    if (stepForItem(db, atStep)?.entryAction !== action) return {};
+    const place = scheduling.capacityKeyOf?.(atStep) ?? null;
+    return { dispatchedIn: place === null ? [] : [place] };
+  }
+
+  /**
+   * Where the run a continuation carries on was dispatched (EO-912), and
+   * on what basis, exactly as its row keeps them. A continuation works in
+   * the directory of the run it continues (`cwd`), so it was dispatched
+   * where that run was: asking `dispatchPlace` again would read the
+   * item's definition as it is now, which a move to another version or
+   * an edit of the step may have pointed elsewhere since.
+   */
+  function carriedPlace(prior: Run): Pick<CreateRunInput, "dispatchedIn" | "dispatchBasis"> {
+    const { dispatchedIn, dispatchBasis } = dispatchOf(db, prior.id);
+    return { dispatchedIn, dispatchBasis };
+  }
 
   /**
    * This item's type, as its row has it (KAN-147).
@@ -7791,6 +7837,8 @@ export function createRunSupervisor(
       agentId: agent.id,
       action,
       ...(opts.stepId ? { stepId: opts.stepId } : {}),
+      // Where this dispatch works (EO-912), kept on the row.
+      ...dispatchPlace(item, opts.stepId, action),
       status: "queued",
       // The thread this run is continuing, exactly as `resumeItem`
       // records it — so a crash mid-run leaves the conversation
@@ -8401,7 +8449,7 @@ export function createRunSupervisor(
       if (checked === null) return;
     }
 
-    const run = checked?.run ?? createRun(db, { itemId: item.id, agentId: null, action, ...(stepId ? { stepId } : {}), status: "running", provider: builtin ? "builtin" : "module" });
+    const run = checked?.run ?? createRun(db, { itemId: item.id, agentId: null, action, ...(stepId ? { stepId } : {}), ...dispatchPlace(item, stepId, action), status: "running", provider: builtin ? "builtin" : "module" });
     if (checked === null) updateRun(db, run.id, { startedAt: now() });
     announceRun(run.id, item.id, "running");
 
@@ -9208,6 +9256,7 @@ export function createRunSupervisor(
         agentId: null,
         action,
         stepId: step.id,
+        ...dispatchPlace(item, step.id, action),
         status: "running",
         provider: builtin ? "builtin" : "module",
         ...(cwd === null ? {} : { cwd }),
@@ -9356,7 +9405,7 @@ export function createRunSupervisor(
       // on a timer — without this an open item would show the check
       // before last for as long as the watch went on waiting.
       if (fresh.length === 0 && run === undefined && !resuming) {
-        const quiet = recordQuietCheck(db, { itemId: item.id, stepId: step.id, action, provider: builtin ? "builtin" : "module", stay: watchArrival(db, item), detail: outcome.detail, at: ended, leasedAt: heldLeases.get(item.id)?.grantedAt ?? ended });
+        const quiet = recordQuietCheck(db, { itemId: item.id, stepId: step.id, action, ...dispatchPlace(item, step.id, action), provider: builtin ? "builtin" : "module", stay: watchArrival(db, item), detail: outcome.detail, at: ended, leasedAt: heldLeases.get(item.id)?.grantedAt ?? ended });
         if (quiet.created) onRunChanged(quiet.run.id, item.id, "succeeded");
         onPushEvents?.(quiet.run.id, []);
         onItemChanged(item.id);
@@ -10101,6 +10150,9 @@ export function createRunSupervisor(
         // The step the crashed run was dispatched from, not wherever the
         // item sits now: this run is that one continued.
         stepId: run.stepId,
+        // And where it was dispatched, carried over with its `cwd`: this
+        // run works where that one did, not where the step points now.
+        ...carriedPlace(run),
         status: "queued",
         threadId: resumableThreadId,
         provider: run.provider,
@@ -10956,6 +11008,9 @@ export function createRunSupervisor(
       // And an item on a step that names no agent, or one that cannot run
       // it (EO-875), is told which and what to do, once for each stay.
       noteUnrunnableSteps(tickInput);
+      // And an item held back by one in flight that changes the same
+      // paths (EO-912) is told which and what path, once for each stay.
+      noteTouchesHolds(tickInput);
       // **The device asks; it does not decide** (EO-324, ARCHITECTURE.md, "The record"). What
       // comes back is work the record has already leased to this
       // machine. In one process that is the same sweep-pick-claim this
@@ -11111,6 +11166,32 @@ export function createRunSupervisor(
       const step = stepForItem(db, item);
       if (step === undefined) continue;
       const body = pullRequestHoldNote(step.name, blocker);
+      const enteredAt = stepEntryTimes(db, [item.id]).get(item.id) ?? item.createdAt;
+      const alreadySaid = listCommentsForItem(db, item.id, { since: enteredAt }).some(
+        (comment) => comment.authorType === "engine" && comment.body === body,
+      );
+      if (alreadySaid) continue;
+      postComment(db, { itemId: item.id, author: { type: "engine" }, kind: "note", body });
+      onItemChanged(item.id);
+    }
+  }
+
+  /**
+   * Says once, in the thread, why an item is held back by another in
+   * flight that changes the same paths (EO-912, invariant #8): which
+   * item, and which path. `notePullRequestHolds`' shape and for its
+   * reason — nobody has to act, the hold lifts by itself when the
+   * holder finishes, so a note and no run. A different holder or path
+   * is different words, and is said again.
+   */
+  function noteTouchesHolds(input: TickInput<GateRefusal>): void {
+    for (const { item, blocker } of dispatchBlockers(input)) {
+      if (blocker.kind !== "touches_overlap") continue;
+      const step = stepForItem(db, item);
+      if (step === undefined || step.offBoard) continue;
+      const named = namedBlocker(db, blocker);
+      if (named.kind !== "touches_overlap") continue;
+      const body = touchesHoldNote(step.name, named);
       const enteredAt = stepEntryTimes(db, [item.id]).get(item.id) ?? item.createdAt;
       const alreadySaid = listCommentsForItem(db, item.id, { since: enteredAt }).some(
         (comment) => comment.authorType === "engine" && comment.body === body,
@@ -12712,6 +12793,8 @@ export function createRunSupervisor(
       agentId: priorRun.agentId,
       action: priorRun.action,
       stepId: priorRun.stepId, // the step the parked run was dispatched from
+      // Where it was dispatched, carried over with its `cwd` below (EO-912).
+      ...carriedPlace(priorRun),
 
       status: "queued",
       threadId: priorRun.threadId,
