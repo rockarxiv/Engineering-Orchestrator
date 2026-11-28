@@ -2632,6 +2632,18 @@ export function createRunSupervisor(
     return refusal === null ? attached : { ...attached, sandboxRefusal: refusal };
   }
 
+  /**
+   * The sandbox an earlier turn's attachment carried, asked about again
+   * for a later turn of the same run (EO-935): a correction, which reuses
+   * the run's attachment rather than attaching afresh. Only the refusal is
+   * answered for; everything else the turn is lent stays the run's.
+   */
+  async function sandboxAsOfNow(attachment: WorkspaceAttachment | undefined, item: Item, agent: Agent): Promise<Pick<WorkspaceAttachment, "sandboxRefusal"> | undefined> {
+    if (attachment?.sandbox === undefined || sandboxAvailability === undefined) return attachment;
+    const refusal = await sandboxRefusalFor(runsOn(agent, item));
+    return refusal === null ? {} : { sandboxRefusal: refusal };
+  }
+
   /** Why this sandboxed agent's turn may not start on this machine, or null when its sandbox can (EO-935). */
   async function sandboxRefusalFor(agent: Agent): Promise<string | null> {
     let answer: SandboxAvailability | null;
@@ -6744,6 +6756,13 @@ export function createRunSupervisor(
             break;
           }
           if (resultRetries < MAX_RESULT_VALIDATION_RETRIES && threadId) {
+            // Whether the sandbox can still start, asked again for this
+            // corrective turn (EO-935): the run's attachment answered for
+            // the turn before, and a machine can stop being able to sandbox
+            // while that turn ran. Asked before the pause check below, and
+            // a stop that landed while it was asked ends the run as a stop.
+            const sandboxNow = await sandboxAsOfNow(runOpts.attachment, item, agent);
+            controller.signal.throwIfAborted();
             if (heldBack(agent)) {
               outcome = { kind: "paused" };
               break;
@@ -6755,7 +6774,7 @@ export function createRunSupervisor(
             // `memory_note` (EO-593): it carries on a thread that may
             // never have been given it.
             const correction = withMemoryWriting(`${validation.error}\n\nPlease return a corrected result that matches the schema.`, agent, turnMemoryScopes(item));
-            stream = openTurn(item, workspaceOfRun(item, run), runOpts.attachment, () =>
+            stream = openTurn(item, workspaceOfRun(item, run), sandboxNow, () =>
             sendingProvider(run, agent, item, action, { purpose: "correction" }).resume(correctedThreadId, correction, correctionOptions()),
           );
             activeStreams.set(run.id, stream);
