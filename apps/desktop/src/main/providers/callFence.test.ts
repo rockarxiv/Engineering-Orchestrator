@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { CallFence } from "@eo/core";
 import { fencedCall, patchTargets, readCheckout, shellRefusal, simpleCommands, type CheckoutState, type FenceGit } from "./callFence.js";
@@ -166,6 +166,47 @@ describe("the fence's push rules (EO-926)", () => {
     });
   });
 
+  describe("after an earlier command in the call changes git", () => {
+    it.each([
+      "git config remote.origin.push refs/heads/eo/EO-1:refs/heads/main && git push --force-with-lease",
+      "git config push.followTags true; git push --force-with-lease origin HEAD:refs/heads/eo/EO-1",
+      "git config --add remote.origin.push refs/heads/eo/EO-1:refs/heads/main && git push --force-with-lease origin HEAD:refs/heads/eo/EO-1",
+      "git branch --set-upstream-to=origin/main && git push --force-with-lease",
+      "git branch -m main; git push --force-with-lease origin HEAD",
+      "git checkout main && git push --force-with-lease origin HEAD",
+      "git switch -c other && git push --force-with-lease",
+      "git remote set-url origin ../other.git && git push --force-with-lease origin HEAD:refs/heads/eo/EO-1",
+      "git symbolic-ref HEAD refs/heads/main && git push --force-with-lease",
+      `printf '[remote "origin"]\\n\\tpush = x:y\\n' >> .git/config && git push --force-with-lease`,
+      "sed -i s/eo/main/ .git/config; git push --force-with-lease",
+      "cp ../template/config .git/config && git push --force-with-lease",
+      "(git config push.default upstream); git push --force-with-lease",
+      "sh -c 'git config remote.origin.push x:y'; git push --force-with-lease",
+      "echo \"$(git config push.default matching)\"; git push --force-with-lease",
+    ])("refuses %s, whose push meets a checkout EO has not read", async (command) => {
+      expect(await ruleOf(command)).toBe("push_after_git_change");
+    });
+
+    it.each([
+      "git config --get remote.origin.url && git push --force-with-lease",
+      "git config user.name && git push --force-with-lease",
+      "git config list && git push --force-with-lease",
+      "git remote -v && git push --force-with-lease",
+      "git remote get-url origin && git push --force-with-lease",
+      "git branch -vv && git push --force-with-lease",
+      "cat .git/config && git push --force-with-lease",
+      "git push --force-with-lease && git config push.default matching",
+    ])("lets %s through: nothing before its push changes git", async (command) => {
+      expect(await ruleOf(command)).toBeNull();
+    });
+
+    it("tells the agent to push in a call of its own", async () => {
+      const refusal = await shellRefusal("git checkout main && git push --force-with-lease", IMPLEMENTER, ROOT, checkout());
+      expect(refusal?.reason).toContain("`git checkout main`");
+      expect(refusal?.reason).toContain("Run the push as a call of its own");
+    });
+  });
+
   describe("in subshells", () => {
     const ELSEWHERE = "/elsewhere";
     it.each([
@@ -265,6 +306,73 @@ describe("the fence's file rules (EO-926)", () => {
     expect(await fencedCall("mcp__eo__comment", { body: "git push --force" }, IMPLEMENTER)).toBeNull();
     expect(await fencedCall("Bash", { command: "cat /etc/hosts > /tmp/copy" }, IMPLEMENTER, ROOT, checkout())).toBeNull();
   });
+});
+
+/**
+ * Writes judged where they really land (EO-926 review): through a link
+ * in the worktree to another checkout is a write to that checkout.
+ */
+describe("the fence's file rules through links", () => {
+  const scratch: string[] = [];
+  afterEach(() => {
+    for (const path of scratch.splice(0)) rmSync(path, { recursive: true, force: true });
+  });
+
+  /** A worktree holding `linked` (a directory link to another checkout) and `dangling` (a link to a file there that does not exist yet). */
+  function linkedWorktree(): { worktree: string; other: string; fence: CallFence } {
+    const root = mkdtempSync(join(tmpdir(), "eo-926-fence-links-"));
+    scratch.push(root);
+    const worktree = join(root, "worktree");
+    const other = join(root, "other");
+    mkdirSync(join(worktree, "src"), { recursive: true });
+    mkdirSync(other);
+    writeFileSync(join(other, "x.txt"), "the other checkout's\n");
+    const kind = process.platform === "win32" ? "junction" : "dir";
+    symlinkSync(other, join(worktree, "linked"), kind);
+    if (process.platform !== "win32") symlinkSync(join(other, "new.txt"), join(worktree, "dangling"));
+    return { worktree, other, fence: { root: worktree, pushBranch: "eo/EO-1" } };
+  }
+
+  it.each(["Write", "Edit", "MultiEdit"])("refuses Claude's %s through a link out of the worktree, and saying where it lands", async (tool) => {
+    const { worktree, other, fence } = linkedWorktree();
+    const refusal = await fencedCall(tool, { file_path: join(worktree, "linked", "x.txt") }, fence, worktree);
+    expect(refusal).toMatchObject({ rule: "write_outside_worktree", call: join(worktree, "linked", "x.txt") });
+    expect(refusal?.reason).toContain(join(await realpathOf(other), "x.txt"));
+    expect(await fencedCall(tool, { file_path: "linked/new/deep.txt" }, fence, worktree)).toMatchObject({ rule: "write_outside_worktree" });
+  });
+
+  it.skipIf(process.platform === "win32")("refuses a write through a dangling link, which would create its target", async () => {
+    const { worktree, fence } = linkedWorktree();
+    expect(await fencedCall("Write", { file_path: join(worktree, "dangling") }, fence, worktree)).toMatchObject({ rule: "write_outside_worktree" });
+  });
+
+  it("refuses a Codex patch through the link, and one that only moves a file through it", async () => {
+    const { worktree, fence } = linkedWorktree();
+    const patch = (lines: string[]) => ({ command: ["*** Begin Patch", ...lines, "*** End Patch", ""].join("\n") });
+    expect(await fencedCall("apply_patch", patch(["*** Update File: linked/x.txt", "@@", "-a", "+b"]), fence, worktree)).toMatchObject({ rule: "write_outside_worktree" });
+    expect(await fencedCall("apply_patch", patch(["*** Update File: src/a.ts", "*** Move to: linked/a.ts"]), fence, worktree)).toMatchObject({ rule: "write_outside_worktree" });
+  });
+
+  it("still lets writes inside the worktree through, new directories and a worktree reached through a link included", async () => {
+    const { worktree, fence } = linkedWorktree();
+    expect(await fencedCall("Write", { file_path: join(worktree, "src", "new", "deep", "a.ts") }, fence, worktree)).toBeNull();
+    expect(await fencedCall("apply_patch", { command: "*** Begin Patch\n*** Add File: src/b.ts\n+b\n*** End Patch\n" }, fence, worktree)).toBeNull();
+    const alias = join(dirname(worktree), "alias");
+    symlinkSync(worktree, alias, process.platform === "win32" ? "junction" : "dir");
+    expect(await fencedCall("Write", { file_path: join(alias, "src", "a.ts") }, { root: worktree, pushBranch: null }, alias)).toBeNull();
+    expect(await fencedCall("Write", { file_path: join(worktree, "src", "a.ts") }, { root: alias, pushBranch: null }, worktree)).toBeNull();
+  });
+
+  it("refuses a push from a directory that is a link out of the worktree", async () => {
+    const { worktree, fence } = linkedWorktree();
+    expect((await shellRefusal("cd linked && git push --force-with-lease", fence, worktree, checkout()))?.rule).toBe("push_outside_worktree");
+    expect(await shellRefusal("cd src && git push --force-with-lease", fence, worktree, checkout())).toBeNull();
+  });
+
+  async function realpathOf(path: string): Promise<string> {
+    const { realpath } = await import("node:fs/promises");
+    return realpath(path);
+  }
 });
 
 describe("simpleCommands", () => {
@@ -430,6 +538,33 @@ describe("the fence over a real checkout", () => {
     expect(await throughTheFence([explicit], fence, work)).toEqual({ [explicit]: null });
     expect(remoteBranch(remote, "eo/EO-1")).toBe(git(work, "rev-parse", "HEAD"));
     expect(git(remote, "tag", "--list")).toBe("");
+  });
+
+  it("refuses a push after a command in the same call remaps it, so main is not pushed", async () => {
+    const root = mkdtempSync(join(tmpdir(), "eo-926-fence-config-change-"));
+    scratch.push(root);
+    const remote = join(root, "remote.git");
+    git(root, "init", "--bare", "-b", "trunk", remote);
+    const work = pushedCheckout(root, remote, "work", "eo/EO-1");
+    git(work, "push", "-u", "origin", "eo/EO-1");
+    git(work, "commit", "--amend", "-m", "work, rebased");
+    const fence: CallFence = { root: work, pushBranch: "eo/EO-1" };
+
+    const remap = "git config remote.origin.push refs/heads/eo/EO-1:refs/heads/main";
+    const rules = await throughTheFence(
+      [`${remap} && git push --force-with-lease`, `${remap}; git push --force-with-lease origin eo/EO-1`, `printf '[remote "origin"]\\n\\tpush = refs/heads/eo/EO-1:refs/heads/main\\n' >> .git/config && git push --force-with-lease`],
+      fence,
+      work,
+    );
+    expect(Object.values(rules)).toEqual(["push_after_git_change", "push_after_git_change", "push_after_git_change"]);
+    expect(remoteBranch(remote, "main")).toBeNull();
+
+    // The change alone is no push, and is let through; the push, as a
+    // call of its own, then meets the remapped checkout and is refused.
+    expect(await throughTheFence([remap], fence, work)).toEqual({ [remap]: null });
+    expect(await throughTheFence(["git push --force-with-lease"], fence, work)).toEqual({ "git push --force-with-lease": "push_unverified" });
+    expect(remoteBranch(remote, "main")).toBeNull();
+    expect(readFileSync(join(work, ".git", "config"), "utf8")).toContain("refs/heads/eo/EO-1:refs/heads/main");
   });
 
   it("refuses a push from another checkout that only a subshell moved out of, so that checkout's branch is not pushed", async () => {

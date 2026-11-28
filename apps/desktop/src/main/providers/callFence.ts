@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
+import { lstat, readlink, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
-import { isAbsolute, relative, resolve, sep } from "node:path";
+import { basename as baseOf, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { CallFence } from "@eo/core";
 
 /**
@@ -60,6 +61,7 @@ export type FenceRule =
   | "push_outside_worktree"
   | "push_unverified"
   | "push_reconfigured"
+  | "push_after_git_change"
   | "pr_merge"
   | "write_outside_worktree"
   | "unreadable_patch";
@@ -120,7 +122,7 @@ export async function fencedCall(tool: string, input: unknown, fence: CallFence,
     const command = fields?.["command"];
     if (typeof command === "string") return shellRefusal(command, fence, base, git);
     if (Array.isArray(command) && command.every((word) => typeof word === "string")) {
-      return commandsRefusal([{ words: command as string[], frame: [], detached: false }], command.join(" "), fence, shellScope(base), git, 0);
+      return commandsRefusal([{ words: command as string[], frame: [], detached: false, targets: [] }], command.join(" "), fence, shellScope(base), git, 0);
     }
     return null;
   }
@@ -128,8 +130,7 @@ export async function fencedCall(tool: string, input: unknown, fence: CallFence,
   if (field !== undefined) {
     const path = fields?.[field];
     if (typeof path !== "string" || path === "") return null;
-    const target = resolve(base, path);
-    return inside(fence.root, target) ? null : outside(target, fence);
+    return writeRefusal(resolve(base, path), fence);
   }
   if (tool === PATCH_TOOL) {
     const text = typeof input === "string" ? input : [fields?.["command"], fields?.["input"], fields?.["patch"]].find((value): value is string => typeof value === "string");
@@ -138,22 +139,80 @@ export async function fencedCall(tool: string, input: unknown, fence: CallFence,
       return { rule: "unreadable_patch", call: (text ?? "").slice(0, LONGEST_CALL), reason: `EO refused this call: it could not tell which files this patch writes, and on this turn a patch may only write inside ${fence.root}. ${FENCE_NOTE}` };
     }
     for (const path of targets) {
-      const target = resolve(base, path);
-      if (!inside(fence.root, target)) return outside(target, fence);
+      const refused = await writeRefusal(resolve(base, path), fence);
+      if (refused !== null) return refused;
     }
   }
   return null;
 }
 
-function outside(target: string, fence: CallFence): FenceRefusal {
+/**
+ * Why a write to `target` is refused, or null where it lands in the
+ * worktree — judged where it really lands (EO-926 review): through any
+ * link on the way, so `<worktree>/linked/x` with `linked` pointing at
+ * another checkout is a write to that checkout.
+ */
+async function writeRefusal(target: string, fence: CallFence): Promise<FenceRefusal | null> {
+  const landing = await whereItLands(target).catch(() => null);
+  const root = await whereItLands(fence.root).catch(() => resolve(fence.root));
+  if (landing !== null && inside(root, landing)) return null;
+  return outside(target, fence, landing);
+}
+
+/** The most links the fence follows for one path before calling it unknowable. */
+const MOST_LINKS = 40;
+
+/**
+ * Where a path really is: every link in it followed, a dangling one
+ * included, for a path whose last parts do not exist yet — which is what
+ * a new file is. Throws where it cannot be told (a link loop, no access).
+ */
+export async function whereItLands(path: string): Promise<string> {
+  let current = resolve(path);
+  const rest: string[] = [];
+  for (let links = 0; links <= MOST_LINKS; ) {
+    let isLink: boolean;
+    try {
+      isLink = (await lstat(current)).isSymbolicLink();
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "ENOENT" && code !== "ENOTDIR") throw error;
+      const parent = dirname(current);
+      if (parent === current) return join(current, ...rest);
+      rest.unshift(baseOf(current));
+      current = parent;
+      continue;
+    }
+    if (!isLink) return join(await realpath(current), ...rest);
+    try {
+      return join(await realpath(current), ...rest);
+    } catch {
+      // A dangling link: a write through it creates its target.
+      current = resolve(dirname(current), await readlink(current));
+      links++;
+    }
+  }
+  throw new Error(`more than ${String(MOST_LINKS)} links`);
+}
+
+/** Whether `dir` really is in the worktree, through any link on the way. */
+async function reallyInside(root: string, dir: string): Promise<boolean> {
+  if (!inside(root, dir)) return false;
+  const landing = await whereItLands(dir).catch(() => null);
+  const realRoot = await whereItLands(root).catch(() => resolve(root));
+  return landing !== null && inside(realRoot, landing);
+}
+
+function outside(target: string, fence: CallFence, landing: string | null = target): FenceRefusal {
+  const where = landing === null ? ", or EO cannot tell where it lands" : landing === target ? "" : ` (through a link, it is \`${landing}\`)`;
   return {
     rule: "write_outside_worktree",
     call: target,
-    reason: `EO refused this call: on this turn files may only be written inside the item's worktree, ${fence.root}, and \`${target}\` is outside it. ${FENCE_NOTE}`,
+    reason: `EO refused this call: on this turn files may only be written inside the item's worktree, ${fence.root}, and \`${target}\` is outside it${where}. ${FENCE_NOTE}`,
   };
 }
 
-/** Whether `target` is `root` or under it. Read as paths, without following links. */
+/** Whether `target` is `root` or under it, as paths. Links are followed before this is asked (`whereItLands`). */
 function inside(root: string, target: string): boolean {
   const rel = relative(resolve(root), target);
   return rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
@@ -197,10 +256,18 @@ interface ShellScope {
   exported: Set<string>;
   /** Hands out frame ids, shared with every parse of this line. */
   frames: { next: number };
+  /**
+   * An earlier command in the line may have changed git's configuration
+   * or which branch is checked out (`changesGit`). The checkout the fence
+   * reads is as it was before the call, so a push after that is not
+   * checked against what it will meet. Shared by every frame and nested
+   * shell: configuration outlives the process that wrote it.
+   */
+  gitChanged: { since: string | null };
 }
 
 function shellScope(base: string | null): ShellScope {
-  return { base, dirs: new Map(), exported: new Set(), frames: { next: 1 } };
+  return { base, dirs: new Map(), exported: new Set(), frames: { next: 1 }, gitChanged: { since: null } };
 }
 
 const frameKey = (frame: readonly number[]): string => frame.join(".");
@@ -219,7 +286,7 @@ const EXPORTING = new Set(["export", "declare", "typeset", "readonly", "local"])
 
 async function commandsRefusal(commands: readonly ShellCommand[], line: string, fence: CallFence, scope: ShellScope, git: FenceGit, depth: number): Promise<FenceRefusal | null> {
   const call = line.length > LONGEST_CALL ? `${line.slice(0, LONGEST_CALL)}…` : line;
-  for (const { words, frame, detached } of commands) {
+  for (const { words, frame, detached, targets } of commands) {
     const { argv, assigned, chdir } = withoutPrefixes(words);
     const here = dirIn(scope, frame);
     // `env -C <dir>` runs the one command there; the line goes on where it was.
@@ -235,8 +302,8 @@ async function commandsRefusal(commands: readonly ShellCommand[], line: string, 
       // command depends on the shell: the frame's directory is unknown.
       scope.dirs.set(frameKey(frame), detached ? null : moved(here, to));
     } else if (program === "git") {
-      const rule = await gitRefusal(argv.slice(1), fence, dir, environment, git);
-      if (rule !== null) return { rule, call, reason: pushReason(rule, fence) };
+      const rule = await gitRefusal(argv.slice(1), fence, dir, environment, git, scope.gitChanged.since !== null);
+      if (rule !== null) return { rule, call, reason: pushReason(rule, fence, scope.gitChanged.since) };
     } else if (program === "gh") {
       if (isPrMerge(argv.slice(1))) {
         return { rule: "pr_merge", call, reason: `EO refused this call: \`gh pr merge\` is refused on this turn, because merging a pull request is EO's to do. ${FENCE_NOTE}` };
@@ -250,13 +317,58 @@ async function commandsRefusal(commands: readonly ShellCommand[], line: string, 
       // nothing it does to its directory comes back.
       const script = shellScript(argv.slice(1));
       if (script !== null) {
-        const child: ShellScope = { base: dir, dirs: new Map(), exported: scope.exported, frames: scope.frames };
+        const child: ShellScope = { base: dir, dirs: new Map(), exported: scope.exported, frames: scope.frames, gitChanged: scope.gitChanged };
         const nested = await commandsRefusal(parseCommands(script, [], child.frames), line, fence, child, git, depth + 1);
         if (nested !== null) return nested;
       }
     }
+    if (scope.gitChanged.since === null && changesGit(program, argv.slice(1), targets)) scope.gitChanged.since = words.join(" ");
   }
   return null;
+}
+
+/** git subcommands that change what a later push would meet: configuration, remotes, upstreams, which branch is checked out, refs. */
+const GIT_STATE_CHANGING = new Set(["checkout", "switch", "update-ref", "init", "clone", "worktree", "submodule", "filter-branch", "replace"]);
+/** `git config` options that only read. */
+const CONFIG_READING = new Set(["--get", "--get-all", "--get-regexp", "--get-urlmatch", "--get-color", "--get-colorbool", "-l", "--list"]);
+/** `git config` options that write. */
+const CONFIG_WRITING = /^(--unset|--unset-all|--add|--replace-all|--rename-section|--remove-section|--edit|-e)$/;
+/** `git branch` options that change an upstream, a name or the current branch's ref. */
+const BRANCH_CHANGING = /^(-u|--set-upstream-to(=.*)?|--set-upstream|--unset-upstream|-t|--track(=.*)?|-m|-M|--move|-c|-C|--copy|--edit-description)$/;
+/** `git remote` subcommands that only read. */
+const REMOTE_READING = new Set(["show", "get-url"]);
+/** A path that is git's configuration: a `.git` directory's contents, `~/.gitconfig`, `$XDG_CONFIG_HOME/git/config`. */
+const GIT_CONFIG_PATH = /(^|[\/])\.git([\/]|$)|\.gitconfig|(^|[\/])git[\/]config$/;
+/** Programs that read the files they are given and write none. */
+const READING_PROGRAMS = new Set(["cat", "less", "more", "head", "tail", "grep", "egrep", "fgrep", "rg", "ls", "stat", "wc", "file", "diff", "cmp", "test", "[", "echo", "printf", "cd", "pushd", "realpath", "readlink"]);
+
+/**
+ * Whether a command may change what a later push in the same call meets
+ * (EO-926 review): git's configuration, its remotes, an upstream, which
+ * branch is checked out, or a ref — through git itself, or by writing a
+ * file that is git's configuration (a redirection's target included).
+ * Conservative: a command it cannot tell about, it counts.
+ */
+function changesGit(program: string, args: readonly string[], targets: readonly string[]): boolean {
+  if (targets.some((target) => GIT_CONFIG_PATH.test(target))) return true;
+  if (program === "git") {
+    let index = 0;
+    while (index < args.length && (args[index] ?? "").startsWith("-")) index += GIT_VALUE_OPTIONS.has(args[index] ?? "") ? 2 : 1;
+    const subcommand = args[index] ?? "";
+    const rest = args.slice(index + 1);
+    const positional = rest.filter((arg) => !arg.startsWith("-"));
+    if (GIT_STATE_CHANGING.has(subcommand)) return true;
+    if (subcommand === "config") {
+      if (rest.some((arg) => CONFIG_READING.has(arg)) || positional[0] === "get" || positional[0] === "list") return false;
+      return rest.some((arg) => CONFIG_WRITING.test(arg)) || positional.length !== 1;
+    }
+    if (subcommand === "remote") return positional.length > 0 && !REMOTE_READING.has(positional[0] ?? "");
+    if (subcommand === "branch") return rest.some((arg) => BRANCH_CHANGING.test(arg));
+    if (subcommand === "symbolic-ref") return positional.length >= 2 || rest.some((arg) => arg === "-d" || arg === "--delete");
+    return false;
+  }
+  if (READING_PROGRAMS.has(program)) return false;
+  return args.some((arg) => GIT_CONFIG_PATH.test(arg));
 }
 
 /** Where `cd <to>` leaves a shell that was at `from`: null where that cannot be told without running it. */
@@ -268,7 +380,7 @@ function moved(from: string | null, to: string | null): string | null {
   return resolve(from, to);
 }
 
-function pushReason(rule: FenceRule, fence: CallFence): string {
+function pushReason(rule: FenceRule, fence: CallFence, gitChangedBy: string | null = null): string {
   const branch = fence.pushBranch ?? "";
   switch (rule) {
     case "push_on_review":
@@ -279,6 +391,8 @@ function pushReason(rule: FenceRule, fence: CallFence): string {
       return `EO refused this call: on this turn \`git push\` is only allowed as \`git push --force-with-lease\` to the item's own branch, ${branch}, and only when an engine note says the remote branch diverged — otherwise EO does the pushing. ${FENCE_NOTE}`;
     case "push_outside_worktree":
       return `EO refused this call: on this turn \`git push\` may only be run in the item's worktree, ${fence.root}, and this one runs elsewhere, in another repository, or somewhere EO cannot tell. ${FENCE_NOTE}`;
+    case "push_after_git_change":
+      return `EO refused this call: an earlier command in it (\`${gitChangedBy ?? ""}\`) may change git's configuration, remotes or checked-out branch, so EO cannot check where this push goes before the call runs. Run the push as a call of its own. ${FENCE_NOTE}`;
     case "push_reconfigured":
       return `EO refused this call: this push changes git's configuration for itself — with \`-c\`, \`--config-env\` or a \`GIT_*\` variable set on the command or earlier in it — which can change what a push sends, and EO cannot see it. Push without the override. ${FENCE_NOTE}`;
     case "push_unverified":
@@ -377,7 +491,7 @@ const GIT_RELOCATING_ENV = new Set(["GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR"
 const GIT_HARMLESS_ENV = /^GIT_(TRACE\w*|TERMINAL_PROMPT|PAGER|EDITOR|ASKPASS|SSH|SSH_COMMAND|AUTHOR_\w+|COMMITTER_\w+|MERGE_AUTOEDIT|PROGRESS_DELAY)$/;
 
 /** Which rule refuses this `git …` (its words after `git`), run in `dir`, or null. */
-async function gitRefusal(args: readonly string[], fence: CallFence, dir: string | null, assigned: readonly string[], git: FenceGit): Promise<FenceRule | null> {
+async function gitRefusal(args: readonly string[], fence: CallFence, dir: string | null, assigned: readonly string[], git: FenceGit, gitChanged: boolean): Promise<FenceRule | null> {
   let index = 0;
   let relocated = assigned.some((name) => GIT_RELOCATING_ENV.has(name));
   let configured = assigned.some((name) => name.startsWith("GIT_") && !GIT_RELOCATING_ENV.has(name) && !GIT_HARMLESS_ENV.test(name));
@@ -392,7 +506,7 @@ async function gitRefusal(args: readonly string[], fence: CallFence, dir: string
   }
   if (args[index] !== "push") return null;
   if (fence.pushBranch === null) return "push_on_review";
-  return pushRefusal(args.slice(index + 1), fence.pushBranch, fence.root, { dir: at, relocated, configured }, git);
+  return pushRefusal(args.slice(index + 1), fence.pushBranch, fence.root, { dir: at, relocated, configured, gitChanged }, git);
 }
 
 /** Push options that update refs other than the one named, or remove one. */
@@ -405,6 +519,8 @@ interface PushPlace {
   dir: string | null;
   relocated: boolean;
   configured: boolean;
+  /** An earlier command in the call may have changed git's configuration or branch. */
+  gitChanged: boolean;
 }
 
 async function pushRefusal(args: readonly string[], branch: string, root: string, place: PushPlace, git: FenceGit): Promise<FenceRule | null> {
@@ -448,11 +564,14 @@ async function pushRefusal(args: readonly string[], branch: string, root: string
   if (wide) return "push_elsewhere";
   if (!lease) return "push_without_lease";
   // Only from the item's worktree, and only into its repository.
-  if (place.relocated || place.dir === null || !inside(root, place.dir)) return "push_outside_worktree";
+  if (place.relocated || place.dir === null || !(await reallyInside(root, place.dir))) return "push_outside_worktree";
   // Configuration set for this command alone — `push.followTags`, a push
   // refspec, a mirror — widens even an explicit push, and the checkout
   // EO reads does not hold it.
   if (place.configured) return "push_reconfigured";
+  // What EO reads below is the checkout before this call ran; a command
+  // before the push may have changed it, so its destination is not known.
+  if (place.gitChanged) return "push_after_git_change";
   // An explicit destination is the one git updates, whatever is configured.
   for (const refspec of refspecs) {
     const colon = refspec.indexOf(":");
@@ -569,6 +688,8 @@ export interface ShellCommand {
   frame: readonly number[];
   /** Part of a pipeline, or ended by `&`: whether a `cd` in it outlives it depends on the shell. */
   detached: boolean;
+  /** The files its redirections name (`> x`, `>> x`, `< x`), which are not words. */
+  targets: string[];
 }
 
 /**
@@ -620,6 +741,7 @@ export function parseCommands(line: string, frame: readonly number[] = [], frame
   const stack: (readonly number[])[] = [frame];
   const current = (): readonly number[] => stack[stack.length - 1] ?? frame;
   let words: string[] = [];
+  let targets: string[] = [];
   let word = "";
   let inWord = false;
   /** The word being read had quoting in it, which for a heredoc's delimiter means its body is literal. */
@@ -635,6 +757,7 @@ export function parseCommands(line: string, frame: readonly number[] = [], frame
     if (!inWord) return;
     if (redirect === "heredoc") heredocs.push({ delimiter: word, strip: stripNext, literal: quoted });
     else if (redirect === null) words.push(word);
+    else targets.push(word);
     redirect = null;
     word = "";
     inWord = false;
@@ -643,8 +766,9 @@ export function parseCommands(line: string, frame: readonly number[] = [], frame
   const endCommand = (ending: "sequence" | "pipe" | "background" = "sequence"): void => {
     endWord();
     redirect = null;
-    if (words.length > 0) commands.push({ words, frame: current(), detached: piped || ending !== "sequence" });
+    if (words.length > 0 || targets.length > 0) commands.push({ words, frame: current(), detached: piped || ending !== "sequence", targets });
     words = [];
+    targets = [];
     piped = ending === "pipe";
   };
   /** A substitution at `open` (`$(`'s or `<(`'s parenthesis): its commands listed in a frame of their own, its text kept in the word. */
