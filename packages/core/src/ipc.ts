@@ -68,6 +68,7 @@ import {
   GuardSaveResultSchema,
   HeldWorktreeSchema,
   ProviderCapabilitiesSchema,
+  SandboxAvailabilitySchema,
   ProviderModelSchema,
   WorkflowProblemSchema,
   HandOffTargetsSchema,
@@ -4789,6 +4790,18 @@ export const recordContract = {
   "providers:capabilities": channel(
     z.object({ provider: z.string(), refreshModels: z.boolean().default(false) }),
     z.object({ capabilities: ProviderCapabilitiesSchema, models: z.array(ProviderModelSchema), problem: z.string().nullable() }),
+  ),
+  // EO-935: whether this backend's sandbox can start on this machine,
+  // shown beside an agent's sandbox setting. Asking starts one (Codex's
+  // `codex sandbox`, or bubblewrap), so the editor asks once per backend.
+  // Null for a backend that runs no commands, which has none to start.
+  "providers:sandbox": channel(
+    z.object({
+      provider: z.string(),
+      /** The agent's own `executablePath`, as `runtime:status` takes it: the binary whose sandbox is asked about. */
+      executablePath: z.string().nullable().optional(),
+    }),
+    z.object({ sandbox: SandboxAvailabilitySchema.nullable() }),
   ),
   // ── EO's MCP server for external clients ────────────────────────
   //

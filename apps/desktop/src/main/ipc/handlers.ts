@@ -244,6 +244,7 @@ import {
 import { getItemBrief } from "./itemBrief.js";
 import type { JiraContext } from "../packs/developer/jira/connection.js";
 import { capabilitiesFor, fetchClaudeModels } from "../providers/capabilities.js";
+import { sandboxAvailability } from "../providers/sandboxAvailability.js";
 import { fetchCodexModels } from "../providers/codexModels.js";
 import { planUsage } from "../planUsage/store.js";
 import { chooseSmallModel, describeSmallModels, smallModelSources } from "../providers/smallModels.js";
@@ -1751,6 +1752,16 @@ export function registerAllHandlers(db: Db, engine: EngineHandle | undefined, re
         return { capabilities, models: [], problem: error instanceof Error ? error.message : String(error) };
       }
     },
+    opts,
+  );
+  // Whether this backend's sandbox can start on this machine (EO-935),
+  // for the agent editor to say beside the setting: asked of the binary
+  // the agent would run, which starts the sandbox once to find out.
+  registerHandler(
+    "providers:sandbox",
+    async (payload) => ({
+      sandbox: await sandboxAvailability(payload.provider, runtimeStatus(runtimes, payload).runtime?.path ?? null),
+    }),
     opts,
   );
   // The one caller that asks the binary whether it is signed in (EO-82):

@@ -332,6 +332,8 @@ const NOT_CATALOGUED: Partial<Record<RecordChannel, string>> = {
 
   // Spawns a provider CLI when refreshModels is set.
   "providers:capabilities": "spawns a CLI",
+  // Starts the backend's sandbox to see whether it can (EO-935).
+  "providers:sandbox": "spawns a CLI",
 
   // Two channels for one listing, and the detailed one is a superset:
   // agents_list answers from it.
