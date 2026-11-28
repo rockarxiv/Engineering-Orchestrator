@@ -442,6 +442,24 @@ export function reviewVerdictsOfRuns(db: Db, runIds: readonly string[]): Map<str
   return verdicts;
 }
 
+/**
+ * The newest payload each of these runs recorded under one event type,
+ * by run id (EO-930): a fact a pack wrote on its own runs, read back
+ * without loading their transcripts. A run that recorded none is absent.
+ */
+export function runEventPayloadsOfType(db: Db, runIds: readonly string[], type: string): Map<string, unknown> {
+  const payloads = new Map<string, unknown>();
+  if (runIds.length === 0) return payloads;
+  const rows = db
+    .select({ runId: runEvents.runId, payload: runEvents.payload })
+    .from(runEvents)
+    .where(and(eq(runEvents.type, type), inArray(runEvents.runId, [...runIds])))
+    .orderBy(asc(runEvents.seq))
+    .all();
+  for (const row of rows) payloads.set(row.runId, row.payload);
+  return payloads;
+}
+
 /** What one run did, counted, for the line a chat folds a finished turn behind. */
 export interface RunActivityCount {
   toolCalls: number;

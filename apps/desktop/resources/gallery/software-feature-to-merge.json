@@ -4,7 +4,7 @@
     "slug": "software-feature-to-merge",
     "title": "Software feature to merge",
     "description": "A feature is implemented on a branch of its own, reviewed, and opened as a pull request for you to approve. This is the pipeline EO ships for its own work.",
-    "version": "1.5",
+    "version": "1.6",
     "blanks": [
       {
         "key": "keyPrefix",
@@ -260,6 +260,14 @@
       "label": "Nothing to reply to",
       "tone": "info",
       "target": "pull_request_watch",
+      "position": 1
+    },
+    {
+      "fromStepId": "todo",
+      "resultKey": "unchanged_since_approval",
+      "label": "Approved commit unchanged",
+      "tone": "info",
+      "target": "merge_request",
       "position": 1
     },
     {

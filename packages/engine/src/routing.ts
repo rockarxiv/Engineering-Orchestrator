@@ -1,5 +1,5 @@
 import type { PipelineStep, StepRoute, Uuid } from "@eo/core";
-import { TERMINAL_TARGET, USER_ATTENTION_TARGET } from "@eo/core";
+import { TERMINAL_TARGET, UNCHANGED_SINCE_APPROVAL_RESULT, USER_ATTENTION_TARGET } from "@eo/core";
 
 /**
  * Where a step's result sends an item (KAN-54).
@@ -112,4 +112,37 @@ function nextByPosition(step: PipelineStep, steps: PipelineStep[]): RouteOutcome
 /** The result keys a step declares, in the order the configuration screen shows them. */
 export function declaredResults(stepId: string, routes: StepRoute[]): StepRoute[] {
   return routes.filter((route) => route.fromStepId === stepId).sort((a, b) => a.position - b.position);
+}
+
+/** What `resultUnlessUnchangedSinceApproval` is told about a finished run (EO-930). */
+export interface UnchangedSinceApprovalInput {
+  /** The result the run would route on without this rule — `done`, for an implementation. */
+  reported: string;
+  /** The step the run finished on. */
+  stepId: string;
+  /** The routes of the graph the item is bound to. */
+  routes: readonly StepRoute[];
+  /** Where the work stands now, as the pack that owns the workspace read it. Null where it could not say. */
+  revision: string | null;
+  /** Where it stood at the item's most recent approval, read the same way at the time. Null where nothing has approved it, or nothing recorded where. */
+  approvedRevision: string | null;
+}
+
+/**
+ * The result a finished run routes on, given where its work stands and
+ * where it stood at its last approval (EO-930).
+ *
+ * `UNCHANGED_SINCE_APPROVAL_RESULT` when the two are the same revision
+ * and the step routes that key; the reported result otherwise. Both
+ * revisions are the workspace's own answer, never the run's, so this is
+ * EO's reading and nothing an agent can claim. A revision nobody could
+ * read, and an item nothing has approved, are not the same revision as
+ * anything. A step that does not route the key keeps the result it
+ * always had, so a pipeline that never mentions it routes as before.
+ */
+export function resultUnlessUnchangedSinceApproval(input: UnchangedSinceApprovalInput): string {
+  const { reported, stepId, routes, revision, approvedRevision } = input;
+  if (revision === null || approvedRevision === null || revision !== approvedRevision) return reported;
+  const routed = routes.some((route) => route.fromStepId === stepId && route.resultKey === UNCHANGED_SINCE_APPROVAL_RESULT);
+  return routed ? UNCHANGED_SINCE_APPROVAL_RESULT : reported;
 }

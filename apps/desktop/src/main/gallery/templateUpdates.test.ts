@@ -2,7 +2,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { sql } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { uuidv7, type Uuid } from "@eo/core";
+import { UNCHANGED_SINCE_APPROVAL_RESULT, uuidv7, type Uuid } from "@eo/core";
 import { describeUpdateKey } from "@eo/engine";
 import type { DbHandle } from "../db/client.js";
 import {
@@ -19,6 +19,7 @@ import {
   getStep,
   listPipelines,
   listPipelineVersions,
+  createRoute,
   listRoutesForPipeline,
   listStepsForPipeline,
   listUpdateConflicts,
@@ -1056,5 +1057,56 @@ describe("1.4 to 1.5: a limit on Review → Changes requested", () => {
     expect(sentBack()?.traversalLimit).toBe(7);
     expect(getPipelineOrigin(handle.db, "default")?.version).toBe("1.4");
     expect(openUpdateConflict(handle.db, "default")?.conflicts).toEqual([expect.objectContaining({ key: { kind: "route", fromStepId: "review", resultKey: "changes_requested" } })]);
+  });
+});
+
+/**
+ * 1.6 (EO-930) routes To Do past Review, to Merge Request, when the run
+ * there left the branch on the commit Review last approved. An
+ * installation on 1.5 gets the route from this update at launch; no
+ * migration edits its graph (ARCHITECTURE.md §15.5).
+ */
+describe("1.5 to 1.6: To Do's route past Review", () => {
+  const skip = () => listRoutesForPipeline(handle.db, "default").find((route) => route.fromStepId === "todo" && route.resultKey === UNCHANGED_SINCE_APPROVAL_RESULT);
+
+  /** Delivery made from 1.5 and on it, as an installation that last launched before 1.6 shipped. */
+  function deliveryOn15(): void {
+    backfillPipelineOrigins(handle.db, upTo("1.5"));
+    applyTemplateUpdates(handle.db, upTo("1.5"), { isTheRecord: false });
+    expect(getPipelineOrigin(handle.db, "default")?.version).toBe("1.5");
+    expect(skip()).toBeUndefined();
+  }
+
+  it("gives a new installation's Delivery the route on its first launch", () => {
+    const shippedHistory = templateHistoryUpTo(GALLERY_DIRECTORY, SOFTWARE, "1.6");
+    backfillPipelineOrigins(handle.db, shippedHistory);
+
+    expect(applyTemplateUpdates(handle.db, shippedHistory, { isTheRecord: false })).toEqual([expect.objectContaining({ pipelineId: "default", outcome: "applied", from: "1.1", to: "1.6" })]);
+    expect(skip()).toMatchObject({ target: "merge_request", label: "Approved commit unchanged", tone: "info" });
+  });
+
+  it("adds the route to a Delivery with no edits of its own, leaves `done` going to Review, and says so in the release notes", () => {
+    deliveryOn15();
+
+    const results = applyTemplateUpdates(handle.db, upTo("1.6"), { isTheRecord: false });
+
+    expect(results).toContainEqual(expect.objectContaining({ pipelineId: "default", outcome: "applied", from: "1.5", to: "1.6" }));
+    expect(getPipelineOrigin(handle.db, "default")?.version).toBe("1.6");
+    expect(skip()).toMatchObject({ target: "merge_request", label: "Approved commit unchanged" });
+    expect(listRoutesForPipeline(handle.db, "default").find((route) => route.fromStepId === "todo" && route.resultKey === "done")?.target).toBe("review");
+    expect(currentVersion(handle.db, "default")!.releaseNotes).toContain("Review was skipped");
+    expect(applyTemplateUpdates(handle.db, upTo("1.6"), { isTheRecord: false })).toEqual([]);
+  });
+
+  it("holds the update where the person already routed that result somewhere of their own", () => {
+    deliveryOn15();
+    createRoute(handle.db, { pipelineId: "default" as Uuid, fromStepId: "todo", resultKey: UNCHANGED_SINCE_APPROVAL_RESULT, label: "Mine", target: "ready_to_merge", position: 1 });
+    handle.db.run(sql`UPDATE pipelines SET updated_at = updated_at + 1 WHERE id = 'default'`);
+
+    const results = applyTemplateUpdates(handle.db, upTo("1.6"), { isTheRecord: false });
+
+    expect(results).toContainEqual(expect.objectContaining({ pipelineId: "default", outcome: "conflict", from: "1.5", to: "1.6" }));
+    expect(skip()?.target).toBe("ready_to_merge");
+    expect(openUpdateConflict(handle.db, "default")?.conflicts).toEqual([expect.objectContaining({ key: { kind: "route", fromStepId: "todo", resultKey: UNCHANGED_SINCE_APPROVAL_RESULT } })]);
   });
 });

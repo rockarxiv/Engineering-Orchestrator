@@ -33,6 +33,7 @@ import { postInterpretation } from "../../roles/interpretation.js";
 import { postMentionReply } from "../../roles/mentionReply.js";
 import { postReviewFeedback } from "../../roles/reviewVerdict.js";
 import { createPosters } from "./posters.js";
+import { implementOutcome, postReviewSkippedNote, routedImplementRun } from "./unchangedSinceApproval.js";
 import { postCommentPlan, postPlanReview } from "./forge/commentPlans.js";
 import { continueTrialLoop } from "../../trials/design.js";
 
@@ -80,6 +81,12 @@ function resultKeyFor(
   parsedResult: unknown,
   item: Item,
   ownFunctions: ReadonlySet<string>,
+  /**
+   * The run whose result this is and the step it is routed from, where
+   * the caller knows them. Absent, nothing about the run's history is
+   * read, and an implementation reports `done`.
+   */
+  routed?: { run: Run | undefined; stepId: string },
 ): string | null {
   // An interpretation is not a stage (EO-184). It reads a reply for a
   // step that is parked and stays parked, so it declares no result and
@@ -179,6 +186,11 @@ function resultKeyFor(
     return "done";
   }
 
+  // An implementation that left the branch on the commit the item's
+  // most recent approval was of (EO-930): EO's own reading of git, where
+  // the step routes it, and `done` everywhere else.
+  if (action === "implement" && routed !== undefined) return implementOutcome(db, item, routed.run, routed.stepId).result;
+
   // One of this pack's actions with nothing special to say about it —
   // `implement`, `respond`. It reached a step, the step declares what
   // comes next, and `done` is what such a step routes on.
@@ -234,7 +246,7 @@ export function createRunResultKey(db: Db, contributed: Registry = developerRegi
     if (!claimed.has(run.action)) return undefined;
     const role = run.agentId === null ? null : (getAgent(db, run.agentId)?.role ?? null);
     if (!packMeaningInForce(db, item, role, run.action)) return undefined;
-    return resultKeyFor(db, contributed, run.action, parsedResultOf(run.result), item, ownFunctions);
+    return resultKeyFor(db, contributed, run.action, parsedResultOf(run.result), item, ownFunctions, run.stepId === null ? undefined : { run, stepId: run.stepId });
   };
 }
 
@@ -286,7 +298,8 @@ export function createRoleWiring(db: Db, contributed: Registry = developerRegist
       // this pack does not own, and the supervisor routes on the
       // `result` the run answered with.
       if (!packMeaningInForce(db, item, role, action)) return undefined;
-      return routeResult(db, currentStep, steps, resultKeyFor(db, contributed, action, parsedResult, item, ownFunctions), item);
+      const routed = action === "implement" ? { run: routedImplementRun(db, item, currentStep.id), stepId: currentStep.id } : undefined;
+      return routeResult(db, currentStep, steps, resultKeyFor(db, contributed, action, parsedResult, item, ownFunctions, routed), item);
     },
 
     onRunSucceeded(item: Item, agent: Agent, action: string, parsedResult: unknown, runId: Uuid): void {
@@ -323,6 +336,10 @@ export function createRoleWiring(db: Db, contributed: Registry = developerRegist
       // reviewer that the transition dispatches.
       if (action === "implement") {
         postImplementHandoff(db, item, agent.id, runId, parsedResult);
+        // And, where the run is about to skip Review, that it is and why
+        // (EO-930) — after the handoff, so the thread reads in the order
+        // it happened.
+        postReviewSkippedNote(db, item, runId);
         return;
       }
 

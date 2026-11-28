@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
+import { UNCHANGED_SINCE_APPROVAL_RESULT } from "@eo/core";
 import { compareTemplateVersions, loadTemplateHistory, readVersion, templateHistoryDirectory, type TemplateVersion } from "./history.js";
 import { bundledTemplates } from "./templates.js";
 
@@ -65,7 +66,7 @@ describe("Software feature to merge", () => {
   const versions = () => loadTemplateHistory(GALLERY_DIRECTORY).get(SOFTWARE)!;
 
   it("has the graph from before EO-461, the one that gave up after a week, and the current one", () => {
-    expect(versions().map((version) => version.version)).toEqual(["1.0", "1.1", "1.2", "1.3", "1.4", "1.5"]);
+    expect(versions().map((version) => version.version)).toEqual(["1.0", "1.1", "1.2", "1.3", "1.4", "1.5", "1.6"]);
   });
 
   it("1.0 opens the pull request and waits at Done, with no step watching it", () => {
@@ -201,6 +202,25 @@ describe("Software feature to merge", () => {
     expect(current!.notes).toContain("four times");
   });
 
+  /**
+   * 1.6 (EO-930) lets a To Do run that left the approved commit as it was
+   * go past Review: one route, To Do → Merge Request on the engine's
+   * `unchanged_since_approval`, and nothing else.
+   */
+  it("differs between 1.5 and 1.6 only in To Do's route past Review, and says so for the person", () => {
+    const [, , , , , before, current] = versions();
+    const added = current!.document.routes.filter((route) => !before!.document.routes.some((old) => old.fromStepId === route.fromStepId && old.resultKey === route.resultKey));
+    expect(added).toEqual([{ fromStepId: "todo", resultKey: UNCHANGED_SINCE_APPROVAL_RESULT, label: "Approved commit unchanged", tone: "info", target: "merge_request", position: 1 }]);
+    const strip = (document: TemplateVersion["document"]) => ({
+      ...document,
+      template: { ...document.template, version: "" },
+      routes: document.routes.filter((route) => route.resultKey !== UNCHANGED_SINCE_APPROVAL_RESULT),
+    });
+    expect(strip(current!.document)).toEqual(strip(before!.document));
+    expect(current!.notes).toContain("Review was skipped");
+    expect(current!.notes).toContain("from git");
+  });
+
   it("differs between 1.0 and 1.1 only in what EO-461 changed", () => {
     const [before, current] = versions();
     const strip = (document: TemplateVersion["document"]) => ({
@@ -258,7 +278,7 @@ describe("reading the history", () => {
   it("skips a damaged file and keeps the versions around it", () => {
     const directory = copyOfHistory();
     writeFileSync(join(templateHistoryDirectory(directory), SOFTWARE, "1.0.json"), "{ not json");
-    expect(loadTemplateHistory(directory).get(SOFTWARE)?.map((version) => version.version)).toEqual(["1.1", "1.2", "1.3", "1.4", "1.5"]);
+    expect(loadTemplateHistory(directory).get(SOFTWARE)?.map((version) => version.version)).toEqual(["1.1", "1.2", "1.3", "1.4", "1.5", "1.6"]);
   });
 
   it("skips a file whose path disagrees with the version it carries", () => {
@@ -270,7 +290,7 @@ describe("reading the history", () => {
 
     const history = loadTemplateHistory(directory);
     expect(history.has("somebody-else")).toBe(false);
-    expect(history.get(SOFTWARE)?.map((version) => version.version)).toEqual(["1.0", "1.1", "1.2", "1.3", "1.4", "1.5"]);
+    expect(history.get(SOFTWARE)?.map((version) => version.version)).toEqual(["1.0", "1.1", "1.2", "1.3", "1.4", "1.5", "1.6"]);
   });
 
   it("refuses a pack that asks for the admin grant, as every other door does", () => {

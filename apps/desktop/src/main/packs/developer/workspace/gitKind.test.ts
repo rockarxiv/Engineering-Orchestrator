@@ -15,6 +15,7 @@ import { attachRunFiles, checkRunFile, type RunFileCheck } from "../../../superv
 import { run, status } from "../../../testing/git.js";
 import { setBranchPrefix } from "./branchPrefix.js";
 import { releaseWorktreeFor } from "./dispatchWorkspace.js";
+import { branchHeadsOfRuns } from "./branchHead.js";
 import { gitWorkspaceKind } from "./gitKind.js";
 import { TICKET_FILES_DIRECTORY } from "./ticketFiles.js";
 
@@ -185,12 +186,62 @@ describe("verify, after an implement run", () => {
   it("has nothing to say about an action it cannot check", async () => {
     const prepared = await preparedWorktree();
 
-    // No checks rather than passing ones, and the reason is on the kind
-    // rather than inside the verifier: `implement` and the plan for pull
-    // request comments (EO-760) are the keys this kind registers, so a
-    // reviewer's run finds nothing to run (EO-297).
-    expect(Object.keys(kind().verifiers)).toEqual(["implement", "plan_comment_response"]);
+    // No checks rather than passing ones. `review` has an entry since
+    // EO-930, which records the commit the review was of and checks
+    // nothing, so a reviewer's run still gets no checks (EO-297) and its
+    // column head says nothing is checked.
+    expect(Object.keys(kind().verifiers)).toEqual(["implement", "review", "plan_comment_response"]);
     expect(await verifyRun(kind(), item, { ...succeededImplement(prepared), action: "review" })).toEqual([]);
+    expect(await verifyRun(kind(), item, { ...succeededImplement(prepared), action: "refine" })).toEqual([]);
+  });
+});
+
+/**
+ * The commit a run left the branch on, read from git and recorded on the
+ * run (EO-930): what tells EO, after a To Do run, whether the branch is
+ * still the commit Review approved.
+ */
+describe("the branch head a run leaves", () => {
+  const runOn = (action: string) => createRun(handle.db, { itemId: item.id, agentId: listAgents(handle.db)[0]!.id, action, status: "running" });
+  const headOf = async (cwd: string) => (await run(["rev-parse", "HEAD"], cwd)).trim();
+
+  it("is recorded on an implement run once verification has passed, as the commit the rebase left", async () => {
+    const prepared = await preparedWorktree();
+    await commitInTheWorktree(prepared);
+    // The base moves on, so verification rebases and the head is a new commit.
+    writeFileSync(join(repoPath, "OTHER.md"), "landed meanwhile\n");
+    await run(["add", "-A"], repoPath);
+    await run(["commit", "-m", "landed meanwhile"], repoPath);
+    const before = await headOf(prepared.cwd);
+    const implement = runOn("implement");
+
+    await verifyRun(kind(), getItem(handle.db, item.id)!, { ...succeededImplement(prepared), id: implement.id });
+
+    const after = await headOf(prepared.cwd);
+    expect(after).not.toBe(before);
+    expect(branchHeadsOfRuns(handle.db, [implement.id]).get(implement.id)).toEqual({ commit: after, branch: "eo/EO-1" });
+  });
+
+  it("is not recorded on an implement run whose verification failed", async () => {
+    const prepared = await preparedWorktree();
+    const implement = runOn("implement");
+
+    // Nothing committed: the branch check fails.
+    await verifyRun(kind(), getItem(handle.db, item.id)!, { ...succeededImplement(prepared), id: implement.id });
+
+    expect(branchHeadsOfRuns(handle.db, [implement.id]).size).toBe(0);
+  });
+
+  it("is recorded on a review run as it ends, and only where the review finished rather than stopped to ask", async () => {
+    const prepared = await preparedWorktree();
+    await commitInTheWorktree(prepared);
+    const review = runOn("review");
+    const asked = runOn("review");
+
+    await verifyRun(kind(), getItem(handle.db, item.id)!, { ...succeededImplement(prepared), id: review.id, action: "review" });
+    await verifyRun(kind(), getItem(handle.db, item.id)!, { ...succeededImplement(prepared), id: asked.id, action: "review", ended: "escalated" });
+
+    expect(branchHeadsOfRuns(handle.db, [review.id, asked.id])).toEqual(new Map([[review.id, { commit: await headOf(prepared.cwd), branch: "eo/EO-1" }]]));
   });
 });
 

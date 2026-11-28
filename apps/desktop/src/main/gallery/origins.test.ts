@@ -2,7 +2,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { sql } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { uuidv7, type Uuid } from "@eo/core";
+import { UNCHANGED_SINCE_APPROVAL_RESULT, uuidv7, type Uuid } from "@eo/core";
 import type { DbHandle } from "../db/client.js";
 import { createPipeline, createStep, getPipelineOrigin, getSetting, listAgents, listRoutesForPipeline, listStepsForPipeline } from "../db/repos/index.js";
 import { withKind } from "../stepAgents.js";
@@ -89,6 +89,27 @@ describe("matching step ids against the history", () => {
     expect(matchTemplateVersion(ids, history, steps, routes)?.version.version).toBe("1.4");
     const limited = routes.map((route) => (route.fromStepId === "review" && route.resultKey === "changes_requested" ? { ...route, traversalLimit: 4 } : route));
     expect(matchTemplateVersion(ids, history, steps, limited)?.version.version).toBe("1.5");
+  });
+
+  /**
+   * 1.5 and 1.6 have the same steps set the same way (EO-930): 1.6 only
+   * adds To Do → Merge Request on `unchanged_since_approval`. So a route
+   * the version has and the pipeline lacks tells them apart, and a
+   * Delivery shaped as 1.5 is not taken for 1.6 and left without it.
+   */
+  it("tells 1.5 from 1.6 by To Do's route past Review", () => {
+    const upTo15 = templateHistoryUpTo(GALLERY_DIRECTORY, SOFTWARE, "1.5");
+    backfillPipelineOrigins(handle.db, upTo15);
+    applyTemplateUpdates(handle.db, upTo15, { isTheRecord: false });
+    const agents = listAgents(handle.db);
+    const steps = listStepsForPipeline(handle.db, "default").map((step) => withKind(agents, step));
+    const ids = steps.map((step) => step.id);
+    const routes = listRoutesForPipeline(handle.db, "default");
+    expect(routes.some((route) => route.resultKey === UNCHANGED_SINCE_APPROVAL_RESULT)).toBe(false);
+
+    expect(matchTemplateVersion(ids, history, steps, routes)?.version.version).toBe("1.5");
+    const withSkip = [...routes, { fromStepId: "todo", resultKey: UNCHANGED_SINCE_APPROVAL_RESULT, traversalLimit: null }];
+    expect(matchTemplateVersion(ids, history, steps, withSkip)?.version.version).toBe("1.6");
   });
 
   it("still matches a pipeline the person removed a step from, and leaves that step out of the map", () => {
