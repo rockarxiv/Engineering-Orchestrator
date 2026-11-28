@@ -272,6 +272,50 @@ describe("opening it", () => {
     expect(body).toContain("test ✓ · lint ✗");
   });
 
+  it("says a check verification skipped for want of a command was not checked (EO-927)", async () => {
+    const item = story();
+    const implementer = listAgents(handle.db).find((agent) => agent.role === "implementer")!;
+    const run = createRun(handle.db, { itemId: item.id, agentId: implementer.id, action: "implement", status: "queued" });
+    updateRun(handle.db, run.id, {
+      status: "succeeded",
+      result: { raw: "", parsed: { branch: "eo/API-4", summary: "Added it.", handoff: "Nothing to flag.", files_changed: ["outbox.ts"], tests_run: true } },
+      verification: { ok: true, steps: [{ name: "test", ok: true, skipped: true, detail: "No test command configured — not checked." }, { name: "lint", ok: true, detail: "" }] },
+    });
+
+    let body = "";
+    const cli: CliRunner = async (_cli, args) => {
+      const index = args.indexOf("--body-file");
+      if (index >= 0) body = readFileSync(args[index + 1]!, "utf8");
+      return args.includes("list") ? noneYet : created;
+    };
+
+    await mergeRequestStep(item, cli);
+
+    expect(body).toContain("test not checked · lint ✓");
+  });
+
+  it("says the same of a verification recorded before skipped checks were marked (EO-927)", async () => {
+    const item = story();
+    const implementer = listAgents(handle.db).find((agent) => agent.role === "implementer")!;
+    const run = createRun(handle.db, { itemId: item.id, agentId: implementer.id, action: "implement", status: "queued" });
+    updateRun(handle.db, run.id, {
+      status: "succeeded",
+      result: { raw: "", parsed: { branch: "eo/API-4", summary: "Added it.", handoff: "Nothing to flag.", files_changed: ["outbox.ts"], tests_run: true } },
+      verification: { ok: true, steps: [{ name: "test", ok: true, detail: "No test command configured — skipped." }, { name: "lint", ok: true, detail: "`pnpm lint` passed." }] },
+    });
+
+    let body = "";
+    const cli: CliRunner = async (_cli, args) => {
+      const index = args.indexOf("--body-file");
+      if (index >= 0) body = readFileSync(args[index + 1]!, "utf8");
+      return args.includes("list") ? noneYet : created;
+    };
+
+    await mergeRequestStep(item, cli);
+
+    expect(body).toContain("test not checked · lint ✓");
+  });
+
   it("opens exactly one across review ping-pong", async () => {
     // review → todo → review → merge_request, twice over, is one pull
     // request. The second pass reads the `prUrl` the first recorded and

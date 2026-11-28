@@ -10,6 +10,7 @@ import { createRoleWiring } from "./wiring.js";
 import { createDispatchGate } from "./scheduling.js";
 import { developerSectionRenderers } from "./sections.js";
 import { commentPlanSectionRenderers } from "./forge/commentPlans.js";
+import { notCheckedSectionRenderers } from "./notCheckedSection.js";
 import { developerBriefRenderers } from "./briefs.js";
 import { developerRouteLimitNotes } from "./routeLimitNotes.js";
 
@@ -103,7 +104,8 @@ export function developerPack(options: DeveloperPackOptions): CodePack {
     // And what the planner, the plan's reviewer and the implementer
     // carrying out an approved plan are told about the pull request
     // comments (EO-760), read off the item's runs as each is dispatched.
-    sectionRenderers: [...developerSectionRenderers, ...commentPlanSectionRenderers(db)],
+    // And what a reviewer is told when verification ran no tests (EO-927).
+    sectionRenderers: [...developerSectionRenderers, ...commentPlanSectionRenderers(db), ...notCheckedSectionRenderers(db)],
     // And what the person deciding on two of this pack's steps is shown
     // (EO-828): the pull request comments beside the planned replies on
     // "Approve plan", and the pull request "Done" closes.

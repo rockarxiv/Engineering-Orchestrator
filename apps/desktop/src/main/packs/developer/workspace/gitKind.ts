@@ -21,7 +21,7 @@ import { parseRemoteUrl } from "../forge/remote.js";
 import { referenceCheckoutFor, releaseReferenceCheckouts, releaseStaleReferenceCheckouts } from "./referenceCheckouts.js";
 import { commitNamingCheck } from "./commitNaming.js";
 import { createImplementationVerifier, createVerifiedRange } from "./implementationVerifier.js";
-import type { VerificationResult, VerifyOptions } from "./verify.js";
+import { notCheckedSteps, type VerificationResult, type VerifyOptions } from "./verify.js";
 
 /** What the git kind needs from the process in order to be built. */
 export interface GitWorkspaceKindOptions {
@@ -445,10 +445,17 @@ function evidence(verification: VerificationResult | undefined): { evidence?: Re
   return verification === undefined ? {} : { evidence: verification as unknown as Record<string, unknown> };
 }
 
-/** One sentence for a verification that passed, naming the steps it actually ran. */
-function describeVerified(verification: VerificationResult | undefined): string {
+/**
+ * One sentence for a verification that passed, naming the steps it
+ * actually ran — and, apart from them, the checks it could not run
+ * because no command is configured (EO-927), which passed nothing.
+ */
+export function describeVerified(verification: VerificationResult | undefined): string {
   if (verification === undefined) return "Nothing was checked: this ticket has no repository to check against.";
-  return `Checked the branch — ${verification.steps.map((step) => step.name).join(", ")} — and every step passed.`;
+  const ran = verification.steps.filter((step) => step.skipped !== true).map((step) => step.name);
+  const notChecked = notCheckedSteps(verification);
+  const checked = `Checked the branch — ${ran.join(", ")} — and every step passed.`;
+  return notChecked.length === 0 ? checked : `${checked} Not checked, because no command is configured: ${notChecked.join(", ")}.`;
 }
 
 /**

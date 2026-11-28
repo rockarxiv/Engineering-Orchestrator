@@ -404,6 +404,15 @@ export const RunViewSchema = z.object({
   /** G-02's verdict, when the run had one. */
   verificationOk: z.boolean().nullable(),
   /**
+   * The checks that verdict did not cover (EO-927): ones verification
+   * skipped because no command is configured for them, by name. A
+   * verdict of true with `test` here ran no tests, and says so rather
+   * than reading as a pass.
+   *
+   * Defaulted, so a client that predates the field still reads a run.
+   */
+  verificationNotChecked: z.array(z.string()).default([]),
+  /**
    * What the workspace kind checked, with a mark each (EO-312, ARCHITECTURE.md, "The item").
    *
    * The sidebar's step block lists these, which is the other half of

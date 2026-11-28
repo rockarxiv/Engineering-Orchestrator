@@ -23,6 +23,7 @@ function run(overrides: Partial<RunView> = {}): RunView {
     startedAt: 1_000,
     endedAt: 2_000,
     verificationOk: null,
+    verificationNotChecked: [],
     checks: [],
     steerable: true,
     ...overrides,

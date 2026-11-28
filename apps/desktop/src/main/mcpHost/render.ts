@@ -602,7 +602,8 @@ export function renderItem(data: IpcResponse<"items:getSections">, request?: Ipc
     lines.push("", "## Runs", "");
     for (const run of runs) {
       const cost = run.costCents === null ? "" : `, ${money(run.costCents)}`;
-      const verdict = run.verificationOk === null ? "" : `, verification ${run.verificationOk ? "passed" : "failed"}`;
+      const notChecked = run.verificationOk === null || run.verificationNotChecked.length === 0 ? "" : ` — not checked: ${run.verificationNotChecked.join(", ")}`;
+      const verdict = run.verificationOk === null ? "" : `, verification ${run.verificationOk ? "passed" : "failed"}${notChecked}`;
       lines.push(`- ${run.id} — ${run.agentName} ${run.action}: ${run.status} (attempt ${run.attempt}${cost}${verdict})`);
       if (run.error !== null) lines.push(`  - error: ${run.error}`);
     }

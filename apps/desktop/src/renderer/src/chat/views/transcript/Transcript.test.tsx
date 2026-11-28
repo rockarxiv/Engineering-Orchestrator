@@ -56,6 +56,7 @@ function run(overrides: Partial<RunView> = {}): RunView {
     startedAt: Date.now() - 65_000,
     endedAt: null,
     verificationOk: null,
+    verificationNotChecked: [],
     checks: [],
     steerable: true,
     ...overrides,
@@ -366,6 +367,14 @@ describe("RunDetails", () => {
     expect(await within(details).findByText("src/a.ts")).toBeInTheDocument();
     expect(within(details).getByRole("region", { name: "Changes (1)" })).toBeInTheDocument();
     expect(within(screen.getByRole("region", { name: "Sessions" })).getByText("sess_01J2")).toBeInTheDocument();
+  });
+
+  it("names the checks no command is configured for as not checked, beside the verdict (EO-927)", () => {
+    mockLog([]);
+    mount(<RunDetails group={solo({ status: "succeeded", verificationOk: true, verificationNotChecked: ["test", "build"] })} />);
+    const tests = screen.getByRole("region", { name: "Tests" });
+    expect(within(tests).getByText("Checks passed")).toBeInTheDocument();
+    expect(within(tests).getByText("Not checked: test, build")).toBeInTheDocument();
   });
 
   it("says so plainly when nothing verified the run, and nothing has a session", () => {

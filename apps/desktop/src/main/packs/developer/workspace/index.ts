@@ -16,6 +16,8 @@ export { baseRefFor, branchFor, resolveItemStackTarget } from "./stackTarget.js"
 export { runCommand, type CommandOutcome, type RunCommandOptions } from "../../../process/runCommand.js";
 export {
   formatVerificationComment,
+  isSkippedStep,
+  notCheckedSteps,
   verifyImplementation,
   DEFAULT_CHECK_TIMEOUT_MS,
   DEFAULT_MAX_OUTPUT_CHARS,

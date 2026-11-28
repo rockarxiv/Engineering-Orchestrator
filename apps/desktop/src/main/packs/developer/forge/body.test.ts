@@ -136,6 +136,16 @@ describe("the facts block", () => {
     expect(text).toContain("test ✓ · lint ✗");
   });
 
+  it("says a check no command is configured for was not checked, not that it passed (EO-927)", () => {
+    const { text } = buildPullRequestBody({
+      agentBody: "Adds an outbox.",
+      facts: facts({ checks: [{ name: "test", passed: true, notChecked: true }, { name: "lint", passed: true }] }),
+    });
+
+    expect(text).toContain("test not checked · lint ✓");
+    expect(text).not.toContain("test ✓");
+  });
+
   it("comes after the prose, not before it", () => {
     const { text } = buildPullRequestBody({ agentBody: "Adds an outbox.", facts: facts() });
 

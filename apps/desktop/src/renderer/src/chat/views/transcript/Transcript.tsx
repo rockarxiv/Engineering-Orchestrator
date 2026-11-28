@@ -74,6 +74,9 @@ export function RunHeader({ group, onCancel, cancelling }: { group: RunGroup; on
       {latest.verificationOk !== null ? (
         <Chip tone={latest.verificationOk ? "running" : "danger"}>{latest.verificationOk ? "verified" : "verification failed"}</Chip>
       ) : null}
+      {latest.verificationOk !== null && latest.verificationNotChecked.length > 0 ? (
+        <Chip tone="paused">not checked: {latest.verificationNotChecked.join(", ")}</Chip>
+      ) : null}
       {isRunActive(latest.status) && onCancel ? (
         <Button size="sm" variant="danger" className="ml-auto" disabled={cancelling} onClick={onCancel}>
           Cancel
@@ -344,8 +347,10 @@ export function RunDetails({ group }: { group: RunGroup }) {
         {run.verificationOk === null ? (
           <p className="text-[12.5px] text-ink-subtle">Not verified.</p>
         ) : (
-          <span>
+          <span className="flex flex-wrap gap-1.5">
             <Chip tone={run.verificationOk ? "running" : "danger"}>{run.verificationOk ? "Checks passed" : "Checks failed"}</Chip>
+            {/* A check with no command ran nothing, so it is not among what passed (EO-927). */}
+            {run.verificationNotChecked.length > 0 ? <Chip tone="paused">Not checked: {run.verificationNotChecked.join(", ")}</Chip> : null}
           </span>
         )}
       </section>

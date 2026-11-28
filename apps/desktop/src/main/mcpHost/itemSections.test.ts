@@ -1,7 +1,7 @@
 import { ItemDetailSchema, ITEM_COMMENTS_PAGE, type Item } from "@eo/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DbHandle } from "../db/client.js";
-import { createRun, listAgents, postComment, transitionItem } from "../db/repos/index.js";
+import { createRun, listAgents, listRunsForItem, postComment, transitionItem, updateRun } from "../db/repos/index.js";
 import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import { getItemDetail, getItemSections, resolveItemKey } from "../ipc/domainQueries.js";
 import { clearHandlerRegistry, registerHandler } from "../ipc/registry.js";
@@ -179,5 +179,38 @@ describe("item_get with the limits", () => {
     expect(runs.map((run) => run.action)).toEqual(["review"]);
     expect(textOf(result)).toContain("## Runs");
     expect(textOf(result)).not.toContain("implement");
+  });
+
+  it("says which checks a passed verification did not run (EO-927)", async () => {
+    const implement = listRunsForItem(handle.db, item.id).find((run) => run.action === "implement")!;
+    updateRun(handle.db, implement.id, {
+      status: "succeeded",
+      verification: { ok: true, steps: [{ name: "test", ok: true, skipped: true, detail: "" }, { name: "lint", ok: true, detail: "" }] },
+    });
+
+    const result = await call("item_get", { itemId: item.id, include: ["runs"] });
+
+    expect(textOf(result)).toContain("verification passed — not checked: test)");
+  });
+
+  it("says the same of a run verified before skipped checks were marked, from the detail it recorded (EO-927)", async () => {
+    const implement = listRunsForItem(handle.db, item.id).find((run) => run.action === "implement")!;
+    updateRun(handle.db, implement.id, {
+      status: "succeeded",
+      verification: {
+        ok: true,
+        steps: [
+          { name: "test", ok: true, detail: "No test command configured — skipped." },
+          { name: "lint", ok: true, detail: "`pnpm lint` passed." },
+          { name: "build", ok: true, detail: "No build command configured — skipped." },
+        ],
+      },
+    });
+
+    const result = await call("item_get", { itemId: item.id, include: ["runs"] });
+
+    expect(textOf(result)).toContain("verification passed — not checked: test, build)");
+    const runs = (result.structuredContent as { runs: { action: string; verificationNotChecked: string[] }[] }).runs;
+    expect(runs.find((run) => run.action === "implement")?.verificationNotChecked).toEqual(["test", "build"]);
   });
 });
