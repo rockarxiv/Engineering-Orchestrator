@@ -39,6 +39,16 @@ async function linked(): Promise<{ root: string; repo: string; common: string; w
   return { root, repo, common, worktree, own: join(common, "worktrees", "EO-1") };
 }
 
+/**
+ * A file's contents replaced, as a command in the sandbox would replace
+ * them. Removed first: Git for Windows marks a worktree's `.git` file
+ * hidden, and Windows refuses to open a hidden file for writing (EPERM).
+ */
+function rewrite(path: string, text: string): void {
+  rmSync(path, { force: true });
+  writeFileSync(path, text);
+}
+
 /** The three things the writable set must never hold, for a common git directory. */
 function closed(common: string): string[] {
   return [common, join(common, "hooks"), join(common, "config")];
@@ -84,7 +94,7 @@ describe("what the agent could have rewritten (EO-934 review)", () => {
     const { root, worktree, repo } = await linked();
     const other = await makeRepo(root, "other");
     // What a command in the sandbox could do to its own checkout.
-    writeFileSync(join(worktree, ".git"), `gitdir: ${join(other, ".git")}\n`);
+    rewrite(join(worktree, ".git"), `gitdir: ${join(other, ".git")}\n`);
 
     const { paths, problem } = await sandboxWritablePaths(worktree, repo, []);
 
@@ -120,7 +130,7 @@ describe("what the agent could have rewritten (EO-934 review)", () => {
   it("is not moved by a .git file that names the right directory through a relative path", async () => {
     const { worktree, repo, own } = await linked();
     // git itself may write a relative one; it still lands on the same directory.
-    writeFileSync(join(worktree, ".git"), `gitdir: ${join("..", "..", "repo", ".git", "worktrees", "EO-1")}\n`);
+    rewrite(join(worktree, ".git"), `gitdir: ${join("..", "..", "repo", ".git", "worktrees", "EO-1")}\n`);
 
     expect((await sandboxWritablePaths(worktree, repo, [])).paths).toContain(own);
     expect(readFileSync(join(worktree, ".git"), "utf8")).toContain("..");
