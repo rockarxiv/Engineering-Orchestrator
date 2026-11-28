@@ -57,6 +57,7 @@ import {
   skillsForRun,
   withoutReservedEnvironmentVariables,
   SKILL_READ_TOOL_NAME,
+  type AgentSandbox,
 } from "@eo/core";
 import type { AdminMcpDispatch } from "../agentAttachments/adminDelivery.js";
 import { deliverableSkills, deliveredSkillOf, writeWorktreeSkills, worktreeSkillsPromptSection, type WorktreeSkillDelivery } from "../agentAttachments/worktreeSkills.js";
@@ -347,6 +348,8 @@ export interface CodexProviderOptions {
     skillSlugs?: readonly string[],
     /** The item the turn works on, whose Codex home it runs in (EO-829). Handed only on a turn on one. */
     itemId?: string,
+    /** The sandbox the turn runs in (EO-934). Handed only on a sandboxed turn. */
+    sandbox?: AgentSandbox,
   ) => Pick<CodexClient, "startThread" | "resumeThread"> & Partial<Pick<CodexClient, "prewarm" | "forkThread" | "sampleThread">>;
   /**
    * Seam for tests — the client a side call runs on (EO-477), built from
@@ -809,7 +812,7 @@ function usageEvent(usage: Usage, model: string | undefined): UsageEvent {
 }
 
 function threadOptionsFrom(
-  opts: { cwd?: string; model?: string; reasoningEffort?: string; showReasoning?: boolean; processScope?: RunProcessScope },
+  opts: { cwd?: string; model?: string; reasoningEffort?: string; showReasoning?: boolean; processScope?: RunProcessScope; sandbox?: AgentSandbox },
   config: CodexAgentConfig | undefined,
 ): CodexThreadOptions {
   const model = opts.model ?? config?.model;
@@ -847,7 +850,15 @@ function threadOptionsFrom(
     // Literals, with no `config` read: `agents.config` is an open bag,
     // and a guarantee that can be edited out of a row is not one. A
     // stale `"sandboxMode"` left behind reaches here and is ignored.
-    sandboxMode: "danger-full-access",
+    //
+    // **Except on a sandboxed turn (EO-934), which names no sandbox here
+    // at all.** Its sandbox is the permission profile in the app-server's
+    // configuration (`codexSandboxConfig`), and EO-933 measured that a
+    // thread opened with a `sandbox` as well silently runs that one, with
+    // its defaults: the worktree's git directory read-only, the hidden
+    // files readable, the network off. The approval policy stays: nothing
+    // waits for a person either way.
+    ...(opts.sandbox ? {} : { sandboxMode: "danger-full-access" as const }),
     approvalPolicy: "never",
     ...(config?.webSearchEnabled !== undefined ? { webSearchEnabled: config.webSearchEnabled } : {}),
   };
@@ -1551,6 +1562,44 @@ function codexSpawnEnvironment(
   return { ...withoutNames({ ...inherited, ...(path === null ? {} : { PATH: path }), ...variables }, declared.withheld), ...spawn };
 }
 
+/** The permission profile a sandboxed turn runs under (EO-934), by name. */
+export const CODEX_SANDBOX_PROFILE = "eo";
+
+/**
+ * A sandboxed turn's sandbox as Codex takes it (EO-934, ARCHITECTURE.md
+ * §12.7): a permission profile in the app-server's configuration, as
+ * `codexSandbox.live.test.ts` established it through this launch path on
+ * 0.171.0 — the only spelling that hides a path at all.
+ *
+ * `default_permissions` names the profile, which extends `:workspace`
+ * (the turn's directory writable), lists what EO worked out the turn may
+ * write as `write`, makes `/tmp` and `$TMPDIR` read-only (`:workspace`
+ * leaves them writable otherwise), maps each path EO hides to `none`, and
+ * turns the network on, as EO-932's network decision asks. A profile
+ * ignores `sandbox_workspace_write`, so nothing is said there.
+ *
+ * **Never together with a `sandbox` on `thread/start` or
+ * `thread/resume`**, which silently wins over the profile with its own
+ * defaults: `threadOptionsFrom` names none on a sandboxed turn.
+ */
+export function codexSandboxConfig(sandbox: AgentSandbox): Record<string, unknown> {
+  return {
+    default_permissions: CODEX_SANDBOX_PROFILE,
+    permissions: {
+      [CODEX_SANDBOX_PROFILE]: {
+        extends: ":workspace",
+        network: { enabled: true },
+        filesystem: Object.fromEntries([
+          ...sandbox.writable.map((path) => [path, "write"]),
+          [":slash_tmp", "read"],
+          [":tmpdir", "read"],
+          ...sandbox.hidden.map((path) => [path, "none"]),
+        ]),
+      },
+    },
+  };
+}
+
 /**
  * Codex's own memories, off, on every turn EO starts (EO-468), so EO's
  * memory is the only one an agent has.
@@ -1685,13 +1734,15 @@ export function buildCodexOptions(
   skillSlugs?: readonly string[],
   /** The item the turn works on, whose Codex home it runs in (EO-829). */
   itemId?: string,
+  /** The sandbox the turn runs in (EO-934), as a permission profile. */
+  sandbox?: AgentSandbox,
 ): Pick<CodexClientOptions, "executablePath" | "config" | "env" | "afterTurn" | "perTurnEnv"> {
   // Asked once per client, and let go of again if the options cannot be
   // built (EO-444): no process will be spawned to let it go after. For
   // the directory the turn runs in (EO-700).
   const admin = options.admin?.(adminDirectory) ?? null;
   try {
-    return codexOptionsWith(options, admin, repositoryMcp, searchHook, attachFrom, memoryScopes, environmentVariables, writeBridge, withheldEnvironmentVariables, skillSlugs, itemId);
+    return codexOptionsWith(options, admin, repositoryMcp, searchHook, attachFrom, memoryScopes, environmentVariables, writeBridge, withheldEnvironmentVariables, skillSlugs, itemId, sandbox);
   } catch (error) {
     admin?.release();
     throw error;
@@ -1710,6 +1761,7 @@ function codexOptionsWith(
   withheldEnvironmentVariables?: readonly string[],
   skillSlugs?: readonly string[],
   itemId?: string,
+  sandbox?: AgentSandbox,
 ): Pick<CodexClientOptions, "executablePath" | "config" | "env" | "afterTurn" | "perTurnEnv"> {
   const attached = deliveredServers(options.attachedServers ?? []);
   const mcpServers: Record<string, unknown> = {};
@@ -1726,10 +1778,9 @@ function codexOptionsWith(
   // the same layers an unreadable organisation value is: what the CLI
   // inherits and the run's variables beneath it.
   const read = declaredValues(options, attached, variables);
-  const declared =
-    withheldEnvironmentVariables === undefined || withheldEnvironmentVariables.length === 0
-      ? read
-      : { ...read, withheld: new Set([...read.withheld, ...withheldEnvironmentVariables]) };
+  // And what a sandboxed turn starts without (EO-934), by the same rule.
+  const withheldNames = [...(withheldEnvironmentVariables ?? []), ...(sandbox?.withheld ?? [])];
+  const declared = withheldNames.length === 0 ? read : { ...read, withheld: new Set([...read.withheld, ...withheldNames]) };
   // What the CLI's environment will hold, which is what a header expands
   // from — so a withheld name expands from nothing here either.
   const expansionSource = { ...withoutNames({ ...inherited, ...variables }, declared.withheld), ...declared.values };
@@ -1870,7 +1921,13 @@ function codexOptionsWith(
   // The item's own (EO-829), on a turn on one.
   const home =
     options.config?.inheritAmbientConfig === true ? undefined : ((itemId === undefined ? options.codexHome?.() : options.codexHome?.(itemId)) ?? undefined);
-  const env = codexSpawnEnvironment(inherited, declared, headers.values, admin?.environment ?? {}, home, searchHook?.env, variables);
+  const spawnEnv = codexSpawnEnvironment(inherited, declared, headers.values, admin?.environment ?? {}, home, searchHook?.env, variables);
+  // EO-934: a sandboxed turn starts without the forge tokens and sign-in
+  // channels EO keeps from it, out of the layers above the inherited ones
+  // too — a value declared for an attached server included — since a
+  // sandbox does not stop a command using a credential it can read. Never
+  // undefined here: the withheld names above make an environment.
+  const env = sandbox && spawnEnv ? withoutNames(spawnEnv, new Set(sandbox.withheld)) : spawnEnv;
 
   // EO's own `PreToolUse` hook, on a turn that has one (EO-379). Inline,
   // as configuration, for the reason the Claude hook is a callback and
@@ -1896,6 +1953,10 @@ function codexOptionsWith(
     ...(Object.keys(mcpServers).length > 0 ? { mcp_servers: mcpServers } : {}),
     ...(hooks ? { hooks } : {}),
     ...CODEX_MEMORY_OFF,
+    // The turn's sandbox, as the permission profile its thread runs under
+    // (EO-934). Configuration of the app-server, so a resumed turn — which
+    // starts an app-server of its own — is launched under it again.
+    ...(sandbox ? codexSandboxConfig(sandbox) : {}),
   };
 
   return {
@@ -1938,9 +1999,10 @@ export function codexClientOptions(
   adminDirectory?: string,
   skillSlugs?: readonly string[],
   itemId?: string,
+  sandbox?: AgentSandbox,
 ): CodexClientOptions {
   return {
-    ...buildCodexOptions(options, repositoryMcp, searchHook, attachFrom, memoryScopes, environmentVariables, writeBridge, withheldEnvironmentVariables, adminDirectory, skillSlugs, itemId),
+    ...buildCodexOptions(options, repositoryMcp, searchHook, attachFrom, memoryScopes, environmentVariables, writeBridge, withheldEnvironmentVariables, adminDirectory, skillSlugs, itemId, sandbox),
     ...(options.onUnmappedEvent ? { onUnmappedNotification: options.onUnmappedEvent } : {}),
   };
 }
@@ -2380,7 +2442,8 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
       adminDirectory?: string,
       skillSlugs?: readonly string[],
       itemId?: string,
-    ) => new CodexClient(codexClientOptions(options, repositoryMcp, searchHook, attachFrom, memoryScopes, environmentVariables, writeBridge, withheldEnvironmentVariables, adminDirectory, skillSlugs, itemId)));
+      sandbox?: AgentSandbox,
+    ) => new CodexClient(codexClientOptions(options, repositoryMcp, searchHook, attachFrom, memoryScopes, environmentVariables, writeBridge, withheldEnvironmentVariables, adminDirectory, skillSlugs, itemId, sandbox)));
 
   /**
    * What marks EO's hook as trusted, learned once per command line.
@@ -2482,8 +2545,26 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
     adminDirectory?: string,
     skillSlugs?: readonly string[],
     itemId?: string,
+    sandbox?: AgentSandbox,
   ) {
     const hook = searchHook ? { command: searchHook.command, env: searchHook.env, matcher: searchHook.matcher, trust: searchHook.trust } : undefined;
+    // And the sandbox only on a sandboxed turn (EO-934) — every argument
+    // before it with it, each as the rules below would hand it.
+    if (sandbox !== undefined) {
+      return createCodex(
+        repositoryMcp,
+        hook,
+        attachFrom,
+        memoryScopes,
+        environmentVariables,
+        writeBridge,
+        withheldEnvironmentVariables,
+        options.admin ? adminDirectory : undefined,
+        skillSlugs && skillSlugs.length > 0 ? skillSlugs : undefined,
+        itemId,
+        sandbox,
+      );
+    }
     // And the item only on a turn on one (EO-829), whose Codex home the
     // turn runs in — every argument before it with it, each as the rules
     // below would hand it.
@@ -2712,6 +2793,10 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
         ...(resumeOpts?.reasoningEffort ? { reasoningEffort: resumeOpts.reasoningEffort } : {}),
         ...(resumeOpts?.showReasoning === undefined ? {} : { showReasoning: resumeOpts.showReasoning }),
         ...(resumeOpts?.processScope ? { processScope: resumeOpts.processScope } : {}),
+        // A resumed sandboxed turn names no sandbox on `thread/resume`
+        // either (EO-934): its profile is in the configuration the
+        // app-server this resume starts is launched with.
+        ...(resumeOpts?.sandbox ? { sandbox: resumeOpts.sandbox } : {}),
       },
       options.config,
     );
@@ -2770,6 +2855,7 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
         resumeOpts?.cwd,
         skillSlugs,
         resumeOpts?.itemId,
+        resumeOpts?.sandbox,
       );
       // A fork opens with `thread/fork` instead, and the turn runs on the
       // copy it answers with (EO-716). A client built without it (a test's
@@ -2895,7 +2981,9 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
       // opened per turn, so a process started without it would never be
       // the one the turn asks for. Conversations have none. Nor for a
       // fenced turn (EO-926), whose hook is opened per turn for the same reason.
-      if (turn.repositoryMcp || turn.fence) return;
+      // Nor a sandboxed one (EO-934): a process warmed without its profile
+      // must never be the one a sandboxed turn adopts.
+      if (turn.repositoryMcp || turn.fence || turn.sandbox) return;
       const thread =
         turn.kind === "start"
           ? { ...threadOptionsFrom(turn, options.config), ...(turn.instructions ? { baseInstructions: turn.instructions } : {}) }
@@ -3355,7 +3443,7 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
       //   back on the originals. EO never uses that. An agent whose
       //   instructions were edited gets a fresh thread
       //   (`findReusableThread`), which is the only way the edit sticks.
-      const thread = clientFor(opts.repositoryMcp, hook, opts.attachFrom, opts.memoryScopes, opts.environmentVariables, opts.writeBridge, opts.withheldEnvironmentVariables, opts.cwd, skillSlugs, opts.itemId).startThread({
+      const thread = clientFor(opts.repositoryMcp, hook, opts.attachFrom, opts.memoryScopes, opts.environmentVariables, opts.writeBridge, opts.withheldEnvironmentVariables, opts.cwd, skillSlugs, opts.itemId, opts.sandbox).startThread({
         ...threadOptionsFrom(opts, options.config),
         ...(opts.instructions ? { baseInstructions: opts.instructions } : {}),
       });

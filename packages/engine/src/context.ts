@@ -195,6 +195,13 @@ export interface SectionRenderInput {
    */
   packAction: boolean;
   /**
+   * Whether the dispatched agent runs sandboxed on this turn (EO-934):
+   * a fact of the dispatch — the agent's setting, as the person left it
+   * — handed in as an answer, for a pack whose instructions differ for
+   * an agent that cannot reach outside its checkout.
+   */
+  sandboxed: boolean;
+  /**
    * What the last step produced, if anything has (EO-298, ARCHITECTURE.md, "The output is a
    * comment").
    *
@@ -374,6 +381,11 @@ export interface AssembleContextInput {
    * which is every dispatch before a role could define an action.
    */
   packAction?: boolean;
+  /**
+   * Whether the dispatched agent runs sandboxed on this turn —
+   * `SectionRenderInput.sandboxed` (EO-934). Absent means no.
+   */
+  sandboxed?: boolean;
   /**
    * The sections the caller writes itself, anchored to the engine's own
    * (KAN-161).
@@ -1196,6 +1208,7 @@ export function assembleContext(input: AssembleContextInput): AssembledContext {
     item: input.item,
     planMode: input.planMode ?? false,
     packAction: input.packAction ?? true,
+    sandboxed: input.sandboxed ?? false,
     currentOutput: input.currentOutput ?? null,
   });
   const screenSection = renderScreenSection(input.action);
@@ -1375,6 +1388,11 @@ export interface AssembleFollowUpContextInput {
   planMode?: boolean;
   /** Whether the action's name carries its pack's meaning — `AssembleContextInput.packAction`, for the renderers (EO-422). */
   packAction?: boolean;
+  /**
+   * Whether the dispatched agent runs sandboxed on this turn —
+   * `SectionRenderInput.sandboxed` (EO-934). Absent means no.
+   */
+  sandboxed?: boolean;
   /** The item's current output — `AssembleContextInput.currentOutput`, and carried for its reasons (EO-298). */
   currentOutput?: AttributedComment | null;
   /** Cheap chars/4 estimate, not a real tokenizer — see estimateTokens(). */
@@ -1449,6 +1467,7 @@ export function assembleFollowUpContext(input: AssembleFollowUpContextInput): As
     item: input.item,
     planMode: input.planMode ?? false,
     packAction: input.packAction ?? true,
+    sandboxed: input.sandboxed ?? false,
     currentOutput: input.currentOutput ?? null,
   });
   const volatileSections = contributed.volatile();
@@ -1518,6 +1537,11 @@ export interface AssembleSeedContextInput {
   planMode?: boolean;
   /** Whether the action's name carries its pack's meaning — `AssembleContextInput.packAction`, and read as it is there (EO-422). */
   packAction?: boolean;
+  /**
+   * Whether the dispatched agent runs sandboxed on this turn —
+   * `SectionRenderInput.sandboxed` (EO-934). Absent means no.
+   */
+  sandboxed?: boolean;
   item: ContextItemInput;
   /** The item's current output — `AssembleContextInput.currentOutput`, and carried for its reasons (EO-298). */
   currentOutput?: AttributedComment | null;
@@ -1799,6 +1823,7 @@ export function assembleSeedContext(input: AssembleSeedContextInput): AssembledS
     item: input.item,
     planMode: input.planMode ?? false,
     packAction: input.packAction ?? true,
+    sandboxed: input.sandboxed ?? false,
     currentOutput: input.currentOutput ?? null,
   });
   const sections = [

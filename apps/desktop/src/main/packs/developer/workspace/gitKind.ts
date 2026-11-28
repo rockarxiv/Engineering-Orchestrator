@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { GIT_WORKTREE_KIND, PLAN_COMMENT_RESPONSE_ACTION, PlanCommentResponseOutputSchema, gitStateOf, type Agent, type BuiltinRole, type CallFence, type Item } from "@eo/core";
+import { agentSandboxed, GIT_WORKTREE_KIND, PLAN_COMMENT_RESPONSE_ACTION, PlanCommentResponseOutputSchema, gitStateOf, type Agent, type BuiltinRole, type CallFence, type Item } from "@eo/core";
 import type { Db } from "../../../db/client.js";
 import { asGitWorkspace, getGitWorkspace, getItem, stepForItem, type Workspace } from "../../../db/repos/index.js";
 import { emitPush } from "../../../ipc/push.js";
@@ -20,6 +20,7 @@ import { git, remoteUrl, statusPorcelain } from "./git.js";
 import { parseRemoteUrl } from "../forge/remote.js";
 import { referenceCheckoutFor, releaseReferenceCheckouts, releaseStaleReferenceCheckouts } from "./referenceCheckouts.js";
 import { commitNamingCheck } from "./commitNaming.js";
+import { sandboxWritablePaths } from "./sandboxWritable.js";
 import { recordBranchHead } from "./branchHead.js";
 import { createImplementationVerifier, createVerifiedRange } from "./implementationVerifier.js";
 import { notCheckedSteps, type VerificationResult, type VerifyOptions } from "./verify.js";
@@ -137,15 +138,19 @@ export function gitWorkspaceKind(options: GitWorkspaceKindOptions): WorkspaceKin
         // and the wall-clock guard both do.
         ...(options.mcpServerSupervisorPath ? { superviseWith: options.mcpServerSupervisorPath } : {}),
       });
+      // What a sandboxed agent may write here (EO-934), worked out only
+      // for one: an agent that is not sandboxed asks git nothing more.
+      const writable = await sandboxWritableOption(db, agent, workspace);
       return {
         mcpServers: delivery.server === null ? [] : [delivery.server],
         // Not this kind's to lend, and deliberately: the worktree skills
         // a Codex agent reads are written into the checkout by the
         // adapter at spawn, out of the agent's own attachments (EO-207).
         skills: [],
-        notices: delivery.notice === null ? [] : [delivery.notice],
+        notices: [...(delivery.notice === null ? [] : [delivery.notice]), ...(writable?.problem ? [writable.problem] : [])],
         sync: (signal) => syncRepositoryIndexAtHandover(intelligenceFor, { db, item, worktreePath: workspace.cwd, agentName: agent.name, signal }),
         ...fenceOption(db, item, agent, workspace),
+        ...(writable ? { sandboxWritable: writable.paths } : {}),
       };
     },
 
@@ -742,4 +747,17 @@ function fenceOption(db: Db, item: Item, agent: Agent, workspace: PreparedWorksp
   // dispatch holds may be from before its first one.
   const branch = pushes === "own_branch" ? gitStateOf(getItem(db, item.id) ?? item).branch : null;
   return { fence: { root: workspace.cwd, pushBranch: branch } };
+}
+
+/**
+ * What a sandboxed agent may write in this checkout (EO-934,
+ * `sandboxWritable.ts`): the worktree, its git directories as a commit
+ * needs them, and the repository's extra writable paths, read off the
+ * repository's row as it is now. Null for an agent that is not
+ * sandboxed, which lends nothing.
+ */
+async function sandboxWritableOption(db: Db, agent: Agent, workspace: PreparedWorkspace): Promise<{ paths: string[]; problem: string | null } | null> {
+  if (!agentSandboxed(agent)) return null;
+  const repository = workspace.workspaceId === null ? undefined : getGitWorkspace(db, workspace.workspaceId);
+  return sandboxWritablePaths(workspace.cwd, repository?.config.extraWritablePaths ?? []);
 }

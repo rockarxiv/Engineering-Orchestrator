@@ -132,6 +132,9 @@ function configProblem(kind: string, config: unknown): string | null {
       // to do with.
       const timeout = parsed.error.issues.find((issue) => issue.path[0] === "checkTimeoutMinutes");
       if (timeout) return timeout.message;
+      // And a relative extra writable path with its own sentence (EO-934).
+      const writable = parsed.error.issues.find((issue) => issue.path[0] === "extraWritablePaths");
+      if (writable) return writable.message;
       return "A repository workspace needs a name and a path to a checkout on this machine.";
     }
     // Blank is not a value either field may hold, which the old
@@ -290,6 +293,7 @@ function gitRepositoryPatch(patch: Record<string, unknown>): Omit<IpcPayload<"re
     "forgeDraft",
     "forgeTemplatePath",
     "forgeReviewers",
+    "extraWritablePaths",
   ] as const;
   const forwarded: Record<string, unknown> = {};
   for (const key of keys) {

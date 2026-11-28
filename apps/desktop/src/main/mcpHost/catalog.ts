@@ -2548,7 +2548,9 @@ const AGENT_SAVE_TOOL: ToolSpec = {
     "names the role rather than the agent — and an edit that changes it is refused rather than silently ignored. " +
     "`provider` is the backend that runs it: `fake` runs inside EO and fetches nothing, while `claude` and `codex` " +
     "need a runtime this machine actually has, so check runtime_status before moving an agent onto one. `model` " +
-    "null means the provider's own default. `projectId` scopes the agent to one project: it then runs only that " +
+    "null means the provider's own default. `config.sandboxed: true` runs the agent sandboxed: its shell commands may " +
+    "write only the item's checkout, the git directories its commits need and the repository's extra writable paths, it " +
+    "is given no forge credentials and it never pushes; anything other than true, or the key removed, is off. `projectId` scopes the agent to one project: it then runs only that " +
     "project's tickets, and there it is used instead of the global agents in its role; null makes it global again, " +
     "and a `system` agent is always global, so a project id on one is refused. New instructions take effect on the " +
     "next dispatch, not on a run already in flight.",
@@ -2984,7 +2986,9 @@ const PROJECT_SETUP_TOOLS: readonly ToolSpec[] = [
       "bounds refuses the update and names them. forgeReviewers is the repository's default pull request reviewers: the forge " +
       "handles EO asks to review each pull request it opens here, after creating it — a GitHub login or org/team, or a " +
       "GitLab username. It replaces the whole list, [] asks nobody, and an entry with a space or comma in it refuses " +
-      "the update and names that entry. A repoPath that is not a git repository is refused by name, and so is one " +
+      "the update and names that entry. extraWritablePaths is what a sandboxed agent working here may write besides " +
+      "its checkout and the git directories its commits need — a package manager's store, say: absolute paths only, " +
+      "a relative one refuses the update, and it replaces the whole list. A repoPath that is not a git repository is refused by name, and so is one " +
       "another repository is already attached to — one checkout is one repository — exactly as on the way in. A " +
       "repository has no key prefix of its own: the prefix its tickets carry is its project's, and projects_list " +
       "reports it.",

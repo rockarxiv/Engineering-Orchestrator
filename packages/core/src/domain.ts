@@ -73,6 +73,24 @@ export interface Agent {
 }
 
 /**
+ * The key in `agents.config` that runs an agent sandboxed (EO-934,
+ * ARCHITECTURE.md §12.7). A person's setting — the Agents editor, or
+ * `agent_save` on EO's administrative server, which no step-owning agent
+ * is served (invariant 11) — so an agent cannot turn it off for itself.
+ */
+export const AGENT_SANDBOXED_KEY = "sandboxed";
+
+/**
+ * Whether this agent's turns run sandboxed (EO-934). Off unless the key
+ * holds a literal `true`: `config` is an open bag, and a missing key, a
+ * null and the string `"true"` all mean the setting nobody turned on —
+ * which is every agent until a person does.
+ */
+export function agentSandboxed(agent: Pick<Agent, "config">): boolean {
+  return agent.config[AGENT_SANDBOXED_KEY] === true;
+}
+
+/**
  * Whether this agent may be dispatched at all (EO-186).
  *
  * Both halves, in one place, because the two ways of getting it wrong
