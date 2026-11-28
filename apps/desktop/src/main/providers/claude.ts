@@ -7,7 +7,7 @@ import { loadClaudeSdk, type ClaudeSdkModule } from "./claudeSdk.js";
 import { claudeProcesses, withStderr, type ClaudeProcesses } from "./claudeProcess.js";
 import { adoptWarmScope, warmScopeKey } from "../process/runScope.js";
 import { agentSpawnPath } from "../process/searchPath.js";
-import { claudeCompatibilityHolds, type ClaudeSettingSources, type ClaudeSettingsReader } from "./claudeCompatibility.js";
+import { claudeCompatibilityHolds, claudeSettingsLayers, effectiveClaudeEnvironment, type ClaudeSettingsLayer, type ClaudeSettingSources, type ClaudeSettingsReader } from "./claudeCompatibility.js";
 import {
   ThreadNotFoundError,
   type AgentInputAttachment,
@@ -1285,6 +1285,28 @@ export function claudeSandboxSettings(sandbox: AgentSandbox): NonNullable<Option
 }
 
 /**
+ * Refuses a sandboxed turn that a settings file the CLI loads would hand
+ * a name EO withholds (EO-934 review). The CLI lays every loaded file's
+ * `env` over the environment EO spawns it with, so a `GH_TOKEN` in the
+ * person's `~/.claude/settings.json`, the repository's
+ * `.claude/settings.json` or a managed file would reach the agent's
+ * commands however carefully EO's own environment left it out. Refused
+ * rather than overridden: nothing measured says a value EO hands the CLI
+ * can take a name away again, and a sandboxed agent is never run on the
+ * hope that it does. The turn fails with this sentence, before anything
+ * is launched.
+ */
+function refuseRestoredNames(sandbox: AgentSandbox, layers: readonly ClaudeSettingsLayer[]): void {
+  const withheld = new Set(sandbox.withheld);
+  const restoring = layers.flatMap((layer) => Object.keys(layer.env).filter((name) => withheld.has(name)).map((name) => `${name} in ${layer.path}`));
+  if (restoring.length === 0) return;
+  throw new Error(
+    `EO did not run this sandboxed turn: the Claude settings it would load set ${restoring.join(", ")}, which a sandboxed agent is never given — ` +
+      "the CLI hands a settings file's variables to every command. Remove them from that file, or turn this agent's sandbox off.",
+  );
+}
+
+/**
  * EO's fence around an implementer's or a reviewer's turn (EO-926,
  * `AgentTurnOverrides.fence`), as a `PreToolUse` hook in EO's process:
  * every call is offered to it — no matcher — and one `fencedCall` answers
@@ -1871,8 +1893,19 @@ function buildOptions(opts: ClaudeTurn, adapter: ClaudeAdapter): Options {
   // What it hides is asked again of this environment, before the names
   // go (EO-934 review): a run's variable or an attached server's value
   // can put the `gh` config, git's credentials or the sockets elsewhere.
+  // And of the environment the CLI will really give its commands, which
+  // is this one with every settings file it loads laid over it: those
+  // only add to what is hidden, never take from it, since the project's
+  // are the agent's to write.
   if (opts.sandbox) {
-    options.sandbox = claudeSandboxSettings(hiddenIn(opts.sandbox, options.env));
+    const layers = claudeSettingsLayers({
+      cwd: options.cwd ?? process.cwd(),
+      env: options.env,
+      sources: config?.inheritAmbientConfig === true ? "all" : "project",
+      ...(adapter.settingsReader ? { reader: adapter.settingsReader } : {}),
+    });
+    refuseRestoredNames(opts.sandbox, layers);
+    options.sandbox = claudeSandboxSettings(hiddenIn(hiddenIn(opts.sandbox, options.env), effectiveClaudeEnvironment(options.env, layers)));
     options.env = withoutNames(options.env, new Set(opts.sandbox.withheld));
   }
   // EO-599 and EO-644: the defaults claude@0.3.312 and claude@0.3.318

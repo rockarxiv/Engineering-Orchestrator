@@ -668,6 +668,56 @@ describe("createClaudeProvider", () => {
       expect(denied).toEqual(expect.arrayContaining([...SANDBOX_HIDDEN, "/alternate-gh/hosts.yml", "/alternate-config/git/credentials", "/alternate-runtime/bus"]));
     });
 
+    describe("the settings files the CLI lays over its environment (EO-934 review)", () => {
+      /** A provider reading only `files` as settings, and the query it was launched with, or the error it was refused with. */
+      const launched = async (files: Record<string, unknown>, config?: Record<string, unknown>) => {
+        const { runQuery, calls } = fakeQuery([init()]);
+        // By path with either separator, as the settings tests above read them.
+        const settingsReader = { readText: (path: string) => (path.replaceAll("\\", "/") in files ? JSON.stringify(files[path.replaceAll("\\", "/")]) : null), listDir: () => [] };
+        const provider = createClaudeProvider({ runQuery, enableCommentTool: false, settingsReader, ...(config ? { config: config as never } : {}) });
+        const refused = await collect(provider.start({ ...startOpts, sandbox: SANDBOX })).then(
+          () => null,
+          (error: unknown) => (error instanceof Error ? error.message : String(error)),
+        );
+        return { refused, calls, denied: (calls[0]?.options.sandbox as { filesystem?: { denyRead?: string[] } } | undefined)?.filesystem?.denyRead ?? [] };
+      };
+      const PROJECT = "/tmp/wt/.claude/settings.json";
+      const USER = "/home/me/.claude/settings.json";
+
+      it("refuses a sandboxed turn whose project settings would hand it a withheld name, before anything is launched", async () => {
+        const { refused, calls } = await launched({ [PROJECT]: { env: { GH_TOKEN: "SYNTHETIC_PROJECT_TOKEN" } } });
+
+        expect(refused).toContain("EO did not run this sandboxed turn");
+        expect(refused).toContain(`GH_TOKEN in ${PROJECT}`);
+        expect(refused).not.toContain("SYNTHETIC_PROJECT_TOKEN");
+        expect(calls).toHaveLength(0);
+      });
+
+      it("refuses one whose own Claude setup would, for an agent that uses it", async () => {
+        const { refused, calls } = await launched({ [USER]: { env: { SSH_AUTH_SOCK: "/run/user/1000/other-agent" } } }, { inheritAmbientConfig: true });
+
+        expect(refused).toContain(`SSH_AUTH_SOCK in ${USER}`);
+        expect(calls).toHaveLength(0);
+      });
+
+      it("does not read the person's own settings for a locked-down agent, which the CLI does not load either", async () => {
+        const { refused, calls } = await launched({ [USER]: { env: { GH_TOKEN: "SYNTHETIC_USER_TOKEN" } } });
+
+        expect(refused).toBeNull();
+        expect(calls).toHaveLength(1);
+      });
+
+      it.each([
+        ["project settings", { [PROJECT]: { env: { GH_CONFIG_DIR: "/alternate-gh", XDG_RUNTIME_DIR: "/alternate-runtime" } } }, undefined],
+        ["the person's own settings", { [USER]: { env: { GH_CONFIG_DIR: "/alternate-gh", XDG_RUNTIME_DIR: "/alternate-runtime" } } }, { inheritAmbientConfig: true }],
+      ])("hides the credentials where %s put them, as well as everywhere else it already did", async (_where, files, config) => {
+        const { refused, denied } = await launched(files, config);
+
+        expect(refused).toBeNull();
+        expect(denied).toEqual(expect.arrayContaining([...SANDBOX_HIDDEN, "/alternate-gh/hosts.yml", "/alternate-runtime/bus"]));
+      });
+    });
+
     it("lets no withheld token reach the launch by any name, an attached server's declared one included (EO-934 review)", async () => {
       const SYNTHETIC = "SYNTHETIC_TOKEN_EO934";
       vi.stubEnv("GITHUB_TOKEN", SYNTHETIC);

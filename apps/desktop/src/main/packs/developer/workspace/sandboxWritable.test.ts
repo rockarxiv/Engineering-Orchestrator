@@ -171,6 +171,43 @@ describe("extra writable paths, judged where their links lead (EO-934 review)", 
     expect(problem).toContain("inside a path the agent can already write");
   });
 
+  it.each([
+    ["the child listed before its parent", (store: string) => [join(store, "inner"), store]],
+    ["the parent listed before its child", (store: string) => [store, join(store, "inner")]],
+  ])("drops a path inside another extra path whichever comes first: %s (EO-934 review)", async (_order, listed) => {
+    const { root, repo, common, worktree } = await linked();
+    const store = join(root, "cache");
+    mkdirSync(join(store, "inner"), { recursive: true });
+
+    const before = await sandboxWritablePaths(worktree, repo, listed(store));
+
+    expect(before.paths).toContain(store);
+    expect(before.paths).not.toContain(join(store, "inner"));
+    expect(before.problem).toContain(`\`${join(store, "inner")}\``);
+
+    // What a command could do through the writable parent: swap the child
+    // for a link to the common directory. It was never a root of its own,
+    // and the next turn's answer drops it as a link into the common directory.
+    rmSync(join(store, "inner"), { recursive: true });
+    symlinkSync(common, join(store, "inner"));
+    const after = await sandboxWritablePaths(worktree, repo, listed(store));
+
+    expect(after.paths).toContain(store);
+    for (const path of closed(common)) expect(after.paths).not.toContain(path);
+    expect(after.paths.filter((path) => path.startsWith(common))).toEqual([join(common, "worktrees", "EO-1"), join(common, "objects"), join(common, "refs"), join(common, "logs")]);
+  });
+
+  it("lends a path listed twice once", async () => {
+    const { root, repo, worktree } = await linked();
+    const store = join(root, "store");
+    mkdirSync(store);
+
+    const { paths, problem } = await sandboxWritablePaths(worktree, repo, [store, store]);
+
+    expect(paths.filter((path) => path === store)).toHaveLength(1);
+    expect(problem).toBeNull();
+  });
+
   it("lends a link to an ordinary directory as the directory it leads to", async () => {
     const { root, repo, worktree } = await linked();
     const real = join(root, "real-cache");

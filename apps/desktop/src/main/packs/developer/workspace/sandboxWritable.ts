@@ -56,13 +56,24 @@ export async function sandboxWritablePaths(worktree: string, repoPath: string | 
     if (path !== null && !reopensGit(path, common)) writable.push(path);
   }
 
+  // Every extra path resolved first, then judged against the whole set,
+  // so that the order a person listed them in decides nothing (EO-934
+  // review): one inside another — `/cache/inner` beside `/cache` — is
+  // dropped whichever comes first, since a command could replace it
+  // through its writable parent with a link to the common directory
+  // before the next command binds it.
+  const extras = await Promise.all(extraWritablePaths.map(async (extra) => ({ extra, real: isAbsolute(extra) ? await landing(extra) : null })));
+  const candidates = extras.flatMap(({ real }) => (real === null || isWithin(real, common) || isWithin(common, real) ? [] : [real]));
   const dropped: string[] = [];
-  for (const extra of extraWritablePaths) {
-    const real = isAbsolute(extra) ? await landing(extra) : null;
-    if (real === null || isWithin(real, common) || isWithin(common, real) || writable.some((root) => isWithin(real, root))) {
-      dropped.push(extra);
+  const lent = new Set<string>();
+  for (const { extra, real } of extras) {
+    const insideAnother = real !== null && (writable.some((root) => isWithin(real, root)) || candidates.some((other) => other !== real && isWithin(real, other)));
+    if (real === null || !candidates.includes(real) || insideAnother || lent.has(real)) {
+      // The same real path listed twice is lent once, and not said twice.
+      if (real === null || !lent.has(real)) dropped.push(extra);
       continue;
     }
+    lent.add(real);
     writable.push(real);
   }
   return {
