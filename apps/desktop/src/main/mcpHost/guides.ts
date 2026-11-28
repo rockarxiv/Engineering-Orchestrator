@@ -228,11 +228,17 @@ related code is not a dependency.
 
 ## Leave \`wait\` out unless the person asked for something else
 
-A bare index or key waits for that work to **finish**, which is what a
-dependency almost always means. Leave \`wait\` out unless the person
-asked for something else. When they did — "start once KAN-14 reaches
-Review", "link it but don't wait" — use the object form instead of the
-bare entry:
+A bare index or key, without \`wait\`, holds the dependent until that
+work **finishes** — reaches its pipeline's terminal step — which is what
+a dependency almost always means. On a pipeline that merges pull
+requests, finishing comes *after the merge*: a chain of dependent
+stories runs one merge at a time, each waiting for the one before it to
+be merged. Leave \`wait\` out unless the person asked for something
+else. When they did — "start once KAN-14 reaches Review", "link it but
+don't wait" — use the object form instead of the bare entry.
+\`wait: "reached"\` with a \`step\` is how a dependent starts earlier:
+\`{ item: "KAN-14", wait: "reached", step: "Review" }\` starts it once
+KAN-14 reaches Review, before anything is merged.
 
 \`\`\`
 addDependsOn: [

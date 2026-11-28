@@ -3670,9 +3670,11 @@ const UNGATED_WRITE_TOOLS: readonly ToolSpec[] = [
       "work is, in your words, which is pinned on the feature and is what every agent downstream reads instead of " +
       "your conversation — the `decisions` you settled, and `stories`, each with acceptance criteria someone who did " +
       "not write it could check. Read the pipelines from pipelines_list before naming a `pipeline`: its name is preferred " +
-      "and its id is accepted, and one this project does not have is refused, not guessed at. `depends_on` holds indices into your own stories array — each waits for that story to finish; leave `wait` out " +
+      "and its id is accepted, and one this project does not have is refused, not guessed at. `depends_on` holds indices into your own stories array — " +
+      "an index without `wait` holds the dependent until the story it names reaches its pipeline's terminal step, which on a pipeline that merges " +
+      "pull requests comes after the merge, so a chain of dependent stories runs one merge at a time. Leave `wait` out " +
       "unless the person asked for something else, and then write { story, wait, step? } instead: { story: 0, wait: \"reached\", step: \"Review\" } " +
-      "waits until story 0 first reaches its pipeline's Review step, { story: 0, wait: \"none\" } keeps the link without waiting — and " +
+      "starts the dependent earlier, once story 0 first reaches its pipeline's Review step, and { story: 0, wait: \"none\" } keeps the link without waiting — and " +
       "`touches` holds repository-relative paths, which EO uses to serialise work that would collide. `priority` is an " +
       "integer, 0 or more, that the scheduler picks highest first — 0 Normal, 1 High, 2 Urgent — and left out it is 0: " +
       "the plan's own `priority` is the feature's, and each story takes only the one it carries, so a story sent without " +
@@ -3763,6 +3765,11 @@ const UNGATED_WRITE_TOOLS: readonly ToolSpec[] = [
       "ticket is, beside its description, written with the ticket so the first agent dispatched on it already has " +
       "them. " +
       ITEM_PATHS_RULE +
+      "`dependsOn` holds keys of tickets that already exist. A bare key, without `wait`, holds this ticket until that one " +
+      "reaches its pipeline's terminal step, which on a pipeline that merges pull requests comes after the merge. Leave " +
+      "`wait` out unless the person asked for something else; { item: \"EO-14\", wait: \"reached\", step: \"Review\" } starts " +
+      "this ticket earlier, once EO-14 first reaches its pipeline's Review step, and { item: \"EO-15\", wait: \"none\" } keeps " +
+      "the link without waiting. " +
       "Read the eo_submit_work guide, via eo_guide, before a first ticket.",
     kind: "write",
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
@@ -3872,9 +3879,10 @@ const UNGATED_WRITE_TOOLS: readonly ToolSpec[] = [
       "inherits again. Entries are trimmed, blanks and repeats dropped, and an entry with a space or comma in it refuses " +
       "the call, naming that entry, with nothing else in the call changed. " +
       "Dependencies can be changed after filing: addDependsOn lists tickets this one is to wait for from now on, and " +
-      "removeDependsOn tickets it is to stop waiting for, each by key — EO-42 — or id. A bare key waits for that ticket to " +
-      "finish; leave wait out unless the person asked for something else, and then name it as { item, wait, step? }: " +
-      "{ item: \"EO-14\", wait: \"reached\", step: \"Watch merge request\" } waits until EO-14 first reaches that step of its own " +
+      "removeDependsOn tickets it is to stop waiting for, each by key — EO-42 — or id. A bare key, without wait, holds this " +
+      "ticket until that one reaches its pipeline's terminal step, which on a pipeline that merges pull requests comes after " +
+      "the merge. Leave wait out unless the person asked for something else, and then name it as { item, wait, step? }: " +
+      "{ item: \"EO-14\", wait: \"reached\", step: \"Review\" } starts this ticket earlier, once EO-14 first reaches that step of its own " +
       "pipeline (or finishes), and { item: \"EO-15\", wait: \"none\" } keeps the link without ever waiting. step goes with " +
       "reached only, is a step name on that ticket's current pipeline and not the step where it finishes — a step it does " +
       "not have is refused with the names it does. updateDependsOn, in the same object form, changes the rule of a " +

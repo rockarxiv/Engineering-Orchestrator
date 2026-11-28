@@ -130,6 +130,14 @@ describe("the guides", () => {
     expect(guide).toContain("`updateDependsOn`");
   });
 
+  it("says a plain dependency waits for the dependency's terminal step, after the merge, and how to start earlier (EO-931)", () => {
+    const guide = guideNamed("eo_submit_work")!.body.replace(/\s+/g, " ");
+
+    expect(guide).toContain("holds the dependent until that work **finishes** — reaches its pipeline's terminal step");
+    expect(guide).toContain("On a pipeline that merges pull requests, finishing comes *after the merge*");
+    expect(guide).toContain('`wait: "reached"` with a `step` is how a dependent starts earlier');
+  });
+
   it("says an unknown pipeline name is refused rather than guessed at", () => {
     // Work placed on a pipeline nobody asked for, reported as a success,
     // is the failure this refusal exists to prevent.
