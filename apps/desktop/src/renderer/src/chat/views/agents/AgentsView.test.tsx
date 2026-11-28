@@ -484,6 +484,21 @@ describe("EO's own switches", () => {
     expect(within(pane).getByText(/EO's memory calls are unavailable on Codex while it keeps its sign-in in your operating system's keyring/)).toBeInTheDocument();
   });
 
+  it("says beside the backend choice that hooks committed to the repository apply to Claude agents only, on Codex alone (EO-929)", async () => {
+    renderAgents({ agents: [agent({ provider: "codex" })] });
+    const pane = await editor();
+    const notice = await within(pane).findByText(/Hooks committed to the repository apply to Claude agents only/);
+    expect(notice).toHaveTextContent(/only in a folder it trusts and only once each one has been reviewed/);
+    // Ticked over to the person's own setup or not: EO trusts nothing for it either way.
+    fireEvent.click(within(pane).getByRole("checkbox", { name: CODEX_AMBIENT }));
+    expect(within(pane).getByText(/Hooks committed to the repository apply to Claude agents only/)).toBeInTheDocument();
+
+    cleanup();
+    renderAgents({ agents: [agent()] });
+    await within(await editor()).findByRole("checkbox", { name: AMBIENT });
+    expect(screen.queryByText(/Hooks committed to the repository/)).not.toBeInTheDocument();
+  });
+
   it("says nothing about memory on a Codex agent whose sign-in is a file", async () => {
     renderAgents({ agents: [agent({ provider: "codex" })], runtime: (provider) => (provider === "codex" ? CODEX : null) });
     const pane = await editor();
