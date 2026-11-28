@@ -250,5 +250,32 @@ export const developerSectionRenderers: SectionRenderer[] = [
             "",
             `A file you make only to put on this ticket — a screenshot, a captured log, a test report — goes in \`${TICKET_FILES_DIRECTORY}/\` at the top of your checkout, and is attached with \`${ATTACHMENT_ADD}\`. Git does not see that directory: nothing in it is staged by \`git add -A\`, committed, or counted as uncommitted work. A file that belongs to the change itself goes where it belongs in the repository, as always.`,
           ].join("\n"),
+  },  /**
+   * That this turn runs sandboxed (EO-934, ARCHITECTURE.md §12.7), on a
+   * dispatch whose agent's setting says so — the fact the implementer
+   * prompt's "if your prompt says you run sandboxed" turns on, and how
+   * any sandboxed agent learns why a write or a push fails.
+   *
+   * Volatile, because the setting is a person's and can change between
+   * two turns of one thread: a resumed turn is told again, and a turn
+   * that is no longer sandboxed is told nothing, which the prompt reads
+   * as unsandboxed.
+   */
+  {
+    id: "sandbox",
+    after: "item",
+    volatile: true,
+    render: ({ sandboxed, item }) =>
+      !sandboxed
+        ? null
+        : [
+            "## Sandbox",
+            "",
+            "You run sandboxed on this turn. Your shell commands may write only " +
+              (item.workspaceKind === GIT_WORKTREE_KIND
+                ? "your checkout, the git directories a commit needs, and the paths the repository lists as extra writable paths"
+                : "the directory you work in") +
+              "; a write anywhere else fails with a read-only file system. You hold no forge credentials and you never push: EO pushes your work itself. A command the sandbox blocks fails rather than asking anyone — work around it, or say in your result what it stopped.",
+          ].join("\n"),
   },
 ];

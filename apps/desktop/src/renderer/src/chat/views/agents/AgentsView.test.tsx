@@ -26,14 +26,15 @@ const CLAUDE_MODELS: ProviderModel[] = [
 ];
 
 function capabilities(provider: string): ProviderCapabilities {
-  const empty = { models: [], modelsAreLive: false, reasoningEfforts: [] };
-  if (provider === "claude") return { ...empty, provider, modelsAreLive: true };
+  const empty = { models: [], modelsAreLive: false, reasoningEfforts: [], sandboxes: false };
+  if (provider === "claude") return { ...empty, provider, modelsAreLive: true, sandboxes: true };
   if (provider === "codex") {
     return {
       ...empty,
       provider,
       models: [{ value: "gpt-5.1-codex", label: "GPT-5.1 Codex", supportsEffort: true, effortLevels: ["low", "high", "xhigh"] }],
       reasoningEfforts: ["low", "high", "xhigh"],
+      sandboxes: true,
     };
   }
   return { ...empty, provider };

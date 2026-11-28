@@ -2075,6 +2075,14 @@ export const ProviderCapabilitiesSchema = z.object({
   /** True when EO can ask the installed provider runtime instead of maintaining a list. */
   modelsAreLive: z.boolean(),
   reasoningEfforts: z.array(z.string()),
+  /**
+   * Whether this backend can run an agent sandboxed at all (EO-934,
+   * ARCHITECTURE.md §12.7) — Claude and Codex, not `fake` or `scripted`,
+   * which run no commands — so the editor offers the setting only where
+   * it would do something. Whether this machine can start that sandbox is
+   * a separate question. Defaulted, so an answer from before reads no.
+   */
+  sandboxes: z.boolean().default(false),
 });
 
 export type ProviderCapabilities = z.infer<typeof ProviderCapabilitiesSchema>;

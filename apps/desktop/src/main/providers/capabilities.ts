@@ -75,6 +75,8 @@ export function capabilitiesFor(provider: string): ProviderCapabilities {
         models: [],
         modelsAreLive: true,
         reasoningEfforts: [...CLAUDE_REASONING_EFFORTS],
+        // The SDK's `sandbox` option (EO-934).
+        sandboxes: true,
       };
 
     case "codex":
@@ -84,6 +86,8 @@ export function capabilitiesFor(provider: string): ProviderCapabilities {
         models: [],
         modelsAreLive: true,
         reasoningEfforts: [...CODEX_REASONING_EFFORTS],
+        // A permission profile (EO-934).
+        sandboxes: true,
       };
 
     default:
@@ -95,6 +99,8 @@ export function capabilitiesFor(provider: string): ProviderCapabilities {
         models: [],
         modelsAreLive: false,
         reasoningEfforts: [],
+        // Nothing to sandbox: these run no commands.
+        sandboxes: false,
       };
   }
 }
