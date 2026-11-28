@@ -416,6 +416,20 @@ describe("changing one", () => {
       expect(asGitWorkspace(getWorkspace(handle.db, git.id))?.config).toMatchObject({ baseBranch: "main", checkTimeoutMinutes: 30 });
     });
 
+    it("saves the extra writable paths the form sends, and refuses a relative one saying why (EO-934)", async () => {
+      const git = attachWorkspace(handle.db, { keyPrefix: "EO", name: "the repo", repoPath: repository("the repo") });
+      expect(asGitWorkspace(getWorkspace(handle.db, git.id))?.config.extraWritablePaths).toEqual([]);
+
+      const saved = await updateWorkspaceCommand(handle.db, credentials, { id: git.id, config: { ...git.config, extraWritablePaths: ["/home/me/.npm"] } });
+      expect(saved.ok, saved.problem ?? "").toBe(true);
+      expect(listRepositoriesCommand(handle.db, credentials).repositories.find((listed) => listed.id === git.id)?.extraWritablePaths).toEqual(["/home/me/.npm"]);
+
+      const refused = await updateWorkspaceCommand(handle.db, credentials, { id: git.id, config: { baseBranch: "trunk", extraWritablePaths: ["node_modules/.cache"] } });
+      expect(refused.ok).toBe(false);
+      expect(refused.problem).toContain("must be absolute");
+      expect(asGitWorkspace(getWorkspace(handle.db, git.id))?.config).toMatchObject({ baseBranch: "main", extraWritablePaths: ["/home/me/.npm"] });
+    });
+
     it("leaves the forge settings alone when only the path is sent", async () => {
       // The patch stays a patch: `updateRepositoryCommand` reads an
       // absent key as "leave it", so forwarding only what was sent is

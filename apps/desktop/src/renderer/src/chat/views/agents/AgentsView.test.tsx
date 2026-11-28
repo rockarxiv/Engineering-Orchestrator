@@ -333,6 +333,7 @@ describe("configuring an agent", () => {
 const REUSE = /Reuse the thread for a whole ticket/;
 const AMBIENT = /Let this agent use your own Claude setup/;
 const CODEX_AMBIENT = /Let this agent use your own Codex setup/;
+const SANDBOXED = /Run this agent sandboxed/;
 
 /**
  * The system agent's consolidation override (EO-578): a model and a
@@ -463,6 +464,32 @@ describe("EO's own switches", () => {
     fireEvent.click(box);
     fireEvent.click(within(pane).getByRole("button", { name: "Save changes" }));
     await waitFor(() => expect(savedConfig(calls)).toEqual({ reasoningEffort: "high", inheritAmbientConfig: true }));
+  });
+
+  it.each(["claude", "codex"] as const)("offers to run a %s agent sandboxed, off until ticked, and clears the key on untick (EO-934)", async (provider) => {
+    const calls = renderAgents({ agents: [agent({ provider, config: { effort: "high" } })] });
+    const pane = await editor();
+
+    const box = within(pane).getByRole("checkbox", { name: SANDBOXED });
+    expect(box).toHaveAccessibleName(/given no forge credentials, and it never pushes/);
+    expect(box).not.toBeChecked();
+    fireEvent.click(box);
+    fireEvent.click(within(pane).getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(savedConfig(calls)).toEqual({ effort: "high", sandboxed: true }));
+
+    cleanup();
+    const again = renderAgents({ agents: [agent({ provider, config: { effort: "high", sandboxed: true } })] });
+    const reopened = await editor();
+    const ticked = within(reopened).getByRole("checkbox", { name: SANDBOXED });
+    expect(ticked).toBeChecked();
+    fireEvent.click(ticked);
+    fireEvent.click(within(reopened).getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(savedConfig(again)).toEqual({ effort: "high" }));
+  });
+
+  it("offers no sandbox on a backend that runs no commands (EO-934)", async () => {
+    renderAgents({ agents: [agent({ provider: "fake" })] });
+    expect(within(await editor()).queryByRole("checkbox", { name: SANDBOXED })).not.toBeInTheDocument();
   });
 
   it("says a Codex agent runs with the person's own setup when their sign-in is in the keyring (EO-378)", async () => {
