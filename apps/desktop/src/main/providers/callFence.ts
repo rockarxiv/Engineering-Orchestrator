@@ -338,7 +338,7 @@ const BRANCH_CHANGING = /^(-u|--set-upstream-to(=.*)?|--set-upstream|--unset-ups
 /** `git remote` subcommands that only read. */
 const REMOTE_READING = new Set(["show", "get-url"]);
 /** A path that is git's configuration: a `.git` directory's contents, `~/.gitconfig`, `$XDG_CONFIG_HOME/git/config`. */
-const GIT_CONFIG_PATH = /(^|[\/])\.git([\/]|$)|\.gitconfig|(^|[\/])git[\/]config$/;
+const GIT_CONFIG_PATH = /(^|[/\\])\.git([/\\]|$)|\.gitconfig|(^|[/\\])git[/\\]config$/;
 /** Programs that read the files they are given and write none. */
 const READING_PROGRAMS = new Set(["cat", "less", "more", "head", "tail", "grep", "egrep", "fgrep", "rg", "ls", "stat", "wc", "file", "diff", "cmp", "test", "[", "echo", "printf", "cd", "pushd", "realpath", "readlink"]);
 
