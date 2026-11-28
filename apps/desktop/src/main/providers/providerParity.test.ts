@@ -72,6 +72,7 @@ import { TOOLS } from "../mcpHost/catalog.js";
 import { toolsFor } from "../mcpHost/gate.js";
 import { createAdminMcpHost } from "../mcpHost/admin.js";
 import { fakePlatform } from "../testing/platform.js";
+import { SANDBOX_HIDDEN, stubSandboxEnvironment } from "../testing/sandboxEnvironment.js";
 import { adminToolOf } from "../roles/pipelineRead.js";
 import { answerActions, ASSIST_ANSWER_WITH_MAPS, ASSIST_ANSWER_WITH_TRIAL, ASSIST_ANSWERS_WITH_CARDS, claudeViolations, openAiStrictViolations } from "../testing/answerSchemas.js";
 import { allGone, descendantPids, DESCENDANTS_SNIPPET, owed, sweepUp } from "../testing/escapingDescendants.js";
@@ -395,9 +396,17 @@ const cliToolsSectionOf = (prompt: string): string | null => {
  */
 const SANDBOX: AgentSandbox = {
   writable: ["/tmp/wt", "/repo/.git/worktrees/wt", "/repo/.git/objects", "/repo/.git/refs", "/repo/.git/logs", "/home/me/.npm"],
-  hidden: ["/home/me/.config/gh/hosts.yml", "/home/me/.ssh", "/run/user/1000/bus"],
+  // EO's own list for the machine `stubSandboxEnvironment` sets up, which
+  // both adapters work out again from the environment they launch with.
+  hidden: SANDBOX_HIDDEN,
   withheld: ["GH_TOKEN", "GITHUB_TOKEN", "SSH_AUTH_SOCK", "DBUS_SESSION_BUS_ADDRESS"],
 };
+
+/** The shell a sandbox proof runs in: that machine, with every withheld name set but the agent's socket, which it already names. */
+function stubSandboxShell(): void {
+  stubSandboxEnvironment();
+  for (const name of SANDBOX.withheld) if (name !== "SSH_AUTH_SOCK") vi.stubEnv(name, `from-the-shell-${name}`);
+}
 
 /** What a backend was launched with, in the parity list's words, for `SANDBOX`. */
 interface SandboxObserved {
@@ -475,7 +484,7 @@ const CAPABILITIES = [
   },
   {
     name: "the sandbox",
-    what: "a turn given a sandbox runs its commands in the backend's sandbox, where they may write only what EO worked out — the worktree, its git directories as a commit needs them and the repository's extra writable paths — and read nothing EO hides, with the network on; it is never also given an unsandboxed mode that would win over it, never waits for approval, and starts without the forge tokens and sign-in channels EO withholds; a resumed turn runs in the same sandbox; and a turn given none is launched as it always was (EO-934)",
+    what: "a turn given a sandbox runs its commands in the backend's sandbox, where they may write only what EO worked out — the worktree, its git directories as a commit needs them and the repository's extra writable paths — and read nothing EO hides, wherever the environment it launches with puts it, with the network on; it is never also given an unsandboxed mode that would win over it, never waits for approval, and starts without the forge tokens and sign-in channels EO withholds, under any name; a resumed turn runs in the same sandbox; and a turn given none is launched as it always was (EO-934)",
     same: {
       started: { sandboxed: true, writes: [...SANDBOX.writable].sort(), hidden: [...SANDBOX.hidden].sort(), network: true, alsoUnsandboxed: false, waitsForApproval: false, withheldReached: [] },
       resumed: { sandboxed: true, writes: [...SANDBOX.writable].sort(), hidden: [...SANDBOX.hidden].sort(), network: true, alsoUnsandboxed: false, waitsForApproval: false, withheldReached: [] },
@@ -3021,7 +3030,7 @@ const CLAUDE: Record<CapabilityName, Proof> = {
     // Claude's delivery: the SDK's `sandbox` option beside
     // `bypassPermissions`, and the names EO withholds left out of `env`.
     const turn = async (sandbox: AgentSandbox | undefined, resuming: boolean): Promise<SandboxObserved> => {
-      for (const name of SANDBOX.withheld) vi.stubEnv(name, `from-the-shell-${name}`);
+      stubSandboxShell();
       try {
         const { runQuery, calls } = scripted([sdk.init(), sdk.result()]);
         const provider = createClaudeProvider({ runQuery, enableCommentTool: false });
@@ -4601,7 +4610,7 @@ const CODEX: Record<CapabilityName, Proof> = {
     // configuration, and no `sandbox` on `thread/start` or
     // `thread/resume`, where one would silently win over it.
     const turn = async (sandbox: AgentSandbox | undefined, resuming: boolean): Promise<SandboxObserved> => {
-      for (const name of SANDBOX.withheld) vi.stubEnv(name, `from-the-shell-${name}`);
+      stubSandboxShell();
       try {
         const { fake, provider } = codexOver({ after: { "turn/start": [note.turnStarted(), note.agentMessage("done", "m", "turn-1", "thr-1"), note.turnCompleted("completed", null, "turn-1", "thr-1")] } });
         await collect(resuming ? provider.resume("thr-1", "carry on", { cwd: "/tmp/wt", ...(sandbox ? { sandbox } : {}) }) : provider.start({ ...startOpts, ...(sandbox ? { sandbox } : {}) }));

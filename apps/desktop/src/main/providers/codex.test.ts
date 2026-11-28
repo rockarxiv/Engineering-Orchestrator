@@ -32,6 +32,7 @@ import { agentCodexHomePath, chooseCodexHome, prepareCodexHome, type CodexHomePr
 import { windowsWithDeveloperMode } from "../testing/unprivilegedWindowsFs.js";
 import { CodexClient, serializeConfigOverrides, type CodexClientOptions, type CodexThread, type CodexThreadOptions, type CodexTurnOptions } from "./codexClient.js";
 import { fakeAppServer, note, type FakeAppServerScenario } from "../testing/fakeCodexAppServer.js";
+import { SANDBOX_HIDDEN, stubSandboxEnvironment } from "../testing/sandboxEnvironment.js";
 import { filesUnder } from "../testing/tree.js";
 import { CODEX_AUTH_ERRORS } from "../testing/authErrorFixtures.js";
 import { agentSpawnPath, resetSearchPathForTests, resolveSearchPath, searchPath } from "../process/searchPath.js";
@@ -2317,12 +2318,17 @@ describe("createCodexProvider over a stubbed app-server", () => {
   describe("the sandbox (EO-934)", () => {
     const SANDBOX = {
       writable: ["/repo/.git/worktrees/wt", "/repo/.git/objects", "/repo/.git/refs", "/repo/.git/logs", "/home/me/.local/share/pnpm/store"],
-      hidden: ["/home/me/.config/gh/hosts.yml", "/home/me/.ssh", "/run/user/1000/bus"],
+      hidden: SANDBOX_HIDDEN,
       withheld: ["GH_TOKEN", "GITHUB_TOKEN", "SSH_AUTH_SOCK", "DBUS_SESSION_BUS_ADDRESS"],
     };
-    const PROFILE_FILESYSTEM =
-      'permissions.eo.filesystem={"/repo/.git/worktrees/wt" = "write", "/repo/.git/objects" = "write", "/repo/.git/refs" = "write", "/repo/.git/logs" = "write", ' +
-      '"/home/me/.local/share/pnpm/store" = "write", ":slash_tmp" = "read", ":tmpdir" = "read", "/home/me/.config/gh/hosts.yml" = "none", "/home/me/.ssh" = "none", "/run/user/1000/bus" = "none"}';
+    /** The profile's filesystem table as it reaches the command line, for `hidden` (EO's own list for this machine unless given). */
+    const profileFilesystem = (hidden: readonly string[] = SANDBOX_HIDDEN) =>
+      `permissions.eo.filesystem={${[...SANDBOX.writable.map((path) => `"${path}" = "write"`), '":slash_tmp" = "read"', '":tmpdir" = "read"', ...hidden.map((path) => `"${path}" = "none"`)].join(", ")}}`;
+    const PROFILE_FILESYSTEM = profileFilesystem();
+
+    beforeEach(() => {
+      stubSandboxEnvironment();
+    });
 
     afterEach(() => {
       vi.unstubAllEnvs();
@@ -2342,7 +2348,6 @@ describe("createCodexProvider over a stubbed app-server", () => {
 
     it("opens a sandboxed thread under EO's permission profile, with no sandbox on thread/start and never asking for approval", async () => {
       vi.stubEnv("GH_TOKEN", "gho_from_the_shell");
-      vi.stubEnv("SSH_AUTH_SOCK", "/run/user/1000/ssh-agent");
       const { fake, provider } = sandboxedProviderOver({ after: { "turn/start": [note.turnStarted(), note.agentMessage("ok"), note.turnCompleted()] } });
       const cwd = worktree();
 
@@ -2371,6 +2376,41 @@ describe("createCodexProvider over a stubbed app-server", () => {
       expect(fake.paramsOf("thread/resume")).not.toHaveProperty("sandbox");
       expect(fake.paramsOf("thread/resume")).toMatchObject({ threadId: "thr-persisted", cwd, approvalPolicy: "never" });
       expect(fake.launches[0]?.args).toEqual(expect.arrayContaining(['default_permissions="eo"', PROFILE_FILESYSTEM]));
+    });
+
+    it("hides the credentials wherever the turn's own variables put them, as well as where EO's environment does (EO-934 review)", async () => {
+      const { fake, provider } = sandboxedProviderOver({ after: { "turn/start": [note.turnStarted(), note.agentMessage("ok"), note.turnCompleted()] } });
+
+      await collect(
+        provider.start({
+          ...startOpts,
+          cwd: worktree(),
+          sandbox: SANDBOX,
+          environmentVariables: { GH_CONFIG_DIR: "/alternate-gh", XDG_CONFIG_HOME: "/alternate-config", XDG_RUNTIME_DIR: "/alternate-runtime" },
+        }),
+      );
+
+      expect(fake.launches[0]?.args).toContain(profileFilesystem([...SANDBOX_HIDDEN, "/alternate-gh/hosts.yml", "/alternate-config/git/credentials", "/alternate-runtime/bus"]));
+    });
+
+    it("lets no withheld token reach the launch by any name, not even expanded into a header's variable (EO-934 review)", () => {
+      const SYNTHETIC = "SYNTHETIC_TOKEN_EO934";
+      vi.stubEnv("GITHUB_TOKEN", SYNTHETIC);
+      const server = catalogueServer({
+        name: "github",
+        config: { transport: "http", url: "https://api.githubcopilot.com/mcp/", headers: { Authorization: "Bearer ${GITHUB_TOKEN}" }, auth: { kind: "header" } },
+        envNames: ["GITHUB_TOKEN"],
+      });
+      const options = { eoMcp: { serverPath: "/app/eoServer.mjs", dbPath: "/data/eo.db" }, attachedServers: [server], serverSecret: (_serverId: string, name: string) => (name === "GITHUB_TOKEN" ? SYNTHETIC : null) };
+
+      const sandboxed = buildCodexOptions(options, undefined, undefined, undefined, undefined, { GITHUB_TOKEN: SYNTHETIC }, undefined, undefined, undefined, undefined, undefined, SANDBOX);
+      const env = (sandboxed["env"] ?? {}) as Record<string, string>;
+      expect(Object.values(env).some((value) => value.includes(SYNTHETIC))).toBe(false);
+      expect(configArguments(sandboxed).join("\n")).not.toContain(SYNTHETIC);
+
+      // Unsandboxed, the same server still gets its token, as before.
+      const open = buildCodexOptions(options);
+      expect(Object.values((open["env"] ?? {}) as Record<string, string>)).toContain(`Bearer ${SYNTHETIC}`);
     });
 
     it("launches an unsandboxed turn exactly as before: danger-full-access on the thread and no profile", async () => {

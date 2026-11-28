@@ -51,6 +51,7 @@ import { withSkillsSection } from "../agentAttachments/skillsPrompt.js";
 import { claudeSkillLoaded, leadingWith, skillsOffered, withoutEvents } from "./skillUsage.js";
 import { REFUSED_CALL_EVENTS, refusalHookOutput, refusedCall, type CallRule } from "./callRefusal.js";
 import { fencedCall, type FenceRefusal } from "./callFence.js";
+import { hiddenIn } from "./sandboxCredentials.js";
 import { openedFork } from "./threadFork.js";
 import type { SearchNudge } from "./searchNudge.js";
 import type { AdminMcpDispatch } from "../agentAttachments/adminDelivery.js";
@@ -1867,8 +1868,11 @@ function buildOptions(opts: ClaudeTurn, adapter: ClaudeAdapter): Options {
   // starts without the forge tokens and sign-in channels EO keeps from
   // it — out of every layer above, what EO injects included, since a
   // sandbox does not stop a command using a credential it can read.
+  // What it hides is asked again of this environment, before the names
+  // go (EO-934 review): a run's variable or an attached server's value
+  // can put the `gh` config, git's credentials or the sockets elsewhere.
   if (opts.sandbox) {
-    options.sandbox = claudeSandboxSettings(opts.sandbox);
+    options.sandbox = claudeSandboxSettings(hiddenIn(opts.sandbox, options.env));
     options.env = withoutNames(options.env, new Set(opts.sandbox.withheld));
   }
   // EO-599 and EO-644: the defaults claude@0.3.312 and claude@0.3.318

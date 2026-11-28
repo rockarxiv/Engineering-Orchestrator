@@ -9,6 +9,7 @@ import { writeToolDirectory } from "../agentAttachments/pluginDirectory.js";
 import { capturingProvider } from "./sentCapture.js";
 import { agentSpawnPath, resetSearchPathForTests, resolveSearchPath, searchPath, type ShellRunner } from "../process/searchPath.js";
 import { CLAUDE_AUTH_ERRORS } from "../testing/authErrorFixtures.js";
+import { SANDBOX_HIDDEN, stubSandboxEnvironment } from "../testing/sandboxEnvironment.js";
 
 /** No settings files at all, so a test does not read the developer's own (EO-599). */
 /** The PATH the CLI is spawned with (EO-906): EO's search PATH, or the inherited one on Windows. */
@@ -599,9 +600,13 @@ describe("createClaudeProvider", () => {
   describe("the sandbox (EO-934)", () => {
     const SANDBOX = {
       writable: ["/tmp/wt", "/repo/.git/worktrees/wt", "/repo/.git/objects", "/repo/.git/refs", "/repo/.git/logs"],
-      hidden: ["/home/me/.config/gh/hosts.yml", "/home/me/.ssh", "/run/user/1000/bus"],
+      hidden: SANDBOX_HIDDEN,
       withheld: ["GH_TOKEN", "GITHUB_TOKEN", "SSH_AUTH_SOCK", "DBUS_SESSION_BUS_ADDRESS"],
     };
+
+    beforeEach(() => {
+      stubSandboxEnvironment();
+    });
 
     afterEach(() => {
       vi.unstubAllEnvs();
@@ -609,7 +614,6 @@ describe("createClaudeProvider", () => {
 
     it("launches a turn with no sandbox exactly as before: no sandbox option, and the environment it inherits", async () => {
       vi.stubEnv("GH_TOKEN", "gho_from_the_shell");
-      vi.stubEnv("SSH_AUTH_SOCK", "/run/user/1000/ssh-agent");
       const { runQuery, calls } = fakeQuery([init()]);
 
       await collect(createClaudeProvider({ runQuery, enableCommentTool: false }).start(startOpts));
@@ -621,7 +625,6 @@ describe("createClaudeProvider", () => {
 
     it("launches a sandboxed turn with the SDK's sandbox beside bypassPermissions, and without the names EO withholds", async () => {
       vi.stubEnv("GH_TOKEN", "gho_from_the_shell");
-      vi.stubEnv("SSH_AUTH_SOCK", "/run/user/1000/ssh-agent");
       vi.stubEnv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1000/bus");
       const { runQuery, calls } = fakeQuery([init()]);
 
@@ -648,6 +651,38 @@ describe("createClaudeProvider", () => {
 
       expect(calls[0]?.options).toMatchObject({ resume: "sess_persisted", permissionMode: "bypassPermissions" });
       expect(calls[0]?.options.sandbox).toMatchObject({ enabled: true, allowUnsandboxedCommands: false, filesystem: { allowWrite: SANDBOX.writable, denyRead: SANDBOX.hidden } });
+    });
+
+    it("hides the credentials wherever the turn's own variables put them, as well as where EO's environment does (EO-934 review)", async () => {
+      const { runQuery, calls } = fakeQuery([init()]);
+
+      await collect(
+        createClaudeProvider({ runQuery, enableCommentTool: false }).start({
+          ...startOpts,
+          sandbox: SANDBOX,
+          environmentVariables: { GH_CONFIG_DIR: "/alternate-gh", XDG_CONFIG_HOME: "/alternate-config", XDG_RUNTIME_DIR: "/alternate-runtime" },
+        }),
+      );
+
+      const denied = (calls[0]?.options.sandbox as { filesystem?: { denyRead?: string[] } } | undefined)?.filesystem?.denyRead ?? [];
+      expect(denied).toEqual(expect.arrayContaining([...SANDBOX_HIDDEN, "/alternate-gh/hosts.yml", "/alternate-config/git/credentials", "/alternate-runtime/bus"]));
+    });
+
+    it("lets no withheld token reach the launch by any name, an attached server's declared one included (EO-934 review)", async () => {
+      const SYNTHETIC = "SYNTHETIC_TOKEN_EO934";
+      vi.stubEnv("GITHUB_TOKEN", SYNTHETIC);
+      const { runQuery, calls } = fakeQuery([init()]);
+
+      await collect(
+        createClaudeProvider({ runQuery, enableCommentTool: false, attachmentEnv: () => ({ env: { GITHUB_TOKEN: SYNTHETIC, GH_TOKEN: SYNTHETIC } }) }).start({
+          ...startOpts,
+          sandbox: SANDBOX,
+          environmentVariables: { GITHUB_TOKEN: SYNTHETIC },
+        }),
+      );
+
+      expect(Object.values(calls[0]?.options.env ?? {}).some((value) => typeof value === "string" && value.includes(SYNTHETIC))).toBe(false);
+      expect(JSON.stringify({ ...calls[0]?.options, abortController: undefined })).not.toContain(SYNTHETIC);
     });
   });
 

@@ -90,6 +90,7 @@ export function sideCallModelCachePaths(home: string): string[] {
   return [join(home, CODEX_MODELS_CACHE)];
 }
 import { fencedCall } from "./callFence.js";
+import { hiddenIn } from "./sandboxCredentials.js";
 import { REFUSED_CALL_EVENTS, refusedCall } from "./callRefusal.js";
 import { CODEX_SEARCH_TOOL_MATCHER, openCodexSearchHook, probeHookTrust, type CodexHookTrust, type CodexSearchHook } from "./codexSearchHook.js";
 import type { SearchNudge } from "./searchNudge.js";
@@ -1780,7 +1781,14 @@ function codexOptionsWith(
   const read = declaredValues(options, attached, variables);
   // And what a sandboxed turn starts without (EO-934), by the same rule.
   const withheldNames = [...(withheldEnvironmentVariables ?? []), ...(sandbox?.withheld ?? [])];
-  const declared = withheldNames.length === 0 ? read : { ...read, withheld: new Set([...read.withheld, ...withheldNames]) };
+  // On a sandboxed turn a value declared for an attached server goes too,
+  // and before anything is expanded from it (EO-934 review): a header
+  // such as `Authorization: Bearer ${GITHUB_TOKEN}` is expanded into a
+  // variable of EO's own naming, so stripping the name from the finished
+  // environment would leave the token in that one.
+  const sandboxWithheld = new Set(sandbox?.withheld ?? []);
+  const kept = sandboxWithheld.size === 0 ? read : { ...read, values: withoutNames(read.values, sandboxWithheld) };
+  const declared = withheldNames.length === 0 ? kept : { ...kept, withheld: new Set([...kept.withheld, ...withheldNames]) };
   // What the CLI's environment will hold, which is what a header expands
   // from — so a withheld name expands from nothing here either.
   const expansionSource = { ...withoutNames({ ...inherited, ...variables }, declared.withheld), ...declared.values };
@@ -1928,6 +1936,11 @@ function codexOptionsWith(
   // sandbox does not stop a command using a credential it can read. Never
   // undefined here: the withheld names above make an environment.
   const env = sandbox && spawnEnv ? withoutNames(spawnEnv, new Set(sandbox.withheld)) : spawnEnv;
+  // And what it hides, asked again of the environment the CLI launches
+  // with before those names went — a declared value included — so a run's
+  // `GH_CONFIG_DIR` or `XDG_RUNTIME_DIR` moves nothing out of reach
+  // (EO-934 review).
+  const effectiveSandbox = sandbox ? hiddenIn(sandbox, { ...inherited, ...variables, ...read.values, ...(spawnEnv ?? {}) }) : undefined;
 
   // EO's own `PreToolUse` hook, on a turn that has one (EO-379). Inline,
   // as configuration, for the reason the Claude hook is a callback and
@@ -1956,7 +1969,7 @@ function codexOptionsWith(
     // The turn's sandbox, as the permission profile its thread runs under
     // (EO-934). Configuration of the app-server, so a resumed turn — which
     // starts an app-server of its own — is launched under it again.
-    ...(sandbox ? codexSandboxConfig(sandbox) : {}),
+    ...(effectiveSandbox ? codexSandboxConfig(effectiveSandbox) : {}),
   };
 
   return {
