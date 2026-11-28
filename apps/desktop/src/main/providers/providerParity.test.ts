@@ -450,10 +450,10 @@ const CAPABILITIES = [
   },
   {
     name: "the work fence",
-    what: "a turn given a fence — an implementer's or a reviewer's — refuses each call as it is made: on an implementer's, a push with a bare --force, -f or a +refspec, a push naming another branch, run from outside the worktree or configuring git for itself, gh pr merge, either inside a command substitution, a push after an earlier command in the call changed git's configuration, and a file write or edit outside the worktree, through a link included, and lets a --force-with-lease push to the item's own branch — one after a subshell left the worktree included — and a write inside the worktree through; on a reviewer's, every push and gh pr merge as well; each refusal says it is EO's fence and is a call_refused event naming the rule and the call; and a resumed turn is held to its fence too (EO-926)",
+    what: "a turn given a fence — an implementer's or a reviewer's — refuses each call as it is made: on an implementer's, a push with a bare --force, -f or a +refspec, a push naming another branch, run from outside the worktree or configuring git for itself, gh pr merge, either inside a command substitution, a push after an earlier command in the call changed git's configuration, and a file write or edit outside the worktree, through a link included — one whose target climbs out of another link as well, and lets a --force-with-lease push to the item's own branch — one after a subshell left the worktree included — and a write inside the worktree through; on a reviewer's, every push and gh pr merge as well; each refusal says it is EO's fence and is a call_refused event naming the rule and the call; and a resumed turn is held to its fence too (EO-926)",
     same: {
       implementer: {
-        refused: ["+refspec push", "-f push", "file edit outside", "file write outside", "file write through a link", "forced push", "merge in a substitution", "pr merge", "push after a config change", "push from elsewhere", "push in a substitution", "push to another branch", "push with a config override"],
+        refused: ["+refspec push", "-f push", "file edit outside", "file write outside", "file write through a climbing link", "file write through a link", "forced push", "merge in a substitution", "pr merge", "push after a config change", "push from elsewhere", "push in a substitution", "push to another branch", "push with a config override"],
         allowed: ["file write inside", "leased push to its branch", "push after a subshell moved"],
         reasonSaid: true,
         recorded: [
@@ -470,15 +470,16 @@ const CAPABILITIES = [
           { rule: "write_outside_worktree", call: "/tmp/outside.txt" },
           { rule: "write_outside_worktree", call: "/tmp/outside.txt" },
           { rule: "write_outside_worktree", call: "<worktree>/linked/escape.txt" },
+          { rule: "write_outside_worktree", call: "<worktree>/climbing" },
         ],
       },
       reviewer: {
-        refused: ["+refspec push", "-f push", "file edit outside", "file write outside", "file write through a link", "forced push", "leased push to its branch", "merge in a substitution", "pr merge", "push after a config change", "push after a subshell moved", "push from elsewhere", "push in a substitution", "push to another branch", "push with a config override"],
+        refused: ["+refspec push", "-f push", "file edit outside", "file write outside", "file write through a climbing link", "file write through a link", "forced push", "leased push to its branch", "merge in a substitution", "pr merge", "push after a config change", "push after a subshell moved", "push from elsewhere", "push in a substitution", "push to another branch", "push with a config override"],
         allowed: ["file write inside"],
         reasonSaid: true,
       },
       resumed: {
-        refused: ["+refspec push", "-f push", "file edit outside", "file write outside", "file write through a link", "forced push", "merge in a substitution", "pr merge", "push after a config change", "push from elsewhere", "push in a substitution", "push to another branch", "push with a config override"],
+        refused: ["+refspec push", "-f push", "file edit outside", "file write outside", "file write through a climbing link", "file write through a link", "forced push", "merge in a substitution", "pr merge", "push after a config change", "push from elsewhere", "push in a substitution", "push to another branch", "push with a config override"],
         allowed: ["file write inside", "leased push to its branch", "push after a subshell moved"],
         reasonSaid: true,
       },
@@ -1613,6 +1614,14 @@ function fenceCheckout(): string {
   execFileSync("git", ["init", "-q", "-b", "eo/EO-1"], { cwd: root, stdio: "pipe" });
   // And `linked`, a link inside it to a directory outside it.
   symlinkSync(scratchDirectory(), join(root, "linked"), process.platform === "win32" ? "junction" : "dir");
+  // And `climbing`, a dangling link to `pivot/../victim.txt` where `pivot`
+  // leads outside: as text it names the worktree, and the kernel follows
+  // `pivot` first. A junction cannot dangle, so on Windows it leads out directly.
+  const outside = scratchDirectory();
+  mkdirSync(join(outside, "nested"));
+  symlinkSync(join(outside, "nested"), join(root, "pivot"), process.platform === "win32" ? "junction" : "dir");
+  if (process.platform === "win32") symlinkSync(outside, join(root, "climbing"), "junction");
+  else symlinkSync("pivot/../victim.txt", join(root, "climbing"));
   return root;
 }
 /** An implementer's fence and a reviewer's, as the git workspace lends them for that worktree. */
@@ -1645,6 +1654,7 @@ const FENCE_CALL_CLASSES: Record<"claude" | "codex", Record<string, [string, unk
     "file write outside": ["Write", { file_path: "/tmp/outside.txt", content: "x" }],
     "file edit outside": ["Edit", { file_path: "/tmp/outside.txt", old_string: "a", new_string: "b" }],
     "file write through a link": ["Write", { file_path: "linked/escape.txt", content: "x" }],
+    "file write through a climbing link": ["Write", { file_path: "climbing", content: "x" }],
   },
   codex: {
     "leased push to its branch": ["Bash", shellInput("git push --force-with-lease origin eo/EO-1")],
@@ -1663,6 +1673,7 @@ const FENCE_CALL_CLASSES: Record<"claude" | "codex", Record<string, [string, unk
     "file write outside": ["apply_patch", patchInput("*** Add File: /tmp/outside.txt")],
     "file edit outside": ["apply_patch", patchInput("*** Update File: /tmp/outside.txt")],
     "file write through a link": ["apply_patch", patchInput("*** Add File: linked/escape.txt")],
+    "file write through a climbing link": ["apply_patch", patchInput("*** Add File: climbing")],
   },
 };
 

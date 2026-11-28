@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
-import { lstat, readlink, realpath } from "node:fs/promises";
+import { lstat, readlink } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename as baseOf, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
 import type { CallFence } from "@eo/core";
 
 /**
@@ -130,7 +130,7 @@ export async function fencedCall(tool: string, input: unknown, fence: CallFence,
   if (field !== undefined) {
     const path = fields?.[field];
     if (typeof path !== "string" || path === "") return null;
-    return writeRefusal(resolve(base, path), fence);
+    return writeRefusal(rawJoin(base, path), fence);
   }
   if (tool === PATCH_TOOL) {
     const text = typeof input === "string" ? input : [fields?.["command"], fields?.["input"], fields?.["patch"]].find((value): value is string => typeof value === "string");
@@ -139,7 +139,7 @@ export async function fencedCall(tool: string, input: unknown, fence: CallFence,
       return { rule: "unreadable_patch", call: (text ?? "").slice(0, LONGEST_CALL), reason: `EO refused this call: it could not tell which files this patch writes, and on this turn a patch may only write inside ${fence.root}. ${FENCE_NOTE}` };
     }
     for (const path of targets) {
-      const refused = await writeRefusal(resolve(base, path), fence);
+      const refused = await writeRefusal(rawJoin(base, path), fence);
       if (refused !== null) return refused;
     }
   }
@@ -152,8 +152,9 @@ export async function fencedCall(tool: string, input: unknown, fence: CallFence,
  * link on the way, so `<worktree>/linked/x` with `linked` pointing at
  * another checkout is a write to that checkout.
  */
-async function writeRefusal(target: string, fence: CallFence): Promise<FenceRefusal | null> {
-  const landing = await whereItLands(target).catch(() => null);
+async function writeRefusal(raw: string, fence: CallFence): Promise<FenceRefusal | null> {
+  const target = resolve(raw);
+  const landing = await whereItLands(raw).catch(() => null);
   const root = await whereItLands(fence.root).catch(() => resolve(fence.root));
   if (landing !== null && inside(root, landing)) return null;
   return outside(target, fence, landing);
@@ -163,41 +164,67 @@ async function writeRefusal(target: string, fence: CallFence): Promise<FenceRefu
 const MOST_LINKS = 40;
 
 /**
- * Where a path really is: every link in it followed, a dangling one
- * included, for a path whose last parts do not exist yet — which is what
- * a new file is. Throws where it cannot be told (a link loop, no access).
+ * Where a path really is (EO-926 review): every link in it followed, a
+ * dangling one included — a write through it creates its target — for a
+ * path whose last parts need not exist yet, which is what a new file is.
+ *
+ * Walked a component at a time, as the kernel does: a link's target is
+ * read as it is met and its own components walked in its place, so a
+ * `..` applies to where the link really led. `pivot/../x` with `pivot` a
+ * link to `/elsewhere/nested` is `/elsewhere/x`, which collapsing the
+ * text first would have called `./x`. So `path` must not be normalised
+ * before it is handed here (`rawJoin`). Throws where it cannot be told:
+ * a link loop, or no access.
  */
 export async function whereItLands(path: string): Promise<string> {
-  let current = resolve(path);
-  const rest: string[] = [];
-  for (let links = 0; links <= MOST_LINKS; ) {
-    let isLink: boolean;
+  const start = isAbsolute(path) ? path : rawJoin(process.cwd(), path);
+  let current = parse(start).root;
+  const pending = components(start.slice(current.length));
+  let links = 0;
+  while (pending.length > 0) {
+    const part = pending.shift() ?? "";
+    if (part === "" || part === ".") continue;
+    if (part === "..") {
+      current = dirname(current);
+      continue;
+    }
+    const next = join(current, part);
+    let isLink = false;
     try {
-      isLink = (await lstat(current)).isSymbolicLink();
+      isLink = (await lstat(next)).isSymbolicLink();
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       if (code !== "ENOENT" && code !== "ENOTDIR") throw error;
-      const parent = dirname(current);
-      if (parent === current) return join(current, ...rest);
-      rest.unshift(baseOf(current));
-      current = parent;
+    }
+    if (!isLink) {
+      current = next;
       continue;
     }
-    if (!isLink) return join(await realpath(current), ...rest);
-    try {
-      return join(await realpath(current), ...rest);
-    } catch {
-      // A dangling link: a write through it creates its target.
-      current = resolve(dirname(current), await readlink(current));
-      links++;
+    if (++links > MOST_LINKS) throw new Error(`more than ${String(MOST_LINKS)} links`);
+    const target = await readlink(next);
+    if (isAbsolute(target)) {
+      current = parse(target).root;
+      pending.unshift(...components(target.slice(current.length)));
+    } else {
+      pending.unshift(...components(target));
     }
   }
-  throw new Error(`more than ${String(MOST_LINKS)} links`);
+  return current;
+}
+
+/** A path's components, split on this platform's separators only: a backslash is a name's on POSIX. */
+function components(path: string): string[] {
+  return path.split(sep === "\\" ? /[\\/]+/ : /\/+/);
+}
+
+/** `relative` under `base`, as text, with nothing collapsed: a `..` in it is for `whereItLands` to apply. */
+function rawJoin(base: string, relative: string): string {
+  return isAbsolute(relative) ? relative : `${base}${sep}${relative}`;
 }
 
 /** Whether `dir` really is in the worktree, through any link on the way. */
 async function reallyInside(root: string, dir: string): Promise<boolean> {
-  if (!inside(root, dir)) return false;
+  if (!inside(root, resolve(dir))) return false;
   const landing = await whereItLands(dir).catch(() => null);
   const realRoot = await whereItLands(root).catch(() => resolve(root));
   return landing !== null && inside(realRoot, landing);
@@ -375,9 +402,10 @@ function changesGit(program: string, args: readonly string[], targets: readonly 
 function moved(from: string | null, to: string | null): string | null {
   if (from === null || to === null || to === "-" || to.includes("$") || to.includes("`")) return null;
   if (to === "~") return homedir();
-  if (to.startsWith("~/")) return resolve(homedir(), to.slice(2));
+  if (to.startsWith("~/")) return rawJoin(homedir(), to.slice(2));
   if (to.startsWith("~")) return null;
-  return resolve(from, to);
+  // As text: `cd pivot/..` is wherever `pivot` leads, then up (`whereItLands`).
+  return rawJoin(from, to);
 }
 
 function pushReason(rule: FenceRule, fence: CallFence, gitChangedBy: string | null = null): string {

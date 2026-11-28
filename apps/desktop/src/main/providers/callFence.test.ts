@@ -1,10 +1,10 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { CallFence } from "@eo/core";
-import { fencedCall, patchTargets, readCheckout, shellRefusal, simpleCommands, type CheckoutState, type FenceGit } from "./callFence.js";
+import { fencedCall, patchTargets, readCheckout, shellRefusal, simpleCommands, whereItLands, type CheckoutState, type FenceGit } from "./callFence.js";
 
 const ROOT = "/home/me/.eo/worktrees/EO-1";
 const IMPLEMENTER: CallFence = { root: ROOT, pushBranch: "eo/EO-1" };
@@ -361,6 +361,57 @@ describe("the fence's file rules through links", () => {
     symlinkSync(worktree, alias, process.platform === "win32" ? "junction" : "dir");
     expect(await fencedCall("Write", { file_path: join(alias, "src", "a.ts") }, { root: worktree, pushBranch: null }, alias)).toBeNull();
     expect(await fencedCall("Write", { file_path: join(worktree, "src", "a.ts") }, { root: alias, pushBranch: null }, worktree)).toBeNull();
+  });
+
+  /**
+   * The review's reproduction: `linked` is a dangling link whose relative
+   * target, `pivot/../victim.txt`, climbs out of a directory that `pivot`
+   * — itself a link — leads to outside the worktree. Read as text the
+   * target is `<worktree>/victim.txt`; the kernel follows `pivot` first,
+   * and the file is created outside.
+   */
+  function pivotingWorktree(): { worktree: string; outside: string; fence: CallFence } {
+    const root = mkdtempSync(join(tmpdir(), "eo-926-fence-pivot-"));
+    scratch.push(root);
+    const worktree = join(root, "worktree");
+    const outside = join(root, "outside");
+    mkdirSync(join(worktree, "sub"), { recursive: true });
+    mkdirSync(join(outside, "nested"), { recursive: true });
+    symlinkSync(join(outside, "nested"), join(worktree, "pivot"), "dir");
+    symlinkSync("pivot/../victim.txt", join(worktree, "linked"));
+    // The control: the same shape through a real directory stays inside.
+    symlinkSync("sub/../kept.txt", join(worktree, "kept"));
+    return { worktree, outside, fence: { root: worktree, pushBranch: "eo/EO-1" } };
+  }
+
+  /** Asks the fence about one write, and makes it as the tool would where the fence lets it through. */
+  async function writeThroughTheFence(tool: "Write" | "apply_patch", path: string, worktree: string, fence: CallFence): Promise<string | null> {
+    const input = tool === "Write" ? { file_path: path, content: "written\n" } : { command: `*** Begin Patch\n*** Add File: ${path}\n+written\n*** End Patch\n` };
+    const refusal = await fencedCall(tool, input, fence, worktree);
+    if (refusal === null) writeFileSync(isAbsolute(path) ? path : `${worktree}/${path}`, "written\n");
+    return refusal?.rule ?? null;
+  }
+
+  it.skipIf(process.platform === "win32").each(["Write", "apply_patch"] as const)("refuses %s through a dangling link whose target climbs out of another link, and nothing is written outside", async (tool) => {
+    const { worktree, outside, fence } = pivotingWorktree();
+    expect(await writeThroughTheFence(tool, tool === "Write" ? join(worktree, "linked") : "linked", worktree, fence)).toBe("write_outside_worktree");
+    expect(await writeThroughTheFence(tool, "pivot/../victim.txt", worktree, fence)).toBe("write_outside_worktree");
+    expect(existsSync(join(outside, "victim.txt"))).toBe(false);
+    expect(await whereItLands(join(worktree, "linked"))).toBe(join(await realpathOf(outside), "victim.txt"));
+  });
+
+  it.skipIf(process.platform === "win32").each(["Write", "apply_patch"] as const)("lets %s through the same shape when it lands inside, and the file is written there", async (tool) => {
+    const { worktree, fence } = pivotingWorktree();
+    expect(await writeThroughTheFence(tool, tool === "Write" ? join(worktree, "kept") : "kept", worktree, fence)).toBeNull();
+    expect(readFileSync(join(worktree, "kept.txt"), "utf8")).toBe("written\n");
+    expect(await writeThroughTheFence(tool, "sub/../sub/new.txt", worktree, fence)).toBeNull();
+    expect(existsSync(join(worktree, "sub", "new.txt"))).toBe(true);
+  });
+
+  it.skipIf(process.platform === "win32")("refuses a push from a directory reached by climbing out of a link", async () => {
+    const { worktree, fence } = pivotingWorktree();
+    expect((await shellRefusal("cd pivot/.. && git push --force-with-lease", fence, worktree, checkout()))?.rule).toBe("push_outside_worktree");
+    expect(await shellRefusal("cd sub/.. && git push --force-with-lease", fence, worktree, checkout())).toBeNull();
   });
 
   it("refuses a push from a directory that is a link out of the worktree", async () => {
