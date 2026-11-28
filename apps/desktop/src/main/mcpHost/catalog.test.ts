@@ -1910,6 +1910,21 @@ describe("the MCP tool catalog", () => {
     expect(description).toMatch(/refuses the whole call/);
   });
 
+  // EO-931. On Delivery a dependency finishes after its pull request is
+  // merged, so a chain of plain dependencies runs one merge at a time. A
+  // client that does not know this plans as if they would run together.
+  it.each(["work_submit_plan", "work_submit_ticket", "ticket_update", "item_update"])(
+    "tells a client that a plain dependency on %s waits for the merge, and how to start earlier (EO-931)",
+    (name) => {
+      const tool = TOOLS.flatMap((candidate) => [candidate, ...(candidate.twin === undefined ? [] : [candidate.twin])]).find((candidate) => candidate.name === name);
+      const description = (tool?.description ?? "").replace(/\s+/g, " ");
+
+      expect(description).toMatch(/without `?wait`?,? holds/);
+      expect(description).toContain("reaches its pipeline's terminal step, which on a pipeline that merges pull requests comes after the merge");
+      expect(description).toMatch(/wait: "reached", step: "Review" \} starts (the dependent|this ticket) earlier/);
+    },
+  );
+
   it.each(["ticket_update", "item_update"])("tells a client that %s sets reviewers, what [] and null mean, and the fallback order (EO-742)", (name) => {
     const tool = TOOLS.flatMap((candidate) => [candidate, ...(candidate.twin === undefined ? [] : [candidate.twin])]).find((candidate) => candidate.name === name);
     const description = (tool?.description ?? "").replace(/\s+/g, " ");
