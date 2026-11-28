@@ -2550,7 +2550,9 @@ const AGENT_SAVE_TOOL: ToolSpec = {
     "need a runtime this machine actually has, so check runtime_status before moving an agent onto one. `model` " +
     "null means the provider's own default. `config.sandboxed: true` runs the agent sandboxed: its shell commands may " +
     "write only the item's checkout, the git directories its commits need and the repository's extra writable paths, it " +
-    "is given no forge credentials and it never pushes; anything other than true, or the key removed, is off. `projectId` scopes the agent to one project: it then runs only that " +
+    "is given no forge credentials and it never pushes; anything other than true, or the key removed, is off. On a machine " +
+    "that cannot start the backend's sandbox (on Linux, Claude needs bubblewrap and socat; on Windows neither backend " +
+    "is offered one), its runs are refused with a comment saying why, never run unsandboxed. `projectId` scopes the agent to one project: it then runs only that " +
     "project's tickets, and there it is used instead of the global agents in its role; null makes it global again, " +
     "and a `system` agent is always global, so a project id on one is refused. New instructions take effect on the " +
     "next dispatch, not on a run already in flight.",
