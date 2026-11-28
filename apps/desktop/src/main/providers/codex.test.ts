@@ -2314,6 +2314,77 @@ describe("createCodexProvider over a stubbed app-server", () => {
     expect(fake.launches).toHaveLength(0);
   });
 
+  describe("the sandbox (EO-934)", () => {
+    const SANDBOX = {
+      writable: ["/repo/.git/worktrees/wt", "/repo/.git/objects", "/repo/.git/refs", "/repo/.git/logs", "/home/me/.local/share/pnpm/store"],
+      hidden: ["/home/me/.config/gh/hosts.yml", "/home/me/.ssh", "/run/user/1000/bus"],
+      withheld: ["GH_TOKEN", "GITHUB_TOKEN", "SSH_AUTH_SOCK", "DBUS_SESSION_BUS_ADDRESS"],
+    };
+    const PROFILE_FILESYSTEM =
+      'permissions.eo.filesystem={"/repo/.git/worktrees/wt" = "write", "/repo/.git/objects" = "write", "/repo/.git/refs" = "write", "/repo/.git/logs" = "write", ' +
+      '"/home/me/.local/share/pnpm/store" = "write", ":slash_tmp" = "read", ":tmpdir" = "read", "/home/me/.config/gh/hosts.yml" = "none", "/home/me/.ssh" = "none", "/run/user/1000/bus" = "none"}';
+
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    /** `providerOver`, with every argument the provider hands its client passed on — the sandbox is the last. */
+    function sandboxedProviderOver(scenario: FakeAppServerScenario) {
+      const fake = fakeAppServer(scenario);
+      const options = { executablePath: "/opt/eo/runtimes/codex/bin/codex" };
+      const provider = createCodexProvider({
+        ...options,
+        createCodex: (...args: Parameters<NonNullable<Parameters<typeof createCodexProvider>[0]>["createCodex"] & object>) =>
+          new CodexClient({ ...codexClientOptions(options, ...args), spawn: fake.spawn, shutdownGraceMs: 200 }),
+      });
+      return { fake, provider };
+    }
+
+    it("opens a sandboxed thread under EO's permission profile, with no sandbox on thread/start and never asking for approval", async () => {
+      vi.stubEnv("GH_TOKEN", "gho_from_the_shell");
+      vi.stubEnv("SSH_AUTH_SOCK", "/run/user/1000/ssh-agent");
+      const { fake, provider } = sandboxedProviderOver({ after: { "turn/start": [note.turnStarted(), note.agentMessage("ok"), note.turnCompleted()] } });
+      const cwd = worktree();
+
+      await collect(provider.start({ ...startOpts, cwd, sandbox: SANDBOX, environmentVariables: { GITHUB_TOKEN: "ghp_step", KEPT: "yes" } }));
+
+      // The trap EO-933 measured: a `sandbox` here would silently win.
+      expect(fake.paramsOf("thread/start")).not.toHaveProperty("sandbox");
+      expect(fake.paramsOf("thread/start")).toMatchObject({ cwd, approvalPolicy: "never" });
+      const args = fake.launches[0]?.args ?? [];
+      expect(args).toEqual(expect.arrayContaining(['default_permissions="eo"', 'permissions.eo.extends=":workspace"', "permissions.eo.network.enabled=true", PROFILE_FILESYSTEM]));
+      // A profile ignores these, so nothing is said there.
+      expect(args.some((arg) => arg.startsWith("sandbox_workspace_write") || arg.startsWith("sandbox_mode"))).toBe(false);
+      const env = fake.launches[0]?.options.env ?? {};
+      for (const name of SANDBOX.withheld) expect(env).not.toHaveProperty(name);
+      expect(env).toMatchObject({ KEPT: "yes" });
+    });
+
+    it("resumes a sandboxed thread under the same profile, sent again to the app-server the resume starts, with no sandbox on thread/resume", async () => {
+      const { fake, provider } = sandboxedProviderOver({
+        after: { "turn/start": [note.turnStarted(), note.agentMessage("continued", "m", "turn-1", "thr-persisted"), note.turnCompleted("completed", null, "turn-1", "thr-persisted")] },
+      });
+      const cwd = worktree();
+
+      await collect(provider.resume("thr-persisted", "the human replied", { cwd, sandbox: SANDBOX }));
+
+      expect(fake.paramsOf("thread/resume")).not.toHaveProperty("sandbox");
+      expect(fake.paramsOf("thread/resume")).toMatchObject({ threadId: "thr-persisted", cwd, approvalPolicy: "never" });
+      expect(fake.launches[0]?.args).toEqual(expect.arrayContaining(['default_permissions="eo"', PROFILE_FILESYSTEM]));
+    });
+
+    it("launches an unsandboxed turn exactly as before: danger-full-access on the thread and no profile", async () => {
+      vi.stubEnv("GH_TOKEN", "gho_from_the_shell");
+      const { fake, provider } = sandboxedProviderOver({ after: { "turn/start": [note.turnStarted(), note.agentMessage("ok"), note.turnCompleted()] } });
+
+      await collect(provider.start({ ...startOpts, cwd: worktree() }));
+
+      expect(fake.paramsOf("thread/start")).toMatchObject({ sandbox: "danger-full-access", approvalPolicy: "never" });
+      expect((fake.launches[0]?.args ?? []).some((arg) => arg.startsWith("default_permissions") || arg.startsWith("permissions."))).toBe(false);
+      expect(fake.launches[0]?.options.env ?? process.env).toMatchObject({ GH_TOKEN: "gho_from_the_shell" });
+    });
+  });
+
   it("resumes the thread it is given, in the worktree it is given", async () => {
     const { fake, provider } = providerOver({ after: { "turn/start": [note.turnStarted(), note.agentMessage("continued", "m", "turn-1", "thr-persisted"), note.turnCompleted("completed", null, "turn-1", "thr-persisted")] } });
     const cwd = worktree();

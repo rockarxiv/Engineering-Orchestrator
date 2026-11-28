@@ -596,6 +596,61 @@ describe("createClaudeProvider", () => {
     });
   });
 
+  describe("the sandbox (EO-934)", () => {
+    const SANDBOX = {
+      writable: ["/tmp/wt", "/repo/.git/worktrees/wt", "/repo/.git/objects", "/repo/.git/refs", "/repo/.git/logs"],
+      hidden: ["/home/me/.config/gh/hosts.yml", "/home/me/.ssh", "/run/user/1000/bus"],
+      withheld: ["GH_TOKEN", "GITHUB_TOKEN", "SSH_AUTH_SOCK", "DBUS_SESSION_BUS_ADDRESS"],
+    };
+
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it("launches a turn with no sandbox exactly as before: no sandbox option, and the environment it inherits", async () => {
+      vi.stubEnv("GH_TOKEN", "gho_from_the_shell");
+      vi.stubEnv("SSH_AUTH_SOCK", "/run/user/1000/ssh-agent");
+      const { runQuery, calls } = fakeQuery([init()]);
+
+      await collect(createClaudeProvider({ runQuery, enableCommentTool: false }).start(startOpts));
+
+      expect(calls[0]?.options).not.toHaveProperty("sandbox");
+      expect(calls[0]?.options).toMatchObject({ permissionMode: "bypassPermissions", allowDangerouslySkipPermissions: true });
+      expect(calls[0]?.options.env).toMatchObject({ GH_TOKEN: "gho_from_the_shell", SSH_AUTH_SOCK: "/run/user/1000/ssh-agent" });
+    });
+
+    it("launches a sandboxed turn with the SDK's sandbox beside bypassPermissions, and without the names EO withholds", async () => {
+      vi.stubEnv("GH_TOKEN", "gho_from_the_shell");
+      vi.stubEnv("SSH_AUTH_SOCK", "/run/user/1000/ssh-agent");
+      vi.stubEnv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1000/bus");
+      const { runQuery, calls } = fakeQuery([init()]);
+
+      // A run's own variable of a withheld name is kept from it too.
+      await collect(createClaudeProvider({ runQuery, enableCommentTool: false }).start({ ...startOpts, sandbox: SANDBOX, environmentVariables: { GITHUB_TOKEN: "ghp_step", KEPT: "yes" } }));
+
+      expect(calls[0]?.options).toMatchObject({ permissionMode: "bypassPermissions", allowDangerouslySkipPermissions: true, settingSources: ["project"] });
+      expect(calls[0]?.options.sandbox).toEqual({
+        enabled: true,
+        autoAllowBashIfSandboxed: true,
+        allowUnsandboxedCommands: false,
+        failIfUnavailable: true,
+        filesystem: { allowWrite: SANDBOX.writable, denyRead: SANDBOX.hidden },
+      });
+      const env = calls[0]?.options.env ?? {};
+      for (const name of SANDBOX.withheld) expect(env).not.toHaveProperty(name);
+      expect(env).toMatchObject({ KEPT: "yes" });
+    });
+
+    it("launches a resumed sandboxed turn in the same sandbox", async () => {
+      const { runQuery, calls } = fakeQuery([init()]);
+
+      await collect(createClaudeProvider({ runQuery, enableCommentTool: false }).resume("sess_persisted", "carry on", { cwd: "/tmp/wt", sandbox: SANDBOX }));
+
+      expect(calls[0]?.options).toMatchObject({ resume: "sess_persisted", permissionMode: "bypassPermissions" });
+      expect(calls[0]?.options.sandbox).toMatchObject({ enabled: true, allowUnsandboxedCommands: false, filesystem: { allowWrite: SANDBOX.writable, denyRead: SANDBOX.hidden } });
+    });
+  });
+
   it("applies per-agent config", async () => {
     const { runQuery, calls } = fakeQuery([init()]);
 
