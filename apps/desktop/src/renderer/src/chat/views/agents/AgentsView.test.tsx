@@ -3,7 +3,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { developerRegistry, isBuiltinRole, NO_POLICY, NOT_ALLOWED_BY_YOUR_ORGANISATION, SECTION_LOCK_TEXT, toRegistryView } from "@eo/core";
-import type { ProviderCapabilities, ProviderModel, RuntimeStatusView } from "@eo/core";
+import type { ProviderCapabilities, ProviderModel, RuntimeStatusView, SandboxAvailability } from "@eo/core";
 import { createQueryClient } from "../../../query/client";
 import { setBridge } from "../../../ipc/bridge";
 import { ViewPublisher } from "../../../shared/view/ViewPublisher";
@@ -103,6 +103,8 @@ interface Options {
   impact?: unknown;
   removeProblem?: string | null;
   handle?: (channel: string, payload: unknown) => unknown | Promise<unknown>;
+  /** What `providers:sandbox` answers for a backend; available everywhere unless a test says otherwise. */
+  sandbox?: (provider: string) => SandboxAvailability | null;
 }
 
 type Call = { channel: string; payload: unknown };
@@ -127,6 +129,11 @@ function mockIpc(options: Options = {}): Call[] {
         const caps = capabilities(provider);
         const models = refreshModels && provider === "claude" && !options.modelProblem ? CLAUDE_MODELS : caps.models;
         return { ok: true, data: { capabilities: { ...caps, models }, models, problem: refreshModels ? (options.modelProblem ?? null) : null } };
+      }
+      case "providers:sandbox": {
+        const { provider } = payload as { provider: string };
+        const answer = options.sandbox ? options.sandbox(provider) : { available: true, how: "bubblewrap (/usr/bin/bwrap) and socat (/usr/bin/socat)" };
+        return { ok: true, data: { sandbox: answer } };
       }
       case "agents:save": {
         const { provider } = payload as { provider: string };
@@ -473,6 +480,8 @@ describe("EO's own switches", () => {
     const box = within(pane).getByRole("checkbox", { name: SANDBOXED });
     expect(box).toHaveAccessibleName(/given no forge credentials, and it never pushes/);
     expect(box).not.toBeChecked();
+    // Enabled once this machine is known to be able to start it (EO-935).
+    await waitFor(() => expect(box).toBeEnabled());
     fireEvent.click(box);
     fireEvent.click(within(pane).getByRole("button", { name: "Save changes" }));
     await waitFor(() => expect(savedConfig(calls)).toEqual({ effort: "high", sandboxed: true }));
@@ -485,6 +494,47 @@ describe("EO's own switches", () => {
     fireEvent.click(ticked);
     fireEvent.click(within(reopened).getByRole("button", { name: "Save changes" }));
     await waitFor(() => expect(savedConfig(again)).toEqual({ effort: "high" }));
+  });
+
+  it("says beside the setting what this machine starts the sandbox with, where it can (EO-935)", async () => {
+    const calls = renderAgents({ agents: [agent({ provider: "codex" })], sandbox: () => ({ available: true, how: "Codex's bubblewrap, which it carries with it" }) });
+    const pane = await editor();
+
+    expect(await within(pane).findByText(/This machine can start the sandbox: Codex's bubblewrap, which it carries with it\./)).toBeInTheDocument();
+    expect(within(pane).getByRole("checkbox", { name: SANDBOXED })).toBeEnabled();
+    expect(calls.find((call) => call.channel === "providers:sandbox")?.payload).toEqual({ provider: "codex", executablePath: null });
+  });
+
+  it("will not turn the sandbox on where it cannot start, and says why and what would fix it (EO-935)", async () => {
+    const missing: SandboxAvailability = {
+      available: false,
+      reason: "Claude's sandbox on Linux needs bubblewrap and socat, and socat is not installed on this machine.",
+      fix: "Install socat (for example `sudo apt install socat`), then check again.",
+    };
+    renderAgents({ agents: [agent({ provider: "claude" })], sandbox: () => missing });
+    const pane = await editor();
+
+    const alert = await within(pane).findByText(/This machine cannot start the sandbox, so it cannot be turned on here\./);
+    expect(alert).toHaveTextContent(/socat is not installed on this machine\. Install socat/);
+    expect(alert).not.toHaveTextContent(/every run of this agent is refused/);
+    const box = within(pane).getByRole("checkbox", { name: SANDBOXED });
+    expect(box).toBeDisabled();
+    expect(box).not.toBeChecked();
+  });
+
+  it("lets an agent already sandboxed be turned off where its sandbox stopped being able to start, and says its runs are refused (EO-935)", async () => {
+    const calls = renderAgents({
+      agents: [agent({ provider: "claude", config: { sandboxed: true } })],
+      sandbox: () => ({ available: false, reason: "bubblewrap is not installed.", fix: "Install bubblewrap." }),
+    });
+    const pane = await editor();
+
+    expect(await within(pane).findByText(/every run of this agent is refused, and says why on its own thread/)).toBeInTheDocument();
+    const box = within(pane).getByRole("checkbox", { name: SANDBOXED });
+    expect(box).toBeEnabled();
+    fireEvent.click(box);
+    fireEvent.click(within(pane).getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(savedConfig(calls)).toEqual({}));
   });
 
   it("offers no sandbox on a backend that runs no commands (EO-934)", async () => {

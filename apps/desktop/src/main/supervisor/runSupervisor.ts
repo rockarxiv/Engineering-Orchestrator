@@ -114,6 +114,7 @@ import {
   type ActionSubject,
   type Agent,
   type AgentInputAttachment,
+  type SandboxAvailability,
   type Registry,
   type SpecShape,
   type AgentEvent,
@@ -483,6 +484,16 @@ export interface RunSupervisorOptions {
   provider: AgentProvider | ((agent: Agent) => AgentProvider);
   /** Snapshots the executable selection used by each provider subprocess. */
   runtimeSource?: (agent: Agent) => RunRuntimeSource | null;
+  /**
+   * Whether this agent's backend can start its sandbox on this machine
+   * (EO-935, `providers/sandboxAvailability.ts`), asked before every turn
+   * of a sandboxed agent, so a machine that stopped being able to — a
+   * bubblewrap uninstalled since the setting was ticked — refuses the
+   * turn rather than running it unsandboxed. Null is a backend with no
+   * sandbox to start. Absent in a test that is not about it, which asks
+   * nothing and launches as EO-934 did.
+   */
+  sandboxAvailability?: (agent: Agent) => Promise<SandboxAvailability | null>;
   /**
    * The environment variables an agent run on this step is given
    * (EO-487): every shared one, with the step's own over them. Null is
@@ -2063,6 +2074,7 @@ export function createRunSupervisor(
     db,
     provider,
     runtimeSource = () => null,
+    sandboxAvailability,
     runEnvironment,
     runEnvironmentWithheld,
     initialPaused = false,
@@ -2598,12 +2610,54 @@ export function createRunSupervisor(
    * is lent and — on the handover — what is brought up to date
    * afterwards.
    */
-  async function attachWorkspace(item: Item, agent: Agent, workspace: PreparedWorkspace | null): Promise<WorkspaceAttachment> {
+  async function attachWorkspace(
+    item: Item,
+    agent: Agent,
+    workspace: PreparedWorkspace | null,
+    { checkSandbox = true }: { checkSandbox?: boolean } = {},
+  ): Promise<WorkspaceAttachment> {
     // And the sandbox, for an agent whose setting asks for one (EO-934),
     // here because every path to a provider passes through this: what the
     // kind lent it may write, and what EO always keeps from it.
-    if (workspace === null) return withAgentSandbox(NOTHING_ATTACHED, agent, null);
-    return withAgentSandbox(await kindFor(item).attach(item, agent, workspace), agent, workspace.cwd);
+    const attached =
+      workspace === null
+        ? withAgentSandbox(NOTHING_ATTACHED, agent, null)
+        : withAgentSandbox(await kindFor(item).attach(item, agent, workspace), agent, workspace.cwd);
+    // And whether this machine can start that sandbox now (EO-935): asked
+    // per turn, not once when the setting was ticked, and a no is carried
+    // to `openTurn`, which refuses the turn before anything is launched.
+    // Not asked for a prewarm, which never launches a sandboxed turn.
+    if (attached.sandbox === undefined || sandboxAvailability === undefined || !checkSandbox) return attached;
+    const refusal = await sandboxRefusalFor(runsOn(agent, item));
+    return refusal === null ? attached : { ...attached, sandboxRefusal: refusal };
+  }
+
+  /**
+   * The sandbox an earlier turn's attachment carried, asked about again
+   * for a later turn of the same run (EO-935): a correction, which reuses
+   * the run's attachment rather than attaching afresh. Only the refusal is
+   * answered for; everything else the turn is lent stays the run's.
+   */
+  async function sandboxAsOfNow(attachment: WorkspaceAttachment | undefined, item: Item, agent: Agent): Promise<Pick<WorkspaceAttachment, "sandboxRefusal"> | undefined> {
+    if (attachment?.sandbox === undefined || sandboxAvailability === undefined) return attachment;
+    const refusal = await sandboxRefusalFor(runsOn(agent, item));
+    return refusal === null ? {} : { sandboxRefusal: refusal };
+  }
+
+  /** Why this sandboxed agent's turn may not start on this machine, or null when its sandbox can (EO-935). */
+  async function sandboxRefusalFor(agent: Agent): Promise<string | null> {
+    let answer: SandboxAvailability | null;
+    try {
+      answer = (await sandboxAvailability?.(agent)) ?? null;
+    } catch (error) {
+      answer = { available: false, reason: `EO could not check whether it can start: ${error instanceof Error ? error.message : String(error)}.`, fix: "Check again from the agent's settings." };
+    }
+    if (answer === null || answer.available) return null;
+    return (
+      `${agent.name} runs sandboxed, and its "${agent.provider}" sandbox cannot start on this machine, so EO did not start the run: ` +
+      `it never runs a sandboxed agent unsandboxed. ${answer.reason} ${answer.fix} ` +
+      `Or turn the sandbox off in ${agent.name}'s settings. Nothing was sent to the backend.`
+    );
   }
 
   /** The workspace a run recorded, as the value the kind's methods take. Null when EO recorded no directory for it. */
@@ -3967,7 +4021,15 @@ export function createRunSupervisor(
    * No workspace is no question: a run EO recorded no directory for has
    * nothing for a kind to judge.
    */
-  function openTurn(item: Item, workspace: PreparedWorkspace | null, open: () => InterruptibleStream<AgentEvent>): InterruptibleStream<AgentEvent> {
+  function openTurn(
+    item: Item,
+    workspace: PreparedWorkspace | null,
+    attachment: Pick<WorkspaceAttachment, "sandboxRefusal"> | undefined,
+    open: () => InterruptibleStream<AgentEvent>,
+  ): InterruptibleStream<AgentEvent> {
+    // A sandboxed agent whose sandbox cannot start here (EO-935), with or
+    // without a workspace: refused, never run unsandboxed.
+    if (attachment?.sandboxRefusal !== undefined) return refusedTurn(attachment.sandboxRefusal);
     if (workspace === null) return open();
     const kind = kinds.get(workspace.kind) ?? coreKinds.get(workspace.kind) ?? noDisk;
     const refusal = kind.refusesTurn?.(item, workspace) ?? null;
@@ -6694,6 +6756,13 @@ export function createRunSupervisor(
             break;
           }
           if (resultRetries < MAX_RESULT_VALIDATION_RETRIES && threadId) {
+            // Whether the sandbox can still start, asked again for this
+            // corrective turn (EO-935): the run's attachment answered for
+            // the turn before, and a machine can stop being able to sandbox
+            // while that turn ran. Asked before the pause check below, and
+            // a stop that landed while it was asked ends the run as a stop.
+            const sandboxNow = await sandboxAsOfNow(runOpts.attachment, item, agent);
+            controller.signal.throwIfAborted();
             if (heldBack(agent)) {
               outcome = { kind: "paused" };
               break;
@@ -6705,7 +6774,7 @@ export function createRunSupervisor(
             // `memory_note` (EO-593): it carries on a thread that may
             // never have been given it.
             const correction = withMemoryWriting(`${validation.error}\n\nPlease return a corrected result that matches the schema.`, agent, turnMemoryScopes(item));
-            stream = openTurn(item, workspaceOfRun(item, run), () =>
+            stream = openTurn(item, workspaceOfRun(item, run), sandboxNow, () =>
             sendingProvider(run, agent, item, action, { purpose: "correction" }).resume(correctedThreadId, correction, correctionOptions()),
           );
             activeStreams.set(run.id, stream);
@@ -7326,7 +7395,7 @@ export function createRunSupervisor(
     const reuse = reusesThreadPerItem(registry, agent, action) ? findReusableThread(db, { itemId: item.id, agent, cwd: workspace.cwd }) : null;
     const attachments = runAttachmentsHash(agent, item);
     const resuming = reuse?.kind === "resume" && reuse.run.threadId !== null && toolSurfaceOf(reuse.run, agent, item) === "same" ? reuse.run.threadId : null;
-    const attachment = await attachWorkspace(item, agent, workspace);
+    const attachment = await attachWorkspace(item, agent, workspace, { checkSandbox: false });
     if (heldBack(agent, itemId) || listActiveRuns(db).some((run) => run.itemId === item.id)) return false;
     const toolDirectory = prepareToolDirectory(item, agent);
     const outputSchema = outputSchemaFor(registryFor(item), action, typeOf(item), definingRole(item, agent));
@@ -8040,7 +8109,7 @@ export function createRunSupervisor(
     // the resumed turn because neither backend accepts them there — the
     // session keeps the ones it was started with, which is exactly why
     // an edit to them refuses the reuse rather than being sent again.
-    const stream = openTurn(item, workspace, () =>
+    const stream = openTurn(item, workspace, attachment, () =>
       resuming
         ? sendingProvider(run, agent, item, action, { purpose: "dispatch" }).resume(resuming.threadId, turnContext, {
             ...turnOptions,
@@ -10348,7 +10417,7 @@ export function createRunSupervisor(
       // Written again past that await (EO-919), so the recovered thread
       // loads its skills as they are now.
       const recoveredToolDirectory = toolDirectoryAtBoundary(newRun, agent, item, preparedRecoveryDirectory);
-      const stream = openTurn(item, workspaceOfRun(item, run), () =>
+      const stream = openTurn(item, workspaceOfRun(item, run), recoveredAttachment, () =>
         // With the memory-writing block where the turn is served
         // `memory_note` (EO-593): the thread being recovered may predate it.
         sendingProvider(newRun, agent, item, run.action, { purpose: "recovery" }).resume(resumableThreadId, withMemoryWriting(message, agent, turnMemoryScopes(item)), {
@@ -13051,7 +13120,7 @@ export function createRunSupervisor(
     // conversation, so the reply's turn loads them as they are now, and is
     // told at the end of its message what changed while it was parked.
     const replyToolDirectory = toolDirectoryAtBoundary(run, agent, item, preparedReplyDirectory);
-    const stream = openTurn(item, workspaceOfRun(item, priorRun), () =>
+    const stream = openTurn(item, workspaceOfRun(item, priorRun), replyAttachment, () =>
       sendingProvider(run, agent, item, priorRun.action, { purpose: "reply" }).resume(resumableThreadId, replyMessage, {
         ...(priorRun.cwd ? { cwd: priorRun.cwd } : {}),
         skillsBefore: skillsGivenBefore(db, priorRun.id),

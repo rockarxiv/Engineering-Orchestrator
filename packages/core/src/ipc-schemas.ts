@@ -2088,6 +2088,23 @@ export const ProviderCapabilitiesSchema = z.object({
 export type ProviderCapabilities = z.infer<typeof ProviderCapabilitiesSchema>;
 
 /**
+ * Whether a backend's sandbox can start on this machine (EO-935,
+ * ARCHITECTURE.md §12.7): asked of the machine, not of the agent, and
+ * asked again before every turn of a sandboxed agent, which is refused
+ * rather than run unsandboxed where the answer is no.
+ *
+ * `how` says what the sandbox runs on here ("bubblewrap 0.13.1 and
+ * socat"); `reason` says why it cannot start and `fix` what would make
+ * it start, both as a sentence a person reads beside the setting.
+ */
+export const SandboxAvailabilitySchema = z.discriminatedUnion("available", [
+  z.object({ available: z.literal(true), how: z.string() }),
+  z.object({ available: z.literal(false), reason: z.string(), fix: z.string() }),
+]);
+
+export type SandboxAvailability = z.infer<typeof SandboxAvailabilitySchema>;
+
+/**
  * Whether the CLI EO resolved is signed in (EO-82).
  *
  * A download makes a runtime *present*; it does not make it usable.

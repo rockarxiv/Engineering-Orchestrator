@@ -56,6 +56,7 @@ import { usePackBriefs } from "./ipc/packBriefs.js";
 import { isItemLive, listAgents, resolveAgentAttachments } from "./db/repos/index.js";
 import { isEnginePausePreferred } from "./engineActivity.js";
 import type { ModuleChangeStaging } from "./roles/moduleChangeProposals.js";
+import { sandboxAvailability } from "./providers/sandboxAvailability.js";
 
 export interface EngineOptions {
   db: Db;
@@ -467,6 +468,15 @@ export function createEngine(options: EngineOptions, packs: readonly CodePack[] 
     runtimeSource: options.provider
       ? () => null
       : (agent) => runtimeSourceForAgent(agent, runtimeRoot, db),
+    // Whether a sandboxed agent's sandbox can start here (EO-935), asked
+    // of the binary the turn would run, before each turn. Not for a
+    // caller's own provider, which launches no CLI of EO's resolving.
+    ...(options.provider
+      ? {}
+      : {
+          sandboxAvailability: (agent: Agent) =>
+            sandboxAvailability(agent.provider, runtimePathFor(agent.provider, runtimeRoot, db, configuredExecutablePath(agent))),
+        }),
     // An agent run's environment variables (EO-487): read from disk as
     // each turn opens and handed to that turn, so they are never part of
     // `providerCacheKey` and an edit reaches the next run.

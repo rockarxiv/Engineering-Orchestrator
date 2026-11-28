@@ -2,10 +2,10 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
-import type { AgentProvider, AgentSandbox, Item } from "@eo/core";
+import type { Agent, AgentProvider, AgentSandbox, Item, SandboxAvailability } from "@eo/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DbHandle } from "../../../db/client.js";
-import { listAgents, listRunsForItem, updateAgent, updateItem, updateWorkspace } from "../../../db/repos/index.js";
+import { listAgents, listCommentsForItem, listRunsForItem, updateAgent, updateItem, updateWorkspace } from "../../../db/repos/index.js";
 import { attachWorkspace, createTestItem, openMigratedTestDb, REVIEWABLE_SPEC } from "../../../db/testHelpers.js";
 import { createClaudeProvider } from "../../../providers/claude.js";
 import { codexClientOptions, createCodexProvider } from "../../../providers/codex.js";
@@ -124,7 +124,7 @@ async function gitStory(): Promise<{ item: Item; worktree: string; common: strin
   return { item, worktree, common: join(repo, ".git"), store };
 }
 
-async function dispatchImplementer(name: BackendName, sandboxed: boolean) {
+async function dispatchImplementer(name: BackendName, sandboxed: boolean, sandboxAvailability?: (agent: Agent) => Promise<SandboxAvailability | null>) {
   const implementer = listAgents(handle.db).find((candidate) => candidate.role === "implementer")!;
   updateAgent(handle.db, implementer.id, { provider: name, config: sandboxed ? { ...implementer.config, sandboxed: true } : implementer.config });
   const story = await gitStory();
@@ -138,6 +138,7 @@ async function dispatchImplementer(name: BackendName, sandboxed: boolean) {
     // The pack's own sections, as the composition root hands them over.
     sectionRenderers: developerSectionRenderers,
     limits: LIMITS,
+    ...(sandboxAvailability ? { sandboxAvailability } : {}),
     kinds: installedKinds(
       fakeWorkspaceKind({
         prepare: async (prepared) => {
@@ -194,5 +195,65 @@ describe.each(["claude", "codex"] as const)("a sandboxed implementer on %s (EO-9
       expect(over.codex?.paramsOf("thread/start")).toMatchObject({ sandbox: "danger-full-access", approvalPolicy: "never" });
       expect((over.codex?.launches[0]?.args ?? []).some((arg) => arg.startsWith("default_permissions"))).toBe(false);
     }
+  });
+});
+
+/**
+ * A sandboxed implementer on a machine that cannot start its sandbox
+ * (EO-935): refused before the backend is called, with a comment on the
+ * item saying why, and never launched unsandboxed.
+ */
+describe.each(["claude", "codex"] as const)("a sandboxed implementer on %s whose sandbox cannot start (EO-935)", (name) => {
+  const MISSING: SandboxAvailability = {
+    available: false,
+    reason: "Claude's sandbox on Linux needs bubblewrap and socat, and bubblewrap (bwrap) is not installed on this machine.",
+    fix: "Install bubblewrap (bwrap) (for example `sudo apt install bubblewrap`), then check again.",
+  };
+
+  it("runs when the machine can start it, having asked about the agent being dispatched", async () => {
+    const asked: string[] = [];
+    const { item, turns } = await dispatchImplementer(name, true, async (agent) => {
+      asked.push(agent.provider);
+      return { available: true, how: "bubblewrap and socat" };
+    });
+
+    expect(asked).toEqual([name]);
+    expect(turns).toHaveLength(1);
+    expect(turns[0]?.sandbox).toBeDefined();
+    expect(listRunsForItem(handle.db, item.id).map((run) => run.status)).not.toContain("awaiting_input");
+  });
+
+  it("is refused before launch when the sandbox stopped being able to start after it was turned on, and the item is told why", async () => {
+    // Available when the setting was ticked; gone by the time the run is.
+    let installed = true;
+    const check = async (): Promise<SandboxAvailability> => (installed ? { available: true, how: "bubblewrap and socat" } : MISSING);
+    expect(await check()).toMatchObject({ available: true });
+    installed = false;
+
+    const { item, over, turns } = await dispatchImplementer(name, true, check);
+
+    // Nothing reached the backend: no turn, no SDK query, no app-server.
+    expect(turns).toEqual([]);
+    expect(over.claudeOptions).toEqual([]);
+    expect(over.codex?.launches ?? []).toEqual([]);
+    const runs = listRunsForItem(handle.db, item.id);
+    expect(runs.map((run) => run.status)).toEqual(["awaiting_input"]);
+    const told = listCommentsForItem(handle.db, item.id).map((comment) => comment.body).join("\n");
+    expect(told).toContain(`"${name}" sandbox cannot start on this machine, so EO did not start the run`);
+    expect(told).toContain("it never runs a sandboxed agent unsandboxed");
+    expect(told).toContain(MISSING.reason);
+    expect(told).toContain(MISSING.fix);
+  });
+
+  it("asks nothing of an agent whose setting is off, and launches it as before", async () => {
+    const asked: string[] = [];
+    const { turns } = await dispatchImplementer(name, false, async (agent) => {
+      asked.push(agent.provider);
+      return MISSING;
+    });
+
+    expect(asked).toEqual([]);
+    expect(turns).toHaveLength(1);
+    expect(turns[0]?.sandbox).toBeUndefined();
   });
 });

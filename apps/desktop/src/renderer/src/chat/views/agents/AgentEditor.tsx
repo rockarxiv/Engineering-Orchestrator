@@ -13,7 +13,7 @@ import {
   NOT_ALLOWED_BY_YOUR_ORGANISATION,
   reusesThreadPerItem,
 } from "@eo/core";
-import type { AgentDetail, IpcRequest, ProviderCapabilities, ProviderModel, RegistryFacts } from "@eo/core";
+import type { AgentDetail, IpcRequest, ProviderCapabilities, ProviderModel, RegistryFacts, SandboxAvailability } from "@eo/core";
 import type { StatusTone } from "@eo/ui";
 import { ipcQuery } from "../../../query/client";
 import { useChromeVocabulary, usePolicy } from "../../../query/hooks";
@@ -345,6 +345,17 @@ export function AgentEditor({
     staleTime: Infinity,
   });
   const models = capabilities.data?.models ?? [];
+  // Whether this machine can start the backend's sandbox (EO-935): asked
+  // of the binary this agent would run, and only where the backend has a
+  // sandbox at all. Asking starts one, so it is kept for a minute.
+  const sandboxes = capabilities.data?.capabilities.sandboxes === true;
+  const sandboxCheck = useQuery({
+    queryKey: ["providers", draft.provider, "sandbox", executablePath(draft.config)],
+    queryFn: () => ipcQuery("providers:sandbox", { provider: draft.provider, executablePath: executablePath(draft.config) }),
+    enabled: sandboxes,
+    staleTime: 60_000,
+  });
+  const sandbox = sandboxCheck.data?.sandbox ?? null;
 
   const runtime = useRuntimeStatus(draft.provider, executablePath(draft.config)).data?.runtime ?? null;
   // Why a Codex agent is not locked down after all (EO-378): the
@@ -560,9 +571,12 @@ export function AgentEditor({
             </TickOption>
           ) : null}
           {/* EO's own switch, on both backends that can sandbox (EO-934, ARCHITECTURE.md §12.7). Off unless ticked. */}
-          {capabilities.data?.capabilities.sandboxes === true ? (
+          {sandboxes ? (
             <TickOption
               checked={agentSandboxed(draft)}
+              // Cannot be turned on where the sandbox cannot start (EO-935),
+              // nor before EO knows; one already on can always be turned off.
+              disabled={!agentSandboxed(draft) && sandbox?.available !== true}
               onChange={(next) => {
                 const config = { ...draft.config };
                 if (next) config[AGENT_SANDBOXED_KEY] = true;
@@ -576,6 +590,7 @@ export function AgentEditor({
               rather than running it unsandboxed.
             </TickOption>
           ) : null}
+          {sandboxes ? <SandboxAvailabilityLine loading={sandboxCheck.isLoading} sandbox={sandbox} on={agentSandboxed(draft)} problem={sandboxCheck.error} /> : null}
           {keyringNotice ? (
             <p role="note" className="text-[11.5px] leading-snug text-paused">
               Your Codex is set to keep its sign-in in your operating system&apos;s keyring, which EO cannot carry into a Codex home of this agent&apos;s own — so
@@ -692,5 +707,38 @@ export function AgentEditor({
         </div>
       </div>
     </section>
+  );
+}
+
+/**
+ * Whether this machine can start the sandbox, beside the setting
+ * (EO-935, invariant 12): what it runs on here, or why it cannot start
+ * and what would fix it.
+ */
+function SandboxAvailabilityLine({
+  loading,
+  sandbox,
+  on,
+  problem,
+}: {
+  loading: boolean;
+  sandbox: SandboxAvailability | null;
+  on: boolean;
+  problem: unknown;
+}) {
+  if (loading) return <p className="pl-6 text-[11.5px] leading-snug text-ink-subtle">Checking whether this machine can start the sandbox…</p>;
+  if (sandbox === null) {
+    return problem ? (
+      <p role="alert" className="pl-6 text-[11.5px] leading-snug text-danger">
+        EO could not check whether this machine can start the sandbox: {problem instanceof Error ? problem.message : String(problem)}
+      </p>
+    ) : null;
+  }
+  if (sandbox.available) return <p className="pl-6 text-[11.5px] leading-snug text-ink-subtle">This machine can start the sandbox: {sandbox.how}.</p>;
+  return (
+    <p role="alert" className="pl-6 text-[11.5px] leading-snug text-danger">
+      This machine cannot start the sandbox, so it cannot be turned on here. {sandbox.reason} {sandbox.fix}
+      {on ? " Until it can, every run of this agent is refused, and says why on its own thread." : null}
+    </p>
   );
 }

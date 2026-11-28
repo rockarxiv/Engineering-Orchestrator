@@ -384,6 +384,13 @@ export interface WorkspaceAttachment {
    * (`agentSandbox.ts`), on every path that reaches a provider.
    */
   sandbox?: AgentSandbox;
+  /**
+   * Why that sandbox cannot start on this machine (EO-935), as the
+   * sentence the item is told: set by the supervisor where its check says
+   * no, and `openTurn` then refuses the turn before the backend is called.
+   * Never a kind's to set.
+   */
+  sandboxRefusal?: string;
 }
 
 /** Nothing lent, which is what a run with no kind — and every supervisor built without one — gets. */
