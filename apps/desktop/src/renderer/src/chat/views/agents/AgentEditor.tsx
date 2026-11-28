@@ -570,7 +570,7 @@ export function AgentEditor({
                 setDraft({ ...draft, config });
               }}
             >
-              <span className="text-ink">Run this agent sandboxed</span> — its shell commands may write only the ticket&apos;s checkout, the git
+              <span className="text-ink">Run this agent sandboxed</span> — its shell commands may write only the {word}&apos;s checkout, the git
               directories its commits need and the repository&apos;s extra writable paths, it is given no forge credentials, and it never pushes: EO
               pushes its work itself. A command the sandbox blocks fails rather than waiting for anyone. A machine that cannot sandbox it refuses the run
               rather than running it unsandboxed.
