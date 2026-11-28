@@ -1,0 +1,192 @@
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
+import type { AgentProvider, AgentSandbox, Item } from "@eo/core";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { DbHandle } from "../../../db/client.js";
+import { listAgents, listRunsForItem, updateAgent, updateItem, updateWorkspace } from "../../../db/repos/index.js";
+import { attachWorkspace, createTestItem, openMigratedTestDb, REVIEWABLE_SPEC } from "../../../db/testHelpers.js";
+import { createClaudeProvider } from "../../../providers/claude.js";
+import { codexClientOptions, createCodexProvider } from "../../../providers/codex.js";
+import { CodexClient } from "../../../providers/codexClient.js";
+import { validImplementResult } from "../../../providers/fixtures.js";
+import { createRunSupervisor } from "../../../supervisor/runSupervisor.js";
+import { fakeWorkspaceKind, installedKinds, preparedIn } from "../../../supervisor/testWorkspaceKinds.js";
+import { fakeAppServer, note, type FakeAppServer } from "../../../testing/fakeCodexAppServer.js";
+import { makeRepo, run } from "../../../testing/git.js";
+import { developerSectionRenderers } from "../sections.js";
+import { createRoleWiring } from "../wiring.js";
+import { gitWorkspaceKind } from "./gitKind.js";
+
+/**
+ * A sandboxed implementer dispatched for real (EO-934): the supervisor,
+ * the git kind's own `attach` on a real linked worktree, and the real
+ * Claude and Codex adapters over stubs of their backends.
+ *
+ * What it shows is the dispatch's half, which no adapter test can: that
+ * the sandbox is computed from the item's checkout and the repository's
+ * settings — never from the agent — that it reaches each backend in the
+ * form EO-933 measured, that the prompt says the turn is sandboxed, and
+ * that an agent whose setting is off is launched exactly as before.
+ */
+const LIMITS = { globalConcurrency: 5, perAgentConcurrency: 5, perRepositoryConcurrency: 10 };
+const EXECUTABLE = "/opt/eo/runtimes/codex/bin/codex";
+
+type BackendName = "claude" | "codex";
+
+let handle: DbHandle;
+let directories: string[];
+
+beforeEach(() => {
+  handle = openMigratedTestDb();
+  directories = [];
+});
+
+afterEach(() => {
+  handle.close();
+  for (const directory of directories) rmSync(directory, { recursive: true, force: true });
+});
+
+function directory(prefix: string): string {
+  const made = realpathSync(mkdtempSync(join(tmpdir(), prefix)));
+  directories.push(made);
+  return made;
+}
+
+interface Backend {
+  provider: AgentProvider;
+  /** What Claude's SDK was handed, per turn. */
+  claudeOptions: Record<string, unknown>[];
+  /** Codex's app-server, as launched and as asked. */
+  codex: FakeAppServer | null;
+}
+
+function backend(name: BackendName): Backend {
+  if (name === "codex") {
+    const fake = fakeAppServer({ model: "gpt-6.1-sol", after: { "turn/start": [note.turnStarted(), note.agentMessage(JSON.stringify(validImplementResult)), note.tokenUsage({ input: 10, output: 10 }), note.turnCompleted()] } });
+    const options = { executablePath: EXECUTABLE, searchHookCommandPath: "/opt/eo/hook.mjs", searchHookTrust: async () => ({ key: "/<session-flags>/config.toml:pre_tool_use:0:0", hash: "sha256:abc" }) };
+    const provider = createCodexProvider({
+      ...options,
+      createCodex: (...args) => new CodexClient({ ...codexClientOptions(options, ...args), spawn: fake.spawn, shutdownGraceMs: 200 }),
+    });
+    return { provider, claudeOptions: [], codex: fake };
+  }
+  const claudeOptions: Record<string, unknown>[] = [];
+  const runQuery = ((params: { options?: Record<string, unknown> }) => {
+    claudeOptions.push(params.options ?? {});
+    return (async function* () {
+      yield { type: "system", subtype: "init", session_id: "sess_1" } as unknown as SDKMessage;
+      yield {
+        type: "result",
+        subtype: "success",
+        result: JSON.stringify(validImplementResult),
+        structured_output: validImplementResult,
+        total_cost_usd: 0.01,
+        usage: { input_tokens: 10, output_tokens: 10 },
+        session_id: "sess_1",
+      } as unknown as SDKMessage;
+    })();
+  }) as never;
+  return { provider: createClaudeProvider({ runQuery, enableCommentTool: false }), claudeOptions, codex: null };
+}
+
+/** Every turn's sandbox and prompt, as the supervisor handed them to the adapter. */
+function recording(provider: AgentProvider, turns: { sandbox: AgentSandbox | undefined; context: string }[]): AgentProvider {
+  return {
+    ...provider,
+    start: (opts) => {
+      turns.push({ sandbox: opts.sandbox, context: opts.context });
+      return provider.start(opts);
+    },
+    resume: (threadId, message, opts) => {
+      turns.push({ sandbox: opts?.sandbox, context: message });
+      return provider.resume(threadId, message, opts);
+    },
+  };
+}
+
+/** A story on a real repository, and the item's linked worktree cut from it. */
+async function gitStory(): Promise<{ item: Item; worktree: string; common: string }> {
+  const root = directory("eo-934-");
+  const repo = await makeRepo(root, "repo");
+  const worktree = join(root, "worktrees", "EO-1");
+  await run(["worktree", "add", "-b", "eo/EO-1", worktree], repo);
+  const workspace = attachWorkspace(handle.db, { keyPrefix: "EO", name: "eo", repoPath: repo });
+  updateWorkspace(handle.db, workspace.id, { config: { extraWritablePaths: ["/home/me/.local/share/pnpm/store"] } });
+  const item = createTestItem(handle.db, { type: "story", title: "Rate limiting", stepId: "todo", spec: REVIEWABLE_SPEC, workspaceId: workspace.id, projectId: workspace.projectId });
+  return { item, worktree, common: join(repo, ".git") };
+}
+
+async function dispatchImplementer(name: BackendName, sandboxed: boolean) {
+  const implementer = listAgents(handle.db).find((candidate) => candidate.role === "implementer")!;
+  updateAgent(handle.db, implementer.id, { provider: name, config: sandboxed ? { ...implementer.config, sandboxed: true } : implementer.config });
+  const story = await gitStory();
+  const over = backend(name);
+  const turns: { sandbox: AgentSandbox | undefined; context: string }[] = [];
+  const git = gitWorkspaceKind({ db: handle.db, intelligenceFor: () => null });
+  const supervisor = createRunSupervisor({
+    db: handle.db,
+    provider: recording(over.provider, turns),
+    ...createRoleWiring(handle.db),
+    // The pack's own sections, as the composition root hands them over.
+    sectionRenderers: developerSectionRenderers,
+    limits: LIMITS,
+    kinds: installedKinds(
+      fakeWorkspaceKind({
+        prepare: async (prepared) => {
+          updateItem(handle.db, prepared.id, { git: { branch: "eo/EO-1" } });
+          return preparedIn(prepared, story.worktree);
+        },
+        attach: git.attach,
+      }),
+    ),
+  });
+  await supervisor.runOnce();
+  return { ...story, over, turns };
+}
+
+describe.each(["claude", "codex"] as const)("a sandboxed implementer on %s (EO-934)", (name) => {
+  it("is launched in a sandbox EO worked out from the item's checkout and the repository's settings, and told so", async () => {
+    const { item, worktree, common, over, turns } = await dispatchImplementer(name, true);
+
+    expect(listRunsForItem(handle.db, item.id).map((run) => run.action)).toEqual(["implement"]);
+    const sandbox = turns[0]?.sandbox;
+    expect(sandbox?.writable).toEqual([
+      worktree,
+      join(common, "worktrees", "EO-1"),
+      join(common, "objects"),
+      join(common, "refs"),
+      join(common, "logs"),
+      "/home/me/.local/share/pnpm/store",
+    ]);
+    for (const closed of [common, join(common, "hooks"), join(common, "config")]) expect(sandbox?.writable).not.toContain(closed);
+    expect(sandbox?.hidden).toEqual(expect.arrayContaining([expect.stringMatching(/gh\/hosts\.yml$/), expect.stringMatching(/\.ssh$/), expect.stringMatching(/\.git-credentials$/)]));
+    expect(sandbox?.withheld).toEqual(expect.arrayContaining(["GH_TOKEN", "GITHUB_TOKEN", "SSH_AUTH_SOCK", "DBUS_SESSION_BUS_ADDRESS"]));
+    // The prompt says so, from the dispatch.
+    expect(turns[0]?.context).toContain("## Sandbox");
+    expect(turns[0]?.context).toContain("You run sandboxed on this turn");
+
+    if (name === "claude") {
+      expect(over.claudeOptions[0]).toMatchObject({ permissionMode: "bypassPermissions", sandbox: { enabled: true, autoAllowBashIfSandboxed: true, allowUnsandboxedCommands: false, failIfUnavailable: true, filesystem: { allowWrite: sandbox?.writable, denyRead: sandbox?.hidden } } });
+    } else {
+      expect(over.codex?.paramsOf("thread/start")).not.toHaveProperty("sandbox");
+      expect(over.codex?.paramsOf("thread/start")).toMatchObject({ approvalPolicy: "never" });
+      expect(over.codex?.launches[0]?.args).toEqual(expect.arrayContaining(['default_permissions="eo"', 'permissions.eo.extends=":workspace"']));
+    }
+  });
+
+  it("is launched exactly as before when its setting is off", async () => {
+    const { over, turns } = await dispatchImplementer(name, false);
+
+    expect(turns[0]?.sandbox).toBeUndefined();
+    expect(turns[0]?.context).not.toContain("## Sandbox");
+    if (name === "claude") {
+      expect(over.claudeOptions[0]).not.toHaveProperty("sandbox");
+      expect(over.claudeOptions[0]).toMatchObject({ permissionMode: "bypassPermissions" });
+    } else {
+      expect(over.codex?.paramsOf("thread/start")).toMatchObject({ sandbox: "danger-full-access", approvalPolicy: "never" });
+      expect((over.codex?.launches[0]?.args ?? []).some((arg) => arg.startsWith("default_permissions"))).toBe(false);
+    }
+  });
+});
