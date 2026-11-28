@@ -2413,6 +2413,60 @@ describe("createCodexProvider over a stubbed app-server", () => {
       expect(Object.values((open["env"] ?? {}) as Record<string, string>)).toContain(`Bearer ${SYNTHETIC}`);
     });
 
+    describe("what Codex's own configuration sets for commands (EO-934 review)", () => {
+      const turnOver = async (effectiveConfig: Record<string, unknown> | null, sandboxed = true) => {
+        const scenario: FakeAppServerScenario = {
+          after: { "turn/start": [note.turnStarted(), note.agentMessage("ok"), note.turnCompleted()] },
+          ...(effectiveConfig === null ? { replies: { "config/read": { error: { code: -32601, message: "no such method" } } } } : { effectiveConfig }),
+        };
+        const { fake, provider } = sandboxedProviderOver(scenario);
+        const refused = await collect(provider.start({ ...startOpts, cwd: worktree(), ...(sandboxed ? { sandbox: SANDBOX } : {}) })).then(
+          () => null,
+          (error: unknown) => (error instanceof Error ? error.message : String(error)),
+        );
+        return { fake, refused };
+      };
+      const policy = (set: Record<string, string>) => ({ shell_environment_policy: { set } });
+
+      it("refuses a sandboxed turn whose configuration sets a withheld name for its commands, before any thread opens, naming it and not its value", async () => {
+        const { fake, refused } = await turnOver(policy({ GH_TOKEN: "SYNTHETIC_POLICY_TOKEN" }));
+
+        expect(refused).toContain("Codex's configuration sets GH_TOKEN for every command");
+        expect(refused).not.toContain("SYNTHETIC_POLICY_TOKEN");
+        expect(fake.paramsOf("config/read")).toMatchObject({ cwd: expect.any(String) });
+        expect(fake.paramsOf("thread/start")).toBeUndefined();
+      });
+
+      it("refuses one whose configuration moves a credential location out of what the profile hides", async () => {
+        const { fake, refused } = await turnOver(policy({ GH_CONFIG_DIR: "/alternate-policy-gh", XDG_RUNTIME_DIR: "/alternate-runtime" }));
+
+        expect(refused).toContain("/alternate-policy-gh/hosts.yml");
+        expect(refused).toContain("/alternate-runtime/bus");
+        expect(fake.paramsOf("thread/start")).toBeUndefined();
+      });
+
+      it("lets through a location that lands only on paths already hidden, and variables it does not guard", async () => {
+        const { fake, refused } = await turnOver(policy({ GH_CONFIG_DIR: "/home/me/.config/gh", EO934_KEPT: "kept" }));
+
+        expect(refused).toBeNull();
+        expect(fake.paramsOf("thread/start")).toBeDefined();
+      });
+
+      it("refuses a sandboxed turn whose configuration cannot be read", async () => {
+        const { fake, refused } = await turnOver(null);
+
+        expect(refused).toContain("could not read Codex's configuration");
+        expect(fake.paramsOf("thread/start")).toBeUndefined();
+      });
+
+      it("never asks an unsandboxed turn's configuration", async () => {
+        const { fake, refused } = await turnOver(policy({ GH_TOKEN: "SYNTHETIC_POLICY_TOKEN" }), false);
+
+        expect(refused).toBeNull();
+        expect(fake.paramsOf("config/read")).toBeUndefined();
+      });
+    });
+
     it("launches an unsandboxed turn exactly as before: danger-full-access on the thread and no profile", async () => {
       vi.stubEnv("GH_TOKEN", "gho_from_the_shell");
       const { fake, provider } = sandboxedProviderOver({ after: { "turn/start": [note.turnStarted(), note.agentMessage("ok"), note.turnCompleted()] } });

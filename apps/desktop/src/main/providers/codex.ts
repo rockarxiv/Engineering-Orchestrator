@@ -1582,6 +1582,15 @@ export const CODEX_SANDBOX_PROFILE = "eo";
  * **Never together with a `sandbox` on `thread/start` or
  * `thread/resume`**, which silently wins over the profile with its own
  * defaults: `threadOptionsFrom` names none on a sandboxed turn.
+ *
+ * **What a configuration file sets for commands is checked, not
+ * overridden** (EO-934 review). The person's own `config.toml`, on an
+ * agent that uses their setup, can set variables for every command in
+ * `[shell_environment_policy] set`, laid over the app-server's
+ * environment after EO built it; and a `-c` override of that table
+ * merges into it rather than replacing it (measured on 0.171.0). So
+ * `codexSandboxConfigProblem` reads the effective table from the turn's
+ * own app-server and refuses the turn before any thread is opened.
  */
 export function codexSandboxConfig(sandbox: AgentSandbox): Record<string, unknown> {
   return {
@@ -1599,6 +1608,42 @@ export function codexSandboxConfig(sandbox: AgentSandbox): Record<string, unknow
       },
     },
   };
+}
+
+/**
+ * Why a sandboxed turn must not run under this effective Codex
+ * configuration, or null (EO-934 review) — asked of the turn's own
+ * app-server (`CodexClientOptions.configGuard`) before any thread opens.
+ *
+ * `shell_environment_policy.set` is laid over every command's
+ * environment after EO built the app-server's. A name EO withholds there
+ * would hand the agent's commands a credential; a location there
+ * (`GH_CONFIG_DIR`, `XDG_CONFIG_HOME`, `XDG_RUNTIME_DIR`, `HOME`…) would
+ * move a credential file or socket out of what the profile hides. Either
+ * refuses the turn, naming the variables and never their values. A
+ * location that lands only on paths already hidden is let through: the
+ * configuration is not authority for anything, only a reason to refuse.
+ */
+export function codexSandboxConfigProblem(config: Record<string, unknown>, sandbox: AgentSandbox, launchEnvironment: Readonly<Record<string, string | undefined>>): string | null {
+  const policy = config["shell_environment_policy"];
+  const table = typeof policy === "object" && policy !== null ? (policy as Record<string, unknown>)["set"] : undefined;
+  const set = typeof table === "object" && table !== null && !Array.isArray(table) ? (table as Record<string, unknown>) : {};
+  const restoring = Object.keys(set).filter((name) => sandbox.withheld.includes(name));
+  if (restoring.length > 0) {
+    return (
+      `EO did not run this sandboxed turn: Codex's configuration sets ${restoring.join(", ")} for every command ([shell_environment_policy] set), ` +
+      "which a sandboxed agent is never given. Remove them from that file, or turn this agent's sandbox off."
+    );
+  }
+  const values = Object.fromEntries(Object.entries(set).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
+  const missing = hiddenIn(sandbox, { ...launchEnvironment, ...values }).hidden.filter((path) => !sandbox.hidden.includes(path));
+  if (missing.length > 0) {
+    return (
+      `EO did not run this sandboxed turn: Codex's configuration ([shell_environment_policy] set) moves where commands look for credentials, to ${missing.join(", ")}, ` +
+      "which its sandbox would not hide. Remove those variables from that file, or turn this agent's sandbox off."
+    );
+  }
+  return null;
 }
 
 /**
@@ -1737,7 +1782,7 @@ export function buildCodexOptions(
   itemId?: string,
   /** The sandbox the turn runs in (EO-934), as a permission profile. */
   sandbox?: AgentSandbox,
-): Pick<CodexClientOptions, "executablePath" | "config" | "env" | "afterTurn" | "perTurnEnv"> {
+): Pick<CodexClientOptions, "executablePath" | "config" | "env" | "afterTurn" | "perTurnEnv" | "configGuard"> {
   // Asked once per client, and let go of again if the options cannot be
   // built (EO-444): no process will be spawned to let it go after. For
   // the directory the turn runs in (EO-700).
@@ -1763,7 +1808,7 @@ function codexOptionsWith(
   skillSlugs?: readonly string[],
   itemId?: string,
   sandbox?: AgentSandbox,
-): Pick<CodexClientOptions, "executablePath" | "config" | "env" | "afterTurn" | "perTurnEnv"> {
+): Pick<CodexClientOptions, "executablePath" | "config" | "env" | "afterTurn" | "perTurnEnv" | "configGuard"> {
   const attached = deliveredServers(options.attachedServers ?? []);
   const mcpServers: Record<string, unknown> = {};
   // Read once, here, and spent twice: on the stdio servers' `env_vars`
@@ -1940,7 +1985,8 @@ function codexOptionsWith(
   // with before those names went — a declared value included — so a run's
   // `GH_CONFIG_DIR` or `XDG_RUNTIME_DIR` moves nothing out of reach
   // (EO-934 review).
-  const effectiveSandbox = sandbox ? hiddenIn(sandbox, { ...inherited, ...variables, ...read.values, ...(spawnEnv ?? {}) }) : undefined;
+  const launchEnvironment = { ...inherited, ...variables, ...read.values, ...(spawnEnv ?? {}) };
+  const effectiveSandbox = sandbox ? hiddenIn(sandbox, launchEnvironment) : undefined;
 
   // EO's own `PreToolUse` hook, on a turn that has one (EO-379). Inline,
   // as configuration, for the reason the Claude hook is a callback and
@@ -1989,6 +2035,9 @@ function codexOptionsWith(
     // And differs from the bearer a warm process was spawned with by
     // design, so a warm-up matches its turn on the name alone.
     ...(admin ? { perTurnEnv: Object.keys(admin.environment) } : {}),
+    // And a sandboxed turn's check of what Codex's own configuration sets
+    // for commands, before any thread is opened (EO-934 review).
+    ...(effectiveSandbox ? { configGuard: (config: Record<string, unknown>) => codexSandboxConfigProblem(config, effectiveSandbox, launchEnvironment) } : {}),
   };
 }
 

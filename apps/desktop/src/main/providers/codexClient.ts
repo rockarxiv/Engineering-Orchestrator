@@ -335,6 +335,15 @@ export interface CodexThread {
 /** What `providers/codex.ts` constructs a client from, once per turn (`buildCodexOptions`). */
 export interface CodexClientOptions {
   executablePath?: string;
+  /**
+   * Asked of the app-server's effective configuration (`config/read`, for
+   * the thread's directory) after it starts and before any thread is
+   * opened (EO-934 review): a sentence refuses the turn, before the agent
+   * runs anything; null lets it go on. A configuration that cannot be read
+   * refuses it too. Set for a sandboxed turn, whose guarantees a file EO
+   * does not write could otherwise undo.
+   */
+  configGuard?: (config: Record<string, unknown>) => string | null;
   /** Flattened into `-c key=value` overrides on the app-server's command line. */
   config?: Record<string, unknown>;
   /** The whole environment, when EO has something to add to it; undefined inherits. */
@@ -686,6 +695,16 @@ export class CodexClient {
     // other turn hears experimental fields it was not written for.
     await opened.connection.initialize(forking ? { experimentalApi: true } : null);
     const threadParams = threadParamsOf(threadOptions);
+    const guard = this.options.configGuard;
+    if (guard) {
+      const read = (await ask("config/read", { cwd: threadParams["cwd"] }, opened.connection).catch(() => null)) as { config?: unknown } | null;
+      const config = read?.config;
+      if (typeof config !== "object" || config === null || Array.isArray(config)) {
+        throw new Error("EO did not run this sandboxed turn: it could not read Codex's configuration to check that nothing in it undoes the sandbox.");
+      }
+      const problem = guard(config as Record<string, unknown>);
+      if (problem !== null) throw new Error(problem);
+    }
     if (forking) return this.openFork(opened, resumeId, threadParams, ask, threadOptions.forkAfterCompletedTurns);
     const answer = (resumeId === null
       ? await ask("thread/start", threadParams, opened.connection)

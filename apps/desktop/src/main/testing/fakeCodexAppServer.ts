@@ -42,6 +42,8 @@ export interface FakeAppServerScenario {
    * one (EO-374), and names the one asked for when EO asked.
    */
   model?: string;
+  /** What `config/read` answers as the effective configuration (EO-934); `{}` unless set. */
+  effectiveConfig?: Record<string, unknown>;
   /** A method's reply in place of the default. */
   replies?: Record<string, { result: unknown } | { error: { code: number; message: string } }>;
   /**
@@ -128,6 +130,7 @@ const defaults = (message) => {
       };
     }
     // Two completed turns, newest first: a thread a suggestion may follow (EO-808).
+    case "config/read": return { config: scenario.effectiveConfig || {}, origins: {}, layers: null };
     case "thread/turns/list": return { data: [{ id: "turn-2", items: [], itemsView: "notLoaded", status: "completed", error: null }, { id: "turn-1", items: [], itemsView: "notLoaded", status: "completed", error: null }], nextCursor: null, backwardsCursor: null };
     default: return {};
   }
