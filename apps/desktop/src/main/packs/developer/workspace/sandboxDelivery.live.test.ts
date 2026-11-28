@@ -8,7 +8,8 @@ import type { DbHandle } from "../../../db/client.js";
 import { getItem, listAgents, listCommentsForItem, listRunsForItem, stepForItem, updateAgent } from "../../../db/repos/index.js";
 import { attachWorkspace, createTestItem, openMigratedTestDb } from "../../../db/testHelpers.js";
 import { createClaudeProvider } from "../../../providers/claude.js";
-import { createCodexProvider } from "../../../providers/codex.js";
+import { codexClientOptions, createCodexProvider, type CodexProviderOptions } from "../../../providers/codex.js";
+import { CodexClient } from "../../../providers/codexClient.js";
 import { prepareCodexHome } from "../../../providers/codexHome.js";
 import { RUNTIMES } from "../../../runtimes/catalog.js";
 import { runtimeRoot } from "../../../runtimes/install.js";
@@ -61,20 +62,30 @@ function runtimesRoot(): string {
   return process.env["EO_RUNTIME_ROOT"] ?? runtimeRoot(join(homedir(), ".config", "EO"));
 }
 
-async function claudeProvider(): Promise<AgentProvider> {
+/** What each backend was launched with, read where it is handed over: Claude's SDK options, Codex's app-server configuration. */
+type Launched = { sandbox: unknown; defaultPermissions: unknown }[];
+
+async function claudeProvider(launched: Launched): Promise<AgentProvider> {
   const executable = resolveRuntime({ spec: RUNTIMES.claude, root: runtimesRoot() }).path;
   const sdkEntry = resolvePackageSet(runtimesRoot(), CLAUDE_SDK);
   if (executable === null || sdkEntry === null) throw new Error(`Claude Code or its SDK is not installed at EO's pins under ${runtimesRoot()}.`);
-  const sdk = (await import(pathToFileURL(sdkEntry).href)) as never;
+  const real = (await import(pathToFileURL(sdkEntry).href)) as { query: (params: { options?: Record<string, unknown> }) => unknown };
+  const sdk = {
+    ...real,
+    query: (params: { options?: Record<string, unknown> }) => {
+      launched.push({ sandbox: params.options?.["sandbox"], defaultPermissions: undefined });
+      return real.query(params);
+    },
+  } as never;
   return createClaudeProvider({ sdk, executablePath: executable, enableCommentTool: false });
 }
 
-function codexProvider(root: string): AgentProvider {
+function codexProvider(root: string, launched: Launched): AgentProvider {
   const executable = process.env["EO_CODEX_BIN"] ?? resolveRuntime({ spec: RUNTIMES.codex, root: runtimesRoot() }).path;
   if (!executable) throw new Error(`Codex is not installed at EO's pin under ${runtimesRoot()}; name one with EO_CODEX_BIN.`);
   const homes = join(root, "codex-homes");
   mkdirSync(homes);
-  return createCodexProvider({
+  const options: CodexProviderOptions = {
     executablePath: executable,
     // The implementer's turn is fenced (EO-926), and on Codex the fence is
     // the hook this command runs, as the app sets it up.
@@ -83,6 +94,15 @@ function codexProvider(root: string): AgentProvider {
       const prepared = prepareCodexHome({ root: homes, agentId: "eo934-live", ...(itemId ? { itemId } : {}), personHome: join(homedir(), ".codex") });
       if (!prepared.ok) throw new Error(prepared.problem);
       return prepared.path;
+    },
+  };
+  return createCodexProvider({
+    ...options,
+    // The client the provider builds, kept on the way past.
+    createCodex: (...args) => {
+      const built = codexClientOptions(options, ...args);
+      launched.push({ sandbox: args[10], defaultPermissions: built.config?.["default_permissions"] });
+      return new CodexClient(built);
     },
   });
 }
@@ -102,7 +122,7 @@ function recording(provider: AgentProvider, sandboxes: (AgentSandbox | undefined
   };
 }
 
-async function deliver(backend: "claude" | "codex"): Promise<{ handle: DbHandle; item: Item; repoPath: string; worktreeRoot: string; sandboxes: (AgentSandbox | undefined)[] }> {
+async function deliver(backend: "claude" | "codex"): Promise<{ handle: DbHandle; item: Item; repoPath: string; worktreeRoot: string; sandboxes: (AgentSandbox | undefined)[]; launched: Launched }> {
   const root = realpathSync(mkdtempSync(join(homedir(), ".eo934-delivery-")));
   scratches.push(root);
   const repoPath = join(root, "repo");
@@ -132,7 +152,8 @@ async function deliver(backend: "claude" | "codex"): Promise<{ handle: DbHandle;
   updateAgent(handle.db, implementer.id, { provider: backend, model: model ?? null, config: { ...implementer.config, sandboxed: true } });
 
   const sandboxes: (AgentSandbox | undefined)[] = [];
-  const provider = backend === "claude" ? await claudeProvider() : codexProvider(root);
+  const launched: Launched = [];
+  const provider = backend === "claude" ? await claudeProvider(launched) : codexProvider(root, launched);
   const supervisor = createRunSupervisor({
     db: handle.db,
     provider: recording(provider, sandboxes),
@@ -142,7 +163,7 @@ async function deliver(backend: "claude" | "codex"): Promise<{ handle: DbHandle;
     kinds: installedKinds(gitWorkspaceKind({ db: handle.db, worktreeRoot, intelligenceFor: () => null, verifyOptions: { timeoutMs: 60_000 } })),
   });
   await supervisor.runOnce();
-  return { handle, item, repoPath, worktreeRoot, sandboxes };
+  return { handle, item, repoPath, worktreeRoot, sandboxes, launched };
 }
 
 describe.each([
@@ -152,7 +173,7 @@ describe.each([
   it.skipIf(!optedIn)(
     "reaches Review with its commit made, in the sandbox EO worked out",
     async () => {
-      const { handle, item, repoPath, worktreeRoot, sandboxes } = await deliver(backend);
+      const { handle, item, repoPath, worktreeRoot, sandboxes, launched } = await deliver(backend);
       try {
         const runs = listRunsForItem(handle.db, item.id);
         const said = listCommentsForItem(handle.db, item.id)
@@ -166,6 +187,11 @@ describe.each([
         expect(sandboxes[0]?.writable[0]?.startsWith(worktreeRoot)).toBe(true);
         expect(sandboxes[0]?.writable).toContain(join(repoPath, ".git", "objects"));
         expect(sandboxes[0]?.writable).not.toContain(join(repoPath, ".git"));
+        // And the backend was launched in it: the SDK's sandbox on Claude,
+        // EO's permission profile on Codex.
+        expect(launched.length).toBeGreaterThanOrEqual(1);
+        if (backend === "claude") expect(launched.every((one) => (one.sandbox as { enabled?: unknown } | undefined)?.enabled === true)).toBe(true);
+        else expect(launched.every((one) => one.defaultPermissions === "eo")).toBe(true);
 
         // On Review, with the commit on the item's branch.
         const now = getItem(handle.db, item.id)!;
