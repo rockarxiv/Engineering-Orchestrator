@@ -47,3 +47,21 @@ describe("the implementer's prompt on pull request comments", () => {
     expect(Number(/prompt-version: (\d+)/.exec(prompt)?.[1])).toBeGreaterThanOrEqual(18);
   });
 });
+
+describe("the implementer prompt on a refused push (EO-926)", () => {
+  const prompt = readFileSync(join(sourcePromptsDir(), "implementer.md"), "utf8");
+  const paragraph = prompt.split("\n- ").find((line) => line.includes("remote branch has\n  diverged")) ?? "";
+
+  it("keeps its sentences about pushing", () => {
+    expect(paragraph).toContain("`git push --force-with-lease`");
+    expect(paragraph).toContain("Never a bare `--force`, `-f` or a `+refspec`.");
+  });
+
+  it("says a refused push is EO's fence, not a failure to work around", () => {
+    expect(paragraph).toContain("A push EO refuses is EO's fence, not a failure to work around");
+  });
+
+  it("was bumped for it", () => {
+    expect(Number(/prompt-version: (\d+)/.exec(prompt)?.[1])).toBeGreaterThanOrEqual(19);
+  });
+});

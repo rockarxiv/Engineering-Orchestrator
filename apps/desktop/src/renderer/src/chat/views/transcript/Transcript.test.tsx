@@ -178,6 +178,18 @@ describe("TranscriptEvent", () => {
     expect(screen.getByText(/idx_symbol/)).toBeInTheDocument();
   });
 
+  it("shows a call EO's fence refused, with the rule and what the agent was told one click away (EO-926)", () => {
+    render(
+      <TranscriptEvent
+        event={event(15, "call_refused", { type: "call_refused", tool: "Bash", callId: "call-1", rule: "push_forced", call: "git push --force", reason: "EO refused this call: use --force-with-lease." })}
+      />,
+    );
+    const head = screen.getByRole("button", { name: /EO refused Bash: git push --force/ });
+    expect(screen.queryByText(/use --force-with-lease/)).not.toBeInTheDocument();
+    fireEvent.click(head);
+    expect(screen.getByText(/use --force-with-lease/)).toHaveTextContent("(push_forced)");
+  });
+
   it("says which skills a run was given and which it loaded (EO-715)", () => {
     render(<TranscriptEvent event={event(11, "skills_delivered", { type: "skills_delivered", skillIds: ["s-1", "s-2"], slugs: ["house-style", "review"] })} />);
     expect(screen.getByText(/Given the skills/)).toHaveTextContent("Given the skills house-style, review");

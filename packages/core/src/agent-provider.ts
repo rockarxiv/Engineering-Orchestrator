@@ -187,6 +187,34 @@ export interface AgentTurnOverrides {
    * Claude this is never called.
    */
   onSuggestionOutcome?: (outcome: SuggestionOutcome) => void;
+  /**
+   * The fence this turn's calls are held to (EO-926): EO's `PreToolUse`
+   * hook asks `fencedCall` about every call and refuses the ones it
+   * answers for, saying why, and each refusal is reported as a
+   * `CallRefusedEvent`. Claude refuses in a hook in EO's process; Codex in
+   * the hook it runs as a command, and a Codex turn whose hook cannot be
+   * set up or trusted is not run at all. `providerParity.test.ts` holds
+   * both to it.
+   *
+   * A guard against accidents, not a sandbox: a shell command is matched
+   * as words, and a write made through the shell is not looked at.
+   * Lent by the workspace a step works in; absent means no fence.
+   */
+  fence?: CallFence;
+}
+
+/**
+ * What a fenced turn may do (EO-926, `AgentTurnOverrides.fence`), from the
+ * dispatch and never from anything the agent says.
+ */
+export interface CallFence {
+  /** The directory a structured file write (Claude's Write and Edit, Codex's apply_patch) must land in. */
+  root: string;
+  /**
+   * The one branch `git push` may update, and then only with
+   * `--force-with-lease`; null refuses every push.
+   */
+  pushBranch: string | null;
 }
 
 /**
@@ -956,6 +984,29 @@ export interface SearchInterceptionEvent {
  */
 export const SEARCH_INTERCEPTION_EVENT = "search_interception";
 
+/**
+ * EO refused one of the agent's calls at its fence (EO-926,
+ * `AgentTurnOverrides.fence`): the call was not run, and the agent was
+ * told `reason`. Emitted by each adapter from its hook, when it refuses,
+ * and recorded on the run under `CALL_REFUSED_EVENT`.
+ */
+export interface CallRefusedEvent {
+  type: "call_refused";
+  /** The backend's own name for the call — `Bash`, `Write`, `apply_patch`. */
+  tool: string;
+  /** The backend's id for the call, as `SearchInterceptionEvent.callId`; null where it gave none. */
+  callId: string | null;
+  /** Which of the fence's rules refused it, in `fencedCall`'s vocabulary. */
+  rule: string;
+  /** What was refused: the command line, or the path a write named. */
+  call: string;
+  /** What the agent was told. */
+  reason: string;
+}
+
+/** The `run_events.type` a `CallRefusedEvent` is stored under. */
+export const CALL_REFUSED_EVENT = "call_refused";
+
 /** How long a warm backend waits for the turn it was started for before it is shut down. */
 export const PREWARM_IDLE_MS = 60_000;
 
@@ -1135,6 +1186,7 @@ export type AgentEvent =
   | ServerStatusEvent
   | QuotaEvent
   | SearchInterceptionEvent
+  | CallRefusedEvent
   | {
       type: "output";
       text: string;

@@ -6507,6 +6507,9 @@ export function createRunSupervisor(
       // the model with the index gone — between being asked for a result
       // and being asked to fix it.
       ...(runOpts.attachment?.mcpServers[0] ? { repositoryMcp: runOpts.attachment.mcpServers[0] } : {}),
+      // And the fence, on the same argument (EO-926): a corrective turn is
+      // the same agent's work in the same worktree.
+      ...(runOpts.attachment?.fence ? { fence: runOpts.attachment.fence } : {}),
       // And which run this is and where it works (EO-412), or the `eo`
       // server the corrective turn starts would stop listing
       // `attachment_add` between the answer and its correction.
@@ -7327,6 +7330,8 @@ export function createRunSupervisor(
       ...discussionTurnOptions(item, agent),
       ...(toolDirectory ? { toolDirectory: toolDirectory.path } : {}),
       ...(attachment.mcpServers[0] ? { repositoryMcp: attachment.mcpServers[0] } : {}),
+      // And the fence its workspace holds this agent's calls to (EO-926).
+      ...(attachment.fence ? { fence: attachment.fence } : {}),
       ...attachOption(item, { id: item.id, cwd: workspace.cwd }),
       // What the turn this warms will tell the `eo` server (EO-478), so
       // the warmed process lists the tools the turn would have.
@@ -8007,6 +8012,8 @@ export function createRunSupervisor(
       ...(initiatingAttachments.length > 0 ? { attachments: safeTurnAttachments(initiatingAttachments) } : {}),
       ...(toolDirectory ? { toolDirectory: toolDirectory.path } : {}),
       ...(attachment.mcpServers[0] ? { repositoryMcp: attachment.mcpServers[0] } : {}),
+      // And the fence its workspace holds this agent's calls to (EO-926).
+      ...(attachment.fence ? { fence: attachment.fence } : {}),
       // The run and its directory, which is what the `eo` server needs
       // to offer `attachment_add` and to refuse a path truthfully
       // (EO-412).
@@ -10342,6 +10349,7 @@ export function createRunSupervisor(
           ...discussionTurnOptions(item, agent),
           ...(recoveredToolDirectory ? { toolDirectory: recoveredToolDirectory.path } : {}),
           ...(recoveredAttachment.mcpServers[0] ? { repositoryMcp: recoveredAttachment.mcpServers[0] } : {}),
+          ...(recoveredAttachment.fence ? { fence: recoveredAttachment.fence } : {}),
           // The continuation's own id: what it attaches is counted
           // against, and filed under, the run that attached it (EO-412).
           ...attachOption(item, newRun),
@@ -13040,6 +13048,7 @@ export function createRunSupervisor(
         ...discussionTurnOptions(item, agent),
         ...(replyToolDirectory ? { toolDirectory: replyToolDirectory.path } : {}),
         ...(replyAttachment.mcpServers[0] ? { repositoryMcp: replyAttachment.mcpServers[0] } : {}),
+        ...(replyAttachment.fence ? { fence: replyAttachment.fence } : {}),
         ...attachOption(item, run),
         // The parked thread was given memory; its tool stays (EO-478).
         ...memoryOption(item),

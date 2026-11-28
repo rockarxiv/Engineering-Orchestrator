@@ -30,6 +30,8 @@ import {
   type AgentWriteBridgeAddress,
   type RepositoryMcpServer,
   type SearchInterceptionEvent,
+  type CallFence,
+  type CallRefusedEvent,
   type UsageEvent,
   eoToolName,
   MEMORY_READ_TOOL_NAME,
@@ -47,6 +49,7 @@ import { NO_SKILL_CHANGES, skillChangesBetween, skillChangesSection } from "../a
 import { withSkillsSection } from "../agentAttachments/skillsPrompt.js";
 import { claudeSkillLoaded, leadingWith, skillsOffered, withoutEvents } from "./skillUsage.js";
 import { REFUSED_CALL_EVENTS, refusalHookOutput, refusedCall, type CallRule } from "./callRefusal.js";
+import { fencedCall, type FenceRefusal } from "./callFence.js";
 import { openedFork } from "./threadFork.js";
 import type { SearchNudge } from "./searchNudge.js";
 import type { AdminMcpDispatch } from "../agentAttachments/adminDelivery.js";
@@ -1249,6 +1252,36 @@ function callRefusals(eoTools: readonly string[] | undefined, server: Repository
   return { hooks: [hook] };
 }
 
+/**
+ * EO's fence around an implementer's or a reviewer's turn (EO-926,
+ * `AgentTurnOverrides.fence`), as a `PreToolUse` hook in EO's process:
+ * every call is offered to it — no matcher — and one `fencedCall` answers
+ * for is denied with its reason, and reported through `record` so the
+ * run's log says which rule refused which call. A hook's `deny` stands in
+ * every permission mode, `bypassPermissions` included.
+ */
+function fenceRefusals(fence: CallFence | undefined, record: (event: CallRefusedEvent) => void): PreToolUseEntry | undefined {
+  if (fence === undefined) return undefined;
+  const hook = async (input: HookInput): Promise<HookJSONOutput> => {
+    if (input.hook_event_name !== "PreToolUse") return {};
+    // A fence that could not decide refuses: one that fails open is no fence.
+    const refusal = await fencedCall(input.tool_name, input.tool_input, fence, typeof input.cwd === "string" && input.cwd !== "" ? input.cwd : undefined).catch(
+      (error: unknown): FenceRefusal => ({ rule: "push_unverified", call: input.tool_name, reason: `EO refused this call: its fence could not check it (${error instanceof Error ? error.message : String(error)}).` }),
+    );
+    if (refusal === null) return {};
+    record({
+      type: "call_refused",
+      tool: input.tool_name,
+      callId: typeof input.tool_use_id === "string" && input.tool_use_id !== "" ? input.tool_use_id : null,
+      rule: refusal.rule,
+      call: refusal.call,
+      reason: refusal.reason,
+    });
+    return refusalHookOutput(refusal.reason);
+  };
+  return { hooks: [hook] };
+}
+
 /** The tool the CLI gives a turn sent an answer schema, which the turn ends by calling. */
 const CLAUDE_ANSWER_TOOL = "StructuredOutput";
 
@@ -1284,13 +1317,17 @@ const CLAUDE_ANSWER_TOOL = "StructuredOutput";
  * one run's interceptions under another's.
  */
 interface InterceptionQueue {
-  record: (event: SearchInterceptionEvent) => void;
+  /** An interception, or a call the turn's fence refused (EO-926), which waits for the same boundary. */
+  record: (event: HookEvent) => void;
   /** Everything recorded since the last call. Empty on a turn that intercepted nothing. */
-  drain: () => SearchInterceptionEvent[];
+  drain: () => HookEvent[];
 }
 
+/** What a hook reports while the adapter is parked on the next message. */
+type HookEvent = SearchInterceptionEvent | CallRefusedEvent;
+
 function interceptionQueue(): InterceptionQueue {
-  const pending: SearchInterceptionEvent[] = [];
+  const pending: HookEvent[] = [];
   return {
     record: (event) => void pending.push(event),
     drain: () => pending.splice(0, pending.length),
@@ -1335,6 +1372,8 @@ interface ClaudeTurn {
   writeBridge?: AgentWriteBridgeAddress | undefined;
   /** The only calls this turn may make, refused in a hook when made (EO-732, `AgentProviderResumeOptions.refuseCallsExcept`). */
   refuseCallsExcept?: readonly string[] | undefined;
+  /** The fence this turn's calls are held to (EO-926, `AgentTurnOverrides.fence`). On the turn because it is one item's. */
+  fence?: CallFence | undefined;
   /** The run's environment variables (EO-487, `AgentTurnOverrides.environmentVariables`). On the turn because they are the step's, read as it opens. */
   environmentVariables?: Record<string, string> | undefined;
   /** Names the CLI must start without, inherited or not (EO-584, `AgentTurnOverrides.withheldEnvironmentVariables`). On the turn for the reason the variables are. */
@@ -1350,7 +1389,7 @@ interface ClaudeTurn {
    * simply not observed, which is what a test that only inspects the
    * options is doing.
    */
-  onInterception?: ((event: SearchInterceptionEvent) => void) | undefined;
+  onInterception?: ((event: HookEvent) => void) | undefined;
 }
 
 /**
@@ -1670,6 +1709,10 @@ function buildOptions(opts: ClaudeTurn, adapter: ClaudeAdapter): Options {
   // they are made, beside the interception rather than instead of it.
   const refusals = callRefusals(opts.refuseCallsExcept, opts.repositoryMcp, opts.outputSchema !== undefined);
   if (refusals) options.hooks = { ...options.hooks, PreToolUse: [...(options.hooks?.PreToolUse ?? []), refusals] };
+  // EO-926: an implementer's or a reviewer's turn is held to its fence,
+  // beside both, and every refusal is reported where interceptions are.
+  const fenced = fenceRefusals(opts.fence, opts.onInterception ?? (() => {}));
+  if (fenced) options.hooks = { ...options.hooks, PreToolUse: [...(options.hooks?.PreToolUse ?? []), fenced] };
 
   // EO-84: the CLI has no flag for a key — it reads `ANTHROPIC_API_KEY`
   // from its environment — so this is where a key EO stores is spent.
@@ -2611,6 +2654,7 @@ export function createClaudeProvider(options: ClaudeProviderOptions = {}): Agent
     ...(opts.writeBridge ? { writeBridge: opts.writeBridge } : {}),
     ...(opts.environmentVariables ? { environmentVariables: opts.environmentVariables } : {}),
     ...(opts.withheldEnvironmentVariables ? { withheldEnvironmentVariables: opts.withheldEnvironmentVariables } : {}),
+    ...(opts.fence ? { fence: opts.fence } : {}),
   });
 
   /**
@@ -2641,6 +2685,8 @@ export function createClaudeProvider(options: ClaudeProviderOptions = {}): Agent
     ...(opts?.writeBridge ? { writeBridge: opts.writeBridge } : {}),
     // And the calls it may make, where it may make only some (EO-732).
     ...(opts?.refuseCallsExcept ? { refuseCallsExcept: opts.refuseCallsExcept } : {}),
+    // And its fence, which a resume is held to as the turn it carries on was (EO-926).
+    ...(opts?.fence ? { fence: opts.fence } : {}),
     // And the run's environment variables, for that reason too (EO-487):
     // they are in the environment of the process the resume spawns.
     ...(opts?.environmentVariables ? { environmentVariables: opts.environmentVariables } : {}),
@@ -2825,8 +2871,8 @@ export function createClaudeProvider(options: ClaudeProviderOptions = {}): Agent
     prewarm(turn: AgentPrewarmTurn): void {
       // Not for a turn with a repository index, as on Codex, whose search
       // hook is opened per turn: the two backends warm the same turns.
-      // Conversations have none.
-      if (turn.repositoryMcp) return;
+      // Conversations have none. Nor for a fenced turn (EO-926), as on Codex.
+      if (turn.repositoryMcp || turn.fence) return;
       const startedBefore = turnsStarted;
       // The bearer this warm process would be spawned with (EO-444), held
       // here until the warm query owns it and let go on every way out

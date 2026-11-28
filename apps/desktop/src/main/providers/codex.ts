@@ -45,6 +45,8 @@ import {
   type RepositoryMcpServer,
   type RunProcessScope,
   type SearchInterceptionEvent,
+  type CallFence,
+  type CallRefusedEvent,
   type ServerStatusEvent,
   type Skill,
   type SuggestionOutcome,
@@ -86,6 +88,7 @@ const CODEX_MODELS_CACHE = "models_cache.json";
 export function sideCallModelCachePaths(home: string): string[] {
   return [join(home, CODEX_MODELS_CACHE)];
 }
+import { fencedCall } from "./callFence.js";
 import { REFUSED_CALL_EVENTS, refusedCall } from "./callRefusal.js";
 import { CODEX_SEARCH_TOOL_MATCHER, openCodexSearchHook, probeHookTrust, type CodexHookTrust, type CodexSearchHook } from "./codexSearchHook.js";
 import type { SearchNudge } from "./searchNudge.js";
@@ -2420,9 +2423,14 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
    * is opened whatever the nudge and the index, offered every call, and a
    * hook that cannot be set up is thrown — the turn is not run — rather
    * than the turn run with nothing refusing its calls.
+   *
+   * And on a fenced turn (EO-926, `fence`) for the same reason: the hook
+   * is the fence, so an implementer's or a reviewer's turn whose hook
+   * cannot be set up or trusted is not run, and the throw's sentence is
+   * what the supervisor posts on the item.
    */
-  async function searchHookFor(repositoryMcp: RepositoryMcpServer | undefined, cwd: string | undefined, refuseCallsExcept?: readonly string[]): Promise<TurnSearchHook | null> {
-    const refusing = refuseCallsExcept !== undefined;
+  async function searchHookFor(repositoryMcp: RepositoryMcpServer | undefined, cwd: string | undefined, refuseCallsExcept?: readonly string[], fence?: CallFence): Promise<TurnSearchHook | null> {
+    const refusing = refuseCallsExcept !== undefined || fence !== undefined;
     let hook: CodexSearchHook | null = null;
     try {
       if (cwd === undefined) {
@@ -2437,7 +2445,8 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
         // A turn allowed no calls is allowed none of the repository
         // server's either (EO-808): its tools are still offered, so the
         // request starts as the run's did, and refused when called.
-        ...(refusing ? { refuse: (tool: string) => refusedCall(tool, { eoTools: refuseCallsExcept, repositoryServer: refuseCallsExcept.length === 0 ? null : (repositoryMcp?.name ?? null) }) } : {}),
+        ...(refuseCallsExcept !== undefined ? { refuse: (tool: string) => refusedCall(tool, { eoTools: refuseCallsExcept, repositoryServer: refuseCallsExcept.length === 0 ? null : (repositoryMcp?.name ?? null) }) } : {}),
+        ...(fence !== undefined ? { fence: (tool: string, input: unknown, callCwd: string) => fencedCall(tool, input, fence, callCwd) } : {}),
       });
       if (hook === null) {
         if (refusing) throw new Error("EO has no hook command to run on this machine");
@@ -2449,7 +2458,8 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
     } catch (error) {
       await hook?.close();
       const why = error instanceof Error ? error.message : String(error);
-      if (refusing) throw new Error(`EO could not set up the hook that refuses this turn's other calls, so the turn was not run: ${why}`, { cause: error });
+      if (refuseCallsExcept !== undefined) throw new Error(`EO could not set up the hook that refuses this turn's other calls, so the turn was not run: ${why}`, { cause: error });
+      if (fence !== undefined) throw new Error(`EO could not set up the hook that fences this turn's pushes, merges and file writes on Codex, so the turn was not run: ${why}`, { cause: error });
       console.warn(`[codex] the broad-search hook could not be set up, so this turn runs without it: ${why}`);
       return null;
     }
@@ -2538,7 +2548,7 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
     /** Where what the turn says of itself is kept for after it (EO-808). */
     facts?: TurnFacts,
   ) {
-    const interceptions = (): SearchInterceptionEvent[] => searchHook?.drain() ?? [];
+    const interceptions = (): (SearchInterceptionEvent | CallRefusedEvent)[] => searchHook?.drain() ?? [];
     const turn = await thread.runStreamed(input, {
       ...(outputSchema ? { outputSchema: strictCodexOutputSchema(outputSchema) } : {}),
       ...(signal ? { signal } : {}),
@@ -2741,7 +2751,7 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
     // And on a turn that may make only some calls, the hook is what
     // refuses the rest (EO-732): one that cannot be set up throws here,
     // before any client is launched.
-    const searchHook = await searchHookFor(resumeOpts?.repositoryMcp, resumeOpts?.cwd, resumeOpts?.refuseCallsExcept);
+    const searchHook = await searchHookFor(resumeOpts?.repositoryMcp, resumeOpts?.cwd, resumeOpts?.refuseCallsExcept, resumeOpts?.fence);
     try {
       yield* resumedWith(searchHook);
     } finally {
@@ -2883,8 +2893,9 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
     prewarm(turn: AgentPrewarmTurn): void {
       // Not for a turn with a repository index: its broad-search hook is
       // opened per turn, so a process started without it would never be
-      // the one the turn asks for. Conversations have none.
-      if (turn.repositoryMcp) return;
+      // the one the turn asks for. Conversations have none. Nor for a
+      // fenced turn (EO-926), whose hook is opened per turn for the same reason.
+      if (turn.repositoryMcp || turn.fence) return;
       const thread =
         turn.kind === "start"
           ? { ...threadOptionsFrom(turn, options.config), ...(turn.instructions ? { baseInstructions: turn.instructions } : {}) }
@@ -3304,7 +3315,9 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
     // Opened before the client is, because the client is constructed
     // with it: the listener's address is part of what the CLI is launched
     // with (EO-379). Closed when the turn is over, however it ended.
-    const searchHook = await searchHookFor(opts.repositoryMcp, opts.cwd);
+    // And on a fenced turn, the hook is the fence (EO-926): one that cannot
+    // be set up throws here, before any client is launched.
+    const searchHook = await searchHookFor(opts.repositoryMcp, opts.cwd, undefined, opts.fence);
     try {
       yield* startedWith(searchHook);
     } finally {
@@ -3399,10 +3412,16 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
  * A firing whose id matches no call here stays in `pending` for a later
  * one, and `streamTurn` records whatever is left when the turn ends.
  */
-function withInterceptions(mapped: AgentEvent[], pending: SearchInterceptionEvent[], arrived: SearchInterceptionEvent[]): AgentEvent[] {
-  pending.push(...arrived);
-  if (pending.length === 0) return mapped;
-  const woven: AgentEvent[] = [];
+function withInterceptions(mapped: AgentEvent[], pending: SearchInterceptionEvent[], arrived: (SearchInterceptionEvent | CallRefusedEvent)[]): AgentEvent[] {
+  // A call the fence refused (EO-926) is said as it arrives: Codex reports
+  // no item for a call its hook denied, so there is no call to wait for.
+  const refused: AgentEvent[] = [];
+  for (const event of arrived) {
+    if (event.type === "call_refused") refused.push(event);
+    else pending.push(event);
+  }
+  if (pending.length === 0) return [...refused, ...mapped];
+  const woven: AgentEvent[] = [...refused];
   for (const event of mapped) {
     woven.push(event);
     if (event.type !== "tool_call" || event.callId === undefined) continue;

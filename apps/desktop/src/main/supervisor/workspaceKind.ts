@@ -1,4 +1,4 @@
-import type { Agent, Item, PipelineStep, RepositoryMcpServer, Skill, Uuid, WorkspaceKindSlug } from "@eo/core";
+import type { Agent, CallFence, Item, PipelineStep, RepositoryMcpServer, Skill, Uuid, WorkspaceKindSlug } from "@eo/core";
 import type { Workspace } from "../db/repos/workspacesRepo.js";
 
 /**
@@ -362,6 +362,13 @@ export interface WorkspaceAttachment {
    * comment.
    */
   sync?: (signal: AbortSignal) => Promise<{ notice: string | null }>;
+  /**
+   * The fence this workspace holds the agent's calls to on this turn
+   * (EO-926, `AgentTurnOverrides.fence`), from what the dispatch knows —
+   * the item's own branch and checkout — and never from the agent.
+   * Absent is no fence: a kind that has nothing to guard lends none.
+   */
+  fence?: CallFence;
 }
 
 /** Nothing lent, which is what a run with no kind — and every supervisor built without one — gets. */

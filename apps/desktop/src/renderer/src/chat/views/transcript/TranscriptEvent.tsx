@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from "react";
-import { AlertTriangle, BookOpen, ChevronRight, Coins, CornerDownLeft, CornerDownRight, FileDiff, Gauge, MessageSquare, Signpost, Terminal } from "lucide-react";
+import { AlertTriangle, BookOpen, ChevronRight, Coins, CornerDownLeft, CornerDownRight, FileDiff, Gauge, MessageSquare, ShieldAlert, Signpost, Terminal } from "lucide-react";
 import { outcomeProse, type RunEventView } from "@eo/core";
 import { cn } from "@eo/ui";
 import { RefText } from "../items/ItemReference";
@@ -157,6 +157,28 @@ export function TranscriptEvent({ event }: { event: RunEventView }) {
         </Folding>
       );
     }
+
+    // EO's fence refused one of the agent's calls (EO-926). Shown, never
+    // folded into the tool calls, for the interception's reason: EO acted
+    // on somebody's work. The call and what the agent was told open below.
+    case "call_refused":
+      return (
+        <Folding
+          className="text-paused"
+          head={
+            <>
+              <ShieldAlert aria-hidden size={12} className="shrink-0" />
+              <span className="min-w-0 truncate">
+                EO refused <span className="font-mono">{asText(field(event.payload, "tool"))}</span>: <span className="font-mono">{asText(field(event.payload, "call"))}</span>
+              </span>
+            </>
+          }
+        >
+          <p className={cn(BLOCK, "font-sans text-[12px]")}>
+            {asText(field(event.payload, "reason"))} <span className="text-ink-subtle">({asText(field(event.payload, "rule"))})</span>
+          </p>
+        </Folding>
+      );
 
     // What the backend's allowance has left — already a percentage.
     case "quota": {

@@ -4,10 +4,11 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { RepositoryMcpServer, SearchInterceptionEvent } from "@eo/core";
+import type { CallRefusedEvent, RepositoryMcpServer, SearchInterceptionEvent } from "@eo/core";
 import { AppServerConnection, type AppServerSpawn } from "./codexAppServer.js";
 import { configArguments } from "./codexClient.js";
 import { refusalHookOutput } from "./callRefusal.js";
+import type { FenceRefusal } from "./callFence.js";
 import type { SearchNudge } from "./searchNudge.js";
 
 /**
@@ -58,12 +59,12 @@ import type { SearchNudge } from "./searchNudge.js";
 export interface CodexSearchHook {
   /** The command line Codex runs for the hook, as one string its shell is given. */
   command: string;
-  /** Which tool calls Codex offers it: the shell's alone, or every one on a turn that refuses calls (EO-732). */
+  /** Which tool calls Codex offers it: the shell's alone, or every one on a turn that refuses calls (EO-732) or is fenced (EO-926). */
   matcher: string;
   /** What the command reads to find this listener. Goes into the CLI's environment, never its arguments. */
   env: Record<string, string>;
-  /** Every firing recorded since the last call. Empty on a turn that intercepted nothing. */
-  drain: () => SearchInterceptionEvent[];
+  /** Every firing recorded since the last call, and every call the fence refused (EO-926). Empty on a turn that intercepted nothing. */
+  drain: () => (SearchInterceptionEvent | CallRefusedEvent)[];
   /** Stops listening. The turn is over and there is nobody left to answer. */
   close: () => Promise<void>;
 }
@@ -119,6 +120,13 @@ export interface CodexSearchHookRequest {
    * call this answers for is denied before the nudge is asked anything.
    */
   refuse?: (tool: string) => string | null;
+  /**
+   * The turn's fence (EO-926, `fencedCall`), asked about every call with
+   * what the payload says it would do and where. Given, the hook is opened
+   * as for `refuse`, a call it answers for is denied with its reason, and
+   * the refusal is recorded as a `call_refused` event.
+   */
+  fence?: (tool: string, input: unknown, cwd: string) => Promise<FenceRefusal | null>;
 }
 
 /**
@@ -138,13 +146,16 @@ export interface CodexSearchHookRequest {
  * no `hooks` key in the CLI's configuration and no listener.
  */
 export async function openCodexSearchHook(request: CodexSearchHookRequest): Promise<CodexSearchHook | null> {
-  const { nudge, server, cwd, commandPath, refuse } = request;
+  const { nudge, server, cwd, commandPath, refuse, fence } = request;
+  // A hook that decides, rather than one that only advises: offered every
+  // call, and refusing what it cannot read rather than letting it by.
+  const guarding = refuse !== undefined || fence !== undefined;
   if (commandPath === undefined) return null;
   const answers = server?.answers;
   const knows = server?.knows;
   // Nothing to nudge with: no judgement, or no index that could answer.
   const nudging = nudge !== undefined && server !== undefined && answers !== undefined && knows !== undefined;
-  if (!nudging && refuse === undefined) return null;
+  if (!nudging && !guarding) return null;
 
   // `<server>/<tool>` is how this backend spells a tool id wherever EO
   // meets one — it is what `mapCompletedItem` records a call under — and
@@ -153,7 +164,7 @@ export async function openCodexSearchHook(request: CodexSearchHookRequest): Prom
   // (EO-198).
   const qualify = (tool: string): string => `${server?.name ?? ""}/${tool}`;
 
-  const pending: SearchInterceptionEvent[] = [];
+  const pending: (SearchInterceptionEvent | CallRefusedEvent)[] = [];
   const token = randomBytes(32).toString("hex");
   const expected = Buffer.from(`Bearer ${token}`);
 
@@ -162,10 +173,23 @@ export async function openCodexSearchHook(request: CodexSearchHookRequest): Prom
     const tool = payload?.["tool_name"];
     // A turn that refuses calls refuses one it cannot read (EO-732).
     if (payload === null || payload["hook_event_name"] !== "PreToolUse" || typeof tool !== "string") {
-      return refuse === undefined ? null : JSON.stringify(refusalHookOutput("EO refused this call: it could not tell which tool it was, and this turn may make only some calls."));
+      return !guarding ? null : JSON.stringify(refusalHookOutput("EO refused this call: it could not tell which tool it was, and this turn may make only some calls."));
     }
     const refused = refuse?.(tool) ?? null;
     if (refused !== null) return JSON.stringify(refusalHookOutput(refused));
+    const callCwd = payload["cwd"];
+    // The payload's `cwd` is where the call runs: the turn's directory, or
+    // the `workdir` a shell call names (measured on 0.171.0).
+    // A fence that could not decide refuses: one that fails open is no fence.
+    const fenced =
+      (await fence?.(tool, payload["tool_input"], typeof callCwd === "string" && callCwd !== "" ? callCwd : cwd).catch(
+        (error: unknown): FenceRefusal => ({ rule: "push_unverified", call: tool, reason: `EO refused this call: its fence could not check it (${error instanceof Error ? error.message : String(error)}).` }),
+      )) ?? null;
+    if (fenced !== null) {
+      const callId = payload["tool_use_id"];
+      pending.push({ type: "call_refused", tool, callId: typeof callId === "string" && callId !== "" ? callId : null, rule: fenced.rule, call: fenced.call, reason: fenced.reason });
+      return JSON.stringify(refusalHookOutput(fenced.reason));
+    }
     if (!nudging) return null;
     const interception = await nudge({ tool, input: payload["tool_input"], answers, knows, qualify, root: cwd });
     if (interception === null) return null;
@@ -194,8 +218,8 @@ export async function openCodexSearchHook(request: CodexSearchHookRequest): Prom
 
   return {
     command: hookCommandLine(request.nodePath ?? process.execPath, commandPath, request.platform ?? process.platform),
-    matcher: refuse === undefined ? CODEX_SEARCH_TOOL_MATCHER : CODEX_EVERY_TOOL_MATCHER,
-    env: { [SEARCH_HOOK_URL_ENV]: `http://127.0.0.1:${port}/`, [SEARCH_HOOK_TOKEN_ENV]: token, ...(refuse === undefined ? {} : { [SEARCH_HOOK_REFUSES_ENV]: "1" }) },
+    matcher: guarding ? CODEX_EVERY_TOOL_MATCHER : CODEX_SEARCH_TOOL_MATCHER,
+    env: { [SEARCH_HOOK_URL_ENV]: `http://127.0.0.1:${port}/`, [SEARCH_HOOK_TOKEN_ENV]: token, ...(guarding ? { [SEARCH_HOOK_REFUSES_ENV]: "1" } : {}) },
     drain: () => pending.splice(0, pending.length),
     close: () =>
       new Promise<void>((resolveClosed) => {
