@@ -4,7 +4,7 @@ import { ArchivedItemListFiltersSchema, ItemListFiltersSchema, toRegistryView, t
 import { AttachmentStorage } from "../attachments/storage.js";
 import { pipelineHome } from "./pipelineHome.js";
 import type { Db } from "../db/client.js";
-import { archiveAgentCommand, customiseAgent, deleteAgentCommand, listAgentDetails, projectStaffing, readGuards, saveAgent, setAgentBinding, savePipeline, validatePipelineCommand, writeGuards } from "./configCommands.js";
+import { archiveAgentCommand, customiseAgent, deleteAgentCommand, listAgentDetails, projectStaffing, readGuards, savePipeline, validatePipelineCommand, writeGuards } from "./configCommands.js";
 import { runMemoryFacts } from "../process/runScope.js";
 import {
   createPipelineCommand,
@@ -244,7 +244,7 @@ import {
 import { getItemBrief } from "./itemBrief.js";
 import type { JiraContext } from "../packs/developer/jira/connection.js";
 import { capabilitiesFor, fetchClaudeModels } from "../providers/capabilities.js";
-import { sandboxAvailability } from "../providers/sandboxAvailability.js";
+import { saveAgentChecked, sandboxStatus, setAgentBindingChecked } from "./sandboxCommands.js";
 import { fetchCodexModels } from "../providers/codexModels.js";
 import { planUsage } from "../planUsage/store.js";
 import { chooseSmallModel, describeSmallModels, smallModelSources } from "../providers/smallModels.js";
@@ -1647,8 +1647,11 @@ export function registerAllHandlers(db: Db, engine: EngineHandle | undefined, re
   registerHandler("agents:listDetailed", () => listAgentDetails(db), opts);
   registerHandler(
     "agents:save",
-    (payload) => {
-      const saved = saveAgent(db, payload);
+    async (payload) => {
+      // Not turned on where this machine cannot start it (EO-935): the
+      // editor greys the box, and this is what makes it a rule for
+      // `agent_save` too, which reaches this handler.
+      const saved = await saveAgentChecked(db, runtimes, payload);
       emitPush("config:changed", {});
       return saved;
     },
@@ -1674,8 +1677,9 @@ export function registerAllHandlers(db: Db, engine: EngineHandle | undefined, re
   // agents section publishes — see `setAgentBinding`.
   registerHandler(
     "agents:setBinding",
-    (payload) => {
-      const bound = setAgentBinding(db, payload);
+    async (payload) => {
+      // Nor onto a backend whose sandbox cannot start here, for a sandboxed agent (EO-935).
+      const bound = await setAgentBindingChecked(db, runtimes, payload);
       if (bound.bound) emitPush("config:changed", {});
       return bound;
     },
@@ -1759,9 +1763,7 @@ export function registerAllHandlers(db: Db, engine: EngineHandle | undefined, re
   // the agent would run, which starts the sandbox once to find out.
   registerHandler(
     "providers:sandbox",
-    async (payload) => ({
-      sandbox: await sandboxAvailability(payload.provider, runtimeStatus(runtimes, payload).runtime?.path ?? null),
-    }),
+    (payload) => sandboxStatus(runtimes, payload),
     opts,
   );
   // The one caller that asks the binary whether it is signed in (EO-82):

@@ -13,6 +13,7 @@ import {
   deferPush,
   enqueueOutbox,
   getAgent,
+  updateAgent,
   getAttachment,
   getComment,
   getItem,
@@ -47,6 +48,7 @@ import type { JiraContext } from "../packs/developer/jira/connection.js";
 import { hasToken, type CredentialsOptions } from "../packs/developer/jira/credentials.js";
 import type { SecretStore } from "../secrets/store.js";
 import { listAgentDetails, readGuards, saveAgent, savePipeline, writeGuards } from "../ipc/configCommands.js";
+import { saveAgentChecked } from "../ipc/sandboxCommands.js";
 import { moveItem, postCommentCommand, readSettings, setPinned, writeSettings } from "../ipc/domainCommands.js";
 import { getDailyCost, getItemCost } from "../ipc/costHandlers.js";
 import { formatDateKey } from "../dateUtils.js";
@@ -1294,6 +1296,52 @@ describe("a composite tool", () => {
     expect(outcome.text).toContain("Merge");
     // And nothing moved, including the fields that came along for the ride.
     expect(readGuards(handle.db)).toEqual(STORED_GUARDS);
+  });
+});
+
+describe("an agent's sandbox, through the tool that configures it (EO-935)", () => {
+  const CANNOT = {
+    available: false as const,
+    reason: "Claude's sandbox on Linux needs bubblewrap and socat, and socat is not installed on this machine.",
+    fix: "Install socat (for example `sudo apt install socat`), then check again.",
+  };
+
+  function registerSave(answer: { available: true; how: string } | typeof CANNOT): void {
+    registerHandler("agents:listDetailed", () => listAgentDetails(handle.db), opts);
+    const context = { root: join(tmpdir(), "eo-935-no-runtimes"), fetchImpl: async () => new Response("", { status: 500 }), db: handle.db };
+    registerHandler("agents:save", (payload) => saveAgentChecked(handle.db, context, payload, async () => answer), opts);
+  }
+
+  it("refuses to turn the sandbox on where this machine cannot start it, saying why and what would fix it, and writes nothing", async () => {
+    registerSave(CANNOT);
+    const before = listAgents(handle.db).find((agent) => agent.role === "implementer")!;
+    updateAgent(handle.db, before.id, { provider: "claude" });
+
+    const outcome = await tool("agent_save").run(dispatch, { id: before.id, config: { sandboxed: true } });
+
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.refused).toBe(true);
+    expect(outcome.text).toContain('This machine cannot start the "claude" sandbox');
+    expect(outcome.text).toContain(CANNOT.reason);
+    expect(outcome.text).toContain(CANNOT.fix);
+    expect(getAgent(handle.db, before.id)?.config["sandboxed"]).toBeUndefined();
+  });
+
+  it("turns it off on such a machine, and turns it on where it can start", async () => {
+    registerSave(CANNOT);
+    const before = listAgents(handle.db).find((agent) => agent.role === "implementer")!;
+    updateAgent(handle.db, before.id, { provider: "claude", config: { ...before.config, sandboxed: true } });
+
+    const off = await tool("agent_save").run(dispatch, { id: before.id, config: { sandboxed: null } });
+    expect(off.ok && !off.refused).toBe(true);
+    expect(getAgent(handle.db, before.id)?.config["sandboxed"]).toBeUndefined();
+
+    clearHandlerRegistry();
+    registerSave({ available: true, how: "bubblewrap and socat" });
+    const on = await tool("agent_save").run(dispatch, { id: before.id, config: { sandboxed: true } });
+    expect(on.ok && !on.refused).toBe(true);
+    expect(getAgent(handle.db, before.id)?.config["sandboxed"]).toBe(true);
   });
 });
 

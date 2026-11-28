@@ -304,6 +304,22 @@ function authTarget(context: RuntimeContext, provider: ManagedProvider, input: I
 }
 
 /**
+ * The binary dispatch would run for this backend, with the agent's own
+ * `executablePath` when one is named (EO-935): `authTarget`'s resolution,
+ * for a caller asking about that binary rather than EO's managed copy —
+ * whether its sandbox can start. Null for a backend with no CLI, and
+ * where nothing would run.
+ */
+export function dispatchedRuntimePath(
+  context: RuntimeContext,
+  input: { provider: string; executablePath?: string | null | undefined },
+  machine: Machine = {},
+): string | null {
+  const provider = providerOf(input.provider);
+  return provider === null ? null : authTarget(context, provider, { provider: input.provider, executablePath: input.executablePath ?? null }, machine);
+}
+
+/**
  * The same facts, plus the one only the binary can give (EO-82).
  *
  * Separate from `runtimeStatus` because probing runs a process. This is
