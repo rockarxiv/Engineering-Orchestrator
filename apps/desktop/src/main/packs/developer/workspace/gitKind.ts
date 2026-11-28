@@ -759,5 +759,5 @@ function fenceOption(db: Db, item: Item, agent: Agent, workspace: PreparedWorksp
 async function sandboxWritableOption(db: Db, agent: Agent, workspace: PreparedWorkspace): Promise<{ paths: string[]; problem: string | null } | null> {
   if (!agentSandboxed(agent)) return null;
   const repository = workspace.workspaceId === null ? undefined : getGitWorkspace(db, workspace.workspaceId);
-  return sandboxWritablePaths(workspace.cwd, repository?.config.extraWritablePaths ?? []);
+  return sandboxWritablePaths(workspace.cwd, repository?.config.repoPath ?? null, repository?.config.extraWritablePaths ?? []);
 }
