@@ -1,4 +1,4 @@
-import { actionFactsFor, builtinResultLabel, builtinInputs, builtinResults, declaredStepInputs, ENGINE_RESULTS, resultsFromRoutes, stepHoldsItemsMessage, uuidv7, VERIFICATION_FAILED_RESULT } from "@eo/core";
+import { actionFactsFor, builtinResultLabel, builtinInputs, builtinResults, declaredStepInputs, ENGINE_RESULTS, resultsFromRoutes, stepHoldsItemsMessage, UNCHANGED_SINCE_APPROVAL_RESULT, uuidv7, VERIFICATION_FAILED_RESULT } from "@eo/core";
 import type { ModuleInput, ModuleView, PipelineStepView, RegistryFacts, StepHold, StepInputs, StepResult, StepRouteView, WorkspaceMode } from "@eo/core";
 
 /**
@@ -213,13 +213,18 @@ export function declaredResults(
  *
  * Not `verification_failed`: that one is the workspace kind's word and
  * has its own offer, made only on a step whose action is checked
- * (EO-312). Nothing for a step whose keys are still free text, where
+ * (EO-312). Nor `unchanged_since_approval` (EO-930): only a pack that
+ * can read where an action's work stands ever reports it — the developer
+ * pack, for `implement` on a Git workspace — so offering it on every
+ * agent step would offer a row that most could never take. A route on it
+ * arrives with a template, an import or `pipeline_save`, and once there
+ * it is kept like the others. Nothing for a step whose keys are still free text, where
  * "Add result" is the way in, nor for a builtin or a module.
  */
 export function engineResultOffers(step: PipelineStepView, declared: string[] | null, routes: StepRouteView[]): string[] {
   if (step.type !== "agent" || declared === null) return [];
   const routed = new Set(routes.filter((route) => route.fromStepId === step.id).map((route) => route.resultKey));
-  return ENGINE_RESULTS.filter((key) => key !== VERIFICATION_FAILED_RESULT && !declared.includes(key) && !routed.has(key));
+  return ENGINE_RESULTS.filter((key) => key !== VERIFICATION_FAILED_RESULT && key !== UNCHANGED_SINCE_APPROVAL_RESULT && !declared.includes(key) && !routed.has(key));
 }
 
 /**

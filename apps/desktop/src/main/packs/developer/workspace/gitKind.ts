@@ -20,6 +20,7 @@ import { git, remoteUrl, statusPorcelain } from "./git.js";
 import { parseRemoteUrl } from "../forge/remote.js";
 import { referenceCheckoutFor, releaseReferenceCheckouts, releaseStaleReferenceCheckouts } from "./referenceCheckouts.js";
 import { commitNamingCheck } from "./commitNaming.js";
+import { recordBranchHead } from "./branchHead.js";
 import { createImplementationVerifier, createVerifiedRange } from "./implementationVerifier.js";
 import type { VerificationResult, VerifyOptions } from "./verify.js";
 
@@ -160,6 +161,9 @@ export function gitWorkspaceKind(options: GitWorkspaceKindOptions): WorkspaceKin
      * the top of one method and again at the top of the verifier beneath
      * it; it is a key in a table now, which is the same decision said
      * once and said where something other than this function can read it.
+     *
+     * `review` has an entry since EO-930 that still checks nothing and
+     * says so: it is where EO reads the commit a review was of.
      */
     verifiers: {
       /**
@@ -216,6 +220,12 @@ export function gitWorkspaceKind(options: GitWorkspaceKindOptions): WorkspaceKin
         // report on a failed run before this story either.
         if (!implementation.passed) return [implementation];
 
+        // Where the branch ended up, once verification has rebased it, so a
+        // later pass through To Do can be told from git whether it is still
+        // the commit Review approved (EO-930). A record, not a check: it
+        // passes or fails nothing, and the run's checks are as they were.
+        await recordBranchHead(db, item, run.id);
+
         const checks: Check[] = [implementation];
         // Read off the verification rather than asked of git a second
         // time: "nothing left uncommitted" is one of the steps it just
@@ -229,6 +239,24 @@ export function gitWorkspaceKind(options: GitWorkspaceKindOptions): WorkspaceKin
         const naming = await commitNamingCheck(db, getItem(db, item.id) ?? item, await verifiedRange(item));
         if (naming) checks.push(naming);
         return checks;
+      }),
+      /**
+       * Nothing about a review is checked: the verdict is the reviewer's
+       * own opinion, and claiming to verify it would be theatre. So this
+       * says it checks nothing — no phrase on the column head, no
+       * `verification_failed` offered — and returns no checks.
+       *
+       * What it does is read which commit the branch is on as the review
+       * ends, and record it on the run (EO-930), because that is the
+       * commit an approval approved. A To Do run that leaves the branch
+       * on it skips Review where the pipeline routes
+       * `unchanged_since_approval`, and the commit is EO's reading of git,
+       * never the reviewer's word.
+       */
+      review: verifier([], async (item: Item, run: VerifiableRun): Promise<readonly Check[]> => {
+        if (run.packAction === false || run.ended !== "succeeded") return [];
+        await recordBranchHead(db, item, run.id);
+        return [];
       }),
       /**
        * A plan for other accounts' pull request comments (EO-760): that it

@@ -1074,16 +1074,33 @@ export const NEEDS_USER_INPUT_RESULT = "needs_user_input";
 export const ESCALATION_RESULT = "escalation";
 
 /**
+ * The result a run reports when EO saw that the work it left is exactly
+ * what was last approved (EO-930).
+ *
+ * Chosen by EO after the run and never by whatever ran: the pack that
+ * owns the workspace reads where the work stands from the workspace
+ * itself and compares it with where it stood at the item's most recent
+ * approval. Only where the step routes it — a run whose step does not
+ * report the result it would have reported anyway, so every pipeline
+ * that never mentions this key routes exactly as it did before it
+ * existed. That is what makes it the one engine result that does not
+ * park where nothing routes it: it is never produced there.
+ */
+export const UNCHANGED_SINCE_APPROVAL_RESULT = "unchanged_since_approval";
+
+/**
  * The results a step may route without its action declaring them
  * (EO-423).
  *
  * Each is produced by EO rather than chosen by whatever ran: a run that
  * stopped to ask, a run that escalated, a workspace that would not vouch
- * for the work. So a route on one is never a branch that cannot be
- * taken, whatever the action's own list says — and none is required,
- * since where nothing routes it the item parks and asks.
+ * for the work, work left as it was last approved. So a route on one is
+ * never a branch that cannot be taken, whatever the action's own list
+ * says — and none is required, since where nothing routes it the item
+ * parks and asks, or for `UNCHANGED_SINCE_APPROVAL_RESULT` takes the
+ * result it would have had without it.
  */
-export const ENGINE_RESULTS: readonly string[] = [NEEDS_USER_INPUT_RESULT, ESCALATION_RESULT, VERIFICATION_FAILED_RESULT];
+export const ENGINE_RESULTS: readonly string[] = [NEEDS_USER_INPUT_RESULT, ESCALATION_RESULT, VERIFICATION_FAILED_RESULT, UNCHANGED_SINCE_APPROVAL_RESULT];
 
 /**
  * Checks a registry's contents and returns it, or throws on the first

@@ -1,6 +1,7 @@
 import type { PipelineStep, StepRoute, Uuid } from "@eo/core";
 import { describe, expect, it } from "vitest";
-import { resolveRoute } from "./routing.js";
+import { UNCHANGED_SINCE_APPROVAL_RESULT } from "@eo/core";
+import { resolveRoute, resultUnlessUnchangedSinceApproval } from "./routing.js";
 
 function step(id: string, position: number, overrides: Partial<PipelineStep> = {}): PipelineStep {
   return {
@@ -192,5 +193,41 @@ describe("resolveRoute", () => {
     // `implement` also declares `done`; resolving `review`'s `done` must not
     // borrow it.
     expect(resolveRoute({ step: REVIEW, steps: STEPS, routes: ROUTES, result: "done" })).toEqual({ kind: "stay", reason: "no_route" });
+  });
+});
+
+describe("resultUnlessUnchangedSinceApproval (EO-930)", () => {
+  // To Do → Review on `done`, and past Review to Merge Request on the
+  // engine's key, as the shipped Delivery has it from 1.6.
+  const steps = [step("todo", 0), step("review", 1, { entryAction: "review" }), step("merge_request", 2, { type: "builtin", agentId: null, entryAction: "open_pull_request" })];
+  const routes = [route("todo", "done", "review"), route("todo", UNCHANGED_SINCE_APPROVAL_RESULT, "merge_request", 1), route("review", "approved", "merge_request")];
+  const routed = (result: string) => resolveRoute({ step: steps[0]!, steps, routes, result });
+
+  it("routes past the approving step when the work is the revision it approved", () => {
+    const result = resultUnlessUnchangedSinceApproval({ reported: "done", stepId: "todo", routes, revision: "c0ffee", approvedRevision: "c0ffee" });
+    expect(result).toBe(UNCHANGED_SINCE_APPROVAL_RESULT);
+    expect(routed(result)).toEqual({ kind: "step", stepId: "merge_request", pipelineId: "p1" });
+  });
+
+  it("keeps the reported result when the work moved on since its approval", () => {
+    const result = resultUnlessUnchangedSinceApproval({ reported: "done", stepId: "todo", routes, revision: "beef", approvedRevision: "c0ffee" });
+    expect(result).toBe("done");
+    expect(routed(result)).toEqual({ kind: "step", stepId: "review", pipelineId: "p1" });
+  });
+
+  it("keeps the reported result when nothing has approved the work", () => {
+    expect(resultUnlessUnchangedSinceApproval({ reported: "done", stepId: "todo", routes, revision: "c0ffee", approvedRevision: null })).toBe("done");
+  });
+
+  it("keeps the reported result when where the work stands could not be read", () => {
+    expect(resultUnlessUnchangedSinceApproval({ reported: "done", stepId: "todo", routes, revision: null, approvedRevision: null })).toBe("done");
+  });
+
+  it("keeps the reported result on a step that does not route the key, so a pipeline without it routes as before", () => {
+    const withoutIt = routes.filter((candidate) => candidate.resultKey !== UNCHANGED_SINCE_APPROVAL_RESULT);
+    expect(resultUnlessUnchangedSinceApproval({ reported: "done", stepId: "todo", routes: withoutIt, revision: "c0ffee", approvedRevision: "c0ffee" })).toBe("done");
+    // A route out of another step on the key says nothing about this one.
+    const elsewhere = [...withoutIt, route("review", UNCHANGED_SINCE_APPROVAL_RESULT, "merge_request", 1)];
+    expect(resultUnlessUnchangedSinceApproval({ reported: "done", stepId: "todo", routes: elsewhere, revision: "c0ffee", approvedRevision: "c0ffee" })).toBe("done");
   });
 });

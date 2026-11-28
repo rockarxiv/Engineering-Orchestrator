@@ -63,7 +63,10 @@ export interface TemplateMatch {
  * Where the caller passes the pipeline's routes too, a route's traversal
  * limit counts as one of those settings (EO-921): 1.4 and 1.5 have the
  * same steps set the same way, and differ only in the limit 1.5 puts on
- * Review → Changes requested.
+ * Review → Changes requested. So does a route the version has out of a
+ * step the pipeline holds, where the pipeline has no route on that
+ * result (EO-930): 1.5 and 1.6 differ only in 1.6's To Do → Approved
+ * commit unchanged.
  */
 export function matchTemplateVersion(
   stepIds: readonly string[],
@@ -81,7 +84,7 @@ export function matchTemplateVersion(
       const matched = ids.filter((id) => held.has(id)).length;
       const missing = ids.length - matched;
       if (ids.length === 0 || matched * 2 <= ids.length) continue;
-      const candidate = { version, matched, missing, differing: differingSettings(version, byId) + differingLimits(version, held, routes) };
+      const candidate = { version, matched, missing, differing: differingSettings(version, byId) + differingRoutes(version, held, routes) };
       if (best === null || better(candidate, best)) best = candidate;
     }
   }
@@ -128,17 +131,19 @@ function differingSettings(version: TemplateVersion, steps: ReadonlyMap<string, 
 export type MatchedRoute = { readonly fromStepId: string; readonly resultKey: string; readonly traversalLimit?: number | null };
 
 /**
- * How many of a version's routes out of steps the pipeline holds carry a
- * different traversal limit there, a route the pipeline does not have
- * counting as one without a limit. Nought where the caller gave no routes.
+ * How many of a version's routes out of steps the pipeline holds it has
+ * differently: not at all (EO-930), or with a different traversal limit
+ * (EO-921). Nought where the caller gave no routes.
  */
-function differingLimits(version: TemplateVersion, held: ReadonlySet<string>, routes: readonly MatchedRoute[] | null): number {
+function differingRoutes(version: TemplateVersion, held: ReadonlySet<string>, routes: readonly MatchedRoute[] | null): number {
   if (routes === null) return 0;
   const limits = new Map(routes.map((route) => [`${route.fromStepId}\u0000${route.resultKey}`, route.traversalLimit ?? null]));
   let differing = 0;
   for (const route of version.document.routes) {
     if (!held.has(route.fromStepId)) continue;
-    if ((route.traversalLimit ?? null) !== (limits.get(`${route.fromStepId}\u0000${route.resultKey}`) ?? null)) differing += 1;
+    const key = `${route.fromStepId}\u0000${route.resultKey}`;
+    if (!limits.has(key)) differing += 1;
+    else if ((route.traversalLimit ?? null) !== limits.get(key)) differing += 1;
   }
   return differing;
 }

@@ -168,6 +168,7 @@ export {
   listReviewVerdicts,
   listReviewVerdictsByItem,
   reviewVerdictsOfRuns,
+  runEventPayloadsOfType,
   listRunEvents,
   listRunEventsAfter,
   listRunEventsFrom,
