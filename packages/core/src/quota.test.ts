@@ -194,12 +194,22 @@ describe("quotaStopReason", () => {
 
     expect(said).toContain('"claude" backend refused this run');
     expect(said).toContain("five-hour usage window"); // the backend's own name, minus its underscores
-    expect(said).toContain("(100% used)");
+    expect(said).toContain("five-hour usage window is full.");
     expect(said).toContain("in about 3 hours");
     // The whole point of the item: a person must not be sent to look
     // at the schema for a turn that ran out of allowance.
     expect(said).toContain("nothing has been retried");
     expect(said).toContain("Sam");
+  });
+
+  it("prints no share from the run's event, which Claude sends as a fraction (EO-938)", () => {
+    // A week 75% used as EO-937's run reported it, then refused at 1.0:
+    // read as a percentage it would say "(1% used)" of a full window.
+    for (const utilization of [0.75, 1, 100]) {
+      const said = quotaStopReason({ agentName: "Sam", event: reading({ window: "seven_day", utilization }), now: NOW });
+      expect(said).not.toContain("% used");
+      expect(said).toContain("seven-day usage window is full.");
+    }
   });
 
   it("leaves the share out when the backend did not measure one", () => {

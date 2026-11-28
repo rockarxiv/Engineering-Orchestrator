@@ -292,9 +292,11 @@ export function quotaStopReason(input: {
   now: number;
 }): string {
   const { agentName, event, now } = input;
-  const share = event.utilization === undefined ? "" : ` (${Math.round(event.utilization)}% used)`;
+  // No share (EO-938): the run's own event is all this has, and Claude's
+  // carries it as a fraction, so a full window would read "(1% used)".
+  // "Is full" is what the refusal says.
   return [
-    `The "${event.provider}" backend refused this run: ${quotaWindowPhrase(event.window)} is full${share}. ` +
+    `The "${event.provider}" backend refused this run: ${quotaWindowPhrase(event.window)} is full. ` +
       `The run stopped there, and nothing has been retried.`,
     `Retrying could not help. A limit does not clear in the seconds between attempts, so asking again would spend ` +
       `an allowance that is already gone, fail the same way, and bury this reason one message deeper. If ${agentName} ` +

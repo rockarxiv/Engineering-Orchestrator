@@ -602,9 +602,8 @@ export function codexUsageLimitRefusal(message: string): QuotaEvent | null {
     provider: PROVIDER,
     window: named !== "" && named.length <= LONGEST_WINDOW_NAME ? named : "unknown",
     // No share, and no stand-in for one. Codex says nothing about how
-    // much of the window was used, and `quotaStopReason` leaves the
-    // "(100% used)" clause out when it is absent rather than asserting a
-    // figure the backend never gave.
+    // much of the window was used, and nothing would draw or print one
+    // from a run's refusal if it did (EO-938).
     status: "rejected",
     // Absent rather than undefined when unreadable, so the comment says
     // "the backend did not say" in the words `describeQuotaReset`
