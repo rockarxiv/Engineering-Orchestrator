@@ -177,13 +177,14 @@ describe("folding the installed packs", () => {
     expect(folded.sectionRenderers.map((renderer) => renderer.id)).toEqual(["first", "second"]);
   });
 
-  it("supplies the developer pack's nine sections, and none with nothing installed", () => {
+  it("supplies the developer pack's ten sections, and none with nothing installed", () => {
     expect(foldPacks([developerPack({ db: handle.db })]).sectionRenderers.map((renderer) => renderer.id)).toEqual([
       "clarify",
       "planModeCheck",
       "currentOutput",
       "acceptanceCriteria",
       "ticketFiles",
+      "sandbox",
       "planCommentResponse",
       "reviewPlan",
       "approvedPlan",
