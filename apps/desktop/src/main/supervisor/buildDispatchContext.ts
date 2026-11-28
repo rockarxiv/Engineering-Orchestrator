@@ -1,5 +1,5 @@
 import { assembleContext, assembleFollowUpContext, assembleSeedContext, type AssembledFollowUpContext, type AssembleContextInput, type AttributedComment, type ContextItemInput, type SectionRenderer } from "@eo/engine";
-import { acceptanceCriteriaOf, actionOverridesFor, definedActionFor, renderActionDefinitionTask, UNKNOWN_ITEM_TYPE, fullThreadEnabled, parsedResultOf, HUMAN_MESSAGE_EVENT, INTERPRET_ACTION, type Agent, type Comment, type CommentKind, type HumanMessageEvent, type Run, type Item, type Uuid } from "@eo/core";
+import { acceptanceCriteriaOf, agentSandboxed, actionOverridesFor, definedActionFor, renderActionDefinitionTask, UNKNOWN_ITEM_TYPE, fullThreadEnabled, parsedResultOf, HUMAN_MESSAGE_EVENT, INTERPRET_ACTION, type Agent, type Comment, type CommentKind, type HumanMessageEvent, type Run, type Item, type Uuid } from "@eo/core";
 import type { Db } from "../db/client.js";
 import { reviewAppendix } from "../packs/developer/forge/reviewAppendix.js";
 import { implementAppendix } from "../packs/developer/workspace/commitNaming.js";
@@ -311,6 +311,8 @@ export async function buildDispatchContext(
    * renders the task as it always was.
    */
   role: string | null = null,
+  /** Whether the dispatched agent runs sandboxed (EO-934), for the pack's sections. */
+  sandboxed = false,
 ): Promise<string> {
   const agentsById = new Map(listAgents(db).map((candidate) => [candidate.id as string, candidate]));
 
@@ -358,6 +360,7 @@ export async function buildDispatchContext(
     repositories: repositories.map((workspace) => ({ name: workspace.config.name, description: workspace.config.description })),
     planMode,
     packAction: packMeaningInForce(db, item, role, action),
+    sandboxed,
     // What the installed pack says on top of the core's own sections:
     // the acceptance criteria, the plan-mode check, and whether `refine`
     // means "decompose this" or "check this can be worked as written"
@@ -533,6 +536,9 @@ export function buildFollowUpContext(
     item: itemView(db, item),
     planMode: stepForItem(db, item)?.planMode ?? false,
     packAction: packMeaningInForce(db, item, agent.role, action),
+    // Whether this agent runs sandboxed (EO-934), read now: the setting
+    // can have changed since the thread began, and its section says so.
+    sandboxed: agentSandboxed(agent),
     currentOutput: outputView(db, item, agentsById),
     maxTokens: options.maxTokens ?? DEFAULT_CONTEXT_MAX_TOKENS,
   });
@@ -650,6 +656,7 @@ export async function buildSeedContext(db: Db, item: Item, agent: Agent, action:
     // The engine is handed the answer rather than a registry to ask
     // (EO-422): whether `action` is the pack's or this role's own.
     packAction: packMeaningInForce(db, item, agent.role, action),
+    sandboxed: agentSandboxed(agent),
     // The same sections the full assembly renders, in the same places
     // (KAN-161) — an agent reads the same words whichever shape it was
     // dispatched with.
@@ -756,6 +763,6 @@ export async function buildTurnContext(
   // created for: no thread, where for these actions the thread is not
   // context about the work but the work itself.
   return fullThreadEnabled(agent) || CONVERSATION_ACTIONS.has(action)
-    ? buildDispatchContext(db, item, action, sectionRenderers, undefined, agent.role)
+    ? buildDispatchContext(db, item, action, sectionRenderers, undefined, agent.role, agentSandboxed(agent))
     : buildSeedContext(db, item, agent, action, sectionRenderers);
 }

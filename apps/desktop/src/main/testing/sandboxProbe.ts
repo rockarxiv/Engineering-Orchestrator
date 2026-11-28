@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { signInSockets as eoSignInSockets } from "../supervisor/agentSandbox.js";
 import { HERMETIC_GIT_CONFIG } from "./git.js";
 
 /**
@@ -77,39 +78,21 @@ export interface ProbeOutcome {
 }
 
 /**
- * The forge variables EO-932's credentials decision strips, and the two
- * EO-933 found also carry a forge sign-in into the sandbox: an SSH agent
- * offers its keys through `SSH_AUTH_SOCK` whatever `~/.ssh` holds, and
- * `gh` reads its token from the desktop keyring through the session bus.
+ * The forge variables, sign-in channels, credential files and sockets EO
+ * keeps from a sandboxed agent — EO's own lists (`supervisor/agentSandbox.ts`,
+ * EO-934), so that these tests ask the real CLIs about exactly what EO
+ * hides. EO-933 established them here first; EO-934 moved them where EO
+ * runs them.
  */
-export const FORGE_TOKEN_VARIABLES = ["GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "GITLAB_TOKEN", "GL_TOKEN"] as const;
-export const SIGN_IN_CHANNEL_VARIABLES = ["SSH_AUTH_SOCK", "DBUS_SESSION_BUS_ADDRESS"] as const;
+export { credentialFiles, FORGE_TOKEN_VARIABLES, SIGN_IN_CHANNEL_VARIABLES } from "../supervisor/agentSandbox.js";
 
 /**
- * The credential files EO knows of, as EO-932's decision lists them:
- * the `gh` hosts file, git's credential stores and `~/.ssh`. Absent ones
- * included — what each backend does with a hidden path that does not
- * exist is one of the things the tests establish.
- */
-export function credentialFiles(home: string = homedir(), environment: NodeJS.ProcessEnv = process.env): string[] {
-  const config = environment["XDG_CONFIG_HOME"] ?? join(home, ".config");
-  const gh = environment["GH_CONFIG_DIR"] ?? join(config, "gh");
-  return [join(gh, "hosts.yml"), join(home, ".git-credentials"), join(config, "git", "credentials"), join(home, ".ssh")];
-}
-
-/**
- * The session bus and SSH agent sockets, by path, hidden beside the
- * variables that name them: stripping a variable does not take away the
- * socket it named, and a program can find the session bus at
- * `$XDG_RUNTIME_DIR/bus` without one.
+ * The session bus and SSH agent sockets, by path, as EO hides them, less
+ * any that do not exist on this machine — what the probe was measured
+ * with.
  */
 export function signInSockets(environment: NodeJS.ProcessEnv = process.env): string[] {
-  const sockets: string[] = [];
-  const agent = environment["SSH_AUTH_SOCK"];
-  if (agent) sockets.push(agent);
-  const runtime = environment["XDG_RUNTIME_DIR"];
-  if (runtime) sockets.push(join(runtime, "bus"));
-  return sockets.filter((path) => existsSync(path));
+  return eoSignInSockets(environment).filter((path) => existsSync(path));
 }
 
 /**

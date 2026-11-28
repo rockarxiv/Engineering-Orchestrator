@@ -1934,6 +1934,36 @@ describe("setting EO up, through the tools that do it", () => {
     }
   });
 
+  it("sets a repository's extra writable paths for sandboxed agents, none until it does, and lists them (EO-934)", async () => {
+    const repositoryId = await attach("api", repoPath);
+    expect(listRepositoriesCommand(handle.db, credentials).repositories[0]!.extraWritablePaths).toEqual([]);
+
+    const changed = await tool("repository_update").run(dispatch, { id: repositoryId, extraWritablePaths: ["/home/me/.local/share/pnpm/store", "/home/me/.npm"] });
+
+    expect(changed.ok).toBe(true);
+    if (!changed.ok) return;
+    expect(changed.refused).toBe(false);
+    const listed = await tool("repositories_list").run(dispatch, {});
+    expect(listed.ok).toBe(true);
+    if (!listed.ok) return;
+    expect((listed.data as IpcResponse<"repositories:list">).repositories[0]!.extraWritablePaths).toEqual(["/home/me/.local/share/pnpm/store", "/home/me/.npm"]);
+    expect(listed.text).toContain("extra writable paths for sandboxed agents: /home/me/.local/share/pnpm/store, /home/me/.npm");
+  });
+
+  it("refuses a relative extra writable path, saying why, and changes nothing (EO-934)", async () => {
+    const repositoryId = await attach("api", repoPath);
+    const before = listRepositoriesCommand(handle.db, credentials).repositories[0]!;
+
+    for (const bad of ["node_modules/.cache", "./store", "~/.npm"]) {
+      const refused = await tool("repository_update").run(dispatch, { id: repositoryId, testCommand: "pnpm test", extraWritablePaths: ["/home/me/.npm", bad] });
+
+      expect(refused.ok).toBe(false);
+      if (refused.ok) return;
+      expect(refused.issues?.[0]).toContain("must be absolute");
+      expect(listRepositoriesCommand(handle.db, credentials).repositories[0]).toEqual(before);
+    }
+  });
+
   it("refuses a path that is not a git repository, and says which path", async () => {
     // The screen has a folder picker, which proves a folder exists and
     // nothing more; a client has not even got that. Stored unchecked, the

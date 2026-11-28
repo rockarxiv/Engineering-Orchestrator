@@ -62,6 +62,7 @@ function toView(db: Db, workspace: GitWorkspace, credentials: CredentialsOptions
     lintCommand: workspace.config.lintCommand,
     buildCommand: workspace.config.buildCommand,
     checkTimeoutMinutes: workspace.config.checkTimeoutMinutes,
+    extraWritablePaths: workspace.config.extraWritablePaths,
     itemCount: listItems(db, workspace.id).length,
     jira: jiraConfigView(db, binding, credentials),
     forge: {
@@ -317,6 +318,8 @@ export async function updateRepositoryCommand(db: Db, credentials: CredentialsOp
     ...(input.forgeDraft !== undefined ? { forgeDraft: input.forgeDraft } : {}),
     ...(input.forgeTemplatePath !== undefined ? { forgeTemplatePath: input.forgeTemplatePath } : {}),
     ...(reviewers !== undefined ? { forgeReviewers: reviewers } : {}),
+    // Absolute, or the input schema refused the update (EO-934).
+    ...(input.extraWritablePaths !== undefined ? { extraWritablePaths: input.extraWritablePaths } : {}),
   };
 
   // The update kept the row's kind, so what comes back is the same

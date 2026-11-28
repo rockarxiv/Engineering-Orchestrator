@@ -9,6 +9,7 @@ import { writeToolDirectory } from "../agentAttachments/pluginDirectory.js";
 import { capturingProvider } from "./sentCapture.js";
 import { agentSpawnPath, resetSearchPathForTests, resolveSearchPath, searchPath, type ShellRunner } from "../process/searchPath.js";
 import { CLAUDE_AUTH_ERRORS } from "../testing/authErrorFixtures.js";
+import { SANDBOX_HIDDEN, stubSandboxEnvironment } from "../testing/sandboxEnvironment.js";
 
 /** No settings files at all, so a test does not read the developer's own (EO-599). */
 /** The PATH the CLI is spawned with (EO-906): EO's search PATH, or the inherited one on Windows. */
@@ -593,6 +594,148 @@ describe("createClaudeProvider", () => {
     expect(calls[0]?.options).toMatchObject({
       permissionMode: "bypassPermissions",
       allowDangerouslySkipPermissions: true,
+    });
+  });
+
+  describe("the sandbox (EO-934)", () => {
+    const SANDBOX = {
+      writable: ["/tmp/wt", "/repo/.git/worktrees/wt", "/repo/.git/objects", "/repo/.git/refs", "/repo/.git/logs"],
+      hidden: SANDBOX_HIDDEN,
+      withheld: ["GH_TOKEN", "GITHUB_TOKEN", "SSH_AUTH_SOCK", "DBUS_SESSION_BUS_ADDRESS"],
+    };
+
+    beforeEach(() => {
+      stubSandboxEnvironment();
+    });
+
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it("launches a turn with no sandbox exactly as before: no sandbox option, and the environment it inherits", async () => {
+      vi.stubEnv("GH_TOKEN", "gho_from_the_shell");
+      const { runQuery, calls } = fakeQuery([init()]);
+
+      await collect(createClaudeProvider({ runQuery, enableCommentTool: false }).start(startOpts));
+
+      expect(calls[0]?.options).not.toHaveProperty("sandbox");
+      expect(calls[0]?.options).toMatchObject({ permissionMode: "bypassPermissions", allowDangerouslySkipPermissions: true });
+      expect(calls[0]?.options.env).toMatchObject({ GH_TOKEN: "gho_from_the_shell", SSH_AUTH_SOCK: "/run/user/1000/ssh-agent" });
+    });
+
+    it("launches a sandboxed turn with the SDK's sandbox beside bypassPermissions, and without the names EO withholds", async () => {
+      vi.stubEnv("GH_TOKEN", "gho_from_the_shell");
+      vi.stubEnv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1000/bus");
+      const { runQuery, calls } = fakeQuery([init()]);
+
+      // A run's own variable of a withheld name is kept from it too.
+      await collect(createClaudeProvider({ runQuery, enableCommentTool: false }).start({ ...startOpts, sandbox: SANDBOX, environmentVariables: { GITHUB_TOKEN: "ghp_step", KEPT: "yes" } }));
+
+      expect(calls[0]?.options).toMatchObject({ permissionMode: "bypassPermissions", allowDangerouslySkipPermissions: true, settingSources: ["project"] });
+      expect(calls[0]?.options.sandbox).toEqual({
+        enabled: true,
+        autoAllowBashIfSandboxed: true,
+        allowUnsandboxedCommands: false,
+        failIfUnavailable: true,
+        filesystem: { allowWrite: SANDBOX.writable, denyRead: SANDBOX.hidden },
+      });
+      const env = calls[0]?.options.env ?? {};
+      for (const name of SANDBOX.withheld) expect(env).not.toHaveProperty(name);
+      expect(env).toMatchObject({ KEPT: "yes" });
+    });
+
+    it("launches a resumed sandboxed turn in the same sandbox", async () => {
+      const { runQuery, calls } = fakeQuery([init()]);
+
+      await collect(createClaudeProvider({ runQuery, enableCommentTool: false }).resume("sess_persisted", "carry on", { cwd: "/tmp/wt", sandbox: SANDBOX }));
+
+      expect(calls[0]?.options).toMatchObject({ resume: "sess_persisted", permissionMode: "bypassPermissions" });
+      expect(calls[0]?.options.sandbox).toMatchObject({ enabled: true, allowUnsandboxedCommands: false, filesystem: { allowWrite: SANDBOX.writable, denyRead: SANDBOX.hidden } });
+    });
+
+    it("hides the credentials wherever the turn's own variables put them, as well as where EO's environment does (EO-934 review)", async () => {
+      const { runQuery, calls } = fakeQuery([init()]);
+
+      await collect(
+        createClaudeProvider({ runQuery, enableCommentTool: false }).start({
+          ...startOpts,
+          sandbox: SANDBOX,
+          environmentVariables: { GH_CONFIG_DIR: "/alternate-gh", XDG_CONFIG_HOME: "/alternate-config", XDG_RUNTIME_DIR: "/alternate-runtime" },
+        }),
+      );
+
+      const denied = (calls[0]?.options.sandbox as { filesystem?: { denyRead?: string[] } } | undefined)?.filesystem?.denyRead ?? [];
+      expect(denied).toEqual(expect.arrayContaining([...SANDBOX_HIDDEN, join("/alternate-gh", "hosts.yml"), join("/alternate-config", "git", "credentials"), join("/alternate-runtime", "bus")]));
+    });
+
+    describe("the settings files the CLI lays over its environment (EO-934 review)", () => {
+      /** A provider reading only `files` as settings, and the query it was launched with, or the error it was refused with. */
+      const launched = async (files: Record<string, unknown>, config?: Record<string, unknown>) => {
+        const { runQuery, calls } = fakeQuery([init()]);
+        // By path with either separator, as the settings tests above read them.
+        const settingsReader = { readText: (path: string) => (path.replaceAll("\\", "/") in files ? JSON.stringify(files[path.replaceAll("\\", "/")]) : null), listDir: () => [] };
+        const provider = createClaudeProvider({ runQuery, enableCommentTool: false, settingsReader, ...(config ? { config: config as never } : {}) });
+        const refused = await collect(provider.start({ ...startOpts, sandbox: SANDBOX })).then(
+          () => null,
+          (error: unknown) => (error instanceof Error ? error.message : String(error)),
+        );
+        return { refused, calls, denied: (calls[0]?.options.sandbox as { filesystem?: { denyRead?: string[] } } | undefined)?.filesystem?.denyRead ?? [] };
+      };
+      // Keyed with slashes, as the reader looks them up; said in the
+      // message as this platform joins them.
+      const PROJECT = "/tmp/wt/.claude/settings.json";
+      const USER = "/home/me/.claude/settings.json";
+      const said = (path: string) => join(...path.split("/").map((part, index) => (index === 0 ? "/" : part)));
+
+      it("refuses a sandboxed turn whose project settings would hand it a withheld name, before anything is launched", async () => {
+        const { refused, calls } = await launched({ [PROJECT]: { env: { GH_TOKEN: "SYNTHETIC_PROJECT_TOKEN" } } });
+
+        expect(refused).toContain("EO did not run this sandboxed turn");
+        expect(refused).toContain(`GH_TOKEN in ${said(PROJECT)}`);
+        expect(refused).not.toContain("SYNTHETIC_PROJECT_TOKEN");
+        expect(calls).toHaveLength(0);
+      });
+
+      it("refuses one whose own Claude setup would, for an agent that uses it", async () => {
+        const { refused, calls } = await launched({ [USER]: { env: { SSH_AUTH_SOCK: "/run/user/1000/other-agent" } } }, { inheritAmbientConfig: true });
+
+        expect(refused).toContain(`SSH_AUTH_SOCK in ${said(USER)}`);
+        expect(calls).toHaveLength(0);
+      });
+
+      it("does not read the person's own settings for a locked-down agent, which the CLI does not load either", async () => {
+        const { refused, calls } = await launched({ [USER]: { env: { GH_TOKEN: "SYNTHETIC_USER_TOKEN" } } });
+
+        expect(refused).toBeNull();
+        expect(calls).toHaveLength(1);
+      });
+
+      it.each([
+        ["project settings", { [PROJECT]: { env: { GH_CONFIG_DIR: "/alternate-gh", XDG_RUNTIME_DIR: "/alternate-runtime" } } }, undefined],
+        ["the person's own settings", { [USER]: { env: { GH_CONFIG_DIR: "/alternate-gh", XDG_RUNTIME_DIR: "/alternate-runtime" } } }, { inheritAmbientConfig: true }],
+      ])("hides the credentials where %s put them, as well as everywhere else it already did", async (_where, files, config) => {
+        const { refused, denied } = await launched(files, config);
+
+        expect(refused).toBeNull();
+        expect(denied).toEqual(expect.arrayContaining([...SANDBOX_HIDDEN, join("/alternate-gh", "hosts.yml"), join("/alternate-runtime", "bus")]));
+      });
+    });
+
+    it("lets no withheld token reach the launch by any name, an attached server's declared one included (EO-934 review)", async () => {
+      const SYNTHETIC = "SYNTHETIC_TOKEN_EO934";
+      vi.stubEnv("GITHUB_TOKEN", SYNTHETIC);
+      const { runQuery, calls } = fakeQuery([init()]);
+
+      await collect(
+        createClaudeProvider({ runQuery, enableCommentTool: false, attachmentEnv: () => ({ env: { GITHUB_TOKEN: SYNTHETIC, GH_TOKEN: SYNTHETIC } }) }).start({
+          ...startOpts,
+          sandbox: SANDBOX,
+          environmentVariables: { GITHUB_TOKEN: SYNTHETIC },
+        }),
+      );
+
+      expect(Object.values(calls[0]?.options.env ?? {}).some((value) => typeof value === "string" && value.includes(SYNTHETIC))).toBe(false);
+      expect(JSON.stringify({ ...calls[0]?.options, abortController: undefined })).not.toContain(SYNTHETIC);
     });
   });
 

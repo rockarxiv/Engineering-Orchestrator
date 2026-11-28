@@ -2455,6 +2455,7 @@ describe("0072: workspaces, connector bindings, and the ids that do not change",
       // No column ever held it: the schema's default, read onto a row
       // written before the field existed (EO-741).
       forgeReviewers: [],
+      extraWritablePaths: [],
       // Written onto every repository by 0189 (EO-928).
       checkTimeoutMinutes: 10,
     });

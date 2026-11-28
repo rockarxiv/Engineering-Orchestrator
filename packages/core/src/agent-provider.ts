@@ -201,6 +201,38 @@ export interface AgentTurnOverrides {
    * Lent by the workspace a step works in; absent means no fence.
    */
   fence?: CallFence;
+  /**
+   * The sandbox this turn's shell commands run in (EO-934,
+   * ARCHITECTURE.md §12.7), on a turn whose agent's setting asks for one
+   * (`agentSandboxed`). Computed by EO for each turn from the dispatch —
+   * the item's checkout, the repository's settings, EO's own list of
+   * credentials — and never from anything the agent says or writes.
+   *
+   * Claude takes it as the SDK's `sandbox` option beside
+   * `bypassPermissions`; Codex as a permission profile with no `sandbox`
+   * on `thread/start`, which would silently win over the profile. Both
+   * withhold `withheld` from the CLI's whole environment. Neither waits
+   * for approval. Absent is the unsandboxed launch every agent had before.
+   */
+  sandbox?: AgentSandbox;
+}
+
+/**
+ * What a sandboxed turn may do (EO-934, `AgentTurnOverrides.sandbox`).
+ * Every path absolute.
+ */
+export interface AgentSandbox {
+  /**
+   * What its shell commands may write: on a git checkout the worktree,
+   * its own git directory, the common git directory's `objects`, `refs`
+   * and `logs`, and the repository's extra writable paths — never the
+   * common git directory itself, its `hooks` or its `config`.
+   */
+  writable: string[];
+  /** What its shell commands may not read: the credential files EO knows of and the sign-in sockets. */
+  hidden: string[];
+  /** Environment variable names the CLI starts without, whatever layer would have set them. */
+  withheld: string[];
 }
 
 /**

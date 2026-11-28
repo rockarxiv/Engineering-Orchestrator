@@ -24,6 +24,7 @@ import {
   type AgentProviderResumeOptions,
   type AgentProvider,
   type CallFence,
+  type AgentSandbox,
   type AgentWriteAnswer,
   type AgentWriteRequest,
   type DebugSent,
@@ -71,6 +72,7 @@ import { TOOLS } from "../mcpHost/catalog.js";
 import { toolsFor } from "../mcpHost/gate.js";
 import { createAdminMcpHost } from "../mcpHost/admin.js";
 import { fakePlatform } from "../testing/platform.js";
+import { SANDBOX_HIDDEN, stubSandboxEnvironment } from "../testing/sandboxEnvironment.js";
 import { adminToolOf } from "../roles/pipelineRead.js";
 import { answerActions, ASSIST_ANSWER_WITH_MAPS, ASSIST_ANSWER_WITH_TRIAL, ASSIST_ANSWERS_WITH_CARDS, claudeViolations, openAiStrictViolations } from "../testing/answerSchemas.js";
 import { allGone, descendantPids, DESCENDANTS_SNIPPET, owed, sweepUp } from "../testing/escapingDescendants.js";
@@ -387,6 +389,38 @@ const cliToolsSectionOf = (prompt: string): string | null => {
   return at === -1 ? null : prompt.slice(at);
 };
 
+/**
+ * One turn's sandbox (EO-934), as the dispatch works it out for a linked
+ * worktree at `/tmp/wt` with one extra writable path. A hidden path with a
+ * dot in it, as `~/.ssh` always has.
+ */
+const SANDBOX: AgentSandbox = {
+  writable: ["/tmp/wt", "/repo/.git/worktrees/wt", "/repo/.git/objects", "/repo/.git/refs", "/repo/.git/logs", "/home/me/.npm"],
+  // EO's own list for the machine `stubSandboxEnvironment` sets up, which
+  // both adapters work out again from the environment they launch with.
+  hidden: SANDBOX_HIDDEN,
+  withheld: ["GH_TOKEN", "GITHUB_TOKEN", "SSH_AUTH_SOCK", "DBUS_SESSION_BUS_ADDRESS"],
+};
+
+/** The shell a sandbox proof runs in: that machine, with every withheld name set but the agent's socket, which it already names. */
+function stubSandboxShell(): void {
+  stubSandboxEnvironment();
+  for (const name of SANDBOX.withheld) if (name !== "SSH_AUTH_SOCK") vi.stubEnv(name, `from-the-shell-${name}`);
+}
+
+/** What a backend was launched with, in the parity list's words, for `SANDBOX`. */
+interface SandboxObserved {
+  sandboxed: boolean;
+  writes: string[];
+  hidden: string[];
+  network: boolean;
+  /** Whether an unsandboxed mode was sent beside the sandbox, which on Codex would silently win. */
+  alsoUnsandboxed: boolean;
+  waitsForApproval: boolean;
+  /** Whether `GH_TOKEN`, set in the shell, reached the CLI's environment. */
+  withheldReached: string[];
+}
+
 const CAPABILITIES = [
   {
     name: "start",
@@ -446,6 +480,15 @@ const CAPABILITIES = [
       allowed: ["memory_note", "memory_read", "repository server", "skill tools"],
       reasonSaid: true,
       skillLoaded: [],
+    },
+  },
+  {
+    name: "the sandbox",
+    what: "a turn given a sandbox runs its commands in the backend's sandbox, where they may write only what EO worked out — the worktree, its git directories as a commit needs them and the repository's extra writable paths — and read nothing EO hides, wherever the environment it launches with puts it, with the network on; it is never also given an unsandboxed mode that would win over it, never waits for approval, and starts without the forge tokens and sign-in channels EO withholds, under any name; a resumed turn runs in the same sandbox; and a turn given none is launched as it always was (EO-934)",
+    same: {
+      started: { sandboxed: true, writes: [...SANDBOX.writable].sort(), hidden: [...SANDBOX.hidden].sort(), network: true, alsoUnsandboxed: false, waitsForApproval: false, withheldReached: [] },
+      resumed: { sandboxed: true, writes: [...SANDBOX.writable].sort(), hidden: [...SANDBOX.hidden].sort(), network: true, alsoUnsandboxed: false, waitsForApproval: false, withheldReached: [] },
+      unsandboxed: { sandboxed: false, writes: [], hidden: [], network: true, alsoUnsandboxed: false, waitsForApproval: false, withheldReached: ["GH_TOKEN"] },
     },
   },
   {
@@ -2983,6 +3026,36 @@ const CLAUDE: Record<CapabilityName, Proof> = {
     return { ...refusalsObserved(answers), skillLoaded: events.filter((event) => event.type === "skill_loaded") };
   },
 
+  "the sandbox": async () => {
+    // Claude's delivery: the SDK's `sandbox` option beside
+    // `bypassPermissions`, and the names EO withholds left out of `env`.
+    const turn = async (sandbox: AgentSandbox | undefined, resuming: boolean): Promise<SandboxObserved> => {
+      stubSandboxShell();
+      try {
+        const { runQuery, calls } = scripted([sdk.init(), sdk.result()]);
+        const provider = createClaudeProvider({ runQuery, enableCommentTool: false });
+        await collect(resuming ? provider.resume("sess-1", "carry on", { cwd: "/tmp/wt", ...(sandbox ? { sandbox } : {}) }) : provider.start({ ...startOpts, ...(sandbox ? { sandbox } : {}) }));
+        const options = calls[0]?.options as
+          | { permissionMode?: unknown; env?: Record<string, unknown>; sandbox?: { enabled?: boolean; autoAllowBashIfSandboxed?: boolean; allowUnsandboxedCommands?: boolean; failIfUnavailable?: boolean; network?: unknown; filesystem?: { allowWrite?: string[]; denyRead?: string[] } } }
+          | undefined;
+        const box = options?.sandbox;
+        return {
+          sandboxed: box?.enabled === true && box.failIfUnavailable === true,
+          writes: [...(box?.filesystem?.allowWrite ?? [])].sort(),
+          hidden: [...(box?.filesystem?.denyRead ?? [])].sort(),
+          // No `network` block is every domain reachable.
+          network: box?.network === undefined,
+          alsoUnsandboxed: box !== undefined && box.allowUnsandboxedCommands !== false,
+          waitsForApproval: options?.permissionMode !== "bypassPermissions" || (box !== undefined && box.autoAllowBashIfSandboxed !== true),
+          withheldReached: ["GH_TOKEN"].filter((name) => name in (options?.env ?? {})),
+        };
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    };
+    return { started: await turn(SANDBOX, false), resumed: await turn(SANDBOX, true), unsandboxed: await turn(undefined, false) };
+  },
+
   "the work fence": async () => {
     // Claude's delivery: a `PreToolUse` callback in EO's own process,
     // offered every call (no matcher). The CLI runs it before each tool,
@@ -4141,9 +4214,10 @@ function codexOver(scenario: FakeAppServerScenario, options: Parameters<typeof c
   const provider = createCodexProvider({
     executablePath: STUB_EXECUTABLE,
     ...options,
-    createCodex: (repository, searchHook, attachFrom, memoryScopes, environmentVariables, writeBridge, withheld, adminDirectory, skillSlugs) =>
+    // The sandbox too, the last argument (EO-934); the item is left out, as it always was here.
+    createCodex: (repository, searchHook, attachFrom, memoryScopes, environmentVariables, writeBridge, withheld, adminDirectory, skillSlugs, _itemId, sandbox) =>
       new CodexClient({
-        ...codexClientOptions({ executablePath: STUB_EXECUTABLE, ...options }, repository, searchHook, attachFrom, memoryScopes, environmentVariables, writeBridge, withheld, adminDirectory, skillSlugs),
+        ...codexClientOptions({ executablePath: STUB_EXECUTABLE, ...options }, repository, searchHook, attachFrom, memoryScopes, environmentVariables, writeBridge, withheld, adminDirectory, skillSlugs, undefined, sandbox),
         spawn: fake.spawn,
         shutdownGraceMs: 200,
         killGraceMs: 100,
@@ -4529,6 +4603,38 @@ const CODEX: Record<CapabilityName, Proof> = {
     const said = existsSync(answersFile) ? readFileSync(answersFile, "utf8").trim().split("\n").map((line) => JSON.parse(line) as { status: number; body: string }) : [];
     const answers = Object.fromEntries(classes.map(([name], index) => [name, said[index]?.status === 200 ? (JSON.parse(said[index].body) as unknown) : null]));
     return { ...refusalsObserved(answers), skillLoaded: events.filter((event) => event.type === "skill_loaded") };
+  },
+
+  "the sandbox": async () => {
+    // Codex's delivery: a permission profile in the app-server's
+    // configuration, and no `sandbox` on `thread/start` or
+    // `thread/resume`, where one would silently win over it.
+    const turn = async (sandbox: AgentSandbox | undefined, resuming: boolean): Promise<SandboxObserved> => {
+      stubSandboxShell();
+      try {
+        const { fake, provider } = codexOver({ after: { "turn/start": [note.turnStarted(), note.agentMessage("done", "m", "turn-1", "thr-1"), note.turnCompleted("completed", null, "turn-1", "thr-1")] } });
+        await collect(resuming ? provider.resume("thr-1", "carry on", { cwd: "/tmp/wt", ...(sandbox ? { sandbox } : {}) }) : provider.start({ ...startOpts, ...(sandbox ? { sandbox } : {}) }));
+        const args = fake.launches[0]?.args ?? [];
+        const params = fake.paramsOf(resuming ? "thread/resume" : "thread/start") as Record<string, unknown> | undefined;
+        const filesystem = args.find((arg) => arg.startsWith("permissions.eo.filesystem=")) ?? "";
+        // Each key as the serializer quoted it, unescaped: a Windows path's backslashes are doubled there.
+        const entries = [...filesystem.matchAll(/("(?:[^"\\]|\\.)*") = "(write|read|none)"/g)].map((match) => [JSON.parse(match[1] ?? '""') as string, match[2] ?? ""] as const);
+        const profiled = args.includes('default_permissions="eo"');
+        return {
+          sandboxed: profiled && args.includes('permissions.eo.extends=":workspace"'),
+          // The two temporary-directory tokens are made read-only, not hidden.
+          writes: entries.filter(([, access]) => access === "write").map(([path]) => path).sort(),
+          hidden: entries.filter(([, access]) => access === "none").map(([path]) => path).sort(),
+          network: !profiled || args.includes("permissions.eo.network.enabled=true"),
+          alsoUnsandboxed: profiled && params?.["sandbox"] !== undefined,
+          waitsForApproval: params?.["approvalPolicy"] !== "never",
+          withheldReached: ["GH_TOKEN"].filter((name) => name in (fake.launches[0]?.options.env ?? process.env)),
+        };
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    };
+    return { started: await turn(SANDBOX, false), resumed: await turn(SANDBOX, true), unsandboxed: await turn(undefined, false) };
   },
 
   "the work fence": async () => {
@@ -5808,7 +5914,7 @@ describe.each(CAPABILITIES)("$name: $what", (capability) => {
 });
 
 describe("the shared list", () => {
-  it("is the twelve capabilities EO-380 names and the ones EO-385, EO-387, EO-392, EO-395, EO-412, EO-421, EO-444, EO-468, EO-470, EO-477, EO-478, EO-479, EO-487, EO-488, EO-490, EO-493, EO-494, EO-534, EO-543, EO-578, EO-587, EO-597, EO-633, EO-700, EO-703, EO-716, EO-717, EO-718, EO-732, EO-738 (two), EO-797, EO-807, EO-820, EO-906, EO-918, EO-926 and the streaming chat added, each once", () => {
+  it("is the twelve capabilities EO-380 names and the ones EO-385, EO-387, EO-392, EO-395, EO-412, EO-421, EO-444, EO-468, EO-470, EO-477, EO-478, EO-479, EO-487, EO-488, EO-490, EO-493, EO-494, EO-534, EO-543, EO-578, EO-587, EO-597, EO-633, EO-700, EO-703, EO-716, EO-717, EO-718, EO-732, EO-738 (two), EO-797, EO-807, EO-820, EO-906, EO-918, EO-926, EO-934 and the streaming chat added, each once", () => {
     // Pinned so that taking one off the list is a decision somebody
     // made in this file rather than a line that went missing.
     expect(CAPABILITIES.map((capability) => capability.name)).toEqual([
@@ -5819,6 +5925,7 @@ describe("the shared list", () => {
       "the learning review's tools",
       "the learning review's skill tools",
       "the learning review's refusals",
+      "the sandbox",
       "the work fence",
       "non-fatal warning",
       "interrupt with usage on escalation",

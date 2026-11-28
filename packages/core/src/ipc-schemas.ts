@@ -17,6 +17,7 @@ import {
   CheckTimeoutMinutesSchema,
   DEFAULT_CHECK_TIMEOUT_MINUTES,
   DEFAULT_WORKSPACE_MODE,
+  ExtraWritablePathSchema,
   WorkspaceModeSchema,
 } from "./schemas/workspaces.js";
 import { ItemWatchViewSchema, StepWatchSchema } from "./watch.js";
@@ -929,6 +930,28 @@ export const InboxSummarySchema = z.object({
 });
 export type InboxSummary = z.infer<typeof InboxSummarySchema>;
 
+/**
+ * An agent's `config` as `agents:save` takes it: an open record, as it
+ * always was (see that channel), with the one key typed whose wrong type
+ * must be refused rather than read as off — the sandbox setting (EO-934,
+ * `AGENT_SANDBOXED_KEY`). `null` is allowed for `agent_save`, where it
+ * removes the key; either way only a literal `true` runs the agent
+ * sandboxed (`agentSandboxed`).
+ */
+export const AgentConfigSchema = z
+  .object({
+    sandboxed: z
+      .boolean()
+      .nullable()
+      .optional()
+      .describe(
+        "Run this agent sandboxed (ARCHITECTURE.md §12.7): its shell commands may write only the item's checkout, the git " +
+          "directories its commits need and the repository's extra writable paths, it is given no forge credentials, and it " +
+          "never pushes. Off unless true. A platform that cannot sandbox it refuses the run rather than running it unsandboxed.",
+      ),
+  })
+  .catchall(z.unknown());
+
 export const AgentViewSchema = z.object({
   id: z.string(),
   name: z.string(),
@@ -1769,6 +1792,8 @@ export const RepositoryViewSchema = z.object({
   buildCommand: z.string().nullable(),
   /** How long each check may run before verify kills it, in whole minutes (EO-928). */
   checkTimeoutMinutes: z.number().int(),
+  /** What a sandboxed agent may write here besides its checkout and git directories (EO-934). Defaulted, so a listing from before it reads as none. */
+  extraWritablePaths: z.array(z.string()).default([]),
   itemCount: z.number(),
   jira: JiraConfigSchema,
   forge: ForgeConfigSchema,
@@ -1909,6 +1934,14 @@ export const UpdateRepositoryInputSchema = z.object({
         "login, a GitHub org/team, or a GitLab username. Replaces the whole list; [] asks nobody. Entries are trimmed, " +
         "blanks and repeats dropped, and an entry with a space or comma in it refuses the update.",
     ),
+  extraWritablePaths: z
+    .array(ExtraWritablePathSchema)
+    .optional()
+    .describe(
+      "What a sandboxed agent working on this repository may write besides its checkout and the git directories its " +
+        "commits need — a package manager's store or cache, say. Absolute paths only: a relative one refuses the update. " +
+        "Replaces the whole list; [] is none, the default. An agent that is not sandboxed is not limited by it.",
+    ),
 });
 
 /**
@@ -2042,6 +2075,14 @@ export const ProviderCapabilitiesSchema = z.object({
   /** True when EO can ask the installed provider runtime instead of maintaining a list. */
   modelsAreLive: z.boolean(),
   reasoningEfforts: z.array(z.string()),
+  /**
+   * Whether this backend can run an agent sandboxed at all (EO-934,
+   * ARCHITECTURE.md §12.7) — Claude and Codex, not `fake` or `scripted`,
+   * which run no commands — so the editor offers the setting only where
+   * it would do something. Whether this machine can start that sandbox is
+   * a separate question. Defaulted, so an answer from before reads no.
+   */
+  sandboxes: z.boolean().default(false),
 });
 
 export type ProviderCapabilities = z.infer<typeof ProviderCapabilitiesSchema>;

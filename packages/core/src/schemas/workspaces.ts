@@ -63,6 +63,23 @@ export const CheckTimeoutMinutesSchema = z
   .max(CHECK_TIMEOUT_MAX_MINUTES, { error: CHECK_TIMEOUT_BOUNDS });
 
 /**
+ * Whether `path` is absolute on any platform EO runs on: `/` on Linux and
+ * macOS, a drive (`C:\\` or `C:/`) or a UNC share (`\\\\server\\share`)
+ * on Windows. In `packages/core`, which has no `node:path`, so spelled
+ * out; the form and `repository_update` refuse alike through it.
+ */
+export function isAbsoluteHostPath(path: string): boolean {
+  return path.startsWith("/") || /^[A-Za-z]:[\\/]/.test(path) || path.startsWith("\\\\");
+}
+
+/** One of a repository's extra writable paths (EO-934): absolute, and refused with a sentence otherwise. */
+export const ExtraWritablePathSchema = z
+  .string()
+  .trim()
+  .min(1, { error: "An extra writable path cannot be empty." })
+  .refine(isAbsoluteHostPath, { error: "An extra writable path must be absolute, such as /home/me/.local/share/pnpm/store: a relative one would mean wherever a turn started." });
+
+/**
  * The `git-worktree` kind's configuration — a repository EO drives.
  *
  * Every field is one of the `repositories` columns that genuinely
@@ -112,6 +129,16 @@ export const GitWorkspaceConfigSchema = z.object({
    * them. Empty asks nobody, which is what EO did before the field.
    */
   forgeReviewers: z.array(z.string()).default([]),
+  /**
+   * What a sandboxed agent working here may write besides its checkout
+   * and the git directories its commits need (EO-934, ARCHITECTURE.md
+   * §12.7): a package manager's store or cache, say. Absolute paths
+   * only, since a sandbox is handed paths and a relative one would mean
+   * wherever a turn happened to start. Empty by default, which lets a
+   * sandboxed agent write nothing more. Read by no agent that is not
+   * sandboxed.
+   */
+  extraWritablePaths: z.array(ExtraWritablePathSchema).default([]),
 });
 
 export type GitWorkspaceConfig = z.infer<typeof GitWorkspaceConfigSchema>;

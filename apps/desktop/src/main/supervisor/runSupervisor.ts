@@ -165,6 +165,7 @@ import { packMeaningInForce, proposedActionsProblem, registry, registryForItem }
 import { previewBuiltinRunner } from "../preview.js";
 import { announceDailyBudgetDefault } from "../guardDefaultNotice.js";
 import type { BuiltinOutcome, BuiltinRunner } from "./builtins.js";
+import { withAgentSandbox } from "./agentSandbox.js";
 import {
   NOTHING_ATTACHED,
   verifies,
@@ -2598,8 +2599,11 @@ export function createRunSupervisor(
    * afterwards.
    */
   async function attachWorkspace(item: Item, agent: Agent, workspace: PreparedWorkspace | null): Promise<WorkspaceAttachment> {
-    if (workspace === null) return NOTHING_ATTACHED;
-    return kindFor(item).attach(item, agent, workspace);
+    // And the sandbox, for an agent whose setting asks for one (EO-934),
+    // here because every path to a provider passes through this: what the
+    // kind lent it may write, and what EO always keeps from it.
+    if (workspace === null) return withAgentSandbox(NOTHING_ATTACHED, agent, null);
+    return withAgentSandbox(await kindFor(item).attach(item, agent, workspace), agent, workspace.cwd);
   }
 
   /** The workspace a run recorded, as the value the kind's methods take. Null when EO recorded no directory for it. */
@@ -6510,6 +6514,8 @@ export function createRunSupervisor(
       // And the fence, on the same argument (EO-926): a corrective turn is
       // the same agent's work in the same worktree.
       ...(runOpts.attachment?.fence ? { fence: runOpts.attachment.fence } : {}),
+      // And the sandbox, which a corrective turn runs in as its turn did (EO-934).
+      ...(runOpts.attachment?.sandbox ? { sandbox: runOpts.attachment.sandbox } : {}),
       // And which run this is and where it works (EO-412), or the `eo`
       // server the corrective turn starts would stop listing
       // `attachment_add` between the answer and its correction.
@@ -7332,6 +7338,8 @@ export function createRunSupervisor(
       ...(attachment.mcpServers[0] ? { repositoryMcp: attachment.mcpServers[0] } : {}),
       // And the fence its workspace holds this agent's calls to (EO-926).
       ...(attachment.fence ? { fence: attachment.fence } : {}),
+      // And the sandbox its agent's setting asks for (EO-934).
+      ...(attachment.sandbox ? { sandbox: attachment.sandbox } : {}),
       ...attachOption(item, { id: item.id, cwd: workspace.cwd }),
       // What the turn this warms will tell the `eo` server (EO-478), so
       // the warmed process lists the tools the turn would have.
@@ -8014,6 +8022,8 @@ export function createRunSupervisor(
       ...(attachment.mcpServers[0] ? { repositoryMcp: attachment.mcpServers[0] } : {}),
       // And the fence its workspace holds this agent's calls to (EO-926).
       ...(attachment.fence ? { fence: attachment.fence } : {}),
+      // And the sandbox its agent's setting asks for (EO-934).
+      ...(attachment.sandbox ? { sandbox: attachment.sandbox } : {}),
       // The run and its directory, which is what the `eo` server needs
       // to offer `attachment_add` and to refuse a path truthfully
       // (EO-412).
@@ -10350,6 +10360,7 @@ export function createRunSupervisor(
           ...(recoveredToolDirectory ? { toolDirectory: recoveredToolDirectory.path } : {}),
           ...(recoveredAttachment.mcpServers[0] ? { repositoryMcp: recoveredAttachment.mcpServers[0] } : {}),
           ...(recoveredAttachment.fence ? { fence: recoveredAttachment.fence } : {}),
+          ...(recoveredAttachment.sandbox ? { sandbox: recoveredAttachment.sandbox } : {}),
           // The continuation's own id: what it attaches is counted
           // against, and filed under, the run that attached it (EO-412).
           ...attachOption(item, newRun),
@@ -13049,6 +13060,7 @@ export function createRunSupervisor(
         ...(replyToolDirectory ? { toolDirectory: replyToolDirectory.path } : {}),
         ...(replyAttachment.mcpServers[0] ? { repositoryMcp: replyAttachment.mcpServers[0] } : {}),
         ...(replyAttachment.fence ? { fence: replyAttachment.fence } : {}),
+        ...(replyAttachment.sandbox ? { sandbox: replyAttachment.sandbox } : {}),
         ...attachOption(item, run),
         // The parked thread was given memory; its tool stays (EO-478).
         ...memoryOption(item),

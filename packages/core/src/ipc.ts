@@ -56,6 +56,7 @@ import {
  */
 const TEMPLATE_TOKEN = { token: z.string().optional() };
 import {
+  AgentConfigSchema,
   AgentDetailSchema,
   AgentRemovalImpactSchema,
   StepNamingAgentSchema,
@@ -3293,7 +3294,7 @@ export const recordContract = {
        * MCP, which lays a patch over what is there — including inside
        * this object.
        */
-      config: z.record(z.string(), z.unknown()).optional(),
+      config: AgentConfigSchema.optional(),
       /**
        * The project this agent works for, or null for a global agent
        * (EO-474, ARCHITECTURE.md, "An agent is a row").

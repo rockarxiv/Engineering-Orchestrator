@@ -326,8 +326,8 @@ describe("a pack's action name, on a step owned by a custom role", () => {
       expect(saveActionDefinition(handle.db, { role: "qa", action: "refine", results: [{ key: "ready" }] }).ok).toBe(true);
       createStep(handle.db, { id: "qa_refine", pipelineId: DEFAULT, position: -5, name: "QA refine", type: "agent", agentId: agentOfKind(handle.db, "qa"), entryAction: "refine" });
       createStep(handle.db, { id: "audit_refine", pipelineId: DEFAULT, position: -4, name: "Audit refine", type: "agent", agentId: agentOfKind(handle.db, "auditor"), entryAction: "refine" });
-      const qa = { id: qaId, role: "qa" } as never;
-      const auditor = { id: auditorId, role: "auditor" } as never;
+      const qa = { id: qaId, role: "qa", config: {} } as never;
+      const auditor = { id: auditorId, role: "auditor", config: {} } as never;
 
       const own = await buildSeedContext(handle.db, storyOn("qa_refine"), qa, "refine", developerSectionRenderers);
       const packs = await buildSeedContext(handle.db, storyOn("audit_refine"), auditor, "refine", developerSectionRenderers);

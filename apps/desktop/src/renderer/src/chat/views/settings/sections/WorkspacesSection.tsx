@@ -17,7 +17,7 @@ import { useProjects } from "../../../../query/useRepositories";
 import { useInvalidateOnPush } from "../../../../query/useInvalidateOnPush";
 import { useViewParameters } from "../../../../shared/view/ViewPublisher";
 import { basename, unsavedEditsBetween } from "../../../../shared/settings/primitives";
-import { Button, Card, CardSection, Checkbox, Chip, EmptyState, ErrorLine, Field, Loading, RowList, Select, TextInput } from "../../../kit";
+import { Button, Card, CardSection, Checkbox, Chip, EmptyState, ErrorLine, Field, Loading, RowList, Select, TextArea, TextInput } from "../../../kit";
 import { CheckLine, FieldGrid, Note, PathField } from "../core/fields";
 import { useItemWords } from "../core/words";
 import { ScopedSkillsLine } from "../../agentTools/skillScope";
@@ -60,6 +60,7 @@ interface GitDraft {
   forgeDraft: boolean;
   forgeTemplatePath: string | null;
   forgeReviewers: string[];
+  extraWritablePaths: string[];
 }
 
 const BLANK_GIT: GitDraft = {
@@ -77,6 +78,7 @@ const BLANK_GIT: GitDraft = {
   forgeDraft: false,
   forgeTemplatePath: null,
   forgeReviewers: [],
+  extraWritablePaths: [],
 };
 
 /**
@@ -99,6 +101,7 @@ const GIT_FIELD_LABELS: Record<keyof GitDraft, string> = {
   forgeDraft: "Open it as a draft",
   forgeTemplatePath: "Template",
   forgeReviewers: "Default reviewers",
+  extraWritablePaths: "Extra writable paths for sandboxed agents",
 };
 
 interface FolderDraft {
@@ -386,6 +389,9 @@ export function GitForm({
   // snap it back. Out of bounds is sent as it is and refused by EO with
   // the bounds, rather than quietly clamped here (EO-928).
   const [checkTimeout, setCheckTimeout] = useState(String(initial.checkTimeoutMinutes));
+  // One per line, kept as typed; a relative path is sent as it is and
+  // refused by EO with a sentence, rather than dropped here (EO-934).
+  const [writable, setWritable] = useState(initial.extraWritablePaths.join("\n"));
   const detect = useMutation({ mutationFn: () => ipcQuery("forge:detect", { repositoryId: workspaceId! }) });
   useViewParameters({ unsavedEdits: unsavedEditsBetween(draft, initial, GIT_FIELD_LABELS) });
   const result = detect.data;
@@ -444,6 +450,19 @@ export function GitForm({
           />
         </Field>
       </FieldGrid>
+      {/* What a sandboxed agent may write besides its checkout (EO-934). Read by no agent that is not sandboxed. */}
+      <Field label="Extra writable paths for sandboxed agents">
+        <TextArea
+          value={writable}
+          rows={2}
+          className="font-mono"
+          placeholder="/home/you/.local/share/pnpm/store — one absolute path per line"
+          onChange={(event) => {
+            setWritable(event.target.value);
+            setDraft({ ...draft, extraWritablePaths: event.target.value.split("\n").map((line) => line.trim()).filter((line) => line !== "") });
+          }}
+        />
+      </Field>
       {/* Verification skips a check it has no command for, so without this
           a run passes having run no tests and nothing says so (EO-927). */}
       {hasNoTestCommand(draft) ? (

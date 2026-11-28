@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Bot } from "lucide-react";
 import {
+  AGENT_SANDBOXED_KEY,
+  agentSandboxed,
   aliasNotice,
   backendAllowed,
   CONSOLIDATION_OVERRIDE_KEYS,
@@ -555,6 +557,23 @@ export function AgentEditor({
               here and nothing else, ignoring the <code className="font-mono">config.toml</code>, <code className="font-mono">AGENTS.md</code>, skills and
               MCP servers in your <code className="font-mono">~/.codex</code>. Tick this to hand all of that back, for an agent that depends on it. Your
               Codex sign-in, your saved conversations and the repository&apos;s own <code className="font-mono">AGENTS.md</code> apply either way.
+            </TickOption>
+          ) : null}
+          {/* EO's own switch, on both backends that can sandbox (EO-934, ARCHITECTURE.md §12.7). Off unless ticked. */}
+          {capabilities.data?.capabilities.sandboxes === true ? (
+            <TickOption
+              checked={agentSandboxed(draft)}
+              onChange={(next) => {
+                const config = { ...draft.config };
+                if (next) config[AGENT_SANDBOXED_KEY] = true;
+                else delete config[AGENT_SANDBOXED_KEY];
+                setDraft({ ...draft, config });
+              }}
+            >
+              <span className="text-ink">Run this agent sandboxed</span> — its shell commands may write only the {word}&apos;s checkout, the git
+              directories its commits need and the repository&apos;s extra writable paths, it is given no forge credentials, and it never pushes: EO
+              pushes its work itself. A command the sandbox blocks fails rather than waiting for anyone. A machine that cannot sandbox it refuses the run
+              rather than running it unsandboxed.
             </TickOption>
           ) : null}
           {keyringNotice ? (

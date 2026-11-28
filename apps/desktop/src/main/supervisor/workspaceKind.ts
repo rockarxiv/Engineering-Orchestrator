@@ -1,4 +1,4 @@
-import type { Agent, CallFence, Item, PipelineStep, RepositoryMcpServer, Skill, Uuid, WorkspaceKindSlug } from "@eo/core";
+import type { Agent, AgentSandbox, CallFence, Item, PipelineStep, RepositoryMcpServer, Skill, Uuid, WorkspaceKindSlug } from "@eo/core";
 import type { Workspace } from "../db/repos/workspacesRepo.js";
 
 /**
@@ -369,6 +369,21 @@ export interface WorkspaceAttachment {
    * Absent is no fence: a kind that has nothing to guard lends none.
    */
   fence?: CallFence;
+  /**
+   * What a sandboxed agent may write on this turn (EO-934), as this kind
+   * works it out from the dispatch — on a git checkout the worktree, its
+   * git directories as a commit needs them, and the repository's extra
+   * writable paths. Lent only for an agent whose setting asks for a
+   * sandbox; absent leaves it the directory the turn runs in.
+   */
+  sandboxWritable?: readonly string[];
+  /**
+   * The sandbox the turn runs in (EO-934, `AgentTurnOverrides.sandbox`).
+   * Never a kind's to set: the supervisor puts it here for a sandboxed
+   * agent, from `sandboxWritable` and EO's own list of what to hide
+   * (`agentSandbox.ts`), on every path that reaches a provider.
+   */
+  sandbox?: AgentSandbox;
 }
 
 /** Nothing lent, which is what a run with no kind — and every supervisor built without one — gets. */

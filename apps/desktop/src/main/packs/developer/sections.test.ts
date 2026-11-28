@@ -1,4 +1,4 @@
-import { assembleContext, assembleSeedContext, type AssembleContextInput, type AssembleSeedContextInput } from "@eo/engine";
+import { assembleContext, assembleFollowUpContext, assembleSeedContext, type AssembleContextInput, type AssembleSeedContextInput } from "@eo/engine";
 import { actionOverridesFor, developerRegistry, eoToolName, ATTACHMENT_ADD_TOOL_NAME, FOLDER_KIND, GIT_WORKTREE_KIND, NONE_KIND, SCRATCH_KIND } from "@eo/core";
 import { describe, expect, it } from "vitest";
 import { developerSectionRenderers } from "./sections.js";
@@ -210,5 +210,33 @@ describe("where a file for the ticket goes (EO-413)", () => {
 
   it("is not sent again on a resumed thread, which already holds it", () => {
     expect(developerSectionRenderers.find((renderer) => renderer.id === "ticketFiles")?.volatile ?? false).toBe(false);
+  });
+});
+
+describe("saying the turn is sandboxed (EO-934)", () => {
+  const story = (workspaceKind: string) => ({ key: "EO-1", title: "A story", body: "Do the thing.", acceptanceCriteria: ["It does the thing."], actionOverrides: overridesOf("story"), workspaceKind });
+
+  it("says so on a sandboxed dispatch, in the full assembly and the seed alike, and names what a checkout may write", () => {
+    for (const { fullText } of [assembleContext(full({ sandboxed: true, item: story(GIT_WORKTREE_KIND) })), assembleSeedContext(seed({ sandboxed: true, item: story(GIT_WORKTREE_KIND) }))]) {
+      expect(fullText).toContain("## Sandbox");
+      expect(fullText).toContain("You run sandboxed on this turn");
+      expect(fullText).toContain("the git directories a commit needs");
+      expect(fullText).toContain("you never push");
+    }
+  });
+
+  it("says nothing on a dispatch that is not sandboxed, which is every one until a person turns it on", () => {
+    expect(section(full({ item: story(GIT_WORKTREE_KIND) }), "sandbox")).toBeNull();
+    expect(section(full({ sandboxed: false, item: story(GIT_WORKTREE_KIND) }), "sandbox")).toBeNull();
+  });
+
+  it("is said again on a resumed thread, since the setting can change between two turns", () => {
+    const followUp = (sandboxed: boolean) => assembleFollowUpContext({ action: "implement", newComments: [], sectionRenderers: developerSectionRenderers, item: story(GIT_WORKTREE_KIND), sandboxed, maxTokens: 10_000 }).fullText;
+    expect(followUp(true)).toContain("You run sandboxed on this turn");
+    expect(followUp(false)).not.toContain("## Sandbox");
+  });
+
+  it("names only the directory it works in where there is no checkout", () => {
+    expect(section(full({ sandboxed: true, item: story(FOLDER_KIND) }), "sandbox")).toContain("only the directory you work in");
   });
 });

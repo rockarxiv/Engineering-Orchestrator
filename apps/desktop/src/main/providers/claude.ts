@@ -7,7 +7,7 @@ import { loadClaudeSdk, type ClaudeSdkModule } from "./claudeSdk.js";
 import { claudeProcesses, withStderr, type ClaudeProcesses } from "./claudeProcess.js";
 import { adoptWarmScope, warmScopeKey } from "../process/runScope.js";
 import { agentSpawnPath } from "../process/searchPath.js";
-import { claudeCompatibilityHolds, type ClaudeSettingSources, type ClaudeSettingsReader } from "./claudeCompatibility.js";
+import { claudeCompatibilityHolds, claudeSettingsLayers, effectiveClaudeEnvironment, type ClaudeSettingsLayer, type ClaudeSettingSources, type ClaudeSettingsReader } from "./claudeCompatibility.js";
 import {
   ThreadNotFoundError,
   type AgentInputAttachment,
@@ -39,6 +39,7 @@ import {
   withoutReservedEnvironmentVariables,
   uuidv7,
   type SkillGivenBefore,
+  type AgentSandbox,
 } from "@eo/core";
 import { agentMcpStdioConfig, eoMcpStdioConfig, type EoMcpServiceConfig } from "../mcp/serviceConfig.js";
 import { toolResultEvent, toolResultText } from "./toolResult.js";
@@ -50,6 +51,7 @@ import { withSkillsSection } from "../agentAttachments/skillsPrompt.js";
 import { claudeSkillLoaded, leadingWith, skillsOffered, withoutEvents } from "./skillUsage.js";
 import { REFUSED_CALL_EVENTS, refusalHookOutput, refusedCall, type CallRule } from "./callRefusal.js";
 import { fencedCall, type FenceRefusal } from "./callFence.js";
+import { hiddenIn } from "./sandboxCredentials.js";
 import { openedFork } from "./threadFork.js";
 import type { SearchNudge } from "./searchNudge.js";
 import type { AdminMcpDispatch } from "../agentAttachments/adminDelivery.js";
@@ -1253,6 +1255,58 @@ function callRefusals(eoTools: readonly string[] | undefined, server: Repository
 }
 
 /**
+ * The SDK's `sandbox` option for a sandboxed turn (EO-934, ARCHITECTURE.md
+ * §12.7), as `claudeSandbox.live.test.ts` established it through this
+ * launch path, beside the `bypassPermissions` every turn has.
+ *
+ * - `autoAllowBashIfSandboxed` and `allowUnsandboxedCommands: false`:
+ *   nothing waits for a person, and a command the model asks to run
+ *   outside the sandbox runs inside it anyway (EO-932, "No prompts").
+ * - `failIfUnavailable`: a platform that cannot sandbox ends the turn
+ *   with an error rather than running it unsandboxed.
+ * - `filesystem.allowWrite` is what EO worked out the turn may write; the
+ *   worktree is writable as the turn's `cwd` in any case.
+ *   `filesystem.denyRead` is what EO hides. No `network` block: every
+ *   domain is reachable, as EO-932's network decision asks.
+ *
+ * The SDK's own types say that with `allowUnsandboxedCommands: false`
+ * set this way the CLI ignores a project settings file's `allowWrite`,
+ * which is what keeps a `.claude/settings.json` the agent writes into its
+ * checkout from widening this. Read off the types, not measured.
+ */
+export function claudeSandboxSettings(sandbox: AgentSandbox): NonNullable<Options["sandbox"]> {
+  return {
+    enabled: true,
+    autoAllowBashIfSandboxed: true,
+    allowUnsandboxedCommands: false,
+    failIfUnavailable: true,
+    filesystem: { allowWrite: [...sandbox.writable], denyRead: [...sandbox.hidden] },
+  };
+}
+
+/**
+ * Refuses a sandboxed turn that a settings file the CLI loads would hand
+ * a name EO withholds (EO-934 review). The CLI lays every loaded file's
+ * `env` over the environment EO spawns it with, so a `GH_TOKEN` in the
+ * person's `~/.claude/settings.json`, the repository's
+ * `.claude/settings.json` or a managed file would reach the agent's
+ * commands however carefully EO's own environment left it out. Refused
+ * rather than overridden: nothing measured says a value EO hands the CLI
+ * can take a name away again, and a sandboxed agent is never run on the
+ * hope that it does. The turn fails with this sentence, before anything
+ * is launched.
+ */
+function refuseRestoredNames(sandbox: AgentSandbox, layers: readonly ClaudeSettingsLayer[]): void {
+  const withheld = new Set(sandbox.withheld);
+  const restoring = layers.flatMap((layer) => Object.keys(layer.env).filter((name) => withheld.has(name)).map((name) => `${name} in ${layer.path}`));
+  if (restoring.length === 0) return;
+  throw new Error(
+    `EO did not run this sandboxed turn: the Claude settings it would load set ${restoring.join(", ")}, which a sandboxed agent is never given — ` +
+      "the CLI hands a settings file's variables to every command. Remove them from that file, or turn this agent's sandbox off.",
+  );
+}
+
+/**
  * EO's fence around an implementer's or a reviewer's turn (EO-926,
  * `AgentTurnOverrides.fence`), as a `PreToolUse` hook in EO's process:
  * every call is offered to it — no matcher — and one `fencedCall` answers
@@ -1374,6 +1428,8 @@ interface ClaudeTurn {
   refuseCallsExcept?: readonly string[] | undefined;
   /** The fence this turn's calls are held to (EO-926, `AgentTurnOverrides.fence`). On the turn because it is one item's. */
   fence?: CallFence | undefined;
+  /** The sandbox this turn's commands run in (EO-934, `AgentTurnOverrides.sandbox`). On the turn for the fence's reason. */
+  sandbox?: AgentSandbox | undefined;
   /** The run's environment variables (EO-487, `AgentTurnOverrides.environmentVariables`). On the turn because they are the step's, read as it opens. */
   environmentVariables?: Record<string, string> | undefined;
   /** Names the CLI must start without, inherited or not (EO-584, `AgentTurnOverrides.withheldEnvironmentVariables`). On the turn for the reason the variables are. */
@@ -1830,6 +1886,28 @@ function buildOptions(opts: ClaudeTurn, adapter: ClaudeAdapter): Options {
     ...withoutNames(withoutReservedEnvironmentVariables(opts.environmentVariables ?? {}), withheld),
     ...injected,
   };
+  // EO-934: a sandboxed turn runs its commands in the CLI's sandbox, and
+  // starts without the forge tokens and sign-in channels EO keeps from
+  // it — out of every layer above, what EO injects included, since a
+  // sandbox does not stop a command using a credential it can read.
+  // What it hides is asked again of this environment, before the names
+  // go (EO-934 review): a run's variable or an attached server's value
+  // can put the `gh` config, git's credentials or the sockets elsewhere.
+  // And of the environment the CLI will really give its commands, which
+  // is this one with every settings file it loads laid over it: those
+  // only add to what is hidden, never take from it, since the project's
+  // are the agent's to write.
+  if (opts.sandbox) {
+    const layers = claudeSettingsLayers({
+      cwd: options.cwd ?? process.cwd(),
+      env: options.env,
+      sources: config?.inheritAmbientConfig === true ? "all" : "project",
+      ...(adapter.settingsReader ? { reader: adapter.settingsReader } : {}),
+    });
+    refuseRestoredNames(opts.sandbox, layers);
+    options.sandbox = claudeSandboxSettings(hiddenIn(hiddenIn(opts.sandbox, options.env), effectiveClaudeEnvironment(options.env, layers)));
+    options.env = withoutNames(options.env, new Set(opts.sandbox.withheld));
+  }
   // EO-599 and EO-644: the defaults claude@0.3.312 and claude@0.3.318
   // changed, held to what the pin before each did, still at
   // claude@0.3.322 (EO-774), and the one claude@0.3.329 changed (EO-889)
@@ -2655,6 +2733,7 @@ export function createClaudeProvider(options: ClaudeProviderOptions = {}): Agent
     ...(opts.environmentVariables ? { environmentVariables: opts.environmentVariables } : {}),
     ...(opts.withheldEnvironmentVariables ? { withheldEnvironmentVariables: opts.withheldEnvironmentVariables } : {}),
     ...(opts.fence ? { fence: opts.fence } : {}),
+    ...(opts.sandbox ? { sandbox: opts.sandbox } : {}),
   });
 
   /**
@@ -2687,6 +2766,9 @@ export function createClaudeProvider(options: ClaudeProviderOptions = {}): Agent
     ...(opts?.refuseCallsExcept ? { refuseCallsExcept: opts.refuseCallsExcept } : {}),
     // And its fence, which a resume is held to as the turn it carries on was (EO-926).
     ...(opts?.fence ? { fence: opts.fence } : {}),
+    // And its sandbox, for the same reason (EO-934): a resume spawns the
+    // CLI again, and a CLI spawned without one runs unsandboxed.
+    ...(opts?.sandbox ? { sandbox: opts.sandbox } : {}),
     // And the run's environment variables, for that reason too (EO-487):
     // they are in the environment of the process the resume spawns.
     ...(opts?.environmentVariables ? { environmentVariables: opts.environmentVariables } : {}),
@@ -2871,8 +2953,10 @@ export function createClaudeProvider(options: ClaudeProviderOptions = {}): Agent
     prewarm(turn: AgentPrewarmTurn): void {
       // Not for a turn with a repository index, as on Codex, whose search
       // hook is opened per turn: the two backends warm the same turns.
-      // Conversations have none. Nor for a fenced turn (EO-926), as on Codex.
-      if (turn.repositoryMcp || turn.fence) return;
+      // Conversations have none. Nor for a fenced turn (EO-926), as on Codex,
+      // nor a sandboxed one (EO-934): a process warmed without its sandbox
+      // must never be the one a sandboxed turn adopts.
+      if (turn.repositoryMcp || turn.fence || turn.sandbox) return;
       const startedBefore = turnsStarted;
       // The bearer this warm process would be spawned with (EO-444), held
       // here until the warm query owns it and let go on every way out
