@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, isAbsolute, join } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { CallFence } from "@eo/core";
 import { fencedCall, patchTargets, readCheckout, shellRefusal, simpleCommands, whereItLands, type CheckoutState, type FenceGit } from "./callFence.js";
@@ -284,8 +284,9 @@ describe("the fence's file rules (EO-926)", () => {
   it.each(["Write", "Edit", "MultiEdit"])("lets Claude's %s write inside the worktree and refuses outside it", async (tool) => {
     expect(await fencedCall(tool, { file_path: `${ROOT}/src/a.ts` }, IMPLEMENTER)).toBeNull();
     expect(await fencedCall(tool, { file_path: "src/a.ts" }, IMPLEMENTER, ROOT)).toBeNull();
-    expect(await fencedCall(tool, { file_path: "/etc/hosts" }, IMPLEMENTER)).toMatchObject({ rule: "write_outside_worktree", call: "/etc/hosts" });
-    expect(await fencedCall(tool, { file_path: "../EO-2/a.ts" }, REVIEWER, ROOT)).toMatchObject({ rule: "write_outside_worktree", call: "/home/me/.eo/worktrees/EO-2/a.ts" });
+    // `resolve`, for the drive a Windows run puts these on.
+    expect(await fencedCall(tool, { file_path: "/etc/hosts" }, IMPLEMENTER)).toMatchObject({ rule: "write_outside_worktree", call: resolve("/etc/hosts") });
+    expect(await fencedCall(tool, { file_path: "../EO-2/a.ts" }, REVIEWER, ROOT)).toMatchObject({ rule: "write_outside_worktree", call: resolve("/home/me/.eo/worktrees/EO-2/a.ts") });
     expect(await fencedCall(tool, { file_path: `${ROOT}-other/a.ts` }, IMPLEMENTER)).toMatchObject({ rule: "write_outside_worktree" });
   });
 
@@ -296,7 +297,7 @@ describe("the fence's file rules (EO-926)", () => {
   it("reads every file a Codex patch touches, relative to the call's directory", async () => {
     const patch = (lines: string[]) => ({ command: ["*** Begin Patch", ...lines, "*** End Patch", ""].join("\n") });
     expect(await fencedCall("apply_patch", patch(["*** Update File: src/a.ts", "@@", "-a", "+b"]), IMPLEMENTER, ROOT)).toBeNull();
-    expect(await fencedCall("apply_patch", patch(["*** Add File: src/b.ts", "+b", "*** Add File: /tmp/outside.txt", "+x"]), IMPLEMENTER, ROOT)).toMatchObject({ rule: "write_outside_worktree", call: "/tmp/outside.txt" });
+    expect(await fencedCall("apply_patch", patch(["*** Add File: src/b.ts", "+b", "*** Add File: /tmp/outside.txt", "+x"]), IMPLEMENTER, ROOT)).toMatchObject({ rule: "write_outside_worktree", call: resolve("/tmp/outside.txt") });
     expect((await fencedCall("apply_patch", patch(["*** Update File: src/a.ts", "*** Move to: ../../elsewhere.ts"]), IMPLEMENTER, ROOT))?.rule).toBe("write_outside_worktree");
     expect((await fencedCall("apply_patch", { command: "not a patch" }, IMPLEMENTER, ROOT))?.rule).toBe("unreadable_patch");
   });
@@ -633,10 +634,10 @@ describe("the fence over a real checkout", () => {
 
     const rules = await throughTheFence(
       [
-        `(cd ${work} && git status --short); git push --force-with-lease`,
-        `echo "$(cd ${work})"; git push --force-with-lease`,
-        `sh -c "cd ${work}"; git push --force-with-lease`,
-        `cd ${work} | true; git push --force-with-lease`,
+        `(cd '${work}' && git status --short); git push --force-with-lease`,
+        `echo "$(cd '${work}')"; git push --force-with-lease`,
+        `sh -c "cd '${work}'"; git push --force-with-lease`,
+        `cd '${work}' | true; git push --force-with-lease`,
       ],
       fence,
       outer,
@@ -646,7 +647,8 @@ describe("the fence over a real checkout", () => {
 
     // Where the shell that pushes really is in the worktree, it is let through, and pushes the item's branch alone.
     git(work, "commit", "--amend", "-m", "work, rebased");
-    const inside = `(cd ${work} && git push --force-with-lease)`;
+    // Quoted: a Windows path's backslashes are escapes to the shell, and to the fence.
+    const inside = `(cd '${work}' && git push --force-with-lease)`;
     expect(await throughTheFence([inside], fence, outer)).toEqual({ [inside]: null });
     expect(remoteBranch(remote, "eo/EO-1")).toBe(git(work, "rev-parse", "HEAD"));
     expect(remoteBranch(remote, "main")).toBeNull();

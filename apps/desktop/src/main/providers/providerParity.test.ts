@@ -1689,7 +1689,8 @@ function fenceObserved(answers: Record<string, unknown>, events: AgentEvent[], r
     allowed: Object.keys(answers).filter((name) => !refused.includes(name)).sort(),
     reasonSaid: refused.length > 0 && refused.every((name) => (decision(answers[name])?.permissionDecisionReason ?? "").includes("EO's fence")),
     // The worktree is a directory of this test's own, named as such.
-    recorded: events.flatMap((event) => (event.type === "call_refused" ? [{ rule: event.rule, call: event.call.replaceAll(root, "<worktree>").replaceAll("\\", "/") }] : [])),
+    // And a Windows run's drive is left off, so `/tmp/outside.txt` reads the same everywhere.
+    recorded: events.flatMap((event) => (event.type === "call_refused" ? [{ rule: event.rule, call: event.call.replaceAll(root, "<worktree>").replaceAll("\\", "/").replace(/^[A-Za-z]:\//, "/") }] : [])),
   };
 }
 

@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
-import { lstat, readlink } from "node:fs/promises";
+import { lstat, readlink, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
+import { basename as lastPart, dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
 import type { CallFence } from "@eo/core";
 
 /**
@@ -178,8 +178,8 @@ const MOST_LINKS = 40;
  */
 export async function whereItLands(path: string): Promise<string> {
   const start = isAbsolute(path) ? path : rawJoin(process.cwd(), path);
-  let current = parse(start).root;
-  const pending = components(start.slice(current.length));
+  let current = rootOf(start);
+  const pending = components(start.slice(parse(start).root.length));
   let links = 0;
   while (pending.length > 0) {
     const part = pending.shift() ?? "";
@@ -203,13 +203,45 @@ export async function whereItLands(path: string): Promise<string> {
     if (++links > MOST_LINKS) throw new Error(`more than ${String(MOST_LINKS)} links`);
     const target = await readlink(next);
     if (isAbsolute(target)) {
-      current = parse(target).root;
-      pending.unshift(...components(target.slice(current.length)));
+      current = rootOf(target);
+      pending.unshift(...components(target.slice(parse(target).root.length)));
     } else {
       pending.unshift(...components(target));
     }
   }
-  return current;
+  return canonical(current);
+}
+
+/**
+ * The root an absolute path starts from, with its drive: on Windows
+ * `/etc` is on the current drive, which `parse` alone would leave off.
+ */
+function rootOf(path: string): string {
+  return parse(resolve(parse(path).root)).root;
+}
+
+/**
+ * The same path as the filesystem spells it: its deepest existing part
+ * through `realpath`, the rest as it is. The walk has already followed
+ * every link, so all this changes is spelling — a Windows short name
+ * (`RUNNER~1`) or a letter's case — which would otherwise make one
+ * directory read as two.
+ */
+async function canonical(path: string): Promise<string> {
+  let existing = path;
+  const rest: string[] = [];
+  for (;;) {
+    try {
+      return join(await realpath(existing), ...rest);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "ENOENT" && code !== "ENOTDIR") throw error;
+      const parent = dirname(existing);
+      if (parent === existing) return path;
+      rest.unshift(lastPart(existing));
+      existing = parent;
+    }
+  }
 }
 
 /** A path's components, split on this platform's separators only: a backslash is a name's on POSIX. */
@@ -219,7 +251,8 @@ function components(path: string): string[] {
 
 /** `relative` under `base`, as text, with nothing collapsed: a `..` in it is for `whereItLands` to apply. */
 function rawJoin(base: string, relative: string): string {
-  return isAbsolute(relative) ? relative : `${base}${sep}${relative}`;
+  // `/` on every platform: Windows takes it as a separator too.
+  return isAbsolute(relative) ? relative : `${base}/${relative}`;
 }
 
 /** Whether `dir` really is in the worktree, through any link on the way. */
@@ -653,7 +686,7 @@ export const readCheckout: FenceGit = {
   async state(dir) {
     const run = (args: string[]) =>
       new Promise<{ ok: boolean; stdout: string }>((done) => {
-        execFile("git", ["-C", dir, ...args], { timeout: GIT_TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024, encoding: "utf8" }, (error, stdout) => done({ ok: error === null, stdout }));
+        execFile("git", ["-C", dir, ...args], { timeout: GIT_TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024, encoding: "utf8", windowsHide: true }, (error, stdout) => done({ ok: error === null, stdout }));
       });
     const [config, head] = await Promise.all([run(["config", "--null", "--list"]), run(["symbolic-ref", "--quiet", "--short", "HEAD"])]);
     if (!config.ok) return null;

@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { RepositoryMcpServer } from "@eo/core";
 import { afterEach, describe, expect, it } from "vitest";
@@ -326,7 +326,8 @@ describe("the hook on a fenced turn", () => {
     expect((await post(hook, JSON.stringify(patch("/etc/a.ts")))).status).toBe(200);
     expect(hook.drain()).toEqual([
       expect.objectContaining({ type: "call_refused", tool: "Bash", callId: "call-push", rule: "push_forced", call: "git push --force origin eo/EO-1" }),
-      expect.objectContaining({ type: "call_refused", tool: "apply_patch", rule: "write_outside_worktree", call: "/etc/a.ts" }),
+      // `resolve`, for the drive a Windows run puts it on.
+      expect.objectContaining({ type: "call_refused", tool: "apply_patch", rule: "write_outside_worktree", call: resolve("/etc/a.ts") }),
     ]);
   });
 });
