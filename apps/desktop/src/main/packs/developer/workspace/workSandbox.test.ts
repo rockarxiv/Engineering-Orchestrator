@@ -1,4 +1,4 @@
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
@@ -49,7 +49,9 @@ afterEach(() => {
 });
 
 function directory(prefix: string): string {
-  const made = realpathSync(mkdtempSync(join(tmpdir(), prefix)));
+  // Native, as EO resolves paths: on Windows the temporary directory is
+  // reached through an 8.3 short name (`RUNNER~1`) only it expands.
+  const made = realpathSync.native(mkdtempSync(join(tmpdir(), prefix)));
   directories.push(made);
   return made;
 }
@@ -107,15 +109,19 @@ function recording(provider: AgentProvider, turns: { sandbox: AgentSandbox | und
 }
 
 /** A story on a real repository, and the item's linked worktree cut from it. */
-async function gitStory(): Promise<{ item: Item; worktree: string; common: string }> {
+async function gitStory(): Promise<{ item: Item; worktree: string; common: string; store: string }> {
   const root = directory("eo-934-");
   const repo = await makeRepo(root, "repo");
   const worktree = join(root, "worktrees", "EO-1");
   await run(["worktree", "add", "-b", "eo/EO-1", worktree], repo);
   const workspace = attachWorkspace(handle.db, { keyPrefix: "EO", name: "eo", repoPath: repo });
-  updateWorkspace(handle.db, workspace.id, { config: { extraWritablePaths: ["/home/me/.local/share/pnpm/store"] } });
+  // A real directory, judged where it really is: a made-up `/home/me/…`
+  // is `/System/Volumes/Data/home/me/…` on macOS and `C:\\home\\me\\…` on Windows.
+  const store = join(root, "pnpm-store");
+  mkdirSync(store);
+  updateWorkspace(handle.db, workspace.id, { config: { extraWritablePaths: [store] } });
   const item = createTestItem(handle.db, { type: "story", title: "Rate limiting", stepId: "todo", spec: REVIEWABLE_SPEC, workspaceId: workspace.id, projectId: workspace.projectId });
-  return { item, worktree, common: join(repo, ".git") };
+  return { item, worktree, common: join(repo, ".git"), store };
 }
 
 async function dispatchImplementer(name: BackendName, sandboxed: boolean) {
@@ -148,7 +154,7 @@ async function dispatchImplementer(name: BackendName, sandboxed: boolean) {
 
 describe.each(["claude", "codex"] as const)("a sandboxed implementer on %s (EO-934)", (name) => {
   it("is launched in a sandbox EO worked out from the item's checkout and the repository's settings, and told so", async () => {
-    const { item, worktree, common, over, turns } = await dispatchImplementer(name, true);
+    const { item, worktree, common, store, over, turns } = await dispatchImplementer(name, true);
 
     expect(listRunsForItem(handle.db, item.id).map((run) => run.action)).toEqual(["implement"]);
     const sandbox = turns[0]?.sandbox;
@@ -158,10 +164,10 @@ describe.each(["claude", "codex"] as const)("a sandboxed implementer on %s (EO-9
       join(common, "objects"),
       join(common, "refs"),
       join(common, "logs"),
-      "/home/me/.local/share/pnpm/store",
+      store,
     ]);
     for (const closed of [common, join(common, "hooks"), join(common, "config")]) expect(sandbox?.writable).not.toContain(closed);
-    expect(sandbox?.hidden).toEqual(expect.arrayContaining([expect.stringMatching(/gh\/hosts\.yml$/), expect.stringMatching(/\.ssh$/), expect.stringMatching(/\.git-credentials$/)]));
+    expect(sandbox?.hidden).toEqual(expect.arrayContaining([expect.stringMatching(/gh[\\/]hosts\.yml$/), expect.stringMatching(/\.ssh$/), expect.stringMatching(/\.git-credentials$/)]));
     expect(sandbox?.withheld).toEqual(expect.arrayContaining(["GH_TOKEN", "GITHUB_TOKEN", "SSH_AUTH_SOCK", "DBUS_SESSION_BUS_ADDRESS"]));
     // The prompt says so, from the dispatch.
     expect(turns[0]?.context).toContain("## Sandbox");

@@ -22,7 +22,9 @@ afterEach(() => {
 });
 
 function scratch(): string {
-  const made = realpathSync(mkdtempSync(join(tmpdir(), "eo-934-writable-")));
+  // Native, as EO resolves paths: on Windows the temporary directory is
+  // reached through an 8.3 short name (`RUNNER~1`) only it expands.
+  const made = realpathSync.native(mkdtempSync(join(tmpdir(), "eo-934-writable-")));
   scratches.push(made);
   return made;
 }

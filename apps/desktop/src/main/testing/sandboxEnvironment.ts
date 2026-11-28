@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import { vi } from "vitest";
 
 /**
@@ -18,15 +19,19 @@ export const SANDBOX_ENVIRONMENT = {
   SSH_AUTH_SOCK: "/run/user/1000/ssh-agent",
 } as const;
 
-/** What EO hides on a machine with `SANDBOX_ENVIRONMENT`, in the order it lists them. */
+/**
+ * What EO hides on a machine with `SANDBOX_ENVIRONMENT`, in the order it
+ * lists them — joined the way this platform joins paths, as EO joins
+ * them, so the same list holds on Windows (`\\home\\me\\…`).
+ */
 export const SANDBOX_HIDDEN = [
-  "/home/me/.config/gh/hosts.yml",
-  "/home/me/.config/glab-cli/config.yml",
-  "/home/me/.git-credentials",
-  "/home/me/.config/git/credentials",
-  "/home/me/.ssh",
+  join("/home/me/.config/gh", "hosts.yml"),
+  join("/home/me/.config/glab-cli", "config.yml"),
+  join("/home/me", ".git-credentials"),
+  join("/home/me/.config", "git", "credentials"),
+  join("/home/me", ".ssh"),
   "/run/user/1000/ssh-agent",
-  "/run/user/1000/bus",
+  join("/run/user/1000", "bus"),
 ];
 
 /** Stubs `SANDBOX_ENVIRONMENT` into `process.env`. Undo with `vi.unstubAllEnvs()`. */

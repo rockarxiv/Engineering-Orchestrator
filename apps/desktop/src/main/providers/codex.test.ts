@@ -2323,7 +2323,8 @@ describe("createCodexProvider over a stubbed app-server", () => {
     };
     /** The profile's filesystem table as it reaches the command line, for `hidden` (EO's own list for this machine unless given). */
     const profileFilesystem = (hidden: readonly string[] = SANDBOX_HIDDEN) =>
-      `permissions.eo.filesystem={${[...SANDBOX.writable.map((path) => `"${path}" = "write"`), '":slash_tmp" = "read"', '":tmpdir" = "read"', ...hidden.map((path) => `"${path}" = "none"`)].join(", ")}}`;
+      // Keys quoted as the serializer quotes them, so a Windows path's backslashes are escaped there too.
+      `permissions.eo.filesystem={${[...SANDBOX.writable.map((path) => `${JSON.stringify(path)} = "write"`), '":slash_tmp" = "read"', '":tmpdir" = "read"', ...hidden.map((path) => `${JSON.stringify(path)} = "none"`)].join(", ")}}`;
     const PROFILE_FILESYSTEM = profileFilesystem();
 
     beforeEach(() => {
@@ -2390,7 +2391,7 @@ describe("createCodexProvider over a stubbed app-server", () => {
         }),
       );
 
-      expect(fake.launches[0]?.args).toContain(profileFilesystem([...SANDBOX_HIDDEN, "/alternate-gh/hosts.yml", "/alternate-config/git/credentials", "/alternate-runtime/bus"]));
+      expect(fake.launches[0]?.args).toContain(profileFilesystem([...SANDBOX_HIDDEN, join("/alternate-gh", "hosts.yml"), join("/alternate-config", "git", "credentials"), join("/alternate-runtime", "bus")]));
     });
 
     it("lets no withheld token reach the launch by any name, not even expanded into a header's variable (EO-934 review)", () => {
@@ -2440,13 +2441,13 @@ describe("createCodexProvider over a stubbed app-server", () => {
       it("refuses one whose configuration moves a credential location out of what the profile hides", async () => {
         const { fake, refused } = await turnOver(policy({ GH_CONFIG_DIR: "/alternate-policy-gh", XDG_RUNTIME_DIR: "/alternate-runtime" }));
 
-        expect(refused).toContain("/alternate-policy-gh/hosts.yml");
-        expect(refused).toContain("/alternate-runtime/bus");
+        expect(refused).toContain(join("/alternate-policy-gh", "hosts.yml"));
+        expect(refused).toContain(join("/alternate-runtime", "bus"));
         expect(fake.paramsOf("thread/start")).toBeUndefined();
       });
 
       it("lets through a location that lands only on paths already hidden, and variables it does not guard", async () => {
-        const { fake, refused } = await turnOver(policy({ GH_CONFIG_DIR: "/home/me/.config/gh", EO934_KEPT: "kept" }));
+        const { fake, refused } = await turnOver(policy({ GH_CONFIG_DIR: join("/home/me", ".config", "gh"), EO934_KEPT: "kept" }));
 
         expect(refused).toBeNull();
         expect(fake.paramsOf("thread/start")).toBeDefined();

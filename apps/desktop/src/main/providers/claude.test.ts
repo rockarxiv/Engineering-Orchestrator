@@ -665,7 +665,7 @@ describe("createClaudeProvider", () => {
       );
 
       const denied = (calls[0]?.options.sandbox as { filesystem?: { denyRead?: string[] } } | undefined)?.filesystem?.denyRead ?? [];
-      expect(denied).toEqual(expect.arrayContaining([...SANDBOX_HIDDEN, "/alternate-gh/hosts.yml", "/alternate-config/git/credentials", "/alternate-runtime/bus"]));
+      expect(denied).toEqual(expect.arrayContaining([...SANDBOX_HIDDEN, join("/alternate-gh", "hosts.yml"), join("/alternate-config", "git", "credentials"), join("/alternate-runtime", "bus")]));
     });
 
     describe("the settings files the CLI lays over its environment (EO-934 review)", () => {
@@ -681,14 +681,17 @@ describe("createClaudeProvider", () => {
         );
         return { refused, calls, denied: (calls[0]?.options.sandbox as { filesystem?: { denyRead?: string[] } } | undefined)?.filesystem?.denyRead ?? [] };
       };
+      // Keyed with slashes, as the reader looks them up; said in the
+      // message as this platform joins them.
       const PROJECT = "/tmp/wt/.claude/settings.json";
       const USER = "/home/me/.claude/settings.json";
+      const said = (path: string) => join(...path.split("/").map((part, index) => (index === 0 ? "/" : part)));
 
       it("refuses a sandboxed turn whose project settings would hand it a withheld name, before anything is launched", async () => {
         const { refused, calls } = await launched({ [PROJECT]: { env: { GH_TOKEN: "SYNTHETIC_PROJECT_TOKEN" } } });
 
         expect(refused).toContain("EO did not run this sandboxed turn");
-        expect(refused).toContain(`GH_TOKEN in ${PROJECT}`);
+        expect(refused).toContain(`GH_TOKEN in ${said(PROJECT)}`);
         expect(refused).not.toContain("SYNTHETIC_PROJECT_TOKEN");
         expect(calls).toHaveLength(0);
       });
@@ -696,7 +699,7 @@ describe("createClaudeProvider", () => {
       it("refuses one whose own Claude setup would, for an agent that uses it", async () => {
         const { refused, calls } = await launched({ [USER]: { env: { SSH_AUTH_SOCK: "/run/user/1000/other-agent" } } }, { inheritAmbientConfig: true });
 
-        expect(refused).toContain(`SSH_AUTH_SOCK in ${USER}`);
+        expect(refused).toContain(`SSH_AUTH_SOCK in ${said(USER)}`);
         expect(calls).toHaveLength(0);
       });
 
@@ -714,7 +717,7 @@ describe("createClaudeProvider", () => {
         const { refused, denied } = await launched(files, config);
 
         expect(refused).toBeNull();
-        expect(denied).toEqual(expect.arrayContaining([...SANDBOX_HIDDEN, "/alternate-gh/hosts.yml", "/alternate-runtime/bus"]));
+        expect(denied).toEqual(expect.arrayContaining([...SANDBOX_HIDDEN, join("/alternate-gh", "hosts.yml"), join("/alternate-runtime", "bus")]));
       });
     });
 

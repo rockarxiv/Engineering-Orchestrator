@@ -1,4 +1,5 @@
 import type { Agent } from "@eo/core";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { agentSandboxFor, credentialFiles, signInSockets, withAgentSandbox } from "./agentSandbox.js";
 import { NOTHING_ATTACHED } from "./workspaceKind.js";
@@ -17,14 +18,15 @@ function agent(config: Record<string, unknown>): Agent {
 
 describe("what a sandboxed agent is kept from", () => {
   it("hides the gh hosts file, glab's config, git's credential stores, ~/.ssh, the SSH agent's socket and the session bus", () => {
+    // Joined the way this platform joins paths, as EO joins them.
     expect(agentSandboxFor([], HOME, ENVIRONMENT).hidden).toEqual([
-      "/home/me/.config/gh/hosts.yml",
-      "/home/me/.config/glab-cli/config.yml",
-      "/home/me/.git-credentials",
-      "/home/me/.config/git/credentials",
-      "/home/me/.ssh",
+      join(HOME, ".config", "gh", "hosts.yml"),
+      join(HOME, ".config", "glab-cli", "config.yml"),
+      join(HOME, ".git-credentials"),
+      join(HOME, ".config", "git", "credentials"),
+      join(HOME, ".ssh"),
       "/run/user/1000/ssh-agent.socket",
-      "/run/user/1000/bus",
+      join("/run/user/1000", "bus"),
     ]);
   });
 
@@ -35,7 +37,13 @@ describe("what a sandboxed agent is kept from", () => {
   });
 
   it("follows the configuration directories the environment names", () => {
-    expect(credentialFiles(HOME, { XDG_CONFIG_HOME: "/cfg", GH_CONFIG_DIR: "/gh" })).toEqual(["/gh/hosts.yml", "/cfg/glab-cli/config.yml", "/home/me/.git-credentials", "/cfg/git/credentials", "/home/me/.ssh"]);
+    expect(credentialFiles(HOME, { XDG_CONFIG_HOME: "/cfg", GH_CONFIG_DIR: "/gh" })).toEqual([
+      join("/gh", "hosts.yml"),
+      join("/cfg", "glab-cli", "config.yml"),
+      join(HOME, ".git-credentials"),
+      join("/cfg", "git", "credentials"),
+      join(HOME, ".ssh"),
+    ]);
   });
 
   it("names no socket the environment does not", () => {

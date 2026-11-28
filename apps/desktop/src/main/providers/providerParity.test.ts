@@ -4617,7 +4617,8 @@ const CODEX: Record<CapabilityName, Proof> = {
         const args = fake.launches[0]?.args ?? [];
         const params = fake.paramsOf(resuming ? "thread/resume" : "thread/start") as Record<string, unknown> | undefined;
         const filesystem = args.find((arg) => arg.startsWith("permissions.eo.filesystem=")) ?? "";
-        const entries = [...filesystem.matchAll(/"([^"]+)" = "(write|read|none)"/g)].map((match) => [match[1] ?? "", match[2] ?? ""] as const);
+        // Each key as the serializer quoted it, unescaped: a Windows path's backslashes are doubled there.
+        const entries = [...filesystem.matchAll(/("(?:[^"\\]|\\.)*") = "(write|read|none)"/g)].map((match) => [JSON.parse(match[1] ?? '""') as string, match[2] ?? ""] as const);
         const profiled = args.includes('default_permissions="eo"');
         return {
           sandboxed: profiled && args.includes('permissions.eo.extends=":workspace"'),
