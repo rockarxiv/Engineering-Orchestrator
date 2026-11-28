@@ -6,13 +6,21 @@ import { emitPush } from "../ipc/push.js";
  * rail's Usage block draws it.
  *
  * Fed from everywhere a backend reports one — a run's `quota` events, a
- * side call's, and the reads `poller.ts` takes every five minutes — and
+ * side call's, and the reads `poller.ts` takes every five minutes, which
+ * alone set the bars' percentages (EO-938) — and
  * kept in this process's memory and nowhere else. Nothing here writes a
  * comment, a message, a run event or a row: a reading is a glance at an
  * account, and the next one replaces it.
  */
 export interface PlanUsageStore {
-  /** One reading, from a run or a side call. */
+  /**
+   * One reading, from a run or a side call: its status, never its share
+   * (EO-938). A running Claude agent's `rate_limit_event` carries its
+   * `utilization` as a fraction where the five-minute read carries a
+   * percentage, so taking it would draw a week 75% used at 1%. The bars'
+   * percentages come from `recordRead` alone; a run's refusal still
+   * takes effect at once, drawn full, and its `allowed` still ends one.
+   */
   record(event: QuotaEvent): void;
   /**
    * One read's answer for a backend: its windows, and whether plan limits
@@ -89,7 +97,8 @@ export function createPlanUsageStore(now: () => number = Date.now): PlanUsageSto
     return cleared;
   };
 
-  const take = (event: QuotaEvent, at: number, takenAt: number): void => {
+  /** `fromRun`: a run's or side call's reading, whose share is not taken (EO-938). */
+  const take = (event: QuotaEvent, at: number, takenAt: number, fromRun: boolean): void => {
     const state = backendOf(event.provider);
     // A read asked before this window's last reading arrived says less
     // than that reading does (EO-920).
@@ -100,16 +109,21 @@ export function createPlanUsageStore(now: () => number = Date.now): PlanUsageSto
     if (!refused(event)) clearUnnamedRefusals(state, takenAt);
     const previous = state.windows.get(event.window);
     const resetsAt = quotaResetAt(event.resetsAt, at);
-    // A reading that says the status and not the share — Claude's
-    // `rate_limit_event` often does — keeps the share the last one gave,
+    // A reading that says the status and not the share — every run's
+    // reading, since its share is not taken, and a read that leaves one
+    // out — keeps the share the last one gave,
     // as long as that one was not a refusal the new status has ended and
     // its window has not refreshed meanwhile.
     const previousStands = previous !== undefined && (previous.resetsAt === null || previous.resetsAt > at);
     const previousRefused = previous !== undefined && refused(previous);
     const carried = previousStands && !(previousRefused && event.status !== "rejected");
+    const carriedShare = carried ? (previous?.utilization ?? null) : null;
+    // A run's refusal is drawn full rather than at the last read's share:
+    // the backend has just said there is nothing left.
+    const share = fromRun ? (event.status === "rejected" ? null : carriedShare) : (event.utilization ?? carriedShare);
     state.windows.set(event.window, {
       window: event.window,
-      utilization: event.utilization ?? (carried ? (previous?.utilization ?? null) : null),
+      utilization: share,
       status: event.status,
       resetsAt: resetsAt ?? (carried && event.resetsAt === undefined ? (previous?.resetsAt ?? null) : null),
       readAt: at,
@@ -131,14 +145,14 @@ export function createPlanUsageStore(now: () => number = Date.now): PlanUsageSto
   return {
     record(event) {
       const takenAt = mark();
-      take(event, now(), takenAt);
+      take(event, now(), takenAt, true);
       changed(event.provider, takenAt);
     },
     recordRead(provider, answer, askedAt = mark()) {
       const at = now();
       const state = backendOf(provider);
       state.limitsApply = answer.limitsApply;
-      for (const event of answer.readings) take({ ...event, provider }, at, askedAt);
+      for (const event of answer.readings) take({ ...event, provider }, at, askedAt, false);
       changed(provider, askedAt);
     },
     mark,

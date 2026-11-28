@@ -769,7 +769,9 @@ export function mapSdkMessage(
           // seven-day, seven-day-opus) and they exhaust independently, so
           // the window is part of the reading rather than a detail of it.
           window: info.rateLimitType ?? "unknown",
-          // Passed through on the SDK's own scale, 0–100. See `QuotaEvent`.
+          // Passed through as given, which on this event is a fraction,
+          // 0–1, not the read's percentage — and so drawn nowhere (EO-938).
+          // See `QuotaEvent`.
           ...(info.utilization === undefined ? {} : { utilization: info.utilization }),
           status: info.status,
           // Passed through exactly as given. The SDK types it as a bare

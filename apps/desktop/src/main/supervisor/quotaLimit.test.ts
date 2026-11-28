@@ -126,7 +126,8 @@ describe("a run stopped by the provider's token limit (EO-172)", () => {
     const body = limitNoteBody();
     expect(body).toContain('"claude" backend refused this run');
     expect(body).toContain("five-hour usage window");
-    expect(body).toContain("(100% used)");
+    expect(body).toContain("five-hour usage window is full.");
+    expect(body).not.toContain("% used"); // the run's own share is not on a scale to print (EO-938)
     expect(body).toContain("in about 3 hours");
     expect(body).toContain("2026-08-28 23:40 UTC");
     // The sentence that stops somebody debugging a schema that was never
@@ -439,7 +440,7 @@ describe("a run stopped by the provider's token limit (EO-172)", () => {
     });
   });
 
-  it("keeps a run's reading as the rail's latest for that backend and window, and rings planUsage:changed (EO-896)", async () => {
+  it("keeps a run's reading as the rail's latest status for that backend and window, not its share, and rings planUsage:changed (EO-896, EO-938)", async () => {
     const rang: unknown[] = [];
     const stop = onPush("planUsage:changed", (payload) => rang.push(payload));
     try {
@@ -451,7 +452,8 @@ describe("a run stopped by the provider's token limit (EO-172)", () => {
       await supervisorFor(provider).runOnce();
 
       const claude = planUsage.view().backends.find((backend) => backend.provider === "claude");
-      expect(claude?.windows.find((window) => window.window === "seven_day")).toMatchObject({ utilization: 64, status: "allowed", resetsAt: resetsAt * 1000 });
+      // The share is the five-minute read's to set; this one stands where none came before.
+      expect(claude?.windows.find((window) => window.window === "seven_day")).toMatchObject({ utilization: null, status: "allowed", resetsAt: resetsAt * 1000 });
       expect(rang.length).toBeGreaterThan(0);
       // Kept in memory only: nothing on the item says so.
       expect(listCommentsForItem(handle.db, item.id).some((comment) => comment.body.includes("64%"))).toBe(false);

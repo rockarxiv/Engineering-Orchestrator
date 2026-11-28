@@ -234,7 +234,7 @@ describe("sideCall", () => {
     expect(await caller(provider).sideCall(request())).toMatchObject({ ok: false, reason: "quota" });
   });
 
-  it("keeps a side call's plan reading as the rail's latest for that backend and window (EO-896)", async () => {
+  it("keeps a side call's plan reading as the rail's latest status for that backend and window, not its share (EO-896, EO-938)", async () => {
     const rang: unknown[] = [];
     const stop = onPush("planUsage:changed", (payload) => rang.push(payload));
     try {
@@ -247,7 +247,7 @@ describe("sideCall", () => {
       };
       expect(await caller(provider).sideCall(request({ backend: "codex" }))).toEqual({ ok: true, value: { picked: ["a"] } });
       const codex = planUsage.view().backends.find((backend) => backend.provider === "codex");
-      expect(codex?.windows).toEqual([expect.objectContaining({ window: "5_hour", utilization: 37, status: "allowed" })]);
+      expect(codex?.windows).toEqual([expect.objectContaining({ window: "5_hour", utilization: null, status: "allowed" })]);
       expect(rang).toEqual([{}]);
     } finally {
       stop();

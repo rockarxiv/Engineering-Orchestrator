@@ -740,17 +740,24 @@ export interface QuotaEvent {
   /** The window that is filling: Claude's `five_hour`, `seven_day`, `seven_day_opus`, … */
   window: string;
   /**
-   * Percentage of that window used, 0–100.
+   * How much of that window is used, on the scale the backend sent it —
+   * which is not one scale (EO-938).
    *
-   * The scale is not documented on the event that carries it, and the
-   * first cut of this read it as a fraction — which would have rendered
-   * a plan 83% through its week as "8300% used". It is a percentage on
-   * the evidence of the same SDK documenting the same figure, from the
-   * same claude.ai usage endpoint, as "Percentage of the window used,
-   * 0-100" (`SDKControlGetUsageResponse.rate_limits.*.utilization`), and
-   * of the sibling `surpassedThreshold`, which is only meaningful on
-   * that scale. If a live reading ever shows a busy window sitting near
-   * 1, this is the assumption to revisit.
+   * A five-minute read (`claudeUsage.ts`, `codexUsage.ts`) carries a
+   * percentage, 0–100: the SDK documents the figure there as "Percentage
+   * of the window used, 0-100"
+   * (`SDKControlGetUsageResponse.rate_limits.*.utilization`). A running
+   * Claude agent's `rate_limit_event` carries a fraction, 0–1, though
+   * nothing on the event says so: EO-937's implementer run reported
+   * `seven_day` at `utilization: 0.75` with `status: allowed_warning`,
+   * a week 75% used. The first cut of this read the event as a fraction,
+   * the second as a percentage on the strength of that documentation,
+   * and the second drew that week at 1%.
+   *
+   * So the rail does not draw a running agent's share, on either
+   * backend: the plan usage store takes a run's or side call's status
+   * and leaves its bars' percentages to the five-minute read, and the
+   * refusal sentence (`quotaStopReason`) prints no share at all.
    *
    * Optional since EO-172, and only because `status` outgrew it. A
    * reading with no share used to be nothing worth recording, so the

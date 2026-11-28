@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { QuotaEvent } from "@eo/core";
+import { shownPlanWindow, type QuotaEvent } from "@eo/core";
 import { createPlanUsageStore } from "./store.js";
 
 const NOW = Date.UTC(2026, 10, 23, 12, 0);
@@ -12,10 +12,10 @@ describe("the plan usage store", () => {
   it("keeps the newest reading per backend and window, with its reset as milliseconds", () => {
     let clock = NOW;
     const store = createPlanUsageStore(() => clock);
-    store.record(reading({ resetsAt: (NOW + 2 * HOUR) / 1000 }));
-    store.record(reading({ provider: "codex", window: "5_hour", utilization: 12 }));
+    store.recordRead("claude", { limitsApply: true, readings: [reading({ resetsAt: (NOW + 2 * HOUR) / 1000 })] });
+    store.recordRead("codex", { limitsApply: true, readings: [reading({ provider: "codex", window: "5_hour", utilization: 12 })] });
     clock += 1_000;
-    store.record(reading({ utilization: 41, resetsAt: NOW + 2 * HOUR }));
+    store.recordRead("claude", { limitsApply: true, readings: [reading({ utilization: 41, resetsAt: NOW + 2 * HOUR })] });
 
     expect(store.view()).toEqual({
       backends: [
@@ -27,7 +27,7 @@ describe("the plan usage store", () => {
 
   it("keeps the last share when a reading says only its status, but not past a refusal it ended", () => {
     const store = createPlanUsageStore(() => NOW);
-    store.record(reading({ utilization: 64, resetsAt: NOW + HOUR }));
+    store.recordRead("claude", { limitsApply: true, readings: [reading({ utilization: 64, resetsAt: NOW + HOUR })] });
     const shareless: QuotaEvent = { type: "quota", provider: "claude", window: "five_hour", status: "allowed" };
     store.record(shareless);
     expect(store.view().backends[0]?.windows[0]).toMatchObject({ utilization: 64, resetsAt: NOW + HOUR });
@@ -35,6 +35,49 @@ describe("the plan usage store", () => {
     store.record(reading({ utilization: 100, status: "rejected" }));
     store.record(shareless);
     expect(store.view().backends[0]?.windows[0]).toMatchObject({ utilization: null, status: "allowed" });
+  });
+
+  describe("a running agent's reading (EO-938)", () => {
+    const week = (over: Partial<QuotaEvent> = {}): QuotaEvent => reading({ window: "seven_day", resetsAt: (NOW + 50 * HOUR) / 1000, ...over });
+    const shown = (store: ReturnType<typeof createPlanUsageStore>, provider: string, window: string) => {
+      const held = store.view().backends.find((backend) => backend.provider === provider)?.windows.find((reading) => reading.window === window);
+      return held === undefined ? undefined : shownPlanWindow(held, NOW);
+    };
+
+    it("sets a window's status but never its share: the bar keeps the five-minute read's percentage", () => {
+      const store = createPlanUsageStore(() => NOW);
+      store.recordRead("claude", { limitsApply: true, readings: [week({ utilization: 75 })] });
+      // What EO-937's implementer run reported: the same 75%, as a fraction.
+      store.record(week({ utilization: 0.75, status: "allowed_warning" }));
+
+      expect(store.view().backends[0]?.windows[0]).toMatchObject({ utilization: 75, status: "allowed_warning" });
+      expect(shown(store, "claude", "seven_day")).toMatchObject({ percent: 75, refused: false });
+    });
+
+    it("follows the same rule on Codex", () => {
+      const store = createPlanUsageStore(() => NOW);
+      store.recordRead("codex", { limitsApply: true, readings: [reading({ provider: "codex", window: "5_hour", utilization: 20 })] });
+      store.record(reading({ provider: "codex", window: "5_hour", utilization: 37 }));
+      expect(shown(store, "codex", "5_hour")).toMatchObject({ percent: 20 });
+
+      // A window only a run has reported has no share until a read gives one.
+      store.record(reading({ provider: "codex", window: "7_day", utilization: 40 }));
+      expect(shown(store, "codex", "7_day")).toMatchObject({ percent: null, refused: false });
+    });
+
+    it("refuses at once, drawn full, and an allowed reading after it lifts the refusal (EO-920)", () => {
+      const store = createPlanUsageStore(() => NOW);
+      store.recordRead("claude", { limitsApply: true, readings: [week({ utilization: 75 })] });
+      expect(store.allowed("claude", NOW)).toBe(true);
+
+      store.record(week({ utilization: 1, status: "rejected" }));
+      expect(shown(store, "claude", "seven_day")).toMatchObject({ percent: 100, tone: "danger", refused: true });
+      expect(store.allowed("claude", NOW)).toBe(false);
+
+      store.record(week({ utilization: 0.4, status: "allowed" }));
+      expect(shown(store, "claude", "seven_day")).toMatchObject({ refused: false });
+      expect(store.allowed("claude", NOW)).toBe(true);
+    });
   });
 
   it("takes a read's answer as one change, and remembers that limits do not apply", () => {
@@ -120,7 +163,7 @@ describe("the plan usage store", () => {
     expect(store.allowed("codex", NOW + HOUR)).toBe(true);
     store.record(reading({ provider: "codex", window: "5_hour", utilization: 0 }));
     expect(store.allowed("codex", NOW)).toBe(true);
-    store.record({ type: "quota", provider: "codex", window: "7_day", utilization: 100, status: "allowed" });
+    store.recordRead("codex", { limitsApply: true, readings: [{ type: "quota", provider: "codex", window: "7_day", utilization: 100, status: "allowed" }] });
     expect(store.allowed("codex", NOW)).toBe(false);
   });
 
@@ -138,7 +181,7 @@ describe("the plan usage store", () => {
     store.recordRead("codex", { limitsApply: true, readings: [reading({ window: "5_hour", utilization: 30 }), reading({ window: "7_day", utilization: 20 })] }, askedAt);
     expect(heard).toHaveBeenLastCalledWith("codex", askedAt);
     expect(store.view().backends[0]?.windows.map((window) => [window.window, window.status, window.utilization])).toEqual([
-      ["5_hour", "rejected", 100],
+      ["5_hour", "rejected", null],
       ["unknown", "rejected", null],
       ["7_day", "allowed", 20],
     ]);
