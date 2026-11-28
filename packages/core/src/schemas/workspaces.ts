@@ -43,6 +43,26 @@ export type WorkspaceKindSlug = string;
 export const GIT_WORKTREE_KIND: WorkspaceKindSlug = "git-worktree";
 
 /**
+ * How long one verify check may run on a repository before EO kills it,
+ * in whole minutes (EO-928). Ten is what every check was given before a
+ * repository could say otherwise; the ceiling of two hours keeps a hung
+ * suite from holding the one run slot (invariant 10) for the rest of
+ * the day.
+ */
+export const CHECK_TIMEOUT_MIN_MINUTES = 1;
+export const CHECK_TIMEOUT_MAX_MINUTES = 120;
+export const DEFAULT_CHECK_TIMEOUT_MINUTES = 10;
+
+const CHECK_TIMEOUT_BOUNDS = `A check timeout is a whole number of minutes from ${CHECK_TIMEOUT_MIN_MINUTES} to ${CHECK_TIMEOUT_MAX_MINUTES}.`;
+
+/** One repository's check timeout, refused outside its bounds with the bounds in the message. */
+export const CheckTimeoutMinutesSchema = z
+  .number({ error: CHECK_TIMEOUT_BOUNDS })
+  .int({ error: CHECK_TIMEOUT_BOUNDS })
+  .min(CHECK_TIMEOUT_MIN_MINUTES, { error: CHECK_TIMEOUT_BOUNDS })
+  .max(CHECK_TIMEOUT_MAX_MINUTES, { error: CHECK_TIMEOUT_BOUNDS });
+
+/**
  * The `git-worktree` kind's configuration — a repository EO drives.
  *
  * Every field is one of the `repositories` columns that genuinely
@@ -71,6 +91,8 @@ export const GitWorkspaceConfigSchema = z.object({
   testCommand: z.string().nullable().default(null),
   lintCommand: z.string().nullable().default(null),
   buildCommand: z.string().nullable().default(null),
+  /** How long each of the three checks may run before verify kills it, in minutes (EO-928). */
+  checkTimeoutMinutes: CheckTimeoutMinutesSchema.default(DEFAULT_CHECK_TIMEOUT_MINUTES),
   /**
    * Opening pull requests (F-06). Off by default: pushing to a
    * repository other people share is not something an upgrade should

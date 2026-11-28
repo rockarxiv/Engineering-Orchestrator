@@ -114,6 +114,8 @@ function repositoryLine(repository: RepositoryView): string {
     `test: ${repository.testCommand ?? "none"}`,
     `lint: ${repository.lintCommand ?? "none"}`,
     `build: ${repository.buildCommand ?? "none"}`,
+    // repository_update offers to change it, so a caller checking its own write must see it (EO-928).
+    `each check killed after ${repository.checkTimeoutMinutes} min`,
   ].join("; ") +
     // Said even when empty: "none" is a setting repository_update offers
     // to change, and a caller checking its own write must see it (EO-741).

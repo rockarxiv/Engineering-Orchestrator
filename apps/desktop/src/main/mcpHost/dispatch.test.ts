@@ -1904,6 +1904,36 @@ describe("setting EO up, through the tools that do it", () => {
     }
   });
 
+  it("sets a repository's check timeout, ten minutes until it does, and lists it (EO-928)", async () => {
+    const repositoryId = await attach("api", repoPath);
+    expect(listRepositoriesCommand(handle.db, credentials).repositories[0]!.checkTimeoutMinutes).toBe(10);
+
+    const changed = await tool("repository_update").run(dispatch, { id: repositoryId, checkTimeoutMinutes: 45 });
+
+    expect(changed.ok).toBe(true);
+    if (!changed.ok) return;
+    expect(changed.refused).toBe(false);
+    const listed = await tool("repositories_list").run(dispatch, {});
+    expect(listed.ok).toBe(true);
+    if (!listed.ok) return;
+    expect((listed.data as IpcResponse<"repositories:list">).repositories[0]!.checkTimeoutMinutes).toBe(45);
+    expect(listed.text).toContain("each check killed after 45 min");
+  });
+
+  it("refuses a check timeout outside 1 to 120 minutes with the bounds, and changes nothing (EO-928)", async () => {
+    const repositoryId = await attach("api", repoPath);
+    const before = listRepositoriesCommand(handle.db, credentials).repositories[0]!;
+
+    for (const bad of [0, 121, 2.5, -10]) {
+      const refused = await tool("repository_update").run(dispatch, { id: repositoryId, testCommand: "pnpm test", checkTimeoutMinutes: bad });
+
+      expect(refused.ok).toBe(false);
+      if (refused.ok) return;
+      expect(refused.issues).toEqual(["A check timeout is a whole number of minutes from 1 to 120."]);
+      expect(listRepositoriesCommand(handle.db, credentials).repositories[0]).toEqual(before);
+    }
+  });
+
   it("refuses a path that is not a git repository, and says which path", async () => {
     // The screen has a folder picker, which proves a folder exists and
     // nothing more; a client has not even got that. Stored unchecked, the

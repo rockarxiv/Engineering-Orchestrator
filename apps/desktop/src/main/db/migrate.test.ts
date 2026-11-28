@@ -2455,6 +2455,8 @@ describe("0072: workspaces, connector bindings, and the ids that do not change",
       // No column ever held it: the schema's default, read onto a row
       // written before the field existed (EO-741).
       forgeReviewers: [],
+      // Written onto every repository by 0189 (EO-928).
+      checkTimeoutMinutes: 10,
     });
     expect(workspaces[1]!.config).toMatchObject({ baseBranch: "trunk", buildCommand: "go build", forgeRemote: "upstream", forgeDraft: true });
   });
@@ -4207,6 +4209,33 @@ describe("0188: a route's traversal limit and a move's result (EO-921)", () => {
         result_key: null,
         from_pipeline_version_id: null,
       });
+    } finally {
+      handle.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("0189: a repository's check timeout (EO-928)", () => {
+  it("gives every repository without one ten minutes, keeps one already set, and leaves other kinds alone", () => {
+    const handle = openDb(":memory:");
+    const tempDir = mkdtempSync(join(tmpdir(), "eo-check-timeout-"));
+    try {
+      writeMigrationSetBefore(tempDir, "0189_check_timeout");
+      runMigrations(handle.db, tempDir);
+      handle.db.run(
+        sql`INSERT INTO workspaces (id, project_id, kind, config, position, created_at, updated_at) VALUES
+            ('w-old', NULL, 'git-worktree', '{"name":"old","repoPath":"/tmp/old","testCommand":"pnpm test"}', 0, 1, 1),
+            ('w-set', NULL, 'git-worktree', '{"name":"set","repoPath":"/tmp/set","checkTimeoutMinutes":45}', 1, 1, 1),
+            ('w-folder', NULL, 'folder', '{"path":"/tmp/drive"}', 2, 1, 1)`,
+      );
+
+      runMigrations(handle.db, join(dirname(fileURLToPath(import.meta.url)), "migrations"));
+
+      const config = (id: string) => JSON.parse(handle.db.get<{ config: string }>(sql`SELECT config FROM workspaces WHERE id = ${id}`)!.config) as unknown;
+      expect(config("w-old")).toEqual({ name: "old", repoPath: "/tmp/old", testCommand: "pnpm test", checkTimeoutMinutes: 10 });
+      expect(config("w-set")).toEqual({ name: "set", repoPath: "/tmp/set", checkTimeoutMinutes: 45 });
+      expect(config("w-folder")).toEqual({ path: "/tmp/drive" });
     } finally {
       handle.close();
       rmSync(tempDir, { recursive: true, force: true });

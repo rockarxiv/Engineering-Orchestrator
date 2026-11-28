@@ -61,6 +61,7 @@ function toView(db: Db, workspace: GitWorkspace, credentials: CredentialsOptions
     testCommand: workspace.config.testCommand,
     lintCommand: workspace.config.lintCommand,
     buildCommand: workspace.config.buildCommand,
+    checkTimeoutMinutes: workspace.config.checkTimeoutMinutes,
     itemCount: listItems(db, workspace.id).length,
     jira: jiraConfigView(db, binding, credentials),
     forge: {
@@ -309,6 +310,7 @@ export async function updateRepositoryCommand(db: Db, credentials: CredentialsOp
     ...(input.testCommand !== undefined ? { testCommand: input.testCommand } : {}),
     ...(input.lintCommand !== undefined ? { lintCommand: input.lintCommand } : {}),
     ...(input.buildCommand !== undefined ? { buildCommand: input.buildCommand } : {}),
+    ...(input.checkTimeoutMinutes !== undefined ? { checkTimeoutMinutes: input.checkTimeoutMinutes } : {}),
     ...(input.forgeOpenPr !== undefined ? { forgeOpenPr: input.forgeOpenPr } : {}),
     ...(input.forgeKind !== undefined ? { forgeKind: input.forgeKind } : {}),
     ...(input.forgeRemote !== undefined ? { forgeRemote: input.forgeRemote } : {}),

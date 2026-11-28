@@ -142,6 +142,22 @@ describe("verifyImplementation", () => {
     expect(result.steps.every((step) => step.ok)).toBe(true);
   });
 
+  it("fails a check that outruns the timeout, naming the timeout it was given (EO-928)", async () => {
+    const created = await createWorktree(config(), "EO-928");
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    writeFileSync(join(created.value.path, "feature.txt"), "done\n");
+    await commitAll(created.value.path, "implement the thing");
+
+    const result = await verifyImplementation(config(), "EO-928", { test: NODE_HANG }, { timeoutMs: 500 });
+
+    expect(result.ok).toBe(false);
+    expect(result.failedStep).toBe("test");
+    const test = result.steps.find((step) => step.name === "test");
+    expect(test?.timedOut).toBe(true);
+    expect(test?.detail).toBe(`\`${NODE_HANG}\` was killed after 500ms without finishing — the repository's check timeout, which its settings can raise.`);
+  });
+
   it("still passes clean when the run had MCP servers and skills attached", async () => {
     // The generated directory is EO's, not the person's, and `clean`
     // fails on anything untracked — so a directory written inside the

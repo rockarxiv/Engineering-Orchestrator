@@ -119,7 +119,12 @@ export function createImplementationVerifier(db: Db, worktreeRoot?: string, opti
     // up being what the other was checked against. Every reassignment now
     // sits on top of the factory's defaults instead of on top of whatever
     // the previous call left behind.
-    let resolved: VerifyOptions = { ...options, branch };
+    //
+    // Each check is given this repository's own timeout (EO-928): a
+    // suite that takes twenty minutes cannot pass under ten. A timeout
+    // the factory was handed explicitly wins, which only tests do.
+    const timeoutMs = options.timeoutMs ?? (workspace ? workspace.config.checkTimeoutMinutes * 60_000 : undefined);
+    let resolved: VerifyOptions = { ...options, branch, ...(timeoutMs !== undefined ? { timeoutMs } : {}) };
 
     // Recomputed on every verify run, never cached from when the
     // worktree was first cut (EO-10 / KAN-42): the dependency this story
