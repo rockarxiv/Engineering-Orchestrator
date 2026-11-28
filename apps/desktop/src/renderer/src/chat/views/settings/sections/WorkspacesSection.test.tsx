@@ -375,6 +375,23 @@ describe("editing one", () => {
     });
   });
 
+  it("shows the check timeout, ten minutes until one is set, and saves what was typed as a number (EO-928)", async () => {
+    const calls = renderSection();
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    const form = screen.getByLabelText("Edit shop-web");
+
+    const field = within(form).getByLabelText("Check timeout (minutes)");
+    expect(field).toHaveValue(10);
+    fireEvent.change(field, { target: { value: "45" } });
+    expect(lastUnsavedEdits(calls)).toContainEqual({ field: "Check timeout (minutes)", value: "45" });
+    fireEvent.click(within(form).getByRole("button", { name: "Save" }));
+
+    await waitFor(() => {
+      const sent = on(calls, "workspaces:update").at(-1) as { id: string; config: { checkTimeoutMinutes: number } };
+      expect(sent.config.checkTimeoutMinutes).toBe(45);
+    });
+  });
+
   it("checks an attached repository's forge and says what to fix", async () => {
     renderSection();
     fireEvent.click(await screen.findByRole("button", { name: "Edit" }));

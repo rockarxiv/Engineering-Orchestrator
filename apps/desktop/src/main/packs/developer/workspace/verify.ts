@@ -1,10 +1,15 @@
+import { DEFAULT_CHECK_TIMEOUT_MINUTES } from "@eo/core";
 import { branchNameFor, worktreePathFor, type WorktreeConfig } from "./worktrees.js";
 import { git, statusPorcelain } from "./git.js";
 import { withoutRepositoryIndex } from "../repositoryIntelligence/index.js";
 import { runCommand } from "../../../process/runCommand.js";
 
-/** Long enough for a real suite, short enough that a hang doesn't wedge EO for the afternoon. */
-export const DEFAULT_CHECK_TIMEOUT_MS = 10 * 60 * 1000;
+/**
+ * What a check is given when the caller names no timeout. The verifier
+ * always names the repository's own (EO-928), so this is the fallback for
+ * a caller with no repository to read one from.
+ */
+export const DEFAULT_CHECK_TIMEOUT_MS = DEFAULT_CHECK_TIMEOUT_MINUTES * 60 * 1000;
 export const DEFAULT_MAX_OUTPUT_CHARS = 20_000;
 
 export interface VerificationStep {
@@ -41,6 +46,7 @@ export interface CheckCommands {
 }
 
 export interface VerifyOptions {
+  /** How long each check may run before it is killed: the repository's check timeout (EO-928). */
   timeoutMs?: number;
   maxOutputChars?: number;
   /**
@@ -202,7 +208,7 @@ export async function verifyImplementation(
         name,
         ok: false,
         detail: outcome.timedOut
-          ? `\`${command}\` was killed after ${timeoutMs}ms without finishing.`
+          ? `\`${command}\` was killed after ${timeoutWords(timeoutMs)} without finishing — the repository's check timeout, which its settings can raise.`
           : `\`${command}\` exited with code ${outcome.exitCode}.`,
         output: outcome.output,
         ...(outcome.timedOut ? { timedOut: true } : {}),
@@ -212,6 +218,13 @@ export async function verifyImplementation(
   }
 
   return { ok: true, steps };
+}
+
+/** A timeout as a person sets it — in minutes — or in milliseconds when it is not a whole number of them. */
+function timeoutWords(timeoutMs: number): string {
+  const minutes = timeoutMs / 60_000;
+  if (Number.isInteger(minutes)) return minutes === 1 ? "1 minute" : `${minutes} minutes`;
+  return `${timeoutMs}ms`;
 }
 
 /** Renders a result as the body of the engine's comment (ARCHITECTURE.md, "One channel") — the failing step first, then its output. */

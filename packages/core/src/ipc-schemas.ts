@@ -11,7 +11,14 @@ import { ProposalSummarySchema } from "./schemas/proposalSummary.js";
 import { WaitingOnSchema } from "./people.js";
 import { SpecShapeSchema } from "./schemas/specShape.js";
 import { StepHoldingItemsSchema } from "./stepHolds.js";
-import { DEFAULT_WORKSPACE_MODE, WorkspaceModeSchema } from "./schemas/workspaces.js";
+import {
+  CHECK_TIMEOUT_MAX_MINUTES,
+  CHECK_TIMEOUT_MIN_MINUTES,
+  CheckTimeoutMinutesSchema,
+  DEFAULT_CHECK_TIMEOUT_MINUTES,
+  DEFAULT_WORKSPACE_MODE,
+  WorkspaceModeSchema,
+} from "./schemas/workspaces.js";
 import { ItemWatchViewSchema, StepWatchSchema } from "./watch.js";
 import { DependencyWaitSchema } from "./schemas/dependencyGates.js";
 
@@ -1760,6 +1767,8 @@ export const RepositoryViewSchema = z.object({
   testCommand: z.string().nullable(),
   lintCommand: z.string().nullable(),
   buildCommand: z.string().nullable(),
+  /** How long each check may run before verify kills it, in whole minutes (EO-928). */
+  checkTimeoutMinutes: z.number().int(),
   itemCount: z.number(),
   jira: JiraConfigSchema,
   forge: ForgeConfigSchema,
@@ -1882,6 +1891,11 @@ export const UpdateRepositoryInputSchema = z.object({
   testCommand: z.string().nullable().optional(),
   lintCommand: z.string().nullable().optional(),
   buildCommand: z.string().nullable().optional(),
+  checkTimeoutMinutes: CheckTimeoutMinutesSchema.optional().describe(
+    `How long each of the test, lint and build commands may run before verification kills it, in whole minutes from ` +
+      `${CHECK_TIMEOUT_MIN_MINUTES} to ${CHECK_TIMEOUT_MAX_MINUTES}; ${DEFAULT_CHECK_TIMEOUT_MINUTES} unless set. A value outside ` +
+      `those bounds refuses the update.`,
+  ),
   forgeOpenPr: z.boolean().optional(),
   forgeKind: z.enum(["github", "gitlab"]).nullable().optional(),
   forgeRemote: z.string().min(1).optional(),

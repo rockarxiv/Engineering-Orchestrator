@@ -1,7 +1,16 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Plus } from "lucide-react";
-import { FOLDER_KIND, GIT_WORKTREE_KIND, NONE_KIND, SCRATCH_KIND, type WorkspaceView } from "@eo/core";
+import {
+  CHECK_TIMEOUT_MAX_MINUTES,
+  CHECK_TIMEOUT_MIN_MINUTES,
+  DEFAULT_CHECK_TIMEOUT_MINUTES,
+  FOLDER_KIND,
+  GIT_WORKTREE_KIND,
+  NONE_KIND,
+  SCRATCH_KIND,
+  type WorkspaceView,
+} from "@eo/core";
 import { ipcQuery } from "../../../../query/client";
 import { itemsKey, pipelineStepsRootKey, projectsKey, repositoriesKey, workspacesKey, worktreesKey } from "../../../../query/hooks";
 import { useProjects } from "../../../../query/useRepositories";
@@ -44,6 +53,7 @@ interface GitDraft {
   testCommand: string | null;
   lintCommand: string | null;
   buildCommand: string | null;
+  checkTimeoutMinutes: number;
   forgeOpenPr: boolean;
   forgeKind: "github" | "gitlab" | null;
   forgeRemote: string;
@@ -60,6 +70,7 @@ const BLANK_GIT: GitDraft = {
   testCommand: null,
   lintCommand: null,
   buildCommand: null,
+  checkTimeoutMinutes: DEFAULT_CHECK_TIMEOUT_MINUTES,
   forgeOpenPr: false,
   forgeKind: null,
   forgeRemote: "origin",
@@ -81,6 +92,7 @@ const GIT_FIELD_LABELS: Record<keyof GitDraft, string> = {
   testCommand: "test command",
   lintCommand: "lint command",
   buildCommand: "build command",
+  checkTimeoutMinutes: "Check timeout (minutes)",
   forgeOpenPr: "Open a pull request when a story is approved",
   forgeKind: "Forge",
   forgeRemote: "Remote",
@@ -370,6 +382,10 @@ export function GitForm({
   // Kept as typed, so a separator being typed is not eaten mid-word; the
   // draft holds the handles it splits into, which EO tidies on save.
   const [reviewers, setReviewers] = useState(initial.forgeReviewers.join(", "));
+  // Kept as typed too, so clearing the box to type a new number does not
+  // snap it back. Out of bounds is sent as it is and refused by EO with
+  // the bounds, rather than quietly clamped here (EO-928).
+  const [checkTimeout, setCheckTimeout] = useState(String(initial.checkTimeoutMinutes));
   const detect = useMutation({ mutationFn: () => ipcQuery("forge:detect", { repositoryId: workspaceId! }) });
   useViewParameters({ unsavedEdits: unsavedEditsBetween(draft, initial, GIT_FIELD_LABELS) });
   const result = detect.data;
@@ -412,6 +428,21 @@ export function GitForm({
             />
           </Field>
         ))}
+        {/* Each of the three checks is killed after this long (EO-928). */}
+        <Field label="Check timeout (minutes)">
+          <TextInput
+            type="number"
+            min={CHECK_TIMEOUT_MIN_MINUTES}
+            max={CHECK_TIMEOUT_MAX_MINUTES}
+            step={1}
+            value={checkTimeout}
+            className="font-mono"
+            onChange={(event) => {
+              setCheckTimeout(event.target.value);
+              setDraft({ ...draft, checkTimeoutMinutes: event.target.value.trim() === "" ? Number.NaN : Number(event.target.value) });
+            }}
+          />
+        </Field>
       </FieldGrid>
       {/* Verification skips a check it has no command for, so without this
           a run passes having run no tests and nothing says so (EO-927). */}

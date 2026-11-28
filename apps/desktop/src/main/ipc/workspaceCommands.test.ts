@@ -400,6 +400,22 @@ describe("changing one", () => {
       expect(asGitWorkspace(getWorkspace(handle.db, git.id))?.config).toMatchObject({ baseBranch: "main", forgeReviewers: [] });
     });
 
+    it("saves the check timeout the form sends, and refuses one outside 1 to 120 minutes with the bounds (EO-928)", async () => {
+      const git = attachWorkspace(handle.db, { keyPrefix: "EO", name: "the repo", repoPath: repository("the repo") });
+      expect(asGitWorkspace(getWorkspace(handle.db, git.id))?.config.checkTimeoutMinutes).toBe(10);
+
+      const raised = await updateWorkspaceCommand(handle.db, credentials, { id: git.id, config: { ...git.config, checkTimeoutMinutes: 30 } });
+      expect(raised.ok, raised.problem ?? "").toBe(true);
+      expect(listRepositoriesCommand(handle.db, credentials).repositories.find((listed) => listed.id === git.id)?.checkTimeoutMinutes).toBe(30);
+
+      for (const bad of [0, 121, Number.NaN]) {
+        const refused = await updateWorkspaceCommand(handle.db, credentials, { id: git.id, config: { baseBranch: "trunk", checkTimeoutMinutes: bad } });
+        expect(refused.ok).toBe(false);
+        expect(refused.problem).toBe("A check timeout is a whole number of minutes from 1 to 120.");
+      }
+      expect(asGitWorkspace(getWorkspace(handle.db, git.id))?.config).toMatchObject({ baseBranch: "main", checkTimeoutMinutes: 30 });
+    });
+
     it("leaves the forge settings alone when only the path is sent", async () => {
       // The patch stays a patch: `updateRepositoryCommand` reads an
       // absent key as "leave it", so forwarding only what was sent is

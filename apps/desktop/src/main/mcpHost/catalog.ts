@@ -2979,7 +2979,9 @@ const PROJECT_SETUP_TOOLS: readonly ToolSpec[] = [
       "Change an attached repository: its name, its description, where it is checked out, its base branch, the " +
       "test, lint and build commands verification runs, and how it opens pull requests. Send only the fields you " +
       "mean to change; anything left out keeps the value repositories_list reports. null on a command means EO has " +
-      "nothing to run for that step. forgeReviewers is the repository's default pull request reviewers: the forge " +
+      "nothing to run for that step. checkTimeoutMinutes is how long each of those commands may run before " +
+      "verification kills it and fails the run, in whole minutes from 1 to 120 (10 unless set); a value outside those " +
+      "bounds refuses the update and names them. forgeReviewers is the repository's default pull request reviewers: the forge " +
       "handles EO asks to review each pull request it opens here, after creating it — a GitHub login or org/team, or a " +
       "GitLab username. It replaces the whole list, [] asks nobody, and an entry with a space or comma in it refuses " +
       "the update and names that entry. A repoPath that is not a git repository is refused by name, and so is one " +

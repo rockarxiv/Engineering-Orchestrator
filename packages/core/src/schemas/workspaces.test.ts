@@ -18,3 +18,23 @@ describe("normaliseReviewers (EO-741)", () => {
     expect(GitWorkspaceConfigSchema.parse({ name: "api", repoPath: "/code/api" }).forgeReviewers).toEqual([]);
   });
 });
+
+describe("a repository's check timeout (EO-928)", () => {
+  it("is ten minutes on a repository that names none", () => {
+    expect(GitWorkspaceConfigSchema.parse({ name: "api", repoPath: "/code/api" }).checkTimeoutMinutes).toBe(10);
+  });
+
+  it("keeps any whole number of minutes from 1 to 120", () => {
+    for (const minutes of [1, 45, 120]) {
+      expect(GitWorkspaceConfigSchema.parse({ name: "api", repoPath: "/code/api", checkTimeoutMinutes: minutes }).checkTimeoutMinutes).toBe(minutes);
+    }
+  });
+
+  it("refuses anything else, with the bounds in the message", () => {
+    for (const minutes of [0, 121, 1.5, "10"]) {
+      const parsed = GitWorkspaceConfigSchema.safeParse({ name: "api", repoPath: "/code/api", checkTimeoutMinutes: minutes });
+      expect(parsed.success).toBe(false);
+      expect(parsed.error?.issues.map((issue) => issue.message)).toEqual(["A check timeout is a whole number of minutes from 1 to 120."]);
+    }
+  });
+});

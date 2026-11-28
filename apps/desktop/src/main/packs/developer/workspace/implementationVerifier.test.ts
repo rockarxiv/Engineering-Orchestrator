@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Item } from "@eo/core";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DbHandle } from "../../../db/client.js";
 import { comments } from "../../../db/schema.js";
 import { addDependency, getItem, listRunsForItem, updateWorkspace, type Workspace } from "../../../db/repos/index.js";
@@ -17,6 +17,23 @@ import { run } from "../../../testing/git.js";
 import { installedKinds } from "../../../supervisor/testWorkspaceKinds.js";
 import { gitWorkspaceKind } from "./gitKind.js";
 import { hourlyClock } from "../../../testing/clock.js";
+
+/**
+ * The timeout every check command was started with, in the order they
+ * ran. The real `runCommand` still runs each one: this only listens, so
+ * the rest of the file is unaffected.
+ */
+const checkTimeouts = vi.hoisted(() => [] as (number | undefined)[]);
+vi.mock("../../../process/runCommand.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../../process/runCommand.js")>();
+  return {
+    ...actual,
+    runCommand: (command: string, options: Parameters<typeof actual.runCommand>[1]) => {
+      checkTimeouts.push(options.timeoutMs);
+      return actual.runCommand(command, options);
+    },
+  };
+});
 
 function forgeRunnerFor(states: Record<string, "OPEN" | "MERGED" | "CLOSED">): CliRunner {
   return async (_cli, args) => {
@@ -105,6 +122,39 @@ function engineComments() {
     .all()
     .filter((comment) => comment.authorType === "engine");
 }
+
+describe("the repository's check timeout (EO-928)", () => {
+  async function commitWork(): Promise<void> {
+    const workspace = await createWorktreeWorkspace(handle.db, worktreeRoot)(item, "implement");
+    expect(workspace.ok).toBe(true);
+    if (!workspace.ok) return;
+    writeFileSync(join(workspace.workspace.cwd, "feature.txt"), "the work\n");
+    await run(["add", "-A"], workspace.workspace.cwd);
+    await run(["commit", "-m", "the work"], workspace.workspace.cwd);
+  }
+
+  it("gives every check ten minutes on a repository that never set one", async () => {
+    updateWorkspace(handle.db, repository.id, { config: { testCommand: `node -e ""`, lintCommand: `node -e ""`, buildCommand: `node -e ""` } });
+    await commitWork();
+    checkTimeouts.length = 0;
+
+    const result = await createImplementationVerifier(handle.db, worktreeRoot)(getItem(handle.db, item.id)!);
+
+    expect(result.ok).toBe(true);
+    expect(checkTimeouts).toEqual([10 * 60_000, 10 * 60_000, 10 * 60_000]);
+  });
+
+  it("gives every check the timeout the repository was raised to", async () => {
+    updateWorkspace(handle.db, repository.id, { config: { testCommand: `node -e ""`, lintCommand: `node -e ""`, buildCommand: `node -e ""`, checkTimeoutMinutes: 90 } });
+    await commitWork();
+    checkTimeouts.length = 0;
+
+    const result = await createImplementationVerifier(handle.db, worktreeRoot)(getItem(handle.db, item.id)!);
+
+    expect(result.ok).toBe(true);
+    expect(checkTimeouts).toEqual([90 * 60_000, 90 * 60_000, 90 * 60_000]);
+  });
+});
 
 describe("createImplementationVerifier, wired into the supervisor", () => {
   it("lets a genuinely finished implementation through to review", async () => {

@@ -126,7 +126,14 @@ function configProblem(kind: string, config: unknown): string | null {
   }
   if (kind === GIT_WORKTREE_KIND) {
     const parsed = GitWorkspaceConfigSchema.safeParse(config);
-    if (!parsed.success) return "A repository workspace needs a name and a path to a checkout on this machine.";
+    if (!parsed.success) {
+      // A timeout out of bounds is named with its bounds (EO-928), not
+      // folded into the sentence about a name and a path it has nothing
+      // to do with.
+      const timeout = parsed.error.issues.find((issue) => issue.path[0] === "checkTimeoutMinutes");
+      if (timeout) return timeout.message;
+      return "A repository workspace needs a name and a path to a checkout on this machine.";
+    }
     // Blank is not a value either field may hold, which the old
     // `repositories:*` channels said with `.min(1)` on their own input
     // schemas. `GitWorkspaceConfigSchema` cannot: it describes the
@@ -200,6 +207,7 @@ export async function createWorkspaceCommand(
       forgeDraft: parsed.data.forgeDraft,
       forgeTemplatePath: parsed.data.forgeTemplatePath,
       forgeReviewers: reviewers.reviewers,
+      checkTimeoutMinutes: parsed.data.checkTimeoutMinutes,
     };
     const workspace = updateWorkspace(db, created.repository.id as Uuid, { config: patch });
     return { ok: true, workspace: workspaceView(db, getWorkspace(db, workspace.id) ?? workspace), problem: null };
@@ -275,6 +283,7 @@ function gitRepositoryPatch(patch: Record<string, unknown>): Omit<IpcPayload<"re
     "testCommand",
     "lintCommand",
     "buildCommand",
+    "checkTimeoutMinutes",
     "forgeOpenPr",
     "forgeKind",
     "forgeRemote",
